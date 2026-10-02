@@ -313,6 +313,7 @@ export function App() {
               onPickRoots={workbench.pickProjectRoots}
               onSelectProject={selectProject}
               onRetryInspection={id => { void workbench.inspectProject(id, true); }}
+              onInspectServices={id => { void workbench.inspectServices(id); }}
               onGoToAi={() => navigate('setup')}
             />
           )}

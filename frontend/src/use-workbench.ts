@@ -7,6 +7,7 @@ import {
   type ClientConfig,
   type Inspection,
   type Proposal,
+  type ServiceInventory,
   type Workspace,
 } from './api';
 import type { ProjectRequest } from './validation';
@@ -24,6 +25,9 @@ export interface WorkbenchState {
   inspection: Inspection | null;
   inspectionError: string | null;
   inspectionLoading: boolean;
+  services: ServiceInventory | null;
+  servicesError: string | null;
+  servicesLoading: boolean;
   refreshing: boolean;
   busyIds: ReadonlySet<string>;
   notice: Notice | null;
@@ -40,6 +44,9 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     inspection: null,
     inspectionError: null,
     inspectionLoading: false,
+    services: null,
+    servicesError: null,
+    servicesLoading: false,
     refreshing: false,
     busyIds: new Set(),
     notice: null,
@@ -65,6 +72,7 @@ export function useWorkbench() {
   const refreshSequence = useRef(0);
   const mutationRevision = useRef(0);
   const inspectionSequence = useRef(0);
+  const servicesSequence = useRef(0);
   const selectionRevision = useRef(0);
   const selectedId = useRef<string | null>(null);
 
@@ -113,6 +121,7 @@ export function useWorkbench() {
         selectedId.current = null;
         selectionRevision.current++;
         inspectionSequence.current++;
+        servicesSequence.current++;
       }
       commit(current => ({
         ...current,
@@ -125,6 +134,9 @@ export function useWorkbench() {
         inspection: selectionExists ? current.inspection : null,
         inspectionError: selectionExists ? current.inspectionError : null,
         inspectionLoading: selectionExists ? current.inspectionLoading : false,
+        services: selectionExists ? current.services : null,
+        servicesError: selectionExists ? current.servicesError : null,
+        servicesLoading: selectionExists ? current.servicesLoading : false,
         refreshing: keepRefreshing,
       }));
       return true;
@@ -183,6 +195,9 @@ export function useWorkbench() {
         inspection: keepCurrent ? current.inspection : null,
         inspectionError: null,
         inspectionLoading: true,
+        services: keepCurrent ? current.services : null,
+        servicesError: null,
+        servicesLoading: false,
         notice: null,
       };
     });
@@ -195,6 +210,29 @@ export function useWorkbench() {
       if (handleSessionExpired(error)) return false;
       if (api.isCurrent(session) && request === inspectionSequence.current && selectedId.current === workspaceId) {
         commit(current => ({ ...current, inspectionLoading: false, inspectionError: errorMessage(error) }));
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired]);
+
+  const inspectServices = useCallback(async (workspaceId: string) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    const request = ++servicesSequence.current;
+    commit(current => ({
+      ...current,
+      servicesLoading: true,
+      servicesError: null,
+    }));
+    try {
+      const services = await api.services(workspaceId);
+      if (!api.isCurrent(session) || request !== servicesSequence.current || selectedId.current !== workspaceId) return false;
+      commit(current => ({ ...current, services, servicesLoading: false }));
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session) && request === servicesSequence.current && selectedId.current === workspaceId) {
+        commit(current => ({ ...current, servicesLoading: false, servicesError: errorMessage(error) }));
       }
       return false;
     }
@@ -229,8 +267,9 @@ export function useWorkbench() {
   const clearSelection = useCallback(() => {
     selectionRevision.current++;
     inspectionSequence.current++;
+    servicesSequence.current++;
     selectedId.current = null;
-    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false }));
+    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false }));
   }, [commit]);
 
   const mutate = useCallback(async <T,>(key: string, action: () => Promise<T>, successMessage: string) => {
@@ -366,6 +405,7 @@ export function useWorkbench() {
     connectDashboard,
     disconnect,
     inspectProject,
+    inspectServices,
     clearSelection,
     requestProject,
     pickProjectRoots,

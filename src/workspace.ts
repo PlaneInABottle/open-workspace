@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Store } from './store.js';
 import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
+import { listPm2Processes, serviceInventory, type ServiceInventory } from './services.js';
 
 export interface RootInspection {
   path: string;
@@ -12,7 +13,7 @@ export interface RootInspection {
 }
 
 export class WorkspaceService {
-  constructor(readonly store: Store) {}
+  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes) {}
 
   async overview() {
     const state = await this.store.read();
@@ -79,6 +80,12 @@ export class WorkspaceService {
       }
     }));
     return { workspace, target: { id: 'local', kind: 'local' }, roots };
+  }
+
+  async services(id: string): Promise<ServiceInventory> {
+    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
+    if (!workspace) throw new Error('Workspace is not approved. Request directory access in the dashboard first.');
+    return serviceInventory(workspace.roots, this.listPm2);
   }
 
   async revoke(id: string) {

@@ -48,7 +48,7 @@ No project environment files are imported. State requires 0700 directories and 0
 - Skip hidden directories, dependency/build directories, symlinked component directories and symlinked manifest files.
 - Show executable availability separately from unverified runtime/readiness.
 - Reuse approved workspace state after a service restart.
-- MCP tools: `workspace_list`, `workspace_propose`, `workspace_inspect`, `onboarding_plan`.
+- MCP tools: `workspace_list`, `workspace_propose`, `workspace_inspect`, `workspace_services`, `onboarding_plan`. `workspace_services` reports bounded PM2 process metadata mapped to approved roots; it is not a runner option, health check or verification.
 - MCP prompt: `workspace_onboarding`.
 
 No project file writes, credential-file reads, dependency installs, application lifecycle operations, database/log queries or browser automation are available in M0. These are M1 slices, not fake working buttons. Manifest metadata may still contain sensitive information; this is not an arbitrary-file secret detector.

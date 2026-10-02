@@ -518,6 +518,48 @@ describe('project-first workbench', () => {
     expect(document.body.textContent).not.toContain(roots[1]);
   });
 
+  it('lets the user request bounded PM2 service inventory without claiming health', async () => {
+    const approved = workspace('11111111-1111-4111-8111-111111111111', 'Service fixture', '/tmp/service-fixture');
+    const inspection = {
+      workspace: approved,
+      target: { id: 'local' as const, kind: 'local' as const },
+      roots: [],
+    };
+    const serviceInventory = {
+      inspectedAt: '2026-10-02T00:00:00.000Z',
+      runner: 'pm2' as const,
+      available: true,
+      processCount: 3,
+      matchedProcessCount: 1,
+      unmatchedProcessCount: 2,
+      services: [{ name: 'worker', pmId: 4, status: 'online', cwd: '/tmp/service-fixture/worker', restartCount: 2, matchedRoots: ['/tmp/service-fixture'], exactRootPath: '/tmp/service-fixture' }],
+      ambiguousServices: [],
+    };
+    let servicesCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
+      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(inspection);
+      if (path === `/api/workspaces/${approved.id}/services` && init.method === 'POST') { servicesCalls++; return json(serviceInventory); }
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Service fixture/ }));
+
+    expect(await screen.findByText('Inspect services')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect services' }));
+
+    expect(await screen.findByText('worker')).toBeInTheDocument();
+    expect(screen.getByText('online')).toBeInTheDocument();
+    expect(screen.getByText(/Working directory: \/tmp\/service-fixture\/worker/)).toBeInTheDocument();
+    expect(screen.queryByText(/no runtime was started or checked/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Inspect local process metadata only/)).toBeInTheDocument();
+    expect(screen.getByText(/3 local processes scanned/)).toBeInTheDocument();
+    expect(servicesCalls).toBe(1);
+  });
+
   it('does not restore revoked access or selected inventory from a pre-revocation refresh', async () => {
     const approved = workspace('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Revocation fixture', '/tmp/revocation-fixture');
     const stale = deferred<Response>();

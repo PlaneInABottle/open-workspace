@@ -52,6 +52,28 @@ export interface RootInspection {
   error?: string;
 }
 
+export interface ServiceRecord {
+  name: string;
+  pmId: number | null;
+  status: string;
+  cwd: string;
+  restartCount: number;
+  matchedRoots: string[];
+  exactRootPath: string | null;
+}
+
+export interface ServiceInventory {
+  inspectedAt: string;
+  runner: 'pm2';
+  available: boolean;
+  error?: 'missing' | 'failed' | 'timeout' | 'invalid';
+  processCount: number;
+  matchedProcessCount: number;
+  unmatchedProcessCount: number;
+  services: ServiceRecord[];
+  ambiguousServices: ServiceRecord[];
+}
+
 export type ProjectRootPickerResult =
   | { status: 'selected'; roots: string[] }
   | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' };
@@ -199,6 +221,7 @@ export class ApiClient {
   approve(proposalId: string) { return this.request<Workspace>(`/api/proposals/${safeId(proposalId)}/approve`, {}); }
   decline(proposalId: string) { return this.request<{ rejected: true }>(`/api/proposals/${safeId(proposalId)}/reject`, {}); }
   revoke(workspaceId: string) { return this.request<{ revoked: true }>(`/api/workspaces/${safeId(workspaceId)}/revoke`, {}); }
+  services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}, { intent: 'inspect-services' }); }
 
   private async revokeDashboardSession(token: string): Promise<void> {
     try {

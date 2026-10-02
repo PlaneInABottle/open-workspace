@@ -15,6 +15,7 @@ This is the product source directory. Application repositories registered in the
 | --- | --- |
 | Shared workspace operations and approval model | `src/workspace.ts` |
 | Bounded metadata discovery and executable availability | `src/discovery.ts` |
+| Bounded PM2 service metadata and root matching | `src/services.ts` |
 | Root-family validation and dashboard-only native selection | `src/project-roots.ts`, `src/project-root-picker.ts` |
 | Trusted system executable/environment boundary | `src/trusted-system.ts` |
 | Private platform state and single-service lock | `src/store.ts` |
@@ -64,7 +65,7 @@ For controlled long-lived checks, inspect existing listeners/PM2 ownership first
 
 Startup opens the secret-free canonical dashboard URL once after readiness; use `OPENWORKSPACE_NO_OPEN=1` or source companion `start --no-open` for headless checks. The browser connects through one explicit consent click, not a password/key/CLI step. Manual `pair` commands and `/api/bootstrap` are removed. Use canonical `127.0.0.1` for session consent. Do not bypass exact Origin/Host/fetch metadata checks to make a test client pass.
 
-`connection.json` is strict private `{origin,mcpToken}` state for the four-tool MCP capability, not a dashboard credential. Dashboard tokens are temporary, tab-scoped and server-revocable; they never enter URLs, HTML, console output or client config. Tests may inspect synthetic/private test credentials but must suppress their values. Reconnect/restart must preserve workspace registrations while clearing expired private UI state.
+`connection.json` is strict private `{origin,mcpToken}` state for the bounded project and PM2-inspection MCP capabilities, not a dashboard credential. Dashboard tokens are temporary, tab-scoped and server-revocable; they never enter URLs, HTML, console output or client config. Tests may inspect synthetic/private test credentials but must suppress their values. Reconnect/restart must preserve workspace registrations while clearing expired private UI state.
 
 ## Validation and UI work
 

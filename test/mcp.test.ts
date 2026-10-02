@@ -16,7 +16,7 @@ test('real stdio MCP shares service state, cannot approve access and survives se
   const store = new Store(join(root, 'state')); await store.initialize();
   const project = join(root, 'project'); await mkdir(project);
   await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
-  let app = createApp(new WorkspaceService(store), { mcpToken: 'b'.repeat(64), assets: fixtureStaticAssets() });
+  let app = createApp(new WorkspaceService(store, async () => ({ available: true, processes: [{ pmId: 7, name: 'fixture-api', namespace: 'default', status: 'online', cwd: project, restartCount: 1, startedAt: null }] })), { mcpToken: 'b'.repeat(64), assets: fixtureStaticAssets() });
   let origin = await app.listen(0);
   await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
   const transport = new StdioClientTransport({
@@ -31,7 +31,7 @@ test('real stdio MCP shares service state, cannot approve access and survives se
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['onboarding_plan','workspace_inspect','workspace_list','workspace_propose']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['onboarding_plan','workspace_inspect','workspace_list','workspace_propose','workspace_services']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     const proposalTool = tools.tools.find(tool => tool.name === 'workspace_propose');
     assert.deepEqual(Object.keys((proposalTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
@@ -41,6 +41,8 @@ test('real stdio MCP shares service state, cannot approve access and survives se
     const proposal = JSON.parse((requested.content as Array<{ text: string }>)[0].text) as { id: string };
     const denied = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: proposal.id } });
     assert.equal(denied.isError, true);
+    const deniedServices = await client.callTool({ name: 'workspace_services', arguments: { workspaceId: proposal.id } });
+    assert.equal(deniedServices.isError, true);
     const mcpApproval = await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
       method: 'POST',
       headers: {
@@ -69,6 +71,11 @@ test('real stdio MCP shares service state, cannot approve access and survives se
     assert.ok(!inspected.isError);
     assert.match((inspected.content as Array<{ text: string }>)[0].text, /not_checked/);
     assert.match((inspected.content as Array<{ text: string }>)[0].text, /"roots"/);
+    const services = await client.callTool({ name: 'workspace_services', arguments: { workspaceId: proposal.id } });
+    const servicesText = (services.content as Array<{ text: string }>)[0].text;
+    assert.ok(!services.isError);
+    assert.match(servicesText, /fixture-api/);
+    assert.match(servicesText, /"matchedProcessCount": 1/);
     const plan = await client.callTool({ name: 'onboarding_plan', arguments: { workspaceId: proposal.id } });
     const planText = (plan.content as Array<{ text: string }>)[0].text;
     assert.match(planText, /not_implemented/);
@@ -81,7 +88,7 @@ test('real stdio MCP shares service state, cannot approve access and survives se
     assert.match(promptText, /Do not infer a common parent/);
     assert.match(promptText, /Jira is optional/);
     await app.close();
-    app = createApp(new WorkspaceService(new Store(store.directory)), { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
+    app = createApp(new WorkspaceService(new Store(store.directory), async () => ({ available: true, processes: [{ pmId: 7, name: 'fixture-api', namespace: 'default', status: 'online', cwd: project, restartCount: 1, startedAt: null }] })), { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
     origin = await app.listen(0);
     await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
     assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${dashboardSession.dashboardToken}` } })).status, 401);

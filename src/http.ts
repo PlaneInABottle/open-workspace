@@ -51,7 +51,8 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   if (role === 'dashboard') return true;
   return (method === 'GET' && pathname === '/api/overview')
     || (method === 'POST' && pathname === '/api/proposals')
-    || (method === 'GET' && new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname));
+    || (method === 'GET' && new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname))
+    || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname));
 }
 
 function sameCanonicalDashboardRequest(request: IncomingMessage, origin: string) {
@@ -219,7 +220,7 @@ export function createApp(service: WorkspaceService, options: {
           const input = proposalSchema.parse(await body(request, proposalBodyLimit));
           json(response, 201, await service.propose(input.name, input.roots));
         } else {
-          const match = new RegExp(`^/api/(proposals|workspaces)/(${uuidPath})(?:/(approve|reject|onboarding|revoke))?$`).exec(url.pathname);
+          const match = new RegExp(`^/api/(proposals|workspaces)/(${uuidPath})(?:/(approve|reject|onboarding|revoke|services))?$`).exec(url.pathname);
           if (match?.[1] === 'proposals' && request.method === 'POST' && ['approve','reject'].includes(match[3])) {
             const input = await body(request);
             z.object({}).strict().parse(input);
@@ -229,6 +230,9 @@ export function createApp(service: WorkspaceService, options: {
           } else if (match?.[1] === 'workspaces' && request.method === 'POST' && match[3] === 'revoke') {
             z.object({}).strict().parse(await body(request));
             json(response, 200, await service.revoke(match[2]));
+          } else if (match?.[1] === 'workspaces' && request.method === 'POST' && match[3] === 'services') {
+            z.object({}).strict().parse(await body(request));
+            json(response, 200, await service.services(match[2]));
           } else {
             json(response, 404, { error: 'Operation not found.' });
           }

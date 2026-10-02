@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
 import { projectRootLabel } from '@/features/projects/root-label';
-import type { Capability, Inspection, ProjectRootPickerResult, Proposal, Workspace } from '@/api';
+import type { Capability, Inspection, ProjectRootPickerResult, Proposal, ServiceInventory, Workspace } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -22,6 +22,7 @@ interface OverviewViewProps {
   onPickRoots: (signal: AbortSignal) => Promise<ProjectRootPickerResult>;
   onSelectProject: (id: string) => void;
   onRetryInspection: (id: string) => void;
+  onInspectServices: (id: string) => void;
   onGoToAi: () => void;
 }
 
@@ -69,7 +70,7 @@ export function PendingRequests({ proposals, busyIds, onApprove, onDecline }: Pe
   );
 }
 
-export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onGoToAi }: OverviewViewProps) {
+export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onGoToAi }: OverviewViewProps) {
   const [creating, setCreating] = useState(false);
   const selectProject = (id: string) => {
     setCreating(false);
@@ -98,7 +99,11 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           inspection={state.inspection}
           loading={state.inspectionLoading}
           error={state.inspectionError}
+          services={state.services}
+          servicesLoading={state.servicesLoading}
+          servicesError={state.servicesError}
           onRetry={() => onRetryInspection(selected.id)}
+          onInspectServices={() => onInspectServices(selected.id)}
           onGoToAi={onGoToAi}
         />
       ) : state.workspaces.length > 0 ? (
@@ -205,11 +210,15 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ inspection, loading, error, onRetry, onGoToAi }: {
+function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, onRetry, onInspectServices, onGoToAi }: {
   inspection: Inspection | null;
   loading: boolean;
   error: string | null;
+  services: ServiceInventory | null;
+  servicesLoading: boolean;
+  servicesError: string | null;
   onRetry: () => void;
+  onInspectServices: () => void;
   onGoToAi: () => void;
 }) {
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) || 0;
@@ -240,7 +249,7 @@ function ProjectInventory({ inspection, loading, error, onRetry, onGoToAi }: {
           <div>
             <p className="eyebrow">APPROVED METADATA</p>
             <h2 id="project-inventory-heading" className="text-base font-semibold">Project inventory</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{inspection.roots.length} {inspection.roots.length === 1 ? 'root' : 'roots'} · {componentCount} {componentCount === 1 ? 'component' : 'components'} · no runtime was started or checked.</p>
+            <p className="mt-1 text-sm text-muted-foreground">{inspection.roots.length} {inspection.roots.length === 1 ? 'root' : 'roots'} · {componentCount} {componentCount === 1 ? 'component' : 'components'} · no application was started or health-checked.</p>
           </div>
           <Badge variant="outline">{unavailableCount ? `${unavailableCount} roots unavailable` : 'Metadata only'}</Badge>
         </header>
@@ -250,6 +259,12 @@ function ProjectInventory({ inspection, loading, error, onRetry, onGoToAi }: {
           ))}
         </div>
       </section>
+      <ServicesPanel
+        services={services}
+        loading={servicesLoading}
+        error={servicesError}
+        onInspectServices={onInspectServices}
+      />
       <section className="next-step" aria-labelledby="project-next-step-heading">
         <div className="min-w-0">
           <p className="eyebrow">NEXT STEP</p>
@@ -333,6 +348,68 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
             </>
           )}
         </>
+      )}
+    </section>
+  );
+}
+
+function ServicesPanel({ services, loading, error, onInspectServices }: {
+  services: ServiceInventory | null;
+  loading: boolean;
+  error: string | null;
+  onInspectServices: () => void;
+}) {
+  return (
+    <section aria-labelledby="service-inspection-heading" className="border-t border-border pt-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">LOCAL SERVICES</p>
+          <h2 id="service-inspection-heading" className="text-base font-semibold">Connected services</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Inspect local process metadata only. This does not start, stop, or health-check a service.</p>
+        </div>
+        <Button type="button" variant="outline" onClick={onInspectServices} disabled={loading}>
+          {loading ? 'Inspecting…' : services ? 'Refresh service information' : 'Inspect services'}
+        </Button>
+      </header>
+      {error && !services && (
+        <p role="alert" className="mt-3 text-sm text-destructive">Service information could not be read: {error}</p>
+      )}
+      {services && !services.available && (
+        <p role="status" className="mt-4 text-sm text-muted-foreground">PM2 service metadata is unavailable on this machine. It has not been checked; install or start PM2 if you need this capability.</p>
+      )}
+      {services?.available && (
+        <div className="mt-4 space-y-4">
+          {services.services.length > 0 && (
+            <ul className="divide-y divide-border border-y border-border">
+              {services.services.map(service => (
+                <li key={`${service.name}-${service.pmId}-${service.cwd}`} className="py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-medium">{service.name}</p>
+                    <Badge variant="outline">{service.status}</Badge>
+                  </div>
+                  <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{service.exactRootPath || service.matchedRoots.join(', ')}</p>
+                  <p className="mt-1 break-all text-xs text-muted-foreground">Working directory: {service.cwd}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {services.ambiguousServices.length > 0 && (
+            <div role="status" className="border-l-2 border-warning bg-warning-background px-4 py-3 text-sm text-warning">
+              <p className="font-semibold">Some services are not clearly owned by one project root.</p>
+              <ul className="mt-2 grid gap-1 text-xs leading-5">
+                {services.ambiguousServices.map(service => (
+                  <li key={`${service.name}-${service.pmId}`}>{service.name}: candidate roots {service.matchedRoots.join(', ')}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {services.services.length === 0 && services.ambiguousServices.length === 0 && (
+            <p className="text-sm text-muted-foreground">No PM2 process working directory matches an approved project root.</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {services.processCount} local {services.processCount === 1 ? 'process' : 'processes'} scanned · {services.matchedProcessCount} matched this project · {services.unmatchedProcessCount} outside the project scope. Read-only metadata; readiness and tests are separate.
+          </p>
+        </div>
       )}
     </section>
   );
