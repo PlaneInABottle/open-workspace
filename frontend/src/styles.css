@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: oklch(0.982 0.004 96);
+  --foreground: oklch(0.235 0.018 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.235 0.018 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.235 0.018 255);
+  --primary: oklch(0.405 0.09 258);
+  --primary-foreground: oklch(0.99 0.003 96);
+  --secondary: oklch(0.951 0.006 255);
+  --secondary-foreground: oklch(0.30 0.025 255);
+  --muted: oklch(0.958 0.004 250);
+  --muted-foreground: oklch(0.47 0.018 255);
+  --accent: oklch(0.934 0.025 252);
+  --accent-foreground: oklch(0.33 0.06 255);
+  --destructive: oklch(0.52 0.16 27);
+  --destructive-foreground: oklch(0.99 0.003 96);
+  --border: oklch(0.885 0.008 255);
+  --input: oklch(0.84 0.012 255);
+  --ring: oklch(0.49 0.09 258);
+  --rail: oklch(0.958 0.006 250);
+  --rail-selected: oklch(0.925 0.025 252);
+  --rail-selected-foreground: oklch(0.31 0.06 255);
+  --warning: oklch(0.39 0.075 73);
+  --warning-background: oklch(0.968 0.024 88);
+  --success: oklch(0.38 0.09 153);
+  --radius: 0.625rem;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-rail: var(--rail);
+  --color-rail-selected: var(--rail-selected);
+  --color-rail-selected-foreground: var(--rail-selected-foreground);
+  --color-warning: var(--warning);
+  --color-warning-background: var(--warning-background);
+  --color-success: var(--success);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply m-0 bg-background text-foreground; }
+  html { scroll-behavior: smooth; }
+  body { min-width: 320px; min-height: 100vh; }
+  button, input { font: inherit; }
+  button { cursor: pointer; }
+  button:focus-visible, a:focus-visible, input:focus-visible {
+    outline: 3px solid var(--ring);
+    outline-offset: 3px;
+  }
+  ::selection { background: var(--accent); color: var(--accent-foreground); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+}
+
+.eyebrow {
+  @apply text-[0.65rem] font-semibold uppercase tracking-[0.13em] text-muted-foreground;
+}
+
+.skip-link {
+  @apply fixed -top-16 left-4 z-50 rounded-md bg-card px-3 py-2 text-sm font-medium text-foreground shadow-md focus-visible:top-4;
+}
+
+.connection-page { min-width: 320px; }
+.connection-notice { @apply border-b border-border px-5 py-3 sm:px-8; }
+.code-panel {
+  @apply max-h-[28rem] overflow-auto rounded-lg border border-border bg-card px-4 py-3 font-mono text-xs leading-6 text-foreground;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.prompt-panel {
+  @apply rounded-lg border border-border bg-muted/55 p-4 text-sm leading-6 text-foreground;
+  overflow-wrap: anywhere;
+}
+.field-error { @apply text-xs font-medium leading-5 text-destructive; }
+
+.workbench-shell {
+  display: grid;
+  grid-template-columns: 258px minmax(0, 1fr);
+  min-height: 100vh;
+  background-color: var(--background);
+  color: var(--foreground);
+}
+.project-rail {
+  @apply sticky top-0 hidden h-screen w-[258px] shrink-0 flex-col border-r border-border bg-rail px-4 py-5 md:flex;
+}
+.nav-links { @apply grid gap-1; }
+.nav-link { @apply flex min-h-10 items-center gap-2.5 rounded-md px-2.5 text-sm text-muted-foreground no-underline transition-colors hover:bg-secondary hover:text-foreground; }
+.nav-link[aria-current="page"] { @apply bg-rail-selected font-medium text-rail-selected-foreground; }
+.rail-project { @apply flex min-h-11 w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground; }
+.rail-project-selected { @apply bg-rail-selected text-rail-selected-foreground; }
+.mobile-workspace { @apply block border-b border-border bg-card md:hidden; }
+.mobile-navigation > .nav-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: visible;
+  @apply border-t border-border px-3;
+}
+.mobile-navigation .nav-link { @apply min-h-11 min-w-0 justify-center rounded-none px-1 text-xs; gap: 0.25rem; }
+.project-select { @apply h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground; }
+.workbench-main { @apply min-w-0 flex-1; }
+.workbench-topbar { @apply sticky top-0 z-20 flex min-h-14 items-center justify-between gap-3 border-b border-border bg-background/95 px-4 backdrop-blur-sm sm:px-6; }
+.workbench-content { @apply mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10; }
+.workbench-footer { @apply mx-auto flex max-w-[1440px] items-center gap-2 border-t border-border px-4 py-4 text-xs text-muted-foreground sm:px-6 lg:px-10; }
+.notice-banner { @apply mb-6 flex items-start justify-between gap-3 border-l-2 border-primary bg-accent/70 px-4 py-3 text-sm leading-6 text-foreground; }
+.notice-error { @apply border-destructive bg-destructive/5 text-destructive; }
+.notice-dismiss { @apply -mr-1 -mt-0.5 grid size-7 shrink-0 place-items-center rounded-md text-current hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring; }
+.project-choice { @apply flex w-full items-center justify-between gap-3 px-3 py-4 text-left transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring; }
+.project-entry-disclosure { @apply border-y border-border; }
+.project-entry-disclosure > summary { @apply flex min-h-[4.5rem] cursor-pointer list-none items-center justify-between gap-4 py-3; }
+.project-entry-disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure-chevron { @apply text-lg text-muted-foreground transition-transform; }
+.project-entry-disclosure[open] .disclosure-chevron { transform: rotate(180deg); }
+.next-step { @apply flex flex-col gap-4 border-l-2 border-primary bg-accent/50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5; }
+.loading-mark { @apply mx-auto block size-7 animate-spin rounded-full border-2 border-muted border-t-primary; }
+
+@media (max-width: 767px) {
+  .workbench-shell { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-mark { animation: none; border-top-color: var(--muted); }
+}

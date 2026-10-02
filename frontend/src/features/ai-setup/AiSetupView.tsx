@@ -1,0 +1,82 @@
+import { Copy } from 'lucide-react';
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import type { WorkbenchState } from '@/use-workbench';
+import { formatSetupRequest } from './format-setup';
+
+export function AiSetupView({ state, selectedId, onCopyText }: {
+  state: WorkbenchState;
+  selectedId: string | null;
+  onCopyText: (text: string, successMessage: string) => Promise<boolean>;
+}) {
+  const [copying, setCopying] = useState(false);
+  const material = formatSetupRequest(state.clientConfig, selectedId);
+
+  async function copySetupRequest() {
+    if (!material || copying) return;
+    setCopying(true);
+    try {
+      await onCopyText(material.copyText, 'Copied the setup request. Review the proposed client configuration before applying it.');
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  return (
+    <div className="max-w-5xl space-y-8">
+      <header className="border-b border-border pb-5">
+        <p className="eyebrow">KEEP YOUR EXISTING WORKFLOW</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Connect your AI</h1>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">Add the local MCP connection to your current assistant. Review every configuration change before applying it.</p>
+      </header>
+
+      <section className="max-w-4xl" aria-labelledby="setup-request-heading">
+        <p className="eyebrow">01 / SETUP REQUEST</p>
+        <h2 id="setup-request-heading" className="text-base font-semibold">Prepare the connection in your assistant</h2>
+        <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">One message includes the generated local stdio entry and the right approved-workspace context. Ask your assistant to adapt it to the client you choose while preserving existing settings.</p>
+        {material ? (
+          <pre role="region" aria-label="Setup request preview" tabIndex={0} className="code-panel mt-4">{material.copyText}</pre>
+        ) : (
+          <p role="status" className="mt-4 text-sm text-muted-foreground">The local MCP entry is unavailable. Refresh the workspace and try again.</p>
+        )}
+        <Button type="button" variant="outline" size="sm" className="mt-3" disabled={!material || copying} aria-busy={copying} onClick={() => void copySetupRequest()}>
+          <Copy aria-hidden="true" data-icon="inline-start" />
+          {copying ? 'Copying…' : 'Copy setup request'}
+        </Button>
+        <p className="mt-3 max-w-3xl text-xs leading-5 text-muted-foreground">Nothing is written automatically. Review and approve any client configuration change. The local state path in the generated entry is specific to this machine and should not be committed as a reusable team path.</p>
+      </section>
+
+      {material && (
+        <>
+          <Separator />
+          <details className="project-entry-disclosure max-w-4xl">
+            <summary>
+              <span>
+                <span className="eyebrow">OPTIONAL</span>
+                <span className="block text-sm font-semibold">Client-specific setup instructions</span>
+                <span className="mt-1 block text-xs text-muted-foreground">Open only the guide for the assistant client you use.</span>
+              </span>
+              <span aria-hidden="true" className="disclosure-chevron">⌄</span>
+            </summary>
+            <div className="grid gap-3 border-t border-border py-4">
+              {material.clientGuides.map(guide => (
+                <details key={guide.id} className="border-b border-border pb-3">
+                  <summary className="cursor-pointer py-2 text-sm font-medium">{guide.title}</summary>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{guide.location}</p>
+                  <ol className="mt-3 grid list-decimal gap-2 pl-5 text-sm leading-6 text-muted-foreground">
+                    {guide.guidance.map(step => <li key={step}>{step}</li>)}
+                  </ol>
+                  <a className="mt-3 inline-flex min-h-9 items-center rounded-md text-sm font-medium text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50" href={guide.sourceUrl} target="_blank" rel="noreferrer noopener">
+                    Official setup documentation
+                  </a>
+                  <pre role="region" aria-label={`${guide.title} configuration example`} tabIndex={0} className="code-panel mt-4">{guide.configuration}</pre>
+                </details>
+              ))}
+            </div>
+          </details>
+        </>
+      )}
+    </div>
+  );
+}
