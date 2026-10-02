@@ -129,6 +129,14 @@ export interface Workstream {
   updatedAt: string;
 }
 
+export interface Lease {
+  resource: string;
+  workstreamId: string;
+  status: 'held' | 'queued';
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type ProjectRootPickerResult =
   | { status: 'selected'; roots: string[] }
   | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' };
@@ -290,6 +298,13 @@ export class ApiClient {
   }
   setWorkstreamStatus(id: string, status: Workstream['status']) {
     return this.request<Workstream>(`/api/workstreams/${safeId(id)}/status`, { status }, { intent: 'update-workstream' });
+  }
+  leases() { return this.request<Lease[]>('/api/leases'); }
+  acquireLease(resource: string, workstreamId: string) {
+    return this.request<{ lease: Lease; position: number }>('/api/leases/acquire', { resource, workstreamId }, { intent: 'acquire-lease' });
+  }
+  releaseLease(resource: string, workstreamId: string) {
+    return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId }, { intent: 'release-lease' });
   }
 
   private async revokeDashboardSession(token: string): Promise<void> {

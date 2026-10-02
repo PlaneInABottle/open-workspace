@@ -34,13 +34,22 @@ const workstream = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();
+const lease = z.object({
+  resource: z.string().min(1).max(80),
+  workstreamId: z.string().uuid(),
+  status: z.enum(['held', 'queued']),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
 const stateSchema = z.object({
   workspaces: z.array(registration).max(50),
   proposals: z.array(registration).max(50),
   workstreams: z.array(workstream).max(50),
+  leases: z.array(lease).max(50).optional().default([]),
 }).strict();
 export type Registration = z.infer<typeof registration>;
 export type WorkstreamRecord = z.infer<typeof workstream>;
+export type LeaseRecord = z.infer<typeof lease>;
 export type State = z.infer<typeof stateSchema>;
 
 export function stateDirectory(): string {

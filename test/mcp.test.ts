@@ -31,7 +31,7 @@ test('real stdio MCP shares service state, cannot approve access and survives se
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['onboarding_plan','workspace_inspect','workspace_list','workspace_propose','workspace_services','workspace_workstreams']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['onboarding_plan','workspace_inspect','workspace_leases','workspace_list','workspace_propose','workspace_services','workspace_workstreams']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     const proposalTool = tools.tools.find(tool => tool.name === 'workspace_propose');
     assert.deepEqual(Object.keys((proposalTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
@@ -80,6 +80,9 @@ test('real stdio MCP shares service state, cannot approve access and survives se
     const planText = (plan.content as Array<{ text: string }>)[0].text;
     assert.match(planText, /not_implemented/);
     assert.match(planText, /dashboard-only/);
+    const leases = await client.callTool({ name: 'workspace_leases', arguments: {} });
+    assert.ok(!leases.isError);
+    assert.deepEqual(JSON.parse((leases.content as Array<{ text: string }>)[0].text), []);
     assert.match(planText, /every approved root group separately/);
     assert.match(planText, /never infer a common parent/);
     assert.equal((await client.listPrompts()).prompts[0].name, 'workspace_onboarding');

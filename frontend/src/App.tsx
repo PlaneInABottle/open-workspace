@@ -318,6 +318,8 @@ export function App() {
               onVerify={(id, verification) => { void workbench.runVerification(id, verification); }}
               onCreateWorkstream={(id, name, checkouts) => { void workbench.createWorkstream(id, name, checkouts); }}
               onWorkstreamStatus={(id, workstreamId, status) => { void workbench.setWorkstreamStatus(id, workstreamId, status); }}
+              onAcquireLease={(id, workstreamId, resource) => { void workbench.acquireLease(id, workstreamId, resource); }}
+              onReleaseLease={(id, workstreamId, resource) => { void workbench.releaseLease(id, workstreamId, resource); }}
               onGoToAi={() => navigate('setup')}
             />
           )}

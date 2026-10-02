@@ -8,6 +8,7 @@ import {
   type Inspection,
   type Proposal,
   type ServiceInventory,
+  type Lease,
   type VerificationRequest,
   type VerificationResult,
   type Workspace,
@@ -37,6 +38,8 @@ export interface WorkbenchState {
   workstreams: Workstream[];
   workstreamsError: string | null;
   workstreamsLoading: boolean;
+  leases: Lease[];
+  leasesError: string | null;
   refreshing: boolean;
   busyIds: ReadonlySet<string>;
   notice: Notice | null;
@@ -62,6 +65,8 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     workstreams: [],
     workstreamsError: null,
     workstreamsLoading: false,
+    leases: [],
+    leasesError: null,
     refreshing: false,
     busyIds: new Set(),
     notice: null,
@@ -217,6 +222,8 @@ export function useWorkbench() {
         workstreams: keepCurrent ? current.workstreams : [],
         workstreamsError: null,
         workstreamsLoading: false,
+        leases: keepCurrent ? current.leases : [],
+        leasesError: null,
         notice: null,
       };
     });
@@ -306,12 +313,13 @@ export function useWorkbench() {
     const request = ++workstreamsSequence.current;
     commit(current => ({ ...current, workstreamsLoading: true, workstreamsError: null }));
     try {
-      const workstreams = await api.workstreams();
+      const [workstreams, leases] = await Promise.all([api.workstreams(), api.leases()]);
       if (!api.isCurrent(session) || request !== workstreamsSequence.current || selectedId.current !== workspaceId) return false;
       commit(current => ({
         ...current,
         workstreamsLoading: false,
         workstreams: workstreams.filter(workstream => workstream.workspaceId === workspaceId),
+        leases,
       }));
       return true;
     } catch (error) {
@@ -358,6 +366,52 @@ export function useWorkbench() {
     }
   }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
 
+  const acquireLease = useCallback(async (workspaceId: string, workstreamId: string, resource: string) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    try {
+      const result = await api.acquireLease(resource, workstreamId);
+      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
+      setNotice({
+        kind: result.lease.status === 'held' ? 'success' : 'info',
+        message: result.lease.status === 'held'
+          ? `Resource ${resource} is held by this workstream.`
+          : `Resource ${resource} is busy; this workstream is queued at position ${result.position}.`,
+      });
+      await listWorkstreamsFor(workspaceId, session);
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session) && selectedId.current === workspaceId) {
+        setNotice({ kind: 'error', message: errorMessage(error) });
+      }
+      return false;
+    }
+  }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
+
+  const releaseLease = useCallback(async (workspaceId: string, workstreamId: string, resource: string) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    try {
+      const result = await api.releaseLease(resource, workstreamId);
+      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
+      setNotice({
+        kind: 'success',
+        message: result.promoted
+          ? `Resource ${resource} released; another workstream now holds it.`
+          : `Resource ${resource} released.`,
+      });
+      await listWorkstreamsFor(workspaceId, session);
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session) && selectedId.current === workspaceId) {
+        setNotice({ kind: 'error', message: errorMessage(error) });
+      }
+      return false;
+    }
+  }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
+
   const refreshSelected = useCallback(async () => {
     const selection = selectedId.current;
     if (!selection) return refresh();
@@ -389,7 +443,7 @@ export function useWorkbench() {
     inspectionSequence.current++;
     servicesSequence.current++;
     selectedId.current = null;
-    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, verification: null, verificationError: null, verificationLoading: false, workstreams: [], workstreamsError: null, workstreamsLoading: false }));
+    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, verification: null, verificationError: null, verificationLoading: false, workstreams: [], workstreamsError: null, workstreamsLoading: false, leases: [], leasesError: null }));
   }, [commit]);
 
   const mutate = useCallback(async <T,>(key: string, action: () => Promise<T>, successMessage: string) => {
@@ -530,6 +584,8 @@ export function useWorkbench() {
     runVerification,
     createWorkstream,
     setWorkstreamStatus,
+    acquireLease,
+    releaseLease,
     clearSelection,
     requestProject,
     pickProjectRoots,

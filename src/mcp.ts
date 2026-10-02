@@ -36,6 +36,11 @@ server.registerTool('workspace_workstreams', {
   inputSchema: z.object({}).strict(),
   annotations: readHints,
 }, () => request('/api/workstreams'));
+server.registerTool('workspace_leases', {
+  description: 'List exclusive resource leases held or queued by workstreams. Read-only; acquiring and releasing are dashboard-only.',
+  inputSchema: z.object({}).strict(),
+  annotations: readHints,
+}, () => request('/api/leases'));
 server.registerTool('workspace_inspect', {
   description: 'Inspect bounded manifest metadata separately for every approved root and its immediate repositories. A replaced or redirected root is reported unavailable without hiding other roots. Never reads env files or executes code. Unknown runtime readiness stays unknown.',
   inputSchema: { workspaceId: z.string().uuid() }, annotations: readHints,

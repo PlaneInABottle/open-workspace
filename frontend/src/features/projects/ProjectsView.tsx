@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
 import { projectRootLabel } from '@/features/projects/root-label';
-import type { Capability, Inspection, ProjectRootPickerResult, Proposal, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
+import type { Capability, Inspection, Lease, ProjectRootPickerResult, Proposal, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -27,6 +27,8 @@ interface OverviewViewProps {
   onVerify: (id: string, verification: VerificationRequest) => void;
   onCreateWorkstream: (id: string, name: string, checkouts: string[]) => void;
   onWorkstreamStatus: (id: string, workstreamId: string, status: Workstream['status']) => void;
+  onAcquireLease: (id: string, workstreamId: string, resource: string) => void;
+  onReleaseLease: (id: string, workstreamId: string, resource: string) => void;
   onGoToAi: () => void;
 }
 
@@ -74,7 +76,7 @@ export function PendingRequests({ proposals, busyIds, onApprove, onDecline }: Pe
   );
 }
 
-export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onGoToAi }: OverviewViewProps) {
+export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi }: OverviewViewProps) {
   const [creating, setCreating] = useState(false);
   const selectProject = (id: string) => {
     setCreating(false);
@@ -112,12 +114,15 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           workstreams={state.workstreams}
           workstreamsLoading={state.workstreamsLoading}
           workstreamsError={state.workstreamsError}
+          leases={state.leases}
           onRetry={() => onRetryInspection(selected.id)}
           onInspectServices={() => onInspectServices(selected.id)}
           onServiceAction={(action, target) => onServiceAction(selected.id, action, target)}
           onVerify={verification => onVerify(selected.id, verification)}
           onCreateWorkstream={(name, checkouts) => onCreateWorkstream(selected.id, name, checkouts)}
           onWorkstreamStatus={(workstreamId, status) => onWorkstreamStatus(selected.id, workstreamId, status)}
+          onAcquireLease={(workstreamId, resource) => onAcquireLease(selected.id, workstreamId, resource)}
+          onReleaseLease={(workstreamId, resource) => onReleaseLease(selected.id, workstreamId, resource)}
           onGoToAi={onGoToAi}
         />
       ) : state.workspaces.length > 0 ? (
@@ -224,7 +229,7 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, workstreams, workstreamsLoading, workstreamsError, onRetry, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onGoToAi }: {
+function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, workstreams, workstreamsLoading, workstreamsError, leases, onRetry, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi }: {
   inspection: Inspection | null;
   loading: boolean;
   error: string | null;
@@ -237,12 +242,15 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
   workstreams: Workstream[];
   workstreamsLoading: boolean;
   workstreamsError: string | null;
+  leases: Lease[];
   onRetry: () => void;
   onInspectServices: () => void;
   onServiceAction: (action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => void;
   onVerify: (verification: VerificationRequest) => void;
   onCreateWorkstream: (name: string, checkouts: string[]) => void;
   onWorkstreamStatus: (workstreamId: string, status: Workstream['status']) => void;
+  onAcquireLease: (workstreamId: string, resource: string) => void;
+  onReleaseLease: (workstreamId: string, resource: string) => void;
   onGoToAi: () => void;
 }) {
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) || 0;
@@ -302,10 +310,13 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
         <WorkstreamsSection
           roots={inspection.roots.map(root => root.path)}
           workstreams={workstreams}
+          leases={leases}
           loading={workstreamsLoading}
           error={workstreamsError}
           onCreate={onCreateWorkstream}
           onStatus={onWorkstreamStatus}
+          onAcquire={onAcquireLease}
+          onRelease={onReleaseLease}
         />
       )}
       <section className="next-step" aria-labelledby="project-next-step-heading">
@@ -423,13 +434,96 @@ function ServiceActionControls({ service, disabled, onServiceAction }: {
   );
 }
 
-function WorkstreamsSection({ roots, workstreams, loading, error, onCreate, onStatus }: {
+function WorkstreamEntry({ workstream, leases, loading, onStatus, onAcquire, onRelease }: {
+  workstream: Workstream;
+  leases: Lease[];
+  loading: boolean;
+  onStatus: (workstreamId: string, status: Workstream['status']) => void;
+  onAcquire: (workstreamId: string, resource: string) => void;
+  onRelease: (workstreamId: string, resource: string) => void;
+}) {
+  const [resource, setResource] = useState('');
+  const mine = leases.filter(lease => lease.workstreamId === workstream.id);
+  const queuePosition = (target: Lease) => leases
+    .filter(lease => lease.resource === target.resource && lease.status === 'queued')
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .findIndex(lease => lease.workstreamId === target.workstreamId && lease.createdAt === target.createdAt) + 1;
+  return (
+    <li className="py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">{workstream.name}</p>
+        <Badge variant="outline">{workstream.status}</Badge>
+      </div>
+      <ul className="mt-1 grid gap-1">
+        {workstream.checkouts.map(checkout => (
+          <li key={checkout.root} className="break-all font-mono text-xs text-muted-foreground">
+            {checkout.root} · rev {checkout.revision ? `${checkout.revision.slice(0, 12)}…` : 'unknown'}
+          </li>
+        ))}
+      </ul>
+      {mine.length > 0 && (
+        <ul className="mt-2 grid gap-1">
+          {mine.map(lease => (
+            <li key={lease.resource} className="flex flex-wrap items-center gap-2 break-all font-mono text-xs text-muted-foreground">
+              <span>{lease.resource} · {lease.status}{lease.status === 'queued' ? ` (position ${queuePosition(lease)})` : ''}</span>
+              {lease.status === 'held' && (
+                <Button type="button" variant="ghost" size="sm" aria-label={`Release ${lease.resource} from ${workstream.name}`} disabled={loading} onClick={() => onRelease(workstream.id, lease.resource)}>Release</Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {workstream.status === 'active' && (
+          <Button type="button" variant="outline" size="sm" aria-label={`Pause ${workstream.name}`} disabled={loading} onClick={() => onStatus(workstream.id, 'paused')}>Pause</Button>
+        )}
+        {workstream.status === 'paused' && (
+          <Button type="button" variant="outline" size="sm" aria-label={`Resume ${workstream.name}`} disabled={loading} onClick={() => onStatus(workstream.id, 'active')}>Resume</Button>
+        )}
+        {workstream.status !== 'done' && (
+          <Button type="button" variant="outline" size="sm" aria-label={`Finish ${workstream.name}`} disabled={loading} onClick={() => onStatus(workstream.id, 'done')}>Finish</Button>
+        )}
+      </div>
+      {workstream.status !== 'done' && (
+        <form
+          className="mt-2 flex max-w-md flex-wrap items-end gap-2"
+          onSubmit={event => {
+            event.preventDefault();
+            const trimmed = resource.trim().toLowerCase();
+            if (!trimmed) return;
+            onAcquire(workstream.id, trimmed);
+            setResource('');
+          }}
+        >
+          <div className="grid min-w-0 flex-1 gap-1">
+            <label htmlFor={`lease-resource-${workstream.id}`} className="text-xs font-medium text-muted-foreground">Hold a resource</label>
+            <input
+              id={`lease-resource-${workstream.id}`}
+              className="rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs"
+              value={resource}
+              maxLength={80}
+              disabled={loading}
+              onChange={event => setResource(event.target.value)}
+              placeholder="port:3000"
+            />
+          </div>
+          <Button type="submit" variant="outline" size="sm" disabled={loading || !resource.trim()}>Hold</Button>
+        </form>
+      )}
+    </li>
+  );
+}
+
+function WorkstreamsSection({ roots, workstreams, leases, loading, error, onCreate, onStatus, onAcquire, onRelease }: {
   roots: string[];
   workstreams: Workstream[];
+  leases: Lease[];
   loading: boolean;
   error: string | null;
   onCreate: (name: string, checkouts: string[]) => void;
   onStatus: (workstreamId: string, status: Workstream['status']) => void;
+  onAcquire: (workstreamId: string, resource: string) => void;
+  onRelease: (workstreamId: string, resource: string) => void;
 }) {
   const [name, setName] = useState('');
   const [selectedRoots, setSelectedRoots] = useState<string[]>([]);
@@ -453,30 +547,15 @@ function WorkstreamsSection({ roots, workstreams, loading, error, onCreate, onSt
       {workstreams.length > 0 && (
         <ul className="mt-4 divide-y divide-border border-y border-border">
           {workstreams.map(workstream => (
-            <li key={workstream.id} className="py-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium">{workstream.name}</p>
-                <Badge variant="outline">{workstream.status}</Badge>
-              </div>
-              <ul className="mt-1 grid gap-1">
-                {workstream.checkouts.map(checkout => (
-                  <li key={checkout.root} className="break-all font-mono text-xs text-muted-foreground">
-                    {checkout.root} · rev {checkout.revision ? `${checkout.revision.slice(0, 12)}…` : 'unknown'}
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {workstream.status === 'active' && (
-                  <Button type="button" variant="outline" size="sm" aria-label={`Pause ${workstream.name}`} disabled={loading} onClick={() => onStatus(workstream.id, 'paused')}>Pause</Button>
-                )}
-                {workstream.status === 'paused' && (
-                  <Button type="button" variant="outline" size="sm" aria-label={`Resume ${workstream.name}`} disabled={loading} onClick={() => onStatus(workstream.id, 'active')}>Resume</Button>
-                )}
-                {workstream.status !== 'done' && (
-                  <Button type="button" variant="outline" size="sm" aria-label={`Finish ${workstream.name}`} disabled={loading} onClick={() => onStatus(workstream.id, 'done')}>Finish</Button>
-                )}
-              </div>
-            </li>
+            <WorkstreamEntry
+              key={workstream.id}
+              workstream={workstream}
+              leases={leases}
+              loading={loading}
+              onStatus={onStatus}
+              onAcquire={onAcquire}
+              onRelease={onRelease}
+            />
           ))}
         </ul>
       )}

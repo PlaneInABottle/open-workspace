@@ -67,7 +67,8 @@ function installFetch(handler: (path: string, init: RequestInit) => Promise<Resp
     const token = new Headers(init.headers).get('Authorization');
     if (token) tokens.push(token);
     const response = await handler(url.pathname, init);
-    if (url.pathname === '/api/workstreams' && (init.method ?? 'GET') === 'GET' && response.status === 404) {
+    if ((url.pathname === '/api/workstreams' || url.pathname === '/api/leases')
+      && (init.method ?? 'GET') === 'GET' && response.status === 404) {
       return json([]);
     }
     return response;
@@ -658,6 +659,7 @@ describe('project-first workbench', () => {
       roots: ['/tmp/stream-a', '/tmp/stream-b'].map(path => ({ path, repositories: [], warnings: [], unavailable: false })),
     };
     let stored: Array<{ id: string; name: string; workspaceId: string; status: string; checkouts: Array<{ root: string; revision: null; revisionState: string }> }> = [];
+    let leases: Array<{ resource: string; workstreamId: string; status: string }> = [];
     let createCalls = 0;
     let statusCalls = 0;
     installFetch(async (path, init) => {
@@ -675,6 +677,24 @@ describe('project-first workbench', () => {
         statusCalls++;
         stored = stored.map(entry => ({ ...entry, status: 'paused' }));
         return json(stored[0]);
+      }
+      if (path === '/api/leases' && init.method === 'GET') return json(leases);
+      if (path === '/api/leases/acquire' && init.method === 'POST') {
+        const input = JSON.parse(String(init.body)) as { resource: string; workstreamId: string };
+        const held = leases.some(lease => lease.resource === input.resource && lease.status === 'held');
+        const lease = { resource: input.resource, workstreamId: input.workstreamId, status: held ? 'queued' : 'held' };
+        leases = [...leases, lease];
+        return json({ lease, position: held ? 1 : 0 });
+      }
+      if (path === '/api/leases/release' && init.method === 'POST') {
+        const input = JSON.parse(String(init.body)) as { resource: string; workstreamId: string };
+        leases = leases.filter(lease => !(lease.resource === input.resource && lease.workstreamId === input.workstreamId));
+        const next = leases.find(lease => lease.resource === input.resource && lease.status === 'queued');
+        if (next) {
+          leases = leases.map(lease => lease === next ? { ...lease, status: 'held' } : lease);
+          return json({ released: true, promoted: next.workstreamId });
+        }
+        return json({ released: true, promoted: null });
       }
       return json({ error: 'Not found.' }, 404);
     });
@@ -696,6 +716,14 @@ describe('project-first workbench', () => {
     fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Pause Group A' }));
     expect(await within(workstreamsRegion).findByText('paused')).toBeInTheDocument();
     expect(statusCalls).toBe(1);
+
+    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Resume Group A' }));
+    expect(await within(workstreamsRegion).findByText('Group A')).toBeInTheDocument();
+    fireEvent.change(within(workstreamsRegion).getByRole('textbox', { name: 'Hold a resource' }), { target: { value: 'port:3000' } });
+    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Hold' }));
+    expect(await within(workstreamsRegion).findByText(/port:3000 · held/)).toBeInTheDocument();
+    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Release port:3000 from Group A' }));
+    await waitFor(() => expect(within(workstreamsRegion).queryByText(/port:3000 · held/)).not.toBeInTheDocument());
   });
 
   it('does not restore revoked access or selected inventory from a pre-revocation refresh', async () => {

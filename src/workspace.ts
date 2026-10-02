@@ -5,6 +5,7 @@ import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, runPm2Action, serviceInventory, type ServiceInventory } from './services.js';
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
 import { createWorkstream, setWorkstreamStatus, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { acquireLease, releaseLease, type Lease } from './leases.js';
 
 export interface RootInspection {
   path: string;
@@ -118,6 +119,18 @@ export class WorkspaceService {
 
   async setWorkstreamStatus(id: string, status: WorkstreamStatus): Promise<Workstream> {
     return setWorkstreamStatus(this.store, id, status);
+  }
+
+  async listLeases(): Promise<Lease[]> {
+    return (await this.store.read()).leases;
+  }
+
+  async acquireLease(input: { resource: string; workstreamId: string }) {
+    return acquireLease(this.store, input);
+  }
+
+  async releaseLease(input: { resource: string; workstreamId: string }) {
+    return releaseLease(this.store, input);
   }
 
   async revoke(id: string) {

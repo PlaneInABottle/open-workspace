@@ -39,6 +39,10 @@ const workstreamSchema = z.object({
 const workstreamStatusSchema = z.object({
   status: z.enum(['active', 'paused', 'done']),
 }).strict();
+const leaseSchema = z.object({
+  resource: z.string().min(1).max(80),
+  workstreamId: z.string().uuid(),
+}).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;
 type ApiRole = 'dashboard' | 'mcp';
@@ -76,7 +80,8 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || (method === 'POST' && pathname === '/api/proposals')
     || (method === 'GET' && new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname))
     || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname))
-    || (method === 'GET' && new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname));
+    || (method === 'GET' && new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))
+    || (method === 'GET' && pathname === '/api/leases');
 }
 
 function sameCanonicalDashboardRequest(request: IncomingMessage, origin: string) {
@@ -301,6 +306,20 @@ export function createApp(service: WorkspaceService, options: {
             json(response, 200, await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status));
             return;
           }
+          if (url.pathname === '/api/leases' && request.method === 'GET') {
+            json(response, 200, await service.listLeases());
+            return;
+          }
+          const leaseMatch = /^\/api\/leases\/(acquire|release)$/.exec(url.pathname);
+          if (leaseMatch && request.method === 'POST') {
+            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, leaseMatch[1] === 'acquire' ? 'acquire-lease' : 'release-lease')) {
+              json(response, 403, { error: 'Lease changes require the connected dashboard.' });
+              return;
+            }
+            const input = leaseSchema.parse(await body(request));
+            json(response, 200, leaseMatch[1] === 'acquire' ? await service.acquireLease(input) : await service.releaseLease(input));
+            return;
+          }
           const match = new RegExp(`^/api/(proposals|workspaces)/(${uuidPath})(?:/(approve|reject|onboarding|revoke|services))?$`).exec(url.pathname);
           if (match?.[1] === 'proposals' && request.method === 'POST' && ['approve','reject'].includes(match[3])) {
             const input = await body(request);
@@ -356,6 +375,10 @@ export function createApp(service: WorkspaceService, options: {
         'Unknown workstream status.',
         'A finished workstream cannot be reopened.',
         'Workstream limit reached.',
+        'Name the resource with 1–80 lowercase letters, digits or :._- characters.',
+        'Only the holding workstream can release a lease.',
+        'A finished workstream cannot hold leases.',
+        'Lease limit reached.',
         'Approved directory identity changed. Request access again.',
         'Use application/json.', 'Request body is too large.',
       ];
