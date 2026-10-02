@@ -1,0 +1,8 @@
+node_modules/
+web-dist/
+.openworkspace/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
