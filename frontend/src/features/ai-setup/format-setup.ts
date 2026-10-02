@@ -110,9 +110,10 @@ function makeClientGuides(server: LocalStdioServer): ClientSetupGuide[] {
       id: 'claude-code',
       title: 'Claude Code',
       sourceUrl: 'https://code.claude.com/docs/en/mcp',
-      location: 'Use .mcp.json at the project root for this project only. Claude Code may ask you to approve the project-scoped server.',
+      location: 'Use Claude Code local scope for the current project. This is private to you and stored under this project in ~/.claude.json; use .mcp.json only when you deliberately share the entry with the team.',
       guidance: [
-        'Merge this stdio entry into the existing mcpServers object; do not replace other servers or write global settings unless you explicitly choose that scope.',
+        'Use local scope rather than user scope. Preserve existing local entries and project settings, and never replace other servers or settings.',
+        'For a project-local .mcp.json, review whether the machine-local Node and OPENWORKSPACE_HOME paths should be shared in version control.',
         'Review the exact change and approve it in Claude Code when prompted.',
         'Run “claude mcp list” to verify the configured entry. An entry in the list does not by itself prove the server is responding.',
       ],
@@ -152,7 +153,7 @@ export function formatSetupRequest(configuration: ClientConfig | null, selectedI
     ? `Context: This named project was separately approved (UUID ${selectedId}) with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this UUID only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
     : 'Context: Verify the MCP connection with workspace_list first. If my project is absent, ask me to choose its name and exact repository folders in the dashboard, then call workspace_propose with {name, roots}. Wait for my separate approval of every requested root before inspecting. Never infer a shared parent. Use workspace_inspect and onboarding_plan only after project approval.';
   const copyText = [
-    'Identify the assistant client I am using and adapt only this generated OpenWorkspace stdio entry to its documented format and the project or user scope I choose. Preserve every existing server and setting, show the exact proposed change, and ask for my review before writing configuration.',
+    'Identify the assistant client I am using and adapt only this generated OpenWorkspace stdio entry to that client’s documented project-local format. Use the current project only; do not write user-wide or global MCP settings. For Claude Code, use Claude’s local scope (private to this project in ~/.claude.json), not user scope or a shared .mcp.json unless I explicitly ask. Preserve every existing server and setting, show the exact proposed change, and ask for my review before writing configuration.',
     'Generated local MCP entry:',
     '```json',
     jsonConfig(server, false),
