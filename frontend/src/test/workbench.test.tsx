@@ -19,7 +19,6 @@ function workspace(id: string, name: string, roots: string | string[]): Workspac
 
 function overview(values: Partial<Overview> = {}): Overview {
   return {
-    version: 2,
     proposals: [],
     workspaces: [],
     capabilities: [],
@@ -62,12 +61,16 @@ function deferred<T>() {
 function installFetch(handler: (path: string, init: RequestInit) => Promise<Response>) {
   const origins: string[] = [];
   const tokens: string[] = [];
-  const fetchMock = vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), window.location.href);
     origins.push(url.origin);
     const token = new Headers(init.headers).get('Authorization');
     if (token) tokens.push(token);
-    return handler(url.pathname, init);
+    const response = await handler(url.pathname, init);
+    if (url.pathname === '/api/workstreams' && (init.method ?? 'GET') === 'GET' && response.status === 404) {
+      return json([]);
+    }
+    return response;
   });
   vi.stubGlobal('fetch', fetchMock);
   return { fetchMock, origins, tokens };
@@ -493,9 +496,9 @@ describe('project-first workbench', () => {
     fireEvent.click(within(rail).getByRole('button', { name: new RegExp(approved.name) }));
 
     expect((await screen.findAllByRole('heading', { name: 'services', level: 3 })).length).toBe(2);
-    expect(screen.getByText(roots[0])).toBeInTheDocument();
-    expect(screen.getByText(roots[1])).toBeInTheDocument();
-    expect(screen.getByText(roots[2])).toBeInTheDocument();
+    expect(screen.getAllByText(roots[0]).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(roots[1]).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(roots[2]).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('web').length).toBeGreaterThan(0);
     expect(screen.getAllByText('api').length).toBeGreaterThan(0);
     expect(screen.getByRole('alert')).toHaveTextContent('unavailable');
@@ -645,6 +648,54 @@ describe('project-first workbench', () => {
     expect(within(verification).getByText(/worktree dirty \(2 changed\)/)).toBeInTheDocument();
     expect(within(verification).getByText(/service web \(online\)/)).toBeInTheDocument();
     expect(verifyCalls).toBe(1);
+  });
+
+  it('creates workstreams on approved roots and moves their status forward', async () => {
+    const approved = workspace('33333333-3333-4333-8333-333333333333', 'Stream fixture', ['/tmp/stream-a', '/tmp/stream-b']);
+    const streamInspection = {
+      workspace: approved,
+      target: { id: 'local' as const, kind: 'local' as const },
+      roots: ['/tmp/stream-a', '/tmp/stream-b'].map(path => ({ path, repositories: [], warnings: [], unavailable: false })),
+    };
+    let stored: Array<{ id: string; name: string; workspaceId: string; status: string; checkouts: Array<{ root: string; revision: null; revisionState: string }> }> = [];
+    let createCalls = 0;
+    let statusCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
+      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(streamInspection);
+      if (path === '/api/workstreams' && init.method === 'GET') return json(stored);
+      if (path === '/api/workstreams' && init.method === 'POST') {
+        createCalls++;
+        const input = JSON.parse(String(init.body)) as { name: string; workspaceId: string; checkouts: string[] };
+        stored = [{ id: '44444444-4444-4444-8444-444444444444', name: input.name, workspaceId: input.workspaceId, status: 'active', checkouts: input.checkouts.map(root => ({ root, revision: null, revisionState: 'unknown' })) }];
+        return json(stored[0], 201);
+      }
+      if (path === '/api/workstreams/44444444-4444-4444-8444-444444444444/status' && init.method === 'POST') {
+        statusCalls++;
+        stored = stored.map(entry => ({ ...entry, status: 'paused' }));
+        return json(stored[0]);
+      }
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Stream fixture/ }));
+
+    expect(await screen.findByText('Workstreams')).toBeInTheDocument();
+    const workstreamsRegion = screen.getByRole('region', { name: 'Workstreams' });
+    expect(within(workstreamsRegion).getByText('No workstreams yet. Create one to track parallel work on these roots.')).toBeInTheDocument();
+    fireEvent.change(within(workstreamsRegion).getByRole('textbox', { name: 'Workstream name' }), { target: { value: 'Group A' } });
+    fireEvent.click(within(workstreamsRegion).getByRole('checkbox', { name: '/tmp/stream-a' }));
+    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Create workstream' }));
+
+    expect(await within(workstreamsRegion).findByText('Group A')).toBeInTheDocument();
+    expect(screen.getByText(/rev unknown/)).toBeInTheDocument();
+    expect(createCalls).toBe(1);
+    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Pause Group A' }));
+    expect(await within(workstreamsRegion).findByText('paused')).toBeInTheDocument();
+    expect(statusCalls).toBe(1);
   });
 
   it('does not restore revoked access or selected inventory from a pre-revocation refresh', async () => {

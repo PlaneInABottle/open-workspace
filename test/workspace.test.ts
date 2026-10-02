@@ -177,57 +177,22 @@ test('tool availability requires an executable file, not a directory', async t =
   assert.equal(tools.find(tool => tool.id === 'docker')?.status, 'found');
 });
 
-test('v1 state migrates every approved and pending path to one root and remains idempotent', async t => {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-v1-migration-')));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const stateDirectory = join(directory, 'state');
-  await mkdir(stateDirectory, { mode: 0o700 });
-  const stateFile = join(stateDirectory, 'state.json');
-  const legacy = {
-    version: 1,
-    workspaces: [
-      { id: '11111111-1111-4111-8111-111111111111', name: 'ResAI', path: '/synthetic/wrapper with spaces', createdAt: '2026-01-02T03:04:05.000Z' },
-      { id: '22222222-2222-4222-8222-222222222222', name: 'Unrelated project', path: '/synthetic/elsewhere/repo', createdAt: '2026-02-03T04:05:06.000Z' },
-      { id: '55555555-5555-4555-8555-555555555555', name: ' ', path: '/synthetic/legacy-blank-name', createdAt: '2026-02-04T04:05:06.000Z' },
-    ],
-    proposals: [
-      { id: '33333333-3333-4333-8333-333333333333', name: 'Pending 🌱', path: "/synthetic/pending's root", createdAt: '2026-03-04T05:06:07.000Z' },
-    ],
-  };
-  await writePrivateJson(stateFile, legacy);
-  const migratedStore = new Store(stateDirectory);
-  await migratedStore.initialize();
-  const migrated = await migratedStore.read();
-  assert.equal(migrated.version, 2);
-  assert.deepEqual(migrated.workspaces.map(({ id, name, roots, createdAt }) => ({ id, name, roots, createdAt })), [
-    { id: legacy.workspaces[0].id, name: 'ResAI', roots: ['/synthetic/wrapper with spaces'], createdAt: legacy.workspaces[0].createdAt },
-    { id: legacy.workspaces[1].id, name: 'Unrelated project', roots: ['/synthetic/elsewhere/repo'], createdAt: legacy.workspaces[1].createdAt },
-    { id: legacy.workspaces[2].id, name: ' ', roots: ['/synthetic/legacy-blank-name'], createdAt: legacy.workspaces[2].createdAt },
-  ]);
-  assert.deepEqual(migrated.proposals.map(({ id, name, roots, createdAt }) => ({ id, name, roots, createdAt })), [
-    { id: legacy.proposals[0].id, name: 'Pending 🌱', roots: ["/synthetic/pending's root"], createdAt: legacy.proposals[0].createdAt },
-  ]);
-  const version2Bytes = await readFile(stateFile);
-  await migratedStore.initialize();
-  assert.deepEqual(await readFile(stateFile), version2Bytes);
-});
-
-test('invalid, mixed, unknown, invalid-UTF8 and oversized prior state stays byte-identical', async t => {
+test('unknown state shapes fail closed and stay byte-identical', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-state-preserve-')));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const validV1 = {
-    version: 1,
+  const valid = {
     workspaces: [],
     proposals: [],
+    workstreams: [],
   };
   const cases: Buffer[] = [
     Buffer.from('{broken'),
-    Buffer.from(JSON.stringify({ ...validV1, version: 3 })),
-    Buffer.from(JSON.stringify({ ...validV1, extra: true })),
-    Buffer.from(JSON.stringify({ ...validV1, workspaces: [{ id: '66666666-6666-4666-8666-666666666666', name: 'Unknown field', path: '/synthetic/repo', createdAt: '2026-01-01T00:00:00.000Z', unknown: true }] })),
-    Buffer.from(JSON.stringify({ version: 1, workspaces: [{ id: '44444444-4444-4444-8444-444444444444', name: 'Mixed', path: '/synthetic/repo', roots: ['/synthetic/other'], createdAt: '2026-01-01T00:00:00.000Z' }], proposals: [] })),
-    Buffer.concat([Buffer.from(JSON.stringify(validV1)), Buffer.from([0xff])]),
-    Buffer.concat([Buffer.from(JSON.stringify(validV1)), Buffer.alloc(1024 * 1024, 0x20)]),
+    Buffer.from(JSON.stringify({ ...valid, version: 2 })),
+    Buffer.from(JSON.stringify({ ...valid, extra: true })),
+    Buffer.from(JSON.stringify({ ...valid, workspaces: [{ id: '66666666-6666-4666-8666-666666666666', name: 'Unknown field', roots: ['/synthetic/repo'], createdAt: '2026-01-01T00:00:00.000Z', unknown: true }] })),
+    Buffer.from(JSON.stringify({ workspaces: [{ id: '44444444-4444-4444-8444-444444444444', name: 'Mixed', path: '/synthetic/repo', roots: ['/synthetic/other'], createdAt: '2026-01-01T00:00:00.000Z' }], proposals: [], workstreams: [] })),
+    Buffer.concat([Buffer.from(JSON.stringify(valid)), Buffer.from([0xff])]),
+    Buffer.concat([Buffer.from(JSON.stringify(valid)), Buffer.alloc(1024 * 1024, 0x20)]),
   ];
 
   for (let index = 0; index < cases.length; index++) {
@@ -247,7 +212,6 @@ test('oversized serialized state is rejected before replacing the prior bytes', 
   await store.initialize();
   const roots = Array.from({ length: 20 }, (_, index) => `/${'\n'.repeat(4093)}${index.toString().padStart(2, '0')}`);
   const populated = {
-    version: 2,
     workspaces: Array.from({ length: 6 }, (_, index) => ({
       id: `${(index + 1).toString().padStart(8, '0')}-1111-4111-8111-111111111111`,
       name: `Large ${index}`,
@@ -255,6 +219,7 @@ test('oversized serialized state is rejected before replacing the prior bytes', 
       createdAt: '2026-01-01T00:00:00.000Z',
     })),
     proposals: [],
+    workstreams: [],
   };
   const expanded = { ...populated, proposals: [{ id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, createdAt: '2026-01-01T00:00:00.000Z' }] };
   const currentBytes = Buffer.from(JSON.stringify(populated, null, 2));

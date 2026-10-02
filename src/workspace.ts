@@ -4,6 +4,7 @@ import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, runPm2Action, serviceInventory, type ServiceInventory } from './services.js';
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
+import { createWorkstream, setWorkstreamStatus, type Workstream, type WorkstreamStatus } from './workstreams.js';
 
 export interface RootInspection {
   path: string;
@@ -14,7 +15,7 @@ export interface RootInspection {
 }
 
 export class WorkspaceService {
-  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner) {}
+  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly revisionRunner?: CommandRunner) {}
 
   async overview() {
     const state = await this.store.read();
@@ -99,6 +100,24 @@ export class WorkspaceService {
     const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
     if (!workspace) throw new Error('Workspace is not approved. Request directory access in the dashboard first.');
     return runVerification(workspace.roots, request, { list: this.listPm2, runCommand: this.verifyRunner, signal });
+  }
+
+  async createWorkstream(input: { name: string; workspaceId: string; checkouts: string[] }): Promise<Workstream> {
+    return createWorkstream(this.store, input, this.revisionRunner ?? this.verifyRunner);
+  }
+
+  async listWorkstreams(): Promise<Workstream[]> {
+    return (await this.store.read()).workstreams;
+  }
+
+  async workstream(id: string): Promise<Workstream> {
+    const workstream = (await this.store.read()).workstreams.find(workstream => workstream.id === id);
+    if (!workstream) throw new Error('Unknown workstream.');
+    return workstream;
+  }
+
+  async setWorkstreamStatus(id: string, status: WorkstreamStatus): Promise<Workstream> {
+    return setWorkstreamStatus(this.store, id, status);
   }
 
   async revoke(id: string) {

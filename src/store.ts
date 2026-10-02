@@ -9,14 +9,7 @@ import { maxProjectRootLength, maxProjectRoots, projectRootsError } from './proj
 
 const privateJsonLimit = 1024 * 1024;
 const name = z.string().min(1).max(100);
-const legacyName = z.string().min(1).max(100);
 const rootPath = z.string().min(1).max(maxProjectRootLength).refine(value => isAbsolute(value) && !value.includes('\0'));
-const registrationV1 = z.object({
-  id: z.string().uuid(),
-  name: legacyName,
-  path: z.string().min(1).max(4096),
-  createdAt: z.string().datetime(),
-}).strict();
 const registration = z.object({
   id: z.string().uuid(),
   name,
@@ -26,17 +19,28 @@ const registration = z.object({
   }),
   createdAt: z.string().datetime(),
 }).strict();
-const stateV1Schema = z.object({
-  version: z.literal(1),
-  workspaces: z.array(registrationV1).max(50),
-  proposals: z.array(registrationV1).max(50),
+const workstreamCheckout = z.object({
+  root: rootPath,
+  revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+  revisionState: z.enum(['observed', 'unknown']),
+  observedAt: z.string().datetime(),
+}).strict();
+const workstream = z.object({
+  id: z.string().uuid(),
+  name,
+  workspaceId: z.string().uuid(),
+  checkouts: z.array(workstreamCheckout).min(1).max(20),
+  status: z.enum(['active', 'paused', 'done']),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
 }).strict();
 const stateSchema = z.object({
-  version: z.literal(2),
   workspaces: z.array(registration).max(50),
   proposals: z.array(registration).max(50),
+  workstreams: z.array(workstream).max(50),
 }).strict();
 export type Registration = z.infer<typeof registration>;
+export type WorkstreamRecord = z.infer<typeof workstream>;
 export type State = z.infer<typeof stateSchema>;
 
 export function stateDirectory(): string {
@@ -123,22 +127,12 @@ export class Store {
       stored = await readPrivateJson(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      await writePrivateJson(path, { version: 2, workspaces: [], proposals: [] });
+      await writePrivateJson(path, { workspaces: [], proposals: [], workstreams: [] });
       return;
     }
 
-    const current = stateSchema.safeParse(stored);
-    if (current.success) return;
-
-    const legacy = stateV1Schema.safeParse(stored);
-    if (!legacy.success) throw new Error('Local workspace state is invalid.');
-    const migrated: State = {
-      version: 2,
-      workspaces: legacy.data.workspaces.map(({ id, name, path: root, createdAt }) => ({ id, name, roots: [root], createdAt })),
-      proposals: legacy.data.proposals.map(({ id, name, path: root, createdAt }) => ({ id, name, roots: [root], createdAt })),
-    };
-    await writePrivateJson(path, stateSchema.parse(migrated));
-    await this.read();
+    // No versioned upgrades: unknown shapes fail closed and the file is left byte-identical.
+    if (!stateSchema.safeParse(stored).success) throw new Error('Local workspace state is invalid.');
   }
 
   async read(): Promise<State> {

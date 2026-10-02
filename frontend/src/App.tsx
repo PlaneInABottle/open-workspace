@@ -316,6 +316,8 @@ export function App() {
               onInspectServices={id => { void workbench.inspectServices(id); }}
               onServiceAction={(id, action, target) => { void workbench.runServiceAction(id, action, target); }}
               onVerify={(id, verification) => { void workbench.runVerification(id, verification); }}
+              onCreateWorkstream={(id, name, checkouts) => { void workbench.createWorkstream(id, name, checkouts); }}
+              onWorkstreamStatus={(id, workstreamId, status) => { void workbench.setWorkstreamStatus(id, workstreamId, status); }}
               onGoToAi={() => navigate('setup')}
             />
           )}

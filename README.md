@@ -48,12 +48,12 @@ No project environment files are imported. State requires 0700 directories and 0
 - Skip hidden directories, dependency/build directories, symlinked component directories and symlinked manifest files.
 - Show executable availability separately from unverified runtime/readiness.
 - Reuse approved workspace state after a service restart.
-- MCP tools: `workspace_list`, `workspace_propose`, `workspace_inspect`, `workspace_services`, `onboarding_plan`. `workspace_services` reports bounded PM2 process metadata mapped to approved roots; it is not a runner option, health check or verification. The connected dashboard can restart or stop only an exactly mapped approved-root service and can run one existing `package.json` test script with checkout/worktree/service/time context; MCP cannot invoke service lifecycle or test runs.
+- MCP tools: `workspace_list`, `workspace_propose`, `workspace_inspect`, `workspace_services`, `workspace_workstreams`, `onboarding_plan`. `workspace_services` reports bounded PM2 process metadata mapped to approved roots; it is not a runner option, health check or verification. `workspace_workstreams` lists parallel workstreams with pinned revisions; it cannot create workstreams or change their status. The connected dashboard can restart or stop only an exactly mapped approved-root service, can run one existing `package.json` test script with checkout/worktree/service/time context, and can create workstreams bound to approved roots; MCP cannot invoke service lifecycle, test runs or workstream changes.
 - MCP prompt: `workspace_onboarding`.
 
 No project file writes, credential-file reads, dependency installs, application lifecycle operations, database/log queries or browser automation are available in M0. These are M1 slices, not fake working buttons. Manifest metadata may still contain sensitive information; this is not an arbitrary-file secret detector.
 
-Private project state is v2. Existing validated v1 records upgrade once from `path` to `roots: [path]`, preserving IDs, names, timestamps and approved/pending collection membership with no filesystem discovery or permission widening. There is no literal status field. Invalid/oversized input fails without reset. Multi-root state is forward-only; do not downgrade it to an old binary that would collapse roots.
+Private project state has one strict schema: explicit `roots` arrays, no versioned upgrades. There is no literal status field. Unknown shapes fail closed and the file stays byte-identical; invalid/oversized input fails without reset.
 
 ## Security boundary
 

@@ -31,6 +31,11 @@ server.registerTool('workspace_services', {
   inputSchema: { workspaceId: z.string().uuid() },
   annotations: readHints,
 }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/services`, {}));
+server.registerTool('workspace_workstreams', {
+  description: 'List parallel workstreams bound to approved project roots with pinned revisions. Read-only; creation and status changes are dashboard-only.',
+  inputSchema: z.object({}).strict(),
+  annotations: readHints,
+}, () => request('/api/workstreams'));
 server.registerTool('workspace_inspect', {
   description: 'Inspect bounded manifest metadata separately for every approved root and its immediate repositories. A replaced or redirected root is reported unavailable without hiding other roots. Never reads env files or executes code. Unknown runtime readiness stays unknown.',
   inputSchema: { workspaceId: z.string().uuid() }, annotations: readHints,

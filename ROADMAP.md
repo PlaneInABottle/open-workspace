@@ -176,6 +176,12 @@ Acceptance: an isolated representative service maps to the intended checkout, st
 
 ### M2 — second major milestone: parallel multi-repo delivery
 
+**Scope narrowed with the user (same sequential discipline as M1):** deliver workstreams in small vertical slices. The service never creates checkouts, worktrees, stashes or resets: a workstream binds already-approved roots and pins observed revisions. Enforcement of revision sets, if ever needed, is a later explicit step, not silent mutation.
+
+1. **Workstream identity.** Create/list/get workstreams bound to one approved workspace's roots, each checkout pinned to its observed revision (or honest `unknown`). No versioned state upgrades: one strict schema, unknown shapes fail closed. Creation and status changes are dashboard-only; MCP gets a read-only list. No leases, runs or Jira in this slice.
+2. **Resource leases.** Named exclusive resources (services, ports, datastores) with acquire/release and a visible queue. Lease mutations are dashboard-only; MCP reads lease state. Shared E2E resources serialize here instead of colliding silently.
+3. **Parallel verification view.** Associate verification results with workstreams and show each workstream's repos/runtimes/blocked resources/approvals with independent Git links. Acceptance: four or five owned fixture workstreams progress in separate checkouts with results tied to actual revisions; no cross-workstream mutation.
+
 Workstream/checkouts, task-local prerequisite provisioning, fixed revision sets, resource ownership/leases and safe cleanup. Optional Jira intake and ticket dossier references; manually initiated work is equally supported. Coordinator/implementer/reviewer roles are a skill pack, not a required agent runtime or hardcoded models.
 
 UI: parallel workstreams, each one's repos/runtimes/blocked resources/approvals and independent Git/PR links. Show why work is queued rather than silently serializing everything.
@@ -217,6 +223,7 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 | 5 | Native repo-folder selection instead of an absolute-path-only default | Implemented with trusted macOS helper and manual fallback. User informally observed selection working; automated real GUI selection/cancellation remains unverified because OS automation permission was denied. |
 | 6 | Narrow M1 and proceed sequentially without speculative plugin infrastructure | Scope agreed. M1 Steps 1–3 implemented and verified: bounded read-only PM2 service/checkout metadata with `workspace_services`; dashboard-only restart/stop for an exactly mapped owned PM2 process with fresh-status reconciliation and MCP denial; dashboard-only run of one existing `package.json` test script with revision/worktree/service/time context, bounded runtime/output and MCP denial. No readiness/health claim anywhere. M1 closure pass: 10/10 checks against an isolated live service (connect→propose→approve→inspect→map→restart→verify-passed→stop→revoke→post-revoke-denied) with owned git/PM2 fixtures; only owned resources were touched and all fixtures were removed. |
 | 7 | Keep M1 verification diagnostic/local, not a CI verdict; preserve parallel multi-service goal for M2 | Accepted. Step 3 remains checkout/service/test context, not a CI badge. Jira-parallel, multi-service and agent-browser orchestration stay M2. |
+| 8 | Start M2 with workstream identity; drop versioned state upgrades | Implemented (M2-1): workstreams bind approved roots with pinned revisions; one strict state schema with no migrations, unknown shapes fail closed. Creation/status are dashboard-only; MCP lists only. |
 
 New user requests amend this queue; they do not discard unfinished earlier requests. Mark outcomes verified from actual code/runtime evidence, not from a plan or a suggested UX.
 

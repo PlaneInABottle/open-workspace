@@ -31,6 +31,14 @@ const verificationSchema = z.object({
     namespace: z.string().max(80).nullable().optional(),
   }).strict().optional(),
 }).strict();
+const workstreamSchema = z.object({
+  name: z.string().min(1).max(100),
+  workspaceId: z.string().uuid(),
+  checkouts: z.array(z.string().min(1).max(4096)).min(1).max(20),
+}).strict();
+const workstreamStatusSchema = z.object({
+  status: z.enum(['active', 'paused', 'done']),
+}).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;
 type ApiRole = 'dashboard' | 'mcp';
@@ -67,7 +75,8 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   return (method === 'GET' && pathname === '/api/overview')
     || (method === 'POST' && pathname === '/api/proposals')
     || (method === 'GET' && new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname))
-    || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname));
+    || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname))
+    || (method === 'GET' && new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname));
 }
 
 function sameCanonicalDashboardRequest(request: IncomingMessage, origin: string) {
@@ -268,6 +277,30 @@ export function createApp(service: WorkspaceService, options: {
             }
             return;
           }
+          const workstreamMatch = new RegExp(`^/api/workstreams(?:/(${uuidPath}))?$`).exec(url.pathname);
+          if (workstreamMatch && request.method === 'GET') {
+            json(response, 200, workstreamMatch[1] ? await service.workstream(workstreamMatch[1]) : await service.listWorkstreams());
+            return;
+          }
+          if (workstreamMatch && !workstreamMatch[1] && request.method === 'POST' && url.pathname === '/api/workstreams') {
+            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'create-workstream')) {
+              json(response, 403, { error: 'Workstream creation requires the connected dashboard.' });
+              return;
+            }
+            const input = workstreamSchema.parse(await body(request));
+            json(response, 201, await service.createWorkstream(input));
+            return;
+          }
+          const workstreamStatusMatch = new RegExp(`^/api/workstreams/(${uuidPath})/status$`).exec(url.pathname);
+          if (workstreamStatusMatch && request.method === 'POST') {
+            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'update-workstream')) {
+              json(response, 403, { error: 'Workstream updates require the connected dashboard.' });
+              return;
+            }
+            const input = workstreamStatusSchema.parse(await body(request));
+            json(response, 200, await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status));
+            return;
+          }
           const match = new RegExp(`^/api/(proposals|workspaces)/(${uuidPath})(?:/(approve|reject|onboarding|revoke|services))?$`).exec(url.pathname);
           if (match?.[1] === 'proposals' && request.method === 'POST' && ['approve','reject'].includes(match[3])) {
             const input = await body(request);
@@ -316,6 +349,13 @@ export function createApp(service: WorkspaceService, options: {
         'The selected folder is not a real directory.',
         'This repository has no runnable test script with that name.',
         'The linked service is not uniquely mapped to an approved root.',
+        'Provide a workstream name with 100 characters or fewer.',
+        'Select at least one checkout and no more than twenty.',
+        'Checkouts must be approved roots of this workspace.',
+        'Unknown workstream.',
+        'Unknown workstream status.',
+        'A finished workstream cannot be reopened.',
+        'Workstream limit reached.',
         'Approved directory identity changed. Request access again.',
         'Use application/json.', 'Request body is too large.',
       ];

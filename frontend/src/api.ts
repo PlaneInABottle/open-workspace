@@ -17,7 +17,6 @@ export interface Capability {
 }
 
 export interface Overview {
-  version: 2;
   proposals: Proposal[];
   workspaces: Workspace[];
   capabilities: Capability[];
@@ -111,6 +110,23 @@ export interface VerificationRequest {
   repositoryPath: string;
   scriptName: string;
   service?: { pmId: number | null; name: string; namespace?: string | null };
+}
+
+export interface WorkstreamCheckout {
+  root: string;
+  revision: string | null;
+  revisionState: 'observed' | 'unknown';
+  observedAt: string;
+}
+
+export interface Workstream {
+  id: string;
+  name: string;
+  workspaceId: string;
+  checkouts: WorkstreamCheckout[];
+  status: 'active' | 'paused' | 'done';
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type ProjectRootPickerResult =
@@ -266,6 +282,14 @@ export class ApiClient {
   }
   verify(workspaceId: string, verification: VerificationRequest) {
     return this.request<VerificationResult>(`/api/workspaces/${safeId(workspaceId)}/verify`, verification, { intent: 'run-verification', timeoutMs: 170_000 });
+  }
+  workstreams() { return this.request<Workstream[]>('/api/workstreams'); }
+  workstream(id: string) { return this.request<Workstream>(`/api/workstreams/${safeId(id)}`); }
+  createWorkstream(input: { name: string; workspaceId: string; checkouts: string[] }) {
+    return this.request<Workstream>('/api/workstreams', input, { intent: 'create-workstream' });
+  }
+  setWorkstreamStatus(id: string, status: Workstream['status']) {
+    return this.request<Workstream>(`/api/workstreams/${safeId(id)}/status`, { status }, { intent: 'update-workstream' });
   }
 
   private async revokeDashboardSession(token: string): Promise<void> {
