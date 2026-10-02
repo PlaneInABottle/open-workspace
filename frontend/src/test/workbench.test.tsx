@@ -532,15 +532,17 @@ describe('project-first workbench', () => {
       processCount: 3,
       matchedProcessCount: 1,
       unmatchedProcessCount: 2,
-      services: [{ name: 'worker', pmId: 4, status: 'online', cwd: '/tmp/service-fixture/worker', restartCount: 2, matchedRoots: ['/tmp/service-fixture'], exactRootPath: '/tmp/service-fixture' }],
+      services: [{ name: 'worker', pmId: 4, namespace: 'default', status: 'online', cwd: '/tmp/service-fixture/worker', restartCount: 2, matchedRoots: ['/tmp/service-fixture'], exactRootPath: '/tmp/service-fixture' }],
       ambiguousServices: [],
     };
     let servicesCalls = 0;
+    let actionCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(inspection);
       if (path === `/api/workspaces/${approved.id}/services` && init.method === 'POST') { servicesCalls++; return json(serviceInventory); }
+      if (path === `/api/workspaces/${approved.id}/services/restart` && init.method === 'POST') { actionCalls++; return json({ action: 'restart', target: { pmId: 4, name: 'worker', namespace: 'default' }, status: 'completed', serviceStatus: 'stopped', message: 'PM2 accepted the restart. Process state is not readiness.' }); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -555,9 +557,94 @@ describe('project-first workbench', () => {
     expect(screen.getByText('online')).toBeInTheDocument();
     expect(screen.getByText(/Working directory: \/tmp\/service-fixture\/worker/)).toBeInTheDocument();
     expect(screen.queryByText(/no runtime was started or checked/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Inspect local process metadata only/)).toBeInTheDocument();
+    expect(screen.getByText(/Dashboard lifecycle control is separate from directory approval/)).toBeInTheDocument();
     expect(screen.getByText(/3 local processes scanned/)).toBeInTheDocument();
     expect(servicesCalls).toBe(1);
+
+    let apiCallsForTest = actionCalls;
+    fireEvent.click(screen.getByRole('button', { name: 'Restart worker' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm restart worker' }));
+    expect(await screen.findByText(/PM2 accepted the restart/)).toBeInTheDocument();
+    expect(actionCalls).toBe(apiCallsForTest + 1);
+  });
+
+  it('runs one repository test with checkout, worktree and service context', async () => {
+    const approved = workspace('22222222-2222-4222-8222-222222222222', 'Verify fixture', '/tmp/verify-fixture');
+    const nodeInspection = {
+      workspace: approved,
+      target: { id: 'local' as const, kind: 'local' as const },
+      roots: [{
+        path: '/tmp/verify-fixture',
+        repositories: [{
+          name: 'web',
+          path: '/tmp/verify-fixture/web',
+          git: true,
+          stack: ['Node.js'],
+          manifests: ['package.json'],
+          instructions: [],
+          scriptNames: ['check'],
+          composeFiles: [],
+          processState: 'not_connected' as const,
+          readiness: 'not_checked' as const,
+        }],
+        warnings: [],
+        unavailable: false,
+      }],
+    };
+    const serviceInventory = {
+      inspectedAt: '2026-10-02T00:00:00.000Z',
+      runner: 'pm2' as const,
+      available: true,
+      processCount: 1,
+      matchedProcessCount: 1,
+      unmatchedProcessCount: 0,
+      services: [{ name: 'web', pmId: 9, namespace: 'default', status: 'online', cwd: '/tmp/verify-fixture/web', restartCount: 0, matchedRoots: ['/tmp/verify-fixture'], exactRootPath: '/tmp/verify-fixture' }],
+      ambiguousServices: [],
+    };
+    const verificationResult = {
+      verifiedAt: '2026-10-02T00:01:00.000Z',
+      repositoryPath: '/tmp/verify-fixture/web',
+      rootPath: '/tmp/verify-fixture',
+      scriptName: 'check',
+      scriptHash: `${'b'.repeat(64)}`,
+      scriptPreview: 'node check.mjs',
+      outcome: 'passed',
+      exitCode: 0,
+      timedOut: false,
+      aborted: false,
+      truncated: false,
+      durationMs: 120,
+      output: 'ok\n',
+      git: { revision: `${'a'.repeat(40)}`, revisionState: 'observed', worktree: 'dirty', changedEntries: 2 },
+      service: { pmId: 9, name: 'web', namespace: 'default', status: 'online' },
+      message: 'The repository test exited 0 in this checkout. This is local diagnostic context, not a CI verdict or end-to-end business verification.',
+    };
+    let verifyCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
+      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(nodeInspection);
+      if (path === `/api/workspaces/${approved.id}/services` && init.method === 'POST') return json(serviceInventory);
+      if (path === `/api/workspaces/${approved.id}/verify` && init.method === 'POST') { verifyCalls++; return json(verificationResult); }
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Verify fixture/ }));
+
+    expect(await screen.findByText('Run one repository test')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run repository test' }));
+    expect(await screen.findByText('Run this exact check?')).toBeInTheDocument();
+    expect(screen.getByText('npm run check --silent')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm run check' }));
+
+    expect(await screen.findByText('passed')).toBeInTheDocument();
+    const verification = screen.getByRole('status', { name: 'Verification passed' });
+    expect(within(verification).getByText(/not a CI verdict/)).toBeInTheDocument();
+    expect(within(verification).getByText(/worktree dirty \(2 changed\)/)).toBeInTheDocument();
+    expect(within(verification).getByText(/service web \(online\)/)).toBeInTheDocument();
+    expect(verifyCalls).toBe(1);
   });
 
   it('does not restore revoked access or selected inventory from a pre-revocation refresh', async () => {

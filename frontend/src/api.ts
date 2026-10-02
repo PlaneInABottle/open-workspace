@@ -55,11 +55,20 @@ export interface RootInspection {
 export interface ServiceRecord {
   name: string;
   pmId: number | null;
+  namespace: string | null;
   status: string;
   cwd: string;
   restartCount: number;
   matchedRoots: string[];
   exactRootPath: string | null;
+}
+
+export interface ServiceActionResult {
+  action: 'restart' | 'stop';
+  target: { pmId: number; name: string; namespace: string | null };
+  status: 'completed' | 'failed' | 'unknown';
+  serviceStatus: string | null;
+  message: string;
 }
 
 export interface ServiceInventory {
@@ -72,6 +81,36 @@ export interface ServiceInventory {
   unmatchedProcessCount: number;
   services: ServiceRecord[];
   ambiguousServices: ServiceRecord[];
+}
+
+export interface VerificationResult {
+  verifiedAt: string;
+  repositoryPath: string;
+  rootPath: string;
+  scriptName: string;
+  scriptHash: string;
+  scriptPreview: string;
+  outcome: 'passed' | 'failed' | 'error';
+  exitCode: number | null;
+  timedOut: boolean;
+  aborted: boolean;
+  truncated: boolean;
+  durationMs: number;
+  output: string;
+  git: {
+    revision: string | null;
+    revisionState: 'observed' | 'unknown';
+    worktree: 'clean' | 'dirty' | 'unknown';
+    changedEntries: number | null;
+  };
+  service: { pmId: number; name: string; namespace: string | null; status: string } | null;
+  message: string;
+}
+
+export interface VerificationRequest {
+  repositoryPath: string;
+  scriptName: string;
+  service?: { pmId: number | null; name: string; namespace?: string | null };
 }
 
 export type ProjectRootPickerResult =
@@ -222,6 +261,12 @@ export class ApiClient {
   decline(proposalId: string) { return this.request<{ rejected: true }>(`/api/proposals/${safeId(proposalId)}/reject`, {}); }
   revoke(workspaceId: string) { return this.request<{ revoked: true }>(`/api/workspaces/${safeId(workspaceId)}/revoke`, {}); }
   services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}, { intent: 'inspect-services' }); }
+  serviceAction(workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
+    return this.request<ServiceActionResult>(`/api/workspaces/${safeId(workspaceId)}/services/${action}`, target, { intent: 'control-service' });
+  }
+  verify(workspaceId: string, verification: VerificationRequest) {
+    return this.request<VerificationResult>(`/api/workspaces/${safeId(workspaceId)}/verify`, verification, { intent: 'run-verification', timeoutMs: 170_000 });
+  }
 
   private async revokeDashboardSession(token: string): Promise<void> {
     try {

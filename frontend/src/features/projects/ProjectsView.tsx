@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
 import { projectRootLabel } from '@/features/projects/root-label';
-import type { Capability, Inspection, ProjectRootPickerResult, Proposal, ServiceInventory, Workspace } from '@/api';
+import type { Capability, Inspection, ProjectRootPickerResult, Proposal, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -23,6 +23,8 @@ interface OverviewViewProps {
   onSelectProject: (id: string) => void;
   onRetryInspection: (id: string) => void;
   onInspectServices: (id: string) => void;
+  onServiceAction: (id: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => void;
+  onVerify: (id: string, verification: VerificationRequest) => void;
   onGoToAi: () => void;
 }
 
@@ -70,7 +72,7 @@ export function PendingRequests({ proposals, busyIds, onApprove, onDecline }: Pe
   );
 }
 
-export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onGoToAi }: OverviewViewProps) {
+export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onServiceAction, onVerify, onGoToAi }: OverviewViewProps) {
   const [creating, setCreating] = useState(false);
   const selectProject = (id: string) => {
     setCreating(false);
@@ -102,8 +104,13 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           services={state.services}
           servicesLoading={state.servicesLoading}
           servicesError={state.servicesError}
+          verification={state.verification}
+          verificationLoading={state.verificationLoading}
+          verificationError={state.verificationError}
           onRetry={() => onRetryInspection(selected.id)}
           onInspectServices={() => onInspectServices(selected.id)}
+          onServiceAction={(action, target) => onServiceAction(selected.id, action, target)}
+          onVerify={verification => onVerify(selected.id, verification)}
           onGoToAi={onGoToAi}
         />
       ) : state.workspaces.length > 0 ? (
@@ -210,15 +217,20 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, onRetry, onInspectServices, onGoToAi }: {
+function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, onRetry, onInspectServices, onServiceAction, onVerify, onGoToAi }: {
   inspection: Inspection | null;
   loading: boolean;
   error: string | null;
   services: ServiceInventory | null;
   servicesLoading: boolean;
   servicesError: string | null;
+  verification: VerificationResult | null;
+  verificationLoading: boolean;
+  verificationError: string | null;
   onRetry: () => void;
   onInspectServices: () => void;
+  onServiceAction: (action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => void;
+  onVerify: (verification: VerificationRequest) => void;
   onGoToAi: () => void;
 }) {
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) || 0;
@@ -264,6 +276,15 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
         loading={servicesLoading}
         error={servicesError}
         onInspectServices={onInspectServices}
+        onServiceAction={onServiceAction}
+      />
+      <VerificationPanel
+        inspection={inspection}
+        services={services}
+        result={verification}
+        loading={verificationLoading}
+        error={verificationError}
+        onVerify={onVerify}
       />
       <section className="next-step" aria-labelledby="project-next-step-heading">
         <div className="min-w-0">
@@ -353,11 +374,156 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
   );
 }
 
-function ServicesPanel({ services, loading, error, onInspectServices }: {
+function ServiceActionControls({ service, disabled, onServiceAction }: {
+  service: ServiceRecord;
+  disabled: boolean;
+  onServiceAction: (action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => void;
+}) {
+  const [pending, setPending] = useState<'restart' | 'stop' | null>(null);
+  const target = { pmId: service.pmId, name: service.name, namespace: service.namespace };
+  if (service.pmId === null) {
+    return <p className="text-xs text-muted-foreground self-center">PM2 identity unavailable; lifecycle controls disabled.</p>;
+  }
+  if (pending) {
+    return (
+      <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label={`Confirm ${pending} ${service.name}`}>
+        <p className="text-xs text-muted-foreground">{pending === 'restart' ? `Restart ${service.name}?` : `Stop ${service.name}?`} This changes runtime state; health and readiness remain separate.</p>
+        <Button type="button" variant="outline" size="sm" aria-label={`Confirm ${pending} ${service.name}`} disabled={disabled} onClick={() => { onServiceAction(pending, target); setPending(null); }}>Confirm</Button>
+        <Button type="button" variant="ghost" size="sm" aria-label={`Cancel ${pending} ${service.name}`} onClick={() => setPending(null)}>Cancel</Button>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      <Button type="button" variant="outline" size="sm" aria-label={`Restart ${service.name}`} disabled={disabled} onClick={() => setPending('restart')}>Restart</Button>
+      <Button type="button" variant="outline" size="sm" aria-label={`Stop ${service.name}`} disabled={disabled} onClick={() => setPending('stop')}>Stop</Button>
+    </div>
+  );
+}
+
+function VerificationPanel({ inspection, services, result, loading, error, onVerify }: {
+  inspection: Inspection | null;
+  services: ServiceInventory | null;
+  result: VerificationResult | null;
+  loading: boolean;
+  error: string | null;
+  onVerify: (verification: VerificationRequest) => void;
+}) {
+  const candidates = (inspection?.roots ?? []).flatMap(root =>
+    root.repositories
+      .filter(repository => repository.manifests.includes('package.json') && repository.scriptNames.length > 0)
+      .map(repository => ({ repoPath: repository.path, scripts: repository.scriptNames })),
+  );
+  const linkedServices = services?.available ? services.services : [];
+  const [repoPath, setRepoPath] = useState('');
+  const [scriptName, setScriptName] = useState('');
+  const [serviceKey, setServiceKey] = useState('none');
+  const [confirming, setConfirming] = useState(false);
+  const activeRepo = repoPath || candidates[0]?.repoPath || '';
+  const activeScripts = candidates.find(candidate => candidate.repoPath === activeRepo)?.scripts || [];
+  const activeScript = scriptName && activeScripts.includes(scriptName) ? scriptName : activeScripts[0] || '';
+  const activeService = serviceKey === 'none'
+    ? null
+    : linkedServices.find(service => `${service.pmId}:${service.name}` === serviceKey) || null;
+  const request: VerificationRequest | null = activeRepo && activeScript
+    ? {
+      repositoryPath: activeRepo,
+      scriptName: activeScript,
+      ...(activeService ? { service: { pmId: activeService.pmId, name: activeService.name, namespace: activeService.namespace } } : {}),
+    }
+    : null;
+  return (
+    <section aria-labelledby="verification-heading" className="border-t border-border pt-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">REPOSITORY VERIFICATION</p>
+          <h2 id="verification-heading" className="text-base font-semibold">Run one repository test</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+            Runs one existing <span className="font-mono">package.json</span> script with a bounded runtime and records the checkout, worktree, service and time context. Dashboard-only; MCP can never run a test. A pass is local diagnostic context, not a CI verdict.
+          </p>
+        </div>
+      </header>
+      {candidates.length === 0 && (
+        <p className="mt-4 text-sm text-muted-foreground">No runnable Node.js test candidate was discovered in this project. Approve a root containing a package.json with scripts first.</p>
+      )}
+      {candidates.length > 0 && !confirming && (
+        <div className="mt-4 grid max-w-2xl gap-3">
+          <div className="grid gap-1">
+            <label htmlFor="verification-repo" className="text-xs font-medium text-muted-foreground">Repository</label>
+            <select id="verification-repo" className="rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs" value={activeRepo} disabled={loading} onChange={event => { setRepoPath(event.target.value); setScriptName(''); }}>
+              {candidates.map(candidate => <option key={candidate.repoPath} value={candidate.repoPath}>{candidate.repoPath}</option>)}
+            </select>
+          </div>
+          <div className="grid gap-1">
+            <label htmlFor="verification-script" className="text-xs font-medium text-muted-foreground">Test script</label>
+            <select id="verification-script" className="rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs" value={activeScript} disabled={loading} onChange={event => setScriptName(event.target.value)}>
+              {activeScripts.map(script => <option key={script} value={script}>{script}</option>)}
+            </select>
+          </div>
+          <div className="grid gap-1">
+            <label htmlFor="verification-service" className="text-xs font-medium text-muted-foreground">Linked service (optional)</label>
+            <select id="verification-service" className="rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs" value={serviceKey} disabled={loading} onChange={event => setServiceKey(event.target.value)}>
+              <option value="none">No service linked</option>
+              {linkedServices.map(service => (
+                <option key={`${service.pmId}:${service.name}`} value={`${service.pmId}:${service.name}`}>
+                  {service.name} · {service.status} · {service.cwd}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <Button type="button" variant="outline" size="sm" disabled={loading || !request} onClick={() => setConfirming(true)}>
+              {loading ? 'Running…' : 'Run repository test'}
+            </Button>
+          </div>
+        </div>
+      )}
+      {candidates.length > 0 && confirming && request && (
+        <div className="mt-4 max-w-2xl border-l-2 border-warning bg-warning-background px-4 py-3 text-sm" role="group" aria-label="Confirm repository test run">
+          <p className="font-semibold">Run this exact check?</p>
+          <p className="mt-1 break-all font-mono text-xs">npm run {request.scriptName} --silent</p>
+          <p className="mt-1 break-all text-xs text-muted-foreground">Working directory: {request.repositoryPath}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Linked service: {request.service ? `${request.service.name} (pmId ${request.service.pmId ?? 'unknown'})` : 'none'} · bounded runtime · output capped · cancellation kills the run.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" aria-label={`Confirm run ${request.scriptName}`} disabled={loading} onClick={() => { onVerify(request); setConfirming(false); }}>Confirm run</Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setConfirming(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">Verification could not run: {error}</p>
+      )}
+      {result && (
+        <div className="mt-4 max-w-3xl border-y border-border py-3" role="status" aria-label={`Verification ${result.outcome}`}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline">{result.outcome}</Badge>
+            <p className="font-mono text-xs text-muted-foreground">{result.scriptName}</p>
+            <p className="text-xs text-muted-foreground">{new Date(result.verifiedAt).toLocaleString()} · {result.durationMs}ms · exit {result.exitCode === null ? 'n/a' : result.exitCode}{result.timedOut ? ' · timed out' : ''}{result.truncated ? ' · output capped' : ''}</p>
+          </div>
+          <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{result.repositoryPath}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Revision: {result.git.revision ? `${result.git.revision.slice(0, 12)}…` : 'unknown'} · worktree {result.git.worktree}
+            {result.git.changedEntries !== null ? ` (${result.git.changedEntries} changed)` : ''} · service {result.service ? `${result.service.name} (${result.service.status})` : 'not linked'} · script sha {result.scriptHash.slice(0, 12)}…
+          </p>
+          <p className="mt-2 text-sm">{result.message}</p>
+          {result.output && (
+            <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-5">{result.output}</pre>
+          )}
+          <p className="mt-1 text-xs text-muted-foreground">Output is untrusted repository data; do not paste secrets from it.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ServicesPanel({ services, loading, error, onInspectServices, onServiceAction }: {
   services: ServiceInventory | null;
   loading: boolean;
   error: string | null;
   onInspectServices: () => void;
+  onServiceAction: (action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => void;
 }) {
   return (
     <section aria-labelledby="service-inspection-heading" className="border-t border-border pt-5">
@@ -365,7 +531,7 @@ function ServicesPanel({ services, loading, error, onInspectServices }: {
         <div>
           <p className="eyebrow">LOCAL SERVICES</p>
           <h2 id="service-inspection-heading" className="text-base font-semibold">Connected services</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Inspect local process metadata only. This does not start, stop, or health-check a service.</p>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Restart or stop only the exactly mapped service selected here. Dashboard lifecycle control is separate from directory approval; it still does not prove health, readiness or test success.</p>
         </div>
         <Button type="button" variant="outline" onClick={onInspectServices} disabled={loading}>
           {loading ? 'Inspecting…' : services ? 'Refresh service information' : 'Inspect services'}
@@ -389,6 +555,7 @@ function ServicesPanel({ services, loading, error, onInspectServices }: {
                   </div>
                   <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{service.exactRootPath || service.matchedRoots.join(', ')}</p>
                   <p className="mt-1 break-all text-xs text-muted-foreground">Working directory: {service.cwd}</p>
+                  <ServiceActionControls service={service} disabled={loading} onServiceAction={onServiceAction} />
                 </li>
               ))}
             </ul>
@@ -407,7 +574,7 @@ function ServicesPanel({ services, loading, error, onInspectServices }: {
             <p className="text-sm text-muted-foreground">No PM2 process working directory matches an approved project root.</p>
           )}
           <p className="text-xs text-muted-foreground">
-            {services.processCount} local {services.processCount === 1 ? 'process' : 'processes'} scanned · {services.matchedProcessCount} matched this project · {services.unmatchedProcessCount} outside the project scope. Read-only metadata; readiness and tests are separate.
+            {services.processCount} local {services.processCount === 1 ? 'process' : 'processes'} scanned · {services.matchedProcessCount} matched this project · {services.unmatchedProcessCount} outside the project scope. Metadata is read-only; lifecycle buttons are dashboard-only, and readiness/tests are separate.
           </p>
         </div>
       )}

@@ -8,6 +8,8 @@ import {
   type Inspection,
   type Proposal,
   type ServiceInventory,
+  type VerificationRequest,
+  type VerificationResult,
   type Workspace,
 } from './api';
 import type { ProjectRequest } from './validation';
@@ -28,6 +30,9 @@ export interface WorkbenchState {
   services: ServiceInventory | null;
   servicesError: string | null;
   servicesLoading: boolean;
+  verification: VerificationResult | null;
+  verificationError: string | null;
+  verificationLoading: boolean;
   refreshing: boolean;
   busyIds: ReadonlySet<string>;
   notice: Notice | null;
@@ -47,6 +52,9 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     services: null,
     servicesError: null,
     servicesLoading: false,
+    verification: null,
+    verificationError: null,
+    verificationLoading: false,
     refreshing: false,
     busyIds: new Set(),
     notice: null,
@@ -238,6 +246,50 @@ export function useWorkbench() {
     }
   }, [api, commit, handleSessionExpired]);
 
+  const runServiceAction = useCallback(async (workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    try {
+      const result = await api.serviceAction(workspaceId, action, target);
+      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
+      if (result.status !== 'completed') {
+        commit(current => ({ ...current, servicesError: result.message }));
+        setNotice({ kind: 'error', message: result.message });
+        return false;
+      }
+      setNotice({ kind: 'success', message: result.message });
+      await inspectServices(workspaceId);
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session) && selectedId.current === workspaceId) {
+        commit(current => ({ ...current, servicesError: errorMessage(error) }));
+        setNotice({ kind: 'error', message: errorMessage(error) });
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired, inspectServices, setNotice]);
+
+  const runVerification = useCallback(async (workspaceId: string, verification: VerificationRequest) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    commit(current => ({ ...current, verificationLoading: true, verificationError: null }));
+    try {
+      const result = await api.verify(workspaceId, verification);
+      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
+      commit(current => ({ ...current, verificationLoading: false, verification: result, verificationError: null }));
+      setNotice({ kind: result.outcome === 'passed' ? 'success' : 'error', message: result.message });
+      return result.outcome === 'passed';
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session) && selectedId.current === workspaceId) {
+        commit(current => ({ ...current, verificationLoading: false, verificationError: errorMessage(error) }));
+        setNotice({ kind: 'error', message: errorMessage(error) });
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired, setNotice]);
+
   const refreshSelected = useCallback(async () => {
     const selection = selectedId.current;
     if (!selection) return refresh();
@@ -269,7 +321,7 @@ export function useWorkbench() {
     inspectionSequence.current++;
     servicesSequence.current++;
     selectedId.current = null;
-    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false }));
+    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, verification: null, verificationError: null, verificationLoading: false }));
   }, [commit]);
 
   const mutate = useCallback(async <T,>(key: string, action: () => Promise<T>, successMessage: string) => {
@@ -406,6 +458,8 @@ export function useWorkbench() {
     disconnect,
     inspectProject,
     inspectServices,
+    runServiceAction,
+    runVerification,
     clearSelection,
     requestProject,
     pickProjectRoots,

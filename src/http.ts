@@ -8,6 +8,7 @@ import { WorkspaceService } from './workspace.js';
 import type { StaticAssets } from './static-assets.js';
 import { maxProjectRootLength, maxProjectRoots } from './project-roots.js';
 import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-picker.js';
+import { verifySocketTimeoutMs } from './verify.js';
 
 const proposalSchema = z.object({
   name: z.string().min(1).max(100),
@@ -16,6 +17,20 @@ const proposalSchema = z.object({
 const consentSchema = z.object({ consent: z.literal(true) }).strict();
 const disconnectSchema = z.object({}).strict();
 const projectRootPickerSchema = z.object({}).strict();
+const serviceActionSchema = z.object({
+  pmId: z.number().int().nonnegative().nullable(),
+  name: z.string().min(1).max(200),
+  namespace: z.string().max(80).nullable().optional(),
+}).strict();
+const verificationSchema = z.object({
+  repositoryPath: z.string().min(1).max(4096),
+  scriptName: z.string().min(1).max(80),
+  service: z.object({
+    pmId: z.number().int().nonnegative().nullable(),
+    name: z.string().min(1).max(200),
+    namespace: z.string().max(80).nullable().optional(),
+  }).strict().optional(),
+}).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;
 type ApiRole = 'dashboard' | 'mcp';
@@ -220,6 +235,39 @@ export function createApp(service: WorkspaceService, options: {
           const input = proposalSchema.parse(await body(request, proposalBodyLimit));
           json(response, 201, await service.propose(input.name, input.roots));
         } else {
+          const serviceActionMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/(restart|stop)$/.exec(url.pathname);
+          if (serviceActionMatch && request.method === 'POST') {
+            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service')) {
+              json(response, 403, { error: 'Service actions require the connected dashboard.' });
+              return;
+            }
+            const input = serviceActionSchema.parse(await body(request));
+            json(response, 200, await service.serviceAction(serviceActionMatch[1], serviceActionMatch[2] as 'restart' | 'stop', input));
+            return;
+          }
+          const verificationMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/verify$/.exec(url.pathname);
+          if (verificationMatch && request.method === 'POST') {
+            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'run-verification')) {
+              json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
+              return;
+            }
+            request.setTimeout(verifySocketTimeoutMs);
+            const input = verificationSchema.parse(await body(request));
+            if (request.aborted || response.destroyed) return;
+            const controller = new AbortController();
+            const abortIfDisconnected = () => {
+              if (!response.writableEnded) controller.abort();
+            };
+            request.once('aborted', abortIfDisconnected);
+            response.once('close', abortIfDisconnected);
+            try {
+              json(response, 200, await service.verify(verificationMatch[1], input, controller.signal));
+            } finally {
+              request.removeListener('aborted', abortIfDisconnected);
+              response.removeListener('close', abortIfDisconnected);
+            }
+            return;
+          }
           const match = new RegExp(`^/api/(proposals|workspaces)/(${uuidPath})(?:/(approve|reject|onboarding|revoke|services))?$`).exec(url.pathname);
           if (match?.[1] === 'proposals' && request.method === 'POST' && ['approve','reject'].includes(match[3])) {
             const input = await body(request);
@@ -264,6 +312,10 @@ export function createApp(service: WorkspaceService, options: {
         'Directory access request not found.', 'Project limit reached.', 'Workspace access not found.',
         'Too many pending requests. Review them first.',
         'Workspace is not approved. Request directory access in the dashboard first.',
+        'The selected folder is not inside an approved project root.',
+        'The selected folder is not a real directory.',
+        'This repository has no runnable test script with that name.',
+        'The linked service is not uniquely mapped to an approved root.',
         'Approved directory identity changed. Request access again.',
         'Use application/json.', 'Request body is too large.',
       ];

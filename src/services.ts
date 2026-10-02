@@ -32,6 +32,22 @@ export interface Pm2Process {
   startedAt: string | null;
 }
 
+export type ServiceAction = 'restart' | 'stop';
+
+export interface ServiceActionTarget {
+  pmId: number | null;
+  name: string;
+  namespace?: string | null;
+}
+
+export interface ServiceActionResult {
+  action: ServiceAction;
+  target: { pmId: number; name: string; namespace: string | null };
+  status: 'completed' | 'failed' | 'unknown';
+  serviceStatus: string | null;
+  message: string;
+}
+
 export type Pm2ListResult =
   | { available: true; processes: Pm2Process[] }
   | { available: false; error: 'missing' | 'failed' | 'timeout' | 'invalid' };
@@ -39,6 +55,7 @@ export type Pm2ListResult =
 export interface ServiceRecord {
   name: string;
   pmId: number | null;
+  namespace: string | null;
   status: string;
   cwd: string;
   restartCount: number;
@@ -165,11 +182,66 @@ export async function listPm2Processes(options: {
   });
 }
 
+export type Pm2ActionRunner = (action: ServiceAction, pmId: number, options?: { spawn?: typeof spawn; timeoutMs?: number }) => Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }>;
+
+export async function runPm2Action(action: ServiceAction, pmId: number, options: { spawn?: typeof spawn; timeoutMs?: number } = {}): Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }> {
+  let child;
+  try {
+    child = (options.spawn ?? spawn)('pm2', [action, String(pmId)], {
+      shell: false,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: safePm2Environment(),
+    });
+  } catch {
+    return { ok: false, error: 'missing' };
+  }
+  return new Promise(resolveResult => {
+    let settled = false;
+    let failure: 'timeout' | 'failed' | undefined;
+    let outputError = false;
+    let totalBytes = 0;
+    const finish = (value: { ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearTimeout(killDeadline);
+      resolveResult(value);
+    };
+    const fail = (status: 'timeout' | 'failed') => {
+      if (settled || failure) return;
+      failure = status;
+      child.kill('SIGTERM');
+      killDeadline = setTimeout(() => child.kill('SIGKILL'), 1000);
+    };
+    let killDeadline: NodeJS.Timeout | undefined;
+    const deadline = setTimeout(() => fail('timeout'), options.timeoutMs ?? pm2MetadataTimeoutMs);
+    const consume = (chunk: Buffer | string) => {
+      if (failure) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += bytes.length;
+      if (totalBytes > maximumPm2MetadataBytes) {
+        outputError = true;
+        fail('failed');
+      }
+    };
+    child.stdout?.on('data', consume);
+    child.stderr?.on('data', consume);
+    child.once('error', () => finish({ ok: false, error: 'missing' }));
+    child.once('close', code => {
+      if (settled) return;
+      if (failure) return finish({ ok: false, error: failure });
+      if (code !== 0 || outputError) return finish({ ok: false, error: 'failed' });
+      finish({ ok: true });
+    });
+  });
+}
+
 function cwdInside(root: string, cwd: string): boolean {
   return cwd === root || cwd.startsWith(`${root}${sep}`);
 }
 
-async function stableRootGroup(workspaceRoots: string[], cwd: string): Promise<{
+export async function stableRootGroup(workspaceRoots: string[], cwd: string): Promise<{
   matchedRoots: string[];
   exactRootPath: string | null;
 }> {
@@ -204,6 +276,7 @@ export async function inspectPm2Services(workspaceRoots: string[], processes: Pm
     const service: ServiceRecord = {
       name: process.name,
       pmId: process.pmId,
+      namespace: process.namespace,
       status: process.status,
       cwd: process.cwd,
       restartCount: process.restartCount,
@@ -245,4 +318,32 @@ export async function serviceInventory(workspaceRoots: string[], list = listPm2P
     services: mapped.services,
     ambiguousServices: mapped.ambiguousServices,
   };
+}
+
+export async function controlPm2Service(workspaceRoots: string[], action: ServiceAction, target: ServiceActionTarget, list = listPm2Processes, runner: Pm2ActionRunner = runPm2Action): Promise<ServiceActionResult> {
+  const fail = (message: string, status: ServiceActionResult['status']): ServiceActionResult => ({
+    action,
+    target: { pmId: target.pmId ?? -1, name: target.name, namespace: target.namespace ?? null },
+    status,
+    serviceStatus: null,
+    message,
+  });
+  if (typeof target.pmId !== 'number' || !Number.isInteger(target.pmId) || target.pmId < 0) return fail('PM2 process identity is unavailable.', 'failed');
+  if (!target.name.trim() || target.name.length > 200) return fail('Service name is invalid.', 'failed');
+  const before = await list();
+  if (!before.available) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? null }, status: 'failed', serviceStatus: null, message: 'PM2 service metadata could not be read before the action.' };
+  const mapped = await inspectPm2Services(workspaceRoots, before.processes);
+  const candidates = [...mapped.services, ...mapped.ambiguousServices];
+  const service = candidates.find(service => service.pmId === target.pmId && service.name === target.name);
+  // Ambiguous roots are not controllable until the human resolves the service owner.
+  if (!service || !service.exactRootPath || (target.namespace && service.pmId === null)) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? null }, status: 'failed', serviceStatus: null, message: 'That PM2 service is not uniquely mapped to an approved root.' };
+  if (target.namespace && service.namespace && service.namespace !== target.namespace) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace }, status: 'failed', serviceStatus: service.status, message: 'The service identity changed; review it again in the dashboard.' };
+  const result = await runner(action, target.pmId);
+  if (!result.ok) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'failed', serviceStatus: service.status, message: result.error === 'missing' ? 'PM2 is unavailable.' : 'The PM2 action did not complete.' };
+  const after = await list();
+  if (!after.available) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'unknown', serviceStatus: null, message: 'The PM2 action finished; fresh service metadata is unavailable.' };
+  const afterMapped = await inspectPm2Services(workspaceRoots, after.processes);
+  const matchedAfter = [...afterMapped.services, ...afterMapped.ambiguousServices].find(service => service.pmId === target.pmId && service.name === target.name);
+  if (matchedAfter?.exactRootPath !== service.exactRootPath) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'unknown', serviceStatus: matchedAfter?.status ?? null, message: 'The service could not be uniquely matched after the action.' };
+  return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'completed', serviceStatus: matchedAfter?.status ?? null, message: action === 'restart' ? 'PM2 accepted the restart. Process state is not readiness.' : 'PM2 accepted the stop request.' };
 }

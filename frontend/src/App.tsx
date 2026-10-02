@@ -314,6 +314,8 @@ export function App() {
               onSelectProject={selectProject}
               onRetryInspection={id => { void workbench.inspectProject(id, true); }}
               onInspectServices={id => { void workbench.inspectServices(id); }}
+              onServiceAction={(id, action, target) => { void workbench.runServiceAction(id, action, target); }}
+              onVerify={(id, verification) => { void workbench.runVerification(id, verification); }}
               onGoToAi={() => navigate('setup')}
             />
           )}
