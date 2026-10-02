@@ -88,3 +88,73 @@ Remove permissions from the dashboard entirely:
 2. Audit retention: how long to keep the run log, and where (private state only)?
 3. Backward compatibility: version the HTTP/MCP contract or hard cutover with
    a state migration?
+
+## Appendix: dashboard pivot brainstorm (open, not decided)
+
+Date: 2026-10-02. Founder brainstorm, recorded as options — no final decision.
+
+### Context
+
+- The real company problem: people cannot fully use AI. The founder's own
+  expert workflow is the product target: boot db + backend + frontend together,
+  steer the agent across layers (browser → frontend value change → db check),
+  let the agent plan against the live environment.
+- Juniors fail at: booting the environment, knowing what to tell the agent,
+  and telling whether it worked. The product must close that gap without
+  oversimplifying everything into plain MCP tools.
+- Constraint: user flows are heterogeneous — some arrive with a plan, some
+  plan by chatting with Claude Code. The dashboard cannot impose one flow.
+- The product stays visible (not invisible infra) and the user keeps their own
+  agent; our tools (env runners, agent-browser behind our MCP, verify) make
+  that agent's own workflows easier. No separate agent-browser install: our
+  MCP pins and runs it.
+
+### What was considered and where it landed
+
+1. **Pure observability (proof / drift / topology / forensics / health).**
+   Partially rejected: service-online status alone is Portainer territory;
+   worktree-dirty style drift panels were judged noise, not value.
+2. **Permission removal (accepted, see Decision above).** Dashboard stops being
+   a gate; execution-safety guards (symlink rejection, caps, timeouts, no
+   secrets) stay.
+3. **Session + timeline observability.** Since flows differ, the unit is the
+   agent session, not a "goal": session list, live tool-call view, per-session
+   timeline, environment + artifacts panel. Every MCP tool call emits a
+   structured event; the dashboard subscribes. No permission semantics.
+4. **Live monitoring objection.** Raw live view duplicates what Claude Code
+   already shows in transcript form — kept only as a candidate, not the core.
+5. **System graph (candidate).** Nodes = systems (page, api-route, table,
+   index — never individual components/files); edges = agent actions with
+   observed/inferred flags and verification status (proven / seen / failed /
+   unknown). Read vs write edges distinguished. Open doubt: at raw granularity
+   (e.g. 20 SQL queries) a node graph is noise — see layering below.
+6. **Feasibility ladder (discussed, stack-dependent).** Free: browser actions,
+   screenshots, network log (method+path+status), our own DB-tool queries, git
+   diff per run. Medium: static route scan (framework-specific), schema from
+   migrations. Deferred as fragile: component-to-code mapping via
+   instrumentation. Backend code changes are tracked exactly via git diff at
+   run boundaries; file→system mapping is heuristic and flagged inferred.
+7. **Diff is data, not UI (agreed).** Agents can change thousands of lines;
+   diffs already live in GitHub/Claude Code. The dashboard never renders diffs:
+   code change appears as an aggregate chip with link-out, used internally only
+   to guess affected systems.
+8. **Noise → 3-layer model (current lean).** Default screen shows verdicts, not
+   actions: (1) short auto-brief per run ("what changed, what is proven,
+   what was not looked at"); (2) aggregated system status on demand;
+   (3) raw evidence (queries, screenshots, outputs) only on drill-down.
+   Alternative on the table: skip live graphs entirely — publish the brief +
+   evidence at run end (in dashboard archive and/or chat/PR), since
+   coordinators review after the run, not mid-run.
+
+### Open questions
+
+1. Do we build any live view at all, or post-run brief + evidence only?
+2. Who writes the brief — heuristics over events, or a small summarizer over
+   the event log? Where does it run?
+3. First vertical slice: bundled browser-navigate + screenshot events,
+   or env-up + readiness first? (Company stack answer pending: monorepo vs
+   split repos, ORM, compose layout.)
+4. Aggregation rules that prevent node/edge explosion (cap nodes at system
+   count, collapse repeated calls into one weighted edge).
+5. Paying customer: solo-dev comfort vs team "agents must not break things" —
+   decides whether team coordination (leases, conflict view) matters.
