@@ -216,8 +216,8 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 
 | Order | Requested outcome | Status / next boundary |
 | --- | --- | --- |
-| Done | Pivot, M1–M3 workspace tools, learning-loop v1, declarative local tools, readiness UI, update-roots, checkpoint notes, budgets, fingerprints, POSIX scope. Evidence: git log. |
-| 11 | Stale-scope runs/ cleanup | Next round. Workspace removal leaves runs/ orphaned (disk + MCP startup scan cost). Remove scope dir on workspace removal + re-verify startup scan bounds. |
+| Done | Pivot, M1–M3 workspace tools, learning-loop v1, declarative local tools, readiness UI, update-roots, checkpoint notes, budgets, fingerprints, stale-scope cleanup, POSIX scope. Evidence: git log. |
+| 11 | Subagent package: note history + workstream_context bundle | Implementing. (a) Checkpoint notes append with actor+timestamp (bounded 10, latest = current behavior) so subagent completions never clobber the coordinator checkpoint. (b) workstream_context read tool: checkpoint + revision + recent runs + related drafts in one call for narrowly-scoped subagents. Additive only; single-agent flow unchanged. |
 | 12 | Token-cost worry | Deferred by user: no action until wire measurement shows manifest cost actually binding. Format budgets + byte-delta notes stay, no count cap, no dynamic discovery. |
 | 13 | Evidence pinning + correlation IDs (checkpoint kanıt zinciri) | Implementing. Checkpoint notes carry bounded `evidence: [runIds]`; pinned runs exempt from ring eviction (capped); note→run→draft→timeline linked by IDs, content never duplicated. Our-system evidence is pinnable, outside evidence described in-note only. Secret-free (IDs only). |
 
