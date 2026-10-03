@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRight, Check, CircleDashed, CircleDot, FolderKanban, Plus } from 'lucide-react';
+import { ArrowRight, Check, CircleDashed, FolderKanban, Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -11,6 +11,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
+import { ProjectStatusBlock } from '@/features/projects/ProjectStatusBlock';
 import { projectRootLabel } from '@/features/projects/root-label';
 import { RecordsView } from '@/features/records/RecordsView';
 import type { ActivityEntry, Capability, Inspection, Learnings, Lease, ProjectRootPickerResult, RunListEntry, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
@@ -60,6 +61,7 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
 
       {selected ? (
         <ProjectInventory
+          connected={state.phase === 'connected'}
           inspection={state.inspection}
           loading={state.inspectionLoading}
           error={state.inspectionError}
@@ -194,7 +196,8 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, workstreams, workstreamsLoading, workstreamsError, leases, activity, learnings, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi, onLoadRecords }: {
+function ProjectInventory({ connected, inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, workstreams, workstreamsLoading, workstreamsError, leases, activity, learnings, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi, onLoadRecords }: {
+  connected: boolean;
   inspection: Inspection | null;
   loading: boolean;
   error: string | null;
@@ -288,6 +291,14 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
         </div>
       ) : (
       <div role="tabpanel" id="project-panel" aria-labelledby="project-tab" className="space-y-7">
+      <ProjectStatusBlock
+        connected={connected}
+        inspection={inspection}
+        inspectionLoading={loading}
+        services={services}
+        servicesLoading={servicesLoading}
+        verification={verification}
+      />
       <section aria-labelledby="project-inventory-heading" className="min-w-0">
         <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
           <div>
@@ -381,13 +392,11 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
                 'aria-label': `Scrollable repository inventory for ${root.path}`,
                 'aria-describedby': `${headingId}-scroll-hint`,
                 className: 'hidden md:block',
-              }} className="min-w-[720px] table-fixed">
+              }} className="min-w-[480px] table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead scope="col" className="w-[34%]">Repository / component</TableHead>
-                    <TableHead scope="col" className="w-[24%]">Stack</TableHead>
-                    <TableHead scope="col" className="w-[21%]">Application runner</TableHead>
-                    <TableHead scope="col" className="w-[21%]">Readiness</TableHead>
+                    <TableHead scope="col" className="w-[55%]">Repository / component</TableHead>
+                    <TableHead scope="col" className="w-[45%]">Stack</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -395,8 +404,6 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
                     <TableRow key={repository.path}>
                       <TableCell className="whitespace-normal"><RepositorySource repository={repository} /></TableCell>
                       <TableCell className="whitespace-normal text-sm">{repository.stack.join(' + ') || 'Not detected'}</TableCell>
-                      <TableCell><StatusLabel icon="connected" label="Not connected" /></TableCell>
-                      <TableCell><StatusLabel icon="readiness" label="Not checked" /></TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -407,8 +414,6 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
                     <RepositorySource repository={repository} />
                     <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4">
                       <StateText label="Stack" value={repository.stack.join(' + ') || 'Not detected'} />
-                      <StateText label="Application runner" value="Not connected" />
-                      <StateText label="Readiness" value="Not checked" />
                     </dl>
                   </article>
                 ))}
@@ -794,11 +799,6 @@ function ServicesPanel({ services, loading, error, onInspectServices, onServiceA
       )}
     </section>
   );
-}
-
-function StatusLabel({ icon, label }: { icon: 'connected' | 'readiness'; label: string }) {
-  const Icon = icon === 'connected' ? CircleDot : CircleDashed;
-  return <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"><Icon aria-hidden="true" className="size-3.5 shrink-0" />{label}</span>;
 }
 
 function CapabilityList({ capabilities }: { capabilities: Capability[] }) {

@@ -29,7 +29,7 @@ export function ConnectionView({ state, onConnect }: {
           <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">
             By selecting Connect this browser, you allow this tab to view registered project metadata, register and remove projects, and run workspace operations. It can also show the local MCP client configuration.
           </p>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Connecting registers nothing by itself. Registering a project reads bounded metadata immediately; execution is authorized by your assistant client, and the dashboard only records what ran. This preview does not read secrets, install tools, or change project files.</p>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Connecting registers nothing by itself. Registering a project reads bounded metadata files only; execution is authorized by your assistant client, and the dashboard only records what ran. Registration does not install tools or change project files. Run and log output shown later is untrusted repository data and may contain app-printed text.</p>
           <Button type="button" className="mt-6" disabled={connecting} aria-busy={connecting} onClick={onConnect}>
             {connecting ? 'Connecting…' : 'Connect this browser'}
             {!connecting && <ArrowRight aria-hidden="true" data-icon="inline-end" />}
