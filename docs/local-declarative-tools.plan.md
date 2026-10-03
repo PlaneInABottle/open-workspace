@@ -225,3 +225,14 @@ Gate walk-through: envelope strict OK; name/description OK (no fences/links/URLs
 - Risk: MCP context bloat per tool → mitigation: server-prefixed desc ≤200, ≤5 keys, no examples/describe, no instructions change, ≤20 tools; rollback: lower active cap by policy.
 - Risk: agent spams `pending/` with junk → mitigation: 20-file cap, gate rejects fast, files are visible in status; no auto-promotion path except passing the gate.
 - Rollback (global): remove `local-tools/` + revert registration block and the two routes; `stateSchema` untouched so no state repair; restart restores pre-feature behavior.
+
+## Appendix: listTools byte-budget note (M2)
+
+Measured 2026-10-03 over a real stdio MCP session against a temp service
+(`measure-listtools-budget.ts`, one-off, removed after the run): `listTools`
+JSON is 12,497 bytes with no declared tool and 13,169 bytes with `db_tables`
+active — a **672-byte delta** for one tool (671-byte entry: server prefix +
+description + 2-key strict schema, plus the array comma). Base MCP
+instructions are untouched. At the 20-tool cap the worst case adds ~13.4KiB
+to a ~12.5KiB baseline — no truncation concern at this scale; if tool count
+ever grows, lower the active cap by policy instead of changing the transport.

@@ -17,6 +17,7 @@ import { psqlArgs, runDatastoreQuery } from '../src/datastore.js';
 import {
   gateDeclaration,
   localToolCallMessages,
+  localToolDescription,
   localToolGateMessages,
   slotValueSchemas,
 } from '../src/local-tools.js';
@@ -804,4 +805,81 @@ test('dashboard intent path: call-local-tool requires the connected dashboard in
   });
   assert.equal(ok.status, 200);
   assert.equal(((await ok.json()) as { rowCount: number }).rowCount, 2);
+});
+
+// --- M2 hardening: extended gate refusals + description confinement ---
+
+test('M2: extended gate refusals cover enum -c, string kind, long/link description, TCP-ish statement', async t => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-lt-m2gate-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const gate = (decl: unknown) => gateDeclaration(decl, {
+    homeDir: home, acceptedCount: 0, searchPath: '', probe: async () => true,
+  });
+  const cases: Array<{ title: string; decl: Record<string, unknown>; message: string }> = [
+    {
+      title: 'enum -c value',
+      decl: dbTablesDecl({ slots: { database: { kind: 'enum', values: ['all', '-c'] }, role: { kind: 'identifier' } } }),
+      message: localToolGateMessages.invalid,
+    },
+    {
+      title: 'free-text string kind',
+      decl: dbTablesDecl({ slots: { database: { kind: 'string' }, role: { kind: 'identifier' } } }),
+      message: localToolGateMessages.invalid,
+    },
+    {
+      title: 'oversized description',
+      decl: dbTablesDecl({ description: `tables ${'x'.repeat(200)}` }),
+      message: localToolGateMessages.badDescription,
+    },
+    {
+      title: 'markdown-link description without URL',
+      decl: dbTablesDecl({ description: 'List tables, see [guide](tables) for detail' }),
+      message: localToolGateMessages.badDescription,
+    },
+    {
+      title: 'TCP-ish dblink statement',
+      decl: dbTablesDecl({ statement: "SELECT dblink('host=evil dbname=x', 'SELECT 1')" }),
+      message: localToolGateMessages.badShape,
+    },
+  ];
+  assert.equal(cases.length, 5);
+  for (const { title, decl, message } of cases) {
+    await assert.rejects(
+      gate(decl),
+      (error: unknown) => error instanceof Error && error.message === message,
+      title,
+    );
+  }
+});
+
+test('M2: hostile-but-gate-clean description stays in the description field only', async t => {
+  const f = await toolService(t);
+  const binDir = await stubPsqllDir(t);
+  withPath(t, `${binDir}${delimiter}${process.env.PATH ?? ''}`);
+  const { run, calls } = toolRunner({});
+  const service = new WorkspaceService(f.store, undefined, undefined, undefined, undefined, run);
+  const workspace = (await f.store.read()).workspaces[0];
+  const statement = "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1";
+  // Gate-clean (no fences, links, URLs, prompt patterns, or controls) yet
+  // shaped like SQL/argv noise: confinement, not pattern refusal, is the
+  // control under test.
+  const description = 'Lists tables; SELECT 1 -- shows -h usage';
+  await writePending(f.store.directory, 'db_tables.json', dbTablesDecl({ description, statement }));
+  const status = await service.localToolStatus();
+  assert.equal(status.find(entry => entry.name === 'db_tables')?.status, 'active');
+  assert.equal(
+    localToolDescription('db_tables', description),
+    `Local tool db_tables: ${description}`,
+    'presentation is a fixed prefix plus the raw description, never an instruction rewrite',
+  );
+  const result = await service.localToolCall(workspace.id,
+    { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } });
+  assert.equal(result.rowCount, 2);
+  const queries = calls.filter(call => call.args[0] !== '--version' && !(call.input ?? '').includes('usesuper'));
+  assert.ok(queries.length > 0, 'the main query spawn is captured alongside the probes');
+  for (const call of queries) {
+    assert.ok(!call.args.join(' ').includes(description), 'no description bytes reach argv');
+    assert.ok((call.input ?? '').includes(statement), 'spawned SQL is exactly the fixed statement');
+    assert.ok(!(call.input ?? '').includes(description), 'no description bytes reach SQL stdin');
+  }
 });
