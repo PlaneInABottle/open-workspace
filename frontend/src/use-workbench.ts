@@ -8,7 +8,9 @@ import {
   type Inspection,
   type Proposal,
   type ServiceInventory,
+  type ActivityEntry,
   type Lease,
+  type OperatorScope,
   type VerificationRequest,
   type VerificationResult,
   type Workspace,
@@ -40,6 +42,9 @@ export interface WorkbenchState {
   workstreamsLoading: boolean;
   leases: Lease[];
   leasesError: string | null;
+  operatorScope: OperatorScope | null;
+  activity: ActivityEntry[];
+  operatorLoading: boolean;
   refreshing: boolean;
   busyIds: ReadonlySet<string>;
   notice: Notice | null;
@@ -67,6 +72,9 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     workstreamsLoading: false,
     leases: [],
     leasesError: null,
+    operatorScope: null,
+    activity: [],
+    operatorLoading: false,
     refreshing: false,
     busyIds: new Set(),
     notice: null,
@@ -412,6 +420,52 @@ export function useWorkbench() {
     }
   }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
 
+  const loadOperator = useCallback(async () => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    commit(current => ({ ...current, operatorLoading: true }));
+    try {
+      const [scope, trail] = await Promise.all([api.operatorScope(), api.activity()]);
+      if (!api.isCurrent(session)) return false;
+      commit(current => ({ ...current, operatorLoading: false, operatorScope: scope, activity: trail }));
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session)) {
+        commit(current => ({ ...current, operatorLoading: false }));
+        setNotice({ kind: 'error', message: errorMessage(error) });
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired, setNotice]);
+
+  const saveOperatorScope = useCallback(async (workspaceIds: string[]) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    commit(current => ({ ...current, operatorLoading: true }));
+    try {
+      const scope = await api.setOperatorScope(workspaceIds);
+      if (!api.isCurrent(session)) return false;
+      const trail = await api.activity().catch(() => null);
+      if (!api.isCurrent(session)) return false;
+      commit(current => ({ ...current, operatorLoading: false, operatorScope: scope, activity: trail ?? current.activity }));
+      setNotice({
+        kind: 'success',
+        message: scope
+          ? `Your assistant can now operate services, run tests and hold leases in ${scope.workspaceIds.length} workspace${scope.workspaceIds.length === 1 ? '' : 's'}. Revoke anytime from this screen.`
+          : 'Operator access revoked. Your assistant is back to read-only.',
+      });
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session)) {
+        commit(current => ({ ...current, operatorLoading: false }));
+        setNotice({ kind: 'error', message: errorMessage(error) });
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired, setNotice]);
+
   const refreshSelected = useCallback(async () => {
     const selection = selectedId.current;
     if (!selection) return refresh();
@@ -586,6 +640,8 @@ export function useWorkbench() {
     setWorkstreamStatus,
     acquireLease,
     releaseLease,
+    loadOperator,
+    saveOperatorScope,
     clearSelection,
     requestProject,
     pickProjectRoots,

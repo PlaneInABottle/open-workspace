@@ -726,6 +726,44 @@ describe('project-first workbench', () => {
     await waitFor(() => expect(within(workstreamsRegion).queryByText(/port:3000 · held/)).not.toBeInTheDocument());
   });
 
+  it('grants and revokes operator access from the AI setup screen', async () => {
+    const approved = workspace('55555555-5555-4555-8555-555555555555', 'Operator fixture', '/tmp/operator-fixture');
+    let scope: { workspaceIds: string[] } | null = null;
+    let saveCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
+      if (path === '/api/operator' && init.method === 'GET') return json(scope);
+      if (path === '/api/activity' && init.method === 'GET') {
+        return json(scope ? [{ at: '2026-10-02T00:00:00.000Z', actor: 'dashboard', operation: 'delegate-operator', workspaceId: null, detail: '1 workspaces' }] : []);
+      }
+      if (path === '/api/operator/delegate' && init.method === 'POST') {
+        saveCalls++;
+        const input = JSON.parse(String(init.body)) as { workspaceIds: string[] };
+        scope = input.workspaceIds.length > 0 ? { workspaceIds: input.workspaceIds } : null;
+        return json(scope);
+      }
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
+
+    expect(await screen.findByText('Let your assistant operate')).toBeInTheDocument();
+    const setupRegion = screen.getByRole('region', { name: 'Let your assistant operate' });
+    fireEvent.click(within(setupRegion).getByRole('checkbox', { name: /Operator fixture/ }));
+    fireEvent.click(within(setupRegion).getByRole('button', { name: 'Grant operator access' }));
+    expect(await within(setupRegion).findByText('operator')).toBeInTheDocument();
+    expect(saveCalls).toBe(1);
+    expect(await within(setupRegion).findByText('delegate-operator')).toBeInTheDocument();
+
+    fireEvent.click(within(setupRegion).getByRole('checkbox', { name: /Operator fixture/ }));
+    fireEvent.click(within(setupRegion).getByRole('button', { name: 'Update operator access' }));
+    await waitFor(() => expect(saveCalls).toBe(2));
+    expect(await within(setupRegion).findByRole('button', { name: 'Grant operator access' })).toBeInTheDocument();
+  });
+
   it('does not restore revoked access or selected inventory from a pre-revocation refresh', async () => {
     const approved = workspace('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Revocation fixture', '/tmp/revocation-fixture');
     const stale = deferred<Response>();

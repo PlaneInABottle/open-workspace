@@ -137,6 +137,19 @@ export interface Lease {
   updatedAt: string;
 }
 
+export interface OperatorScope {
+  workspaceIds: string[];
+  updatedAt: string;
+}
+
+export interface ActivityEntry {
+  at: string;
+  actor: 'dashboard' | 'mcp-operator';
+  operation: string;
+  workspaceId: string | null;
+  detail: string;
+}
+
 export type ProjectRootPickerResult =
   | { status: 'selected'; roots: string[] }
   | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' };
@@ -306,6 +319,11 @@ export class ApiClient {
   releaseLease(resource: string, workstreamId: string) {
     return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId }, { intent: 'release-lease' });
   }
+  operatorScope() { return this.request<OperatorScope | null>('/api/operator'); }
+  setOperatorScope(workspaceIds: string[]) {
+    return this.request<OperatorScope | null>('/api/operator/delegate', { workspaceIds }, { intent: 'delegate-operator' });
+  }
+  activity() { return this.request<ActivityEntry[]>('/api/activity'); }
 
   private async revokeDashboardSession(token: string): Promise<void> {
     try {

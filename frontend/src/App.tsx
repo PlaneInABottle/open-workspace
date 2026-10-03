@@ -216,6 +216,11 @@ export function App() {
     wasConnected.current = state.phase === 'connected';
   }, [replace, state.phase]);
 
+  const loadOperator = workbench.loadOperator;
+  useEffect(() => {
+    if (view === 'setup' && state.phase === 'connected') void loadOperator();
+  }, [view, state.phase, loadOperator]);
+
   function selectProject(id: string) {
     navigate('overview');
     void workbench.inspectProject(id);
@@ -323,7 +328,7 @@ export function App() {
               onGoToAi={() => navigate('setup')}
             />
           )}
-          {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} />}
+          {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} onSaveOperator={ids => { void workbench.saveOperatorScope(ids); }} />}
           {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRevoke={id => void workbench.revoke(id)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
         </div>
         <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · human approval required for each project’s selected roots</footer>

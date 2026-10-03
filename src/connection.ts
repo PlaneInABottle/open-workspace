@@ -18,13 +18,13 @@ export async function connection(directory = stateDirectory()) {
   return value;
 }
 
-export async function serviceRequest(path: string, data?: unknown) {
+export async function serviceRequest(path: string, data?: unknown, timeoutMs = 10_000) {
   const local = await connection();
   const response = await fetch(`${local.origin}${path}`, {
     method: data === undefined ? 'GET' : 'POST',
     headers: { Authorization: `Bearer ${local.mcpToken}`, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-    signal: AbortSignal.timeout(10_000), redirect: 'error',
+    signal: AbortSignal.timeout(timeoutMs), redirect: 'error',
   });
   const result = await response.json() as { error?: string };
   if (!response.ok) throw new Error(result.error || 'Local operation failed.');

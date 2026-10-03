@@ -6,6 +6,7 @@ import { controlPm2Service, listPm2Processes, runPm2Action, serviceInventory, ty
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
 import { createWorkstream, setWorkstreamStatus, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { acquireLease, releaseLease, type Lease } from './leases.js';
+import { operatorCovers, pruneOperatorScope, recordActivity, setOperatorScope, type ActivityEntry, type OperatorScope } from './operator.js';
 
 export interface RootInspection {
   path: string;
@@ -133,12 +134,34 @@ export class WorkspaceService {
     return releaseLease(this.store, input);
   }
 
+  async operatorScope(): Promise<OperatorScope | null> {
+    return (await this.store.read()).operatorScope;
+  }
+
+  async setOperatorScope(workspaceIds: string[]): Promise<OperatorScope | null> {
+    return setOperatorScope(this.store, workspaceIds);
+  }
+
+  async operatorCovers(workspaceId: string): Promise<boolean> {
+    return operatorCovers((await this.store.read()).operatorScope, workspaceId);
+  }
+
+  async recordActivity(entry: { actor: 'dashboard' | 'mcp-operator'; operation: string; workspaceId: string | null; detail: string }): Promise<void> {
+    await recordActivity(this.store, entry);
+  }
+
+  async recentActivity(): Promise<ActivityEntry[]> {
+    return (await this.store.read()).activity;
+  }
+
   async revoke(id: string) {
-    return this.store.update(state => {
+    const result = await this.store.update(state => {
       if (!state.workspaces.some(workspace => workspace.id === id)) throw new Error('Workspace access not found.');
       state.workspaces = state.workspaces.filter(workspace => workspace.id !== id);
       return { revoked: true };
     });
+    await pruneOperatorScope(this.store, id);
+    return result;
   }
 
   async onboarding(id: string) {

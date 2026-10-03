@@ -43,9 +43,12 @@ const leaseSchema = z.object({
   resource: z.string().min(1).max(80),
   workstreamId: z.string().uuid(),
 }).strict();
+const delegateSchema = z.object({
+  workspaceIds: z.array(z.string().uuid()).max(50),
+}).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;
-type ApiRole = 'dashboard' | 'mcp';
+type ApiRole = 'dashboard' | 'mcp' | 'operator';
 
 function hasAuthorizationHeader(request: IncomingMessage) {
   for (let index = 0; index < request.rawHeaders.length; index += 2) {
@@ -67,21 +70,44 @@ function sameToken(supplied: string, expected: string) {
   return suppliedBytes.length === expectedBytes.length && timingSafeEqual(suppliedBytes, expectedBytes);
 }
 
-function apiRole(request: IncomingMessage, mcpToken: string, sessions: DashboardSessions): ApiRole | undefined {
+async function apiRole(request: IncomingMessage, mcpToken: string, sessions: DashboardSessions, service: WorkspaceService): Promise<ApiRole | undefined> {
   const token = bearerToken(request);
   if (!token) return undefined;
-  if (sameToken(token, mcpToken)) return 'mcp';
+  if (sameToken(token, mcpToken)) {
+    // One MCP credential; delegation upgrades its role. No second token, no client reconfig.
+    // An unreadable scope fails closed to observer: no operator powers without readable proof.
+    try {
+      return (await service.operatorScope()) ? 'operator' : 'mcp';
+    } catch {
+      return 'mcp';
+    }
+  }
   return sessions.isActive(token) ? 'dashboard' : undefined;
 }
 
 function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   if (role === 'dashboard') return true;
-  return (method === 'GET' && pathname === '/api/overview')
+  const reads = (method === 'GET' && pathname === '/api/overview')
     || (method === 'POST' && pathname === '/api/proposals')
     || (method === 'GET' && new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname))
     || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname))
     || (method === 'GET' && new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))
-    || (method === 'GET' && pathname === '/api/leases');
+    || (method === 'GET' && pathname === '/api/leases')
+    || (method === 'GET' && pathname === '/api/operator')
+    || (method === 'GET' && pathname === '/api/activity');
+  if (role === 'mcp') return reads;
+  // Operator mutations are bearer-authorized (no browser CSRF surface here); scope is checked per workspace.
+  return reads
+    || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop)$`).test(pathname))
+    || (method === 'POST' && new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname))
+    || (method === 'POST' && /^\/api\/leases\/(acquire|release)$/.test(pathname));
+}
+
+/** Dashboard passes; operator must cover the workspace. MCP never reaches here. */
+async function workspaceScopeError(service: WorkspaceService, role: ApiRole, workspaceId: string): Promise<string | undefined> {
+  if (role === 'dashboard') return undefined;
+  if (role === 'operator' && await service.operatorCovers(workspaceId)) return undefined;
+  return 'Operator access was not granted for this workspace. Ask the user to grant it in the dashboard.';
 }
 
 function sameCanonicalDashboardRequest(request: IncomingMessage, origin: string) {
@@ -185,10 +211,10 @@ export function createApp(service: WorkspaceService, options: {
           json(response, 403, { error: 'Use the local browser to disconnect this dashboard.' });
           return;
         }
-        const role = apiRole(request, mcpToken, sessions);
+        const role = await apiRole(request, mcpToken, sessions, service);
         const token = bearerToken(request);
         if (role !== 'dashboard' || !token) {
-          json(response, role === 'mcp' ? 403 : 401, { error: 'This browser session is no longer active.' });
+          json(response, role === undefined ? 401 : 403, { error: 'This browser session is no longer active.' });
           return;
         }
         disconnectSchema.parse(await body(request));
@@ -199,15 +225,28 @@ export function createApp(service: WorkspaceService, options: {
       }
 
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-        const role = apiRole(request, mcpToken, sessions);
+        const role = await apiRole(request, mcpToken, sessions, service);
         if (!role) {
           json(response, 401, { error: 'Connect this browser or use the local MCP client.' });
           return;
         }
         if (!mcpMayCall(role, request.method || 'GET', url.pathname)) {
-          json(response, 403, { error: 'The local MCP client is not authorized for this dashboard operation.' });
+          const needsDelegation = role !== 'dashboard' && request.method === 'POST' && (
+            new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop)$`).test(url.pathname)
+            || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(url.pathname)
+            || /^\/api\/leases\/(acquire|release)$/.test(url.pathname));
+          json(response, 403, { error: needsDelegation
+            ? 'Operator access was not granted for this workspace. Ask the user to grant it in the dashboard.'
+            : 'The local MCP client is not authorized for this dashboard operation.' });
           return;
         }
+        const actor = role === 'dashboard' ? 'dashboard' : 'mcp-operator';
+        // Activity is committed before the response so teardown/tests never outrun the write.
+        // A logging failure is loud in server logs but never fails the operation that succeeded.
+        const record = (operation: string, workspaceId: string | null, detail: string) =>
+          service.recordActivity({ actor, operation, workspaceId, detail }).catch((error: unknown) => {
+            console.error('Activity record failed:', error instanceof Error ? error.message : error);
+          });
         if (url.pathname === '/api/overview' && request.method === 'GET') {
           json(response, 200, await service.overview());
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
@@ -251,18 +290,32 @@ export function createApp(service: WorkspaceService, options: {
         } else {
           const serviceActionMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/(restart|stop)$/.exec(url.pathname);
           if (serviceActionMatch && request.method === 'POST') {
-            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service')) {
+            if (role === 'mcp'
+              || (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service')))) {
               json(response, 403, { error: 'Service actions require the connected dashboard.' });
               return;
             }
+            const scopeError = await workspaceScopeError(service, role, serviceActionMatch[1]);
+            if (scopeError) {
+              json(response, 403, { error: scopeError });
+              return;
+            }
             const input = serviceActionSchema.parse(await body(request));
-            json(response, 200, await service.serviceAction(serviceActionMatch[1], serviceActionMatch[2] as 'restart' | 'stop', input));
+            const result = await service.serviceAction(serviceActionMatch[1], serviceActionMatch[2] as 'restart' | 'stop', input);
+            await record(`service-${serviceActionMatch[2]}`, serviceActionMatch[1], `${input.name} → ${result.status}`);
+            json(response, 200, result);
             return;
           }
           const verificationMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/verify$/.exec(url.pathname);
           if (verificationMatch && request.method === 'POST') {
-            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'run-verification')) {
+            if (role === 'mcp'
+              || (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'run-verification')))) {
               json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
+              return;
+            }
+            const scopeError = await workspaceScopeError(service, role, verificationMatch[1]);
+            if (scopeError) {
+              json(response, 403, { error: scopeError });
               return;
             }
             request.setTimeout(verifySocketTimeoutMs);
@@ -275,7 +328,9 @@ export function createApp(service: WorkspaceService, options: {
             request.once('aborted', abortIfDisconnected);
             response.once('close', abortIfDisconnected);
             try {
-              json(response, 200, await service.verify(verificationMatch[1], input, controller.signal));
+              const result = await service.verify(verificationMatch[1], input, controller.signal);
+              await record('verify', verificationMatch[1], `${input.scriptName} → ${result.outcome}`);
+              if (!controller.signal.aborted && !response.destroyed) json(response, 200, result);
             } finally {
               request.removeListener('aborted', abortIfDisconnected);
               response.removeListener('close', abortIfDisconnected);
@@ -293,7 +348,9 @@ export function createApp(service: WorkspaceService, options: {
               return;
             }
             const input = workstreamSchema.parse(await body(request));
-            json(response, 201, await service.createWorkstream(input));
+            const created = await service.createWorkstream(input);
+            await record('workstream-create', created.workspaceId, created.name.slice(0, 100));
+            json(response, 201, created);
             return;
           }
           const workstreamStatusMatch = new RegExp(`^/api/workstreams/(${uuidPath})/status$`).exec(url.pathname);
@@ -303,7 +360,9 @@ export function createApp(service: WorkspaceService, options: {
               return;
             }
             const input = workstreamStatusSchema.parse(await body(request));
-            json(response, 200, await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status));
+            const updated = await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status);
+            await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
+            json(response, 200, updated);
             return;
           }
           if (url.pathname === '/api/leases' && request.method === 'GET') {
@@ -312,12 +371,41 @@ export function createApp(service: WorkspaceService, options: {
           }
           const leaseMatch = /^\/api\/leases\/(acquire|release)$/.exec(url.pathname);
           if (leaseMatch && request.method === 'POST') {
-            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, leaseMatch[1] === 'acquire' ? 'acquire-lease' : 'release-lease')) {
+            const intent = leaseMatch[1] === 'acquire' ? 'acquire-lease' : 'release-lease';
+            if (role === 'mcp'
+              || (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, intent)))) {
               json(response, 403, { error: 'Lease changes require the connected dashboard.' });
               return;
             }
             const input = leaseSchema.parse(await body(request));
-            json(response, 200, leaseMatch[1] === 'acquire' ? await service.acquireLease(input) : await service.releaseLease(input));
+            const workstream = await service.workstream(input.workstreamId);
+            const scopeError = await workspaceScopeError(service, role, workstream.workspaceId);
+            if (scopeError) {
+              json(response, 403, { error: scopeError });
+              return;
+            }
+            const result = leaseMatch[1] === 'acquire' ? await service.acquireLease(input) : await service.releaseLease(input);
+            await record(`lease-${leaseMatch[1]}`, workstream.workspaceId, `${input.resource} → ${input.workstreamId.slice(0, 8)}`);
+            json(response, 200, result);
+            return;
+          }
+          if (url.pathname === '/api/operator' && request.method === 'GET') {
+            json(response, 200, await service.operatorScope());
+            return;
+          }
+          if (url.pathname === '/api/operator/delegate' && request.method === 'POST') {
+            if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'delegate-operator')) {
+              json(response, 403, { error: 'Operator delegation requires the connected dashboard.' });
+              return;
+            }
+            const input = delegateSchema.parse(await body(request));
+            const scope = await service.setOperatorScope(input.workspaceIds);
+            await record('delegate-operator', null, scope ? `${scope.workspaceIds.length} workspaces` : 'revoked');
+            json(response, 200, scope);
+            return;
+          }
+          if (url.pathname === '/api/activity' && request.method === 'GET') {
+            json(response, 200, await service.recentActivity());
             return;
           }
           const match = new RegExp(`^/api/(proposals|workspaces)/(${uuidPath})(?:/(approve|reject|onboarding|revoke|services))?$`).exec(url.pathname);
@@ -325,11 +413,13 @@ export function createApp(service: WorkspaceService, options: {
             const input = await body(request);
             z.object({}).strict().parse(input);
             json(response, 200, match[3] === 'approve' ? await service.approve(match[2]) : await service.reject(match[2]));
+            await record(match[3] === 'approve' ? 'approve' : 'reject', null, match[2].slice(0, 8));
           } else if (match?.[1] === 'workspaces' && request.method === 'GET' && (!match[3] || match[3] === 'onboarding')) {
             json(response, 200, match[3] ? await service.onboarding(match[2]) : await service.inspect(match[2]));
           } else if (match?.[1] === 'workspaces' && request.method === 'POST' && match[3] === 'revoke') {
             z.object({}).strict().parse(await body(request));
             json(response, 200, await service.revoke(match[2]));
+            await record('revoke', match[2], match[2].slice(0, 8));
           } else if (match?.[1] === 'workspaces' && request.method === 'POST' && match[3] === 'services') {
             z.object({}).strict().parse(await body(request));
             json(response, 200, await service.services(match[2]));
@@ -379,6 +469,9 @@ export function createApp(service: WorkspaceService, options: {
         'Only the holding workstream can release a lease.',
         'A finished workstream cannot hold leases.',
         'Lease limit reached.',
+        'Operator access covers approved workspaces only.',
+        'Operator access covers at most fifty workspaces.',
+        'Operator access was not granted for this workspace. Ask the user to grant it in the dashboard.',
         'Approved directory identity changed. Request access again.',
         'Use application/json.', 'Request body is too large.',
       ];

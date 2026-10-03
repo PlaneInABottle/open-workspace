@@ -697,6 +697,101 @@ test('dashboard leases serialize shared resources; MCP can only list', async t =
   assert.deepEqual(await released.json(), { released: true, promoted: two.id });
 });
 
+test('delegated MCP credential operates only within granted workspaces', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-operator-http-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const first = join(root, 'first');
+  const second = join(root, 'second');
+  await mkdir(first, { recursive: true });
+  await mkdir(second, { recursive: true });
+  await writeFile(join(first, 'package.json'), JSON.stringify({ scripts: { check: 'node -e "process.exit(0)"' } }));
+  const store = new Store(join(root, 'state'));
+  await store.initialize();
+  const runnerCalls: string[] = [];
+  const service = new WorkspaceService(
+    store,
+    async () => ({ available: true, processes: [{ pmId: 11, name: 'api', namespace: 'default', status: 'online', cwd: first, restartCount: 0, startedAt: null }] }),
+    async (action, pmId) => { runnerCalls.push(`${action}:${pmId}`); return { ok: true }; },
+    async () => ({ exitCode: 0, timedOut: false, aborted: false, truncated: false, stdout: 'ok', stderr: '', durationMs: 3, spawnFailed: false }),
+    async () => ({ exitCode: 0, timedOut: false, aborted: false, truncated: false, stdout: '', stderr: '', durationMs: 1, spawnFailed: true }),
+  );
+
+  const mcpToken = 'f'.repeat(64);
+  let now = 1_800_000_000_000;
+  let counter = 0;
+  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
+  const app = createApp(service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const issued = await fetch(`${origin}/api/dashboard-session`, {
+    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
+  });
+  const { dashboardToken } = await issued.json() as { dashboardToken: string };
+  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+
+  const proposalResponse = await fetch(`${origin}/api/proposals`, {
+    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Operator probe', roots: [first, second] }),
+  });
+  assert.equal(proposalResponse.status, 201);
+  const proposal = await proposalResponse.json() as { id: string };
+  assert.equal((await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
+    method: 'POST', headers: dashboardHeaders, body: '{}',
+  })).status, 200);
+
+  const restartPath = `${origin}/api/workspaces/${proposal.id}/services/restart`;
+  const restartBody = JSON.stringify({ pmId: 11, name: 'api', namespace: 'default' });
+  assert.equal((await fetch(restartPath, { method: 'POST', headers: mcpHeaders, body: restartBody })).status, 403);
+  assert.deepEqual(runnerCalls, []);
+
+  const delegate = await fetch(`${origin}/api/operator/delegate`, {
+    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'delegate-operator' },
+    body: JSON.stringify({ workspaceIds: [proposal.id] }),
+  });
+  assert.equal(delegate.status, 200);
+  assert.deepEqual(((await delegate.json()) as { workspaceIds: string[] }).workspaceIds, [proposal.id]);
+  assert.equal((await fetch(`${origin}/api/operator`, { headers: mcpHeaders })).status, 200);
+
+  const restarted = await fetch(restartPath, { method: 'POST', headers: mcpHeaders, body: restartBody });
+  assert.equal(restarted.status, 200);
+  assert.equal((await restarted.json() as { status: string }).status, 'completed');
+  assert.deepEqual(runnerCalls, ['restart:11']);
+
+  const verified = await fetch(`${origin}/api/workspaces/${proposal.id}/verify`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ repositoryPath: first, scriptName: 'check' }),
+  });
+  assert.equal(verified.status, 200);
+  assert.equal((await verified.json() as { outcome: string }).outcome, 'passed');
+
+  const streamResponse = await fetch(`${origin}/api/workstreams`, {
+    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'create-workstream' },
+    body: JSON.stringify({ name: 'Op stream', workspaceId: proposal.id, checkouts: [first] }),
+  });
+  assert.equal(streamResponse.status, 201);
+  const stream = await streamResponse.json() as { id: string };
+  const acquired = await fetch(`${origin}/api/leases/acquire`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ resource: 'port:5000', workstreamId: stream.id }),
+  });
+  assert.equal(acquired.status, 200);
+  assert.equal((await acquired.json() as { lease: { status: string } }).lease.status, 'held');
+
+  const activity = await fetch(`${origin}/api/activity`, { headers: dashboardHeaders });
+  assert.equal(activity.status, 200);
+  const operations = (await activity.json() as Array<{ actor: string; operation: string }>).map(entry => `${entry.actor}:${entry.operation}`);
+  assert.ok(operations.includes('dashboard:delegate-operator'));
+  assert.ok(operations.includes('mcp-operator:service-restart'));
+  assert.ok(operations.includes('mcp-operator:verify'));
+  assert.ok(operations.includes('mcp-operator:lease-acquire'));
+
+  assert.equal((await fetch(`${origin}/api/operator/delegate`, {
+    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'delegate-operator' },
+    body: JSON.stringify({ workspaceIds: [] }),
+  })).status, 200);
+  assert.equal((await fetch(restartPath, { method: 'POST', headers: mcpHeaders, body: restartBody })).status, 403);
+  assert.deepEqual(runnerCalls, ['restart:11']);
+});
+
 test('dashboard service control reaches only the designated approved-root process', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-service-action-')));
   t.after(() => rm(root, { recursive: true, force: true }));

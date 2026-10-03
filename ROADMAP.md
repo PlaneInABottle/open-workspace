@@ -225,6 +225,7 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 | 7 | Keep M1 verification diagnostic/local, not a CI verdict; preserve parallel multi-service goal for M2 | Accepted. Step 3 remains checkout/service/test context, not a CI badge. Jira-parallel, multi-service and agent-browser orchestration stay M2. |
 | 8 | Start M2 with workstream identity; drop versioned state upgrades | Implemented (M2-1): workstreams bind approved roots with pinned revisions; one strict state schema with no migrations, unknown shapes fail closed. Creation/status are dashboard-only; MCP lists only. |
 | 9 | Continue M2 with resource leases | Implemented (M2-2): named exclusive leases with visible FIFO queue and promotion on release; acquire/release are dashboard-only, MCP lists only. Additive state fields use optional-with-default so old state files keep parsing. |
+| 10 | Operator delegation for the connected assistant | Implemented: one MCP credential whose role upgrades by dashboard delegation (default read-only). Delegated workspaces allow `service_control`, `verification_run`, `lease_acquire`, `lease_release` through MCP with unchanged bounds; denials guide the user to the AI setup grant. Central activity trail records every mutation with its actor. |
 
 New user requests amend this queue; they do not discard unfinished earlier requests. Mark outcomes verified from actual code/runtime evidence, not from a plan or a suggested UX.
 

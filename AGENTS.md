@@ -87,7 +87,7 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 - Keep browser/server imports and TypeScript configurations separate. Never bundle server modules, `process.env`, credentials or machine state into frontend assets. Production assets are served only through the manifest-backed allowlist; do not add arbitrary filesystem paths, a public manifest, generic SPA/API fallbacks or `unsafe-inline` to accommodate a component.
 - The source companion is trusted local code, not an OS sandbox. External assistants may send MCP output to their model provider. Never promise complete local data confinement or universal secret detection.
 - Separate found executables, process/container state, readiness and scenario verification. Keep unimplemented/fake/unverified boundaries visible.
-- No blanket PM2/Docker cleanup, shared DB mutation, real mail, deployment, global client modification or implicit external API action. A fixture test does not authorize pilot mutations.
+- Threat model: contain accidents, agent mistakes and leaked credentials — never the user attacking themselves. No new machinery justified solely by exotic threat models; bounds are reliability/audit rails, not a sandbox promise.
 - No commits, pushes or publication unless explicitly requested.
 
 ## Skills and learning

@@ -41,11 +41,24 @@ const lease = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();
+const operatorScope = z.object({
+  workspaceIds: z.array(z.string().uuid()).max(50),
+  updatedAt: z.string().datetime(),
+}).strict().nullable();
+const activityEntry = z.object({
+  at: z.string().datetime(),
+  actor: z.enum(['dashboard', 'mcp-operator']),
+  operation: z.string().min(1).max(80),
+  workspaceId: z.string().uuid().nullable(),
+  detail: z.string().max(200),
+}).strict();
 const stateSchema = z.object({
   workspaces: z.array(registration).max(50),
   proposals: z.array(registration).max(50),
   workstreams: z.array(workstream).max(50),
   leases: z.array(lease).max(50).optional().default([]),
+  operatorScope: operatorScope.optional().default(null),
+  activity: z.array(activityEntry).max(50).optional().default([]),
 }).strict();
 export type Registration = z.infer<typeof registration>;
 export type WorkstreamRecord = z.infer<typeof workstream>;
