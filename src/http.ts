@@ -10,6 +10,7 @@ import { maxProjectRootLength, maxProjectRoots } from './project-roots.js';
 import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-picker.js';
 import { verifySocketTimeoutMs } from './verify.js';
 import { datastoreQuerySchema, datastoreSocketTimeoutMs } from './datastore.js';
+import { browserCheckSchema, browserSocketTimeoutMs } from './browser.js';
 
 const proposalSchema = z.object({
   name: z.string().min(1).max(100),
@@ -99,6 +100,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
     || pathname === '/api/workstreams'
     || new RegExp(`^/api/workstreams/${uuidPath}/status$`).test(pathname)
@@ -322,6 +324,22 @@ export function createApp(service: WorkspaceService, options: {
             }
             return;
           }
+          const browserMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/browser\/check$/.exec(url.pathname);
+          if (browserMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'check-browser'))) {
+              json(response, 403, { error: 'Browser checks require the connected dashboard.' });
+              return;
+            }
+            request.setTimeout(browserSocketTimeoutMs);
+            const input = browserCheckSchema.parse(await body(request));
+            if (request.aborted || response.destroyed) return;
+            const result = await service.browserCheck(browserMatch[1], input);
+            // Activity records sizes only; the URL may carry secrets and the
+            // snapshot text is never persisted.
+            await record('browser-check', browserMatch[1], `snapshot ${result.snapshotText.length} chars${result.truncated ? ' (truncated)' : ''}, assert ${result.assertFound === null ? 'unchecked' : result.assertFound ? 'found' : 'not found'}`);
+            if (!response.destroyed) json(response, 200, result);
+            return;
+          }
           const datastoreMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/datastore\/query$/.exec(url.pathname);
           if (datastoreMatch && request.method === 'POST') {
             if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'query-datastore'))) {
@@ -463,6 +481,11 @@ export function createApp(service: WorkspaceService, options: {
         'The database query did not finish within the bounded runtime.',
         'The database query failed without returning rows.',
         'PostgreSQL client is unavailable.',
+        'Provide an http(s) loopback URL.',
+        'The page redirected outside loopback; refused.',
+        'Browser check is unavailable.',
+        'The browser check did not finish within the bounded runtime.',
+        'The browser navigation failed safely without a snapshot.',
         'Approved directory identity changed. Request access again.',
         'Use application/json.', 'Request body is too large.',
       ];
