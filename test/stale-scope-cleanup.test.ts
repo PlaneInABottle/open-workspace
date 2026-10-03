@@ -94,3 +94,34 @@ test('startup scan stays bounded with many orphan dirs present', async t => {
   assert.match(suffix ?? '', /4\.4x expected.*learn-from-mistake/, 'live signal found despite 200 orphans');
   assert.ok(Buffer.byteLength(suffix ?? '', 'utf8') <= 200, 'suffix keeps total instructions under budget');
 });
+
+test('registered scopes are scanned before 50+ lexically earlier orphan directories', async t => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-scan-priority-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const project = join(home, 'project');
+  await mkdir(project);
+  const store = new Store(home);
+  await store.initialize();
+  const service = new WorkspaceService(store);
+  await service.register('Live workspace', [project]);
+  const live = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  await store.update(state => { state.workspaces[0].id = live; });
+
+  const runsDir = join(home, 'runs', live);
+  await mkdir(runsDir, { recursive: true });
+  const summary = (durationMs: number) => JSON.stringify({
+    workspaceId: live, scriptName: 'test', outcome: 'passed', durationMs,
+    at: new Date().toISOString(), failingNames: [], failingTruncated: false,
+    failureExcerpt: 'ok', excerptTruncated: false, outputTruncated: false,
+  });
+  await writeFile(join(runsDir, '1000.json'), summary(2000));
+  await writeFile(join(runsDir, '2000.json'), summary(2100));
+  await writeFile(join(runsDir, '3000.json'), summary(9000));
+
+  for (let index = 0; index < maxScopesPerStartupScan + 5; index++) {
+    const orphan = `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+    await mkdir(join(home, 'runs', orphan), { recursive: true });
+  }
+  const suffix = await learningInstructionSuffix(home);
+  assert.match(suffix ?? '', /4\.4x expected.*learn-from-mistake/, 'registered live scope wins before lexically earlier orphan scopes');
+});

@@ -8,7 +8,6 @@ import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import {
   buildLearningLine,
-  countDrafts,
   evaluateLearningSignal,
   learningInstructionSuffix,
   listRecentRuns,
@@ -35,20 +34,31 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   const skill = await readFile(new URL('../skills/learn-from-mistake/SKILL.md', import.meta.url), 'utf8');
   assert.match(skill, /name: learn-from-mistake/);
   assert.ok(skill.split('\n').length < 300, 'skill must stay under 300 lines');
-  for (const required of ['transcript', 'Closing note', 'User correction', 'Scope:', 'Status: draft', 'never self-promote']) {
+  for (const required of [
+    'visible session transcript', 'activity_list', 'recent_runs', 'different task',
+    'one-off flukes', 'runId', 'activity timestamp', 'test name', 'do not copy evidence content',
+    'no more than **5 rules per invocation**',
+    'active project', 'project-root `AGENTS.md`', 'shared ancestor outside the project requires explicit user authorization',
+    'refuse that edit and report the boundary', 'skip the citation; never invent one',
+    'nearest existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`', 'never runs automatically',
+    'secrets', 'absolute user paths', 'customer data', 'SQL literals', 'log/transcript content',
+  ]) {
     assert.ok(skill.includes(required), `skill must cover ${required}`);
   }
-  assert.ok(!/sk-|Bearer |@example\.com/.test(skill), 'skill carries no literal secrets');
+  assert.ok(!/sk-|Bearer |@example\.com|\/Users\/|password\s*[:=]/.test(skill), 'skill carries no literal secrets or path values');
+  assert.ok(!skill.includes('learnings/_drafts') && !skill.includes('Status: draft'), 'learning guidance writes directly without a draft pipeline');
   const onboarding = await readFile(new URL('../skills/openworkspace-onboarding/SKILL.md', import.meta.url), 'utf8');
   assert.ok(onboarding.includes('learn-from-mistake'), 'onboarding skill references learn-from-mistake');
+  assert.ok(onboarding.includes('never runs automatically') && onboarding.includes('creates no drafts'));
   const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
   assert.ok(mcpSource.includes('learn-from-mistake'), 'MCP instructions reference learn-from-mistake');
+  assert.ok(mcpSource.includes('never runs automatically'));
   assert.ok(mcpSource.includes('Mirror major milestones'), 'MCP instructions mirror major milestones');
   const base = mcpSource.match(/const baseInstructions = '((?:[^'\\]|\\.)*)'/)?.[1];
   assert.ok(base, 'base instructions literal found');
   const baseBytes = Buffer.byteLength(base, 'utf8');
   assert.ok(baseBytes <= 600, `base instructions leave room for the dynamic line (got ${baseBytes}B)`);
-  const worst = buildLearningLine({ slowdown: { factor: '99.9', latestMs: 120000, medianMs: 1 }, draftsPending: 50 });
+  const worst = buildLearningLine({ slowdown: { factor: '99.9', latestMs: 120000, medianMs: 1 }, recentFailedRuns: 20 });
   assert.ok(worst && baseBytes + 1 + Buffer.byteLength(worst, 'utf8') <= 760, 'instructions total stays within 760B');
   const prompt = mcpSource.match(/text:\n\s+'((?:[^'\\]|\\.)*)'/)?.[1];
   assert.ok(prompt && Buffer.byteLength(prompt, 'utf8') <= 860, 'prompt stays within 860B');
@@ -67,6 +77,8 @@ test('reads record sanitized descriptors and failures never leak literals', asyn
   await fetch(`${origin}/api/workspaces/${f.workspace.id}/services`, { method: 'POST', headers, body: '{}' });
   await fetch(`${origin}/api/workstreams`, { headers });
   await fetch(`${origin}/api/leases`, { headers });
+  const learnings = await fetch(`${origin}/api/learnings`, { headers });
+  assert.deepEqual(await learnings.json(), { milestones: [] }, 'the read API returns narrative notes only');
   const denied = await fetch(`${origin}/api/workspaces/00000000-0000-4000-8000-000000000000`, { headers });
   assert.equal(denied.status, 400);
   // Failed mutation attempts carrying secrets must not reach activity either.
@@ -202,7 +214,7 @@ test('read tools enforce caps and never self-record', async t => {
   }
 });
 
-test('learning signal fires only on slow runs or three pending drafts', () => {
+test('learning signal fires on a slowdown or at least three failed runs in the recent window', () => {
   assert.equal(median([3000, 1000, 2000]), 2000);
   assert.equal(median([3000, 1000]), 2000);
   const slow = evaluateLearningSignal([9000, 2000, 2100], 0);
@@ -211,32 +223,45 @@ test('learning signal fires only on slow runs or three pending drafts', () => {
   assert.equal(buildLearningLine(evaluateLearningSignal([100, 2000, 2100], 0)), undefined);
   assert.equal(buildLearningLine(evaluateLearningSignal([9000, 2000], 0)), undefined);
   assert.equal(buildLearningLine(evaluateLearningSignal([100, 100, 100], 2)), undefined);
-  const drafts = evaluateLearningSignal([100, 100, 100], 3);
-  assert.equal(drafts.draftsPending, 3);
-  assert.match(buildLearningLine(drafts) ?? '', /3 unprocessed learning drafts pending/);
+  const failures = evaluateLearningSignal([100, 100, 100], 3);
+  assert.equal(failures.recentFailedRuns, 3);
+  assert.match(buildLearningLine(failures) ?? '', /3 of the last 20 local verification runs failed or errored/);
 });
 
-test('instruction suffix reads real run and draft state', async t => {
+test('instruction suffix reads slowdown and the last 20 local run outcomes', async t => {
   const home = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-learning-signal-')));
   try {
     assert.equal(await learningInstructionSuffix(home), undefined);
     const scope = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const runsDir = join(home, 'runs', scope);
     await mkdir(runsDir, { recursive: true });
-    const summary = (durationMs: number) => JSON.stringify({ workspaceId: scope, scriptName: 'test', outcome: 'passed', durationMs, at: new Date().toISOString(), failingNames: [], failingTruncated: false, failureExcerpt: 'ok', excerptTruncated: false, outputTruncated: false });
-    await writeFile(join(runsDir, '1000.json'), summary(2000));
-    await writeFile(join(runsDir, '2000.json'), summary(2100));
-    await writeFile(join(runsDir, '3000.json'), summary(9000));
+    const summary = (index: number, outcome: 'passed' | 'failed' | 'error', source = 'openworkspace-run', durationMs = 100) => JSON.stringify({
+      workspaceId: scope, scriptName: 'test', outcome, durationMs,
+      at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      failingNames: [], failingTruncated: false, failureExcerpt: 'ok', excerptTruncated: false,
+      outputTruncated: false, source,
+    });
+    const writeRun = (index: number, outcome: 'passed' | 'failed' | 'error', source?: string) =>
+      writeFile(join(runsDir, `${Date.UTC(2026, 0, 1, 0, index)}-${String(index).padStart(2, '0')}.json`), summary(index, outcome, source));
+    await writeFile(join(runsDir, '1000.json'), summary(0, 'passed', 'openworkspace-run', 2000));
+    await writeFile(join(runsDir, '2000.json'), summary(1, 'passed', 'openworkspace-run', 2100));
+    await writeFile(join(runsDir, '3000.json'), summary(2, 'passed', 'openworkspace-run', 9000));
     const slow = await learningInstructionSuffix(home);
     assert.match(slow ?? '', /4\.4x expected.*learn-from-mistake/);
     assert.ok(Buffer.byteLength(slow ?? '', 'utf8') <= 200, 'suffix keeps total instructions under budget');
-    const draftsDir = join(home, 'learnings', '_drafts');
-    await mkdir(draftsDir, { recursive: true });
-    assert.equal(await countDrafts(home), 0);
-    await Promise.all([1, 2, 3].map(index => writeFile(join(draftsDir, `draft-${index}.md`), '# draft')));
-    assert.equal(await countDrafts(home), 3);
-    const both = await learningInstructionSuffix(home);
-    assert.match(both ?? '', /drafts pending/);
+
+    await rm(runsDir, { recursive: true, force: true });
+    await mkdir(runsDir, { recursive: true });
+    await Promise.all(Array.from({ length: 17 }, (_, index) => writeRun(index, 'passed')));
+    await writeRun(17, 'failed');
+    await writeRun(18, 'error');
+    await writeRun(19, 'failed', 'external-import');
+    assert.equal(await learningInstructionSuffix(home), undefined, 'two non-passing local runs and an imported failure do not trigger');
+    await writeRun(20, 'failed');
+    assert.match(await learningInstructionSuffix(home) ?? '', /3 of the last 20 local verification runs failed or errored/);
+
+    await Promise.all(Array.from({ length: 18 }, (_, offset) => writeRun(21 + offset, 'passed')));
+    assert.equal(await learningInstructionSuffix(home), undefined, 'failures roll out of the latest-20 local-run window');
   } finally {
     await rm(home, { recursive: true, force: true });
   }

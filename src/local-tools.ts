@@ -32,6 +32,8 @@ const toolNamePattern = /^[a-z][a-z0-9_]{0,39}$/;
 const reservedNamePrefixes = ['workspace_', 'service_', 'verification_', 'lease_', 'workstream_',
   'activity_', 'recent_', 'onboarding_', 'browser_', 'datastore_', 'local_'];
 const sourceDraftPattern = /^[a-z0-9-]{1,80}\.md$/;
+const proposalDraftLimit = 2048;
+const proposalDraftShape = /^# \S[^\r\n]{0,119}\r?\n\r?\n- Scope: \S[^\r\n]{0,199}\r?\n- Rule: \S[^\r\n]{0,499}\r?\n- Source: \S[^\r\n]{0,199}\r?\n- Status: proposal\r?\n?$/;
 const declarationSizeLimit = 8 * 1024;
 const toolCountLimit = 20;
 const quarantineThreshold = 3;
@@ -231,6 +233,26 @@ export async function resolveCanonicalBinary(binary: string, searchPath: string)
   return undefined;
 }
 
+async function isProposalDraft(homeDir: string, basename: string): Promise<boolean> {
+  const localToolsDirectory = join(homeDir, 'local-tools');
+  const directory = join(localToolsDirectory, 'proposals');
+  const path = join(directory, basename);
+  try {
+    const localToolsInfo = await lstat(localToolsDirectory);
+    if (!localToolsInfo.isDirectory() || localToolsInfo.isSymbolicLink()) return false;
+    const directoryInfo = await lstat(directory);
+    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return false;
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > proposalDraftLimit) return false;
+    const bytes = await readFile(path);
+    if (bytes.byteLength > proposalDraftLimit) return false;
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return proposalDraftShape.test(content) && maskSecrets(content) === content;
+  } catch {
+    return false;
+  }
+}
+
 // --- Loader + gate (service-side only; first failure wins, safe error) ---
 
 export interface GatedDeclaration extends LocalToolDeclaration {
@@ -308,12 +330,7 @@ export async function gateDeclaration(
     if (!decl.provenance.sourceDraft || !sourceDraftPattern.test(decl.provenance.sourceDraft)) {
       throw new Error(localToolGateMessages.invalid);
     }
-    try {
-      const draftInfo = await lstat(join(options.homeDir, 'learnings', '_drafts', decl.provenance.sourceDraft));
-      if (!draftInfo.isFile() || draftInfo.isSymbolicLink()) throw new Error(localToolGateMessages.invalid);
-    } catch {
-      throw new Error(localToolGateMessages.invalid);
-    }
+    if (!(await isProposalDraft(options.homeDir, decl.provenance.sourceDraft))) throw new Error(localToolGateMessages.invalid);
   } else if (decl.provenance.sourceDraft !== undefined) {
     throw new Error(localToolGateMessages.invalid);
   }

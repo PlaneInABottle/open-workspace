@@ -224,6 +224,45 @@ test('gate refusals map to the exact listed message', async t => {
   }
 });
 
+test('scaffolded local tools accept only an explicit shaped proposal record', async t => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-lt-proposal-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const proposals = join(home, 'local-tools', 'proposals');
+  await mkdir(proposals, { recursive: true });
+  const basename = 'bounded-query-rule.md';
+  await writeFile(join(proposals, basename), [
+    '# Keep local queries bounded',
+    '',
+    '- Scope: project/**',
+    '- Rule: Keep repeated local queries fixed and bounded.',
+    '- Source: runId 12345-abcde123',
+    '- Status: proposal',
+    '',
+  ].join('\n'));
+  const gate = (decl: unknown) => gateDeclaration(decl, {
+    homeDir: home, acceptedCount: 0, searchPath: '', probe: async () => true,
+  });
+  const valid = await gate(dbTablesDecl({
+    provenance: { origin: 'scaffolded', sourceDraft: basename, createdAt: '2026-10-03T00:00:00.000Z' },
+  }));
+  assert.equal(valid.origin, 'scaffolded');
+
+  await assert.rejects(
+    gate(dbTablesDecl({
+      provenance: { origin: 'scaffolded', sourceDraft: 'missing.md', createdAt: '2026-10-03T00:00:00.000Z' },
+    })),
+    error => error instanceof Error && error.message === localToolGateMessages.invalid,
+  );
+
+  await writeFile(join(proposals, 'malformed.md'), '# title\nnot the proposal format\n');
+  await assert.rejects(
+    gate(dbTablesDecl({
+      provenance: { origin: 'scaffolded', sourceDraft: 'malformed.md', createdAt: '2026-10-03T00:00:00.000Z' },
+    })),
+    error => error instanceof Error && error.message === localToolGateMessages.invalid,
+  );
+});
+
 test('failed gates stay pending with closed-vocabulary reason codes', async t => {
   const f = await toolService(t);
   await writePending(f.store.directory, 'a_tool.json', dbTablesDecl({ name: 'a_tool', executable: 'nope' }));

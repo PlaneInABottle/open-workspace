@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ensurePrivateDirectory, type Store } from './store.js';
+import { ensurePrivateDirectory, Store } from './store.js';
 import type { DirtyFingerprint } from './verify.js';
 
 export type RunSource = 'openworkspace-run' | 'external-import' | 'unknown-source';
@@ -70,6 +70,9 @@ export const maxScopesPerStartupScan = 50;
 const excerptLimit = 2048;
 const listExcerptLimit = 200;
 const maxFailingNames = 20;
+// Prompt after three failed/errored runs among the newest 20 local runs across scanned scopes.
+const maxRecentRunsForLearningSignal = 20;
+const failedRunThresholdForLearningSignal = 3;
 
 /** IDs referenced by checkpoint notes or completion checks in scope, exempt from ordinary run-ring eviction. */
 export function pinnedRunIds(
@@ -354,14 +357,6 @@ export async function listRecentRuns(homeDirectory: string, workspaceId: string,
   return entries;
 }
 
-export async function countDrafts(homeDirectory: string): Promise<number> {
-  try {
-    return (await readdir(join(homeDirectory, 'learnings', '_drafts'))).filter(name => name.endsWith('.md')).length;
-  } catch {
-    return 0;
-  }
-}
-
 export function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
@@ -372,19 +367,19 @@ function formatFactor(latest: number, reference: number): string {
   return String(Number((latest / reference).toFixed(1)));
 }
 
-/** Pure signal check: durations are newest-first. */
-export function evaluateLearningSignal(durationsNewestFirst: number[], draftCount: number): {
+/** Pure signal check: durations and the recent run window are newest-first. */
+export function evaluateLearningSignal(durationsNewestFirst: number[], recentFailedRuns: number): {
   slowdown?: { factor: string; latestMs: number; medianMs: number };
-  draftsPending?: number;
+  recentFailedRuns?: number;
 } {
-  const signal: { slowdown?: { factor: string; latestMs: number; medianMs: number }; draftsPending?: number } = {};
+  const signal: { slowdown?: { factor: string; latestMs: number; medianMs: number }; recentFailedRuns?: number } = {};
   if (durationsNewestFirst.length >= 3) {
     const reference = median(durationsNewestFirst.slice(1));
     if (reference > 0 && durationsNewestFirst[0] > 3 * reference) {
       signal.slowdown = { factor: formatFactor(durationsNewestFirst[0], reference), latestMs: durationsNewestFirst[0], medianMs: reference };
     }
   }
-  if (draftCount >= 3) signal.draftsPending = draftCount;
+  if (recentFailedRuns >= failedRunThresholdForLearningSignal) signal.recentFailedRuns = recentFailedRuns;
   return signal;
 }
 
@@ -393,33 +388,55 @@ export function buildLearningLine(signal: ReturnType<typeof evaluateLearningSign
   if (signal.slowdown) {
     parts.push(`last verify run took ${signal.slowdown.factor}x expected (${signal.slowdown.latestMs}ms vs median ${signal.slowdown.medianMs}ms)`);
   }
-  if (signal.draftsPending !== undefined) parts.push(`${signal.draftsPending} unprocessed learning drafts pending`);
+  if (signal.recentFailedRuns !== undefined) parts.push(`${signal.recentFailedRuns} of the last ${maxRecentRunsForLearningSignal} local verification runs failed or errored`);
   if (parts.length === 0) return undefined;
   return `Note: ${parts.join('; ')} — consider running learn-from-mistake.`;
 }
 
 /** One dynamic MCP-instructions line, or undefined when neither threshold is met. */
 export async function learningInstructionSuffix(homeDirectory: string): Promise<string | undefined> {
-  let scopes: string[];
+  let registeredScopes: string[] = [];
   try {
-    // Bounded startup scan: directories only, UUID scope names only (scope
-    // dirs are workspace UUIDs), capped at the registration limit so orphaned
-    // or junk entries cannot grow MCP startup cost without bound. Per-scope
-    // reads stay small: the ring caps stored summaries per scope.
-    scopes = (await readdir(join(homeDirectory, 'runs'), { withFileTypes: true }))
-      .filter(entry => entry.isDirectory() && uuidPattern.test(entry.name))
-      .map(entry => entry.name)
-      .sort()
-      .slice(0, maxScopesPerStartupScan);
+    registeredScopes = (await new Store(homeDirectory).read()).workspaces
+      .map(workspace => workspace.id)
+      .filter(scope => uuidPattern.test(scope));
   } catch {
-    scopes = [];
+    // Startup guidance is best-effort when private workspace state is absent or invalid.
   }
+  const registeredIds = new Set(registeredScopes.map(scope => scope.toLowerCase()));
+  let discoveredScopes: string[] = [];
+  try {
+    // Registered scopes get first claim on the fixed scan budget; orphaned
+    // UUID directories are considered only after all registered scopes.
+    discoveredScopes = (await readdir(join(homeDirectory, 'runs'), { withFileTypes: true }))
+      .filter(entry => entry.isDirectory() && uuidPattern.test(entry.name))
+      .map(entry => entry.name);
+  } catch {
+    discoveredScopes = [];
+  }
+  const scopes = [
+    ...registeredScopes,
+    ...discoveredScopes.filter(scope => !registeredIds.has(scope.toLowerCase())).sort(),
+  ].slice(0, maxScopesPerStartupScan);
   let slowest: { factor: string; latestMs: number; medianMs: number } | undefined;
+  const recentRuns: Array<Pick<RunListEntry, 'at' | 'outcome'>> = [];
   for (const scope of scopes) {
-    const durations = await readRunDurations(homeDirectory, scope);
+    const [durations, runs] = await Promise.all([
+      readRunDurations(homeDirectory, scope),
+      listRecentRuns(homeDirectory, scope, maxRecentRunsForLearningSignal),
+    ]);
     const signal = evaluateLearningSignal(durations, 0);
     if (signal.slowdown && (!slowest || Number(signal.slowdown.factor) > Number(slowest.factor))) slowest = signal.slowdown;
+    recentRuns.push(...runs
+      .filter(run => run.source === 'openworkspace-run' && Number.isFinite(Date.parse(run.at)))
+      .map(({ at, outcome }) => ({ at, outcome })));
   }
-  const drafts = await countDrafts(homeDirectory);
-  return buildLearningLine({ ...(slowest ? { slowdown: slowest } : {}), ...(drafts >= 3 ? { draftsPending: drafts } : {}) });
+  const recentFailureCount = recentRuns
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+    .slice(0, maxRecentRunsForLearningSignal)
+    .filter(run => run.outcome === 'failed' || run.outcome === 'error').length;
+  return buildLearningLine({
+    ...(slowest ? { slowdown: slowest } : {}),
+    ...(recentFailureCount >= failedRunThresholdForLearningSignal ? { recentFailedRuns: recentFailureCount } : {}),
+  });
 }
