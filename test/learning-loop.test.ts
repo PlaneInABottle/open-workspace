@@ -60,6 +60,10 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   assert.ok(baseBytes <= 600, `base instructions leave room for the dynamic line (got ${baseBytes}B)`);
   const worst = buildLearningLine({ slowdown: { factor: '99.9', latestMs: 120000, medianMs: 1 }, recentFailedRuns: 20 });
   assert.ok(worst && baseBytes + 1 + Buffer.byteLength(worst, 'utf8') <= 760, 'instructions total stays within 760B');
+  // listTools byte note (folded from the retired declarative-tools plan, measured
+  // 2026-10-03 over a real stdio session): 12,497 B with no declared tool vs
+  // 13,169 B with db_tables active — a 672 B delta for one tool. The binding
+  // budget stays the 760 B base-instructions cap asserted above, not this note.
   const prompt = mcpSource.match(/text:\n\s+'((?:[^'\\]|\\.)*)'/)?.[1];
   assert.ok(prompt && Buffer.byteLength(prompt, 'utf8') <= 860, 'prompt stays within 860B');
 });

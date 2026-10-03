@@ -317,8 +317,8 @@ export function createApp(service: WorkspaceService, options: {
           json(response, 200, {
             mcpServers: { openworkspace: {
               command: process.execPath,
-              args: [fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url)),
-                fileURLToPath(new URL('./mcp.ts', import.meta.url))],
+              args: [fileURLToPath(new URL('../bin/openworkspace.mjs', import.meta.url)),
+                'mcp', '--state-directory', service.store.directory],
               env: { OPENWORKSPACE_HOME: service.store.directory },
             } },
           });
