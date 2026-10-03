@@ -5,6 +5,7 @@ import { serviceRequest } from './connection.js';
 import { localToolDescription, slotValueSchemas, type LocalToolStatusEntry } from './local-tools.js';
 import { learningInstructionSuffix } from './run-summaries.js';
 import { stateDirectory } from './store.js';
+import { consumerSkills } from './consumer-skills.js';
 
 // Base instructions stay well under the 760-byte cap so the optional
 // learning-loop line below still fits; per-tool detail lives in each tool
@@ -263,4 +264,9 @@ server.registerPrompt('workspace_onboarding', {
 }, () => ({ messages: [{ role: 'user', content: { type: 'text', text:
   'Help me prepare my project. Use workspace_list first. If my project is missing, ask me to choose exact folders and a project name, then call workspace_register with {name, roots}. Do not infer a common parent or register roots I did not choose. Then use workspace_inspect and onboarding_plan, reviewing every root group and identifying unavailable roots separately. Jira is optional: only discuss Atlassian MCP if I use Jira. Use datastore_query for one read-only query, service_logs for a bounded log tail, and browser_check for one loopback text snapshot. Do not request secrets in chat, change global configuration or install tools. Mutations (service_control, verification_run, workstream_create, lease_acquire) need my approval per my settings; the dashboard only records what ran. Do not claim setup is done before a tool call succeeds.'
 } }] }));
+for (const skill of consumerSkills) {
+  server.registerPrompt(`skill/${skill.name}`, {
+    description: skill.description,
+  }, () => ({ messages: [{ role: 'user', content: { type: 'text', text: skill.text } }] }));
+}
 await server.connect(new StdioServerTransport());

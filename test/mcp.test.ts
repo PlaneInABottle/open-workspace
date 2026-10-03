@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import { Store, writePrivateJson } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
+import { consumerSkills } from '../src/consumer-skills.js';
 
 test('real stdio MCP registers and operates without dashboard approval and survives service recreation', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-mcp-')));
@@ -93,8 +94,25 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     assert.match((reinspected.content as Array<{ text: string }>)[0].text, /"roots"/);
     const plan = await client.callTool({ name: 'onboarding_plan', arguments: { workspaceId } });
     const planText = (plan.content as Array<{ text: string }>)[0].text;
+    const planValue = JSON.parse(planText) as { availableSkills: Array<{ name: string; whenToUse: string; fetch: { prompt: string } }> };
     assert.match(planText, /not_implemented/);
     assert.match(planText, /only records what ran/);
+    const skillDirectories = await readdir(new URL('../skills/', import.meta.url), { withFileTypes: true });
+    const onDiskSkills = [];
+    for (const entry of skillDirectories.filter(item => item.isDirectory())) {
+      try {
+        await readFile(new URL(`../skills/${entry.name}/SKILL.md`, import.meta.url));
+        onDiskSkills.push(entry.name);
+      } catch { /* A directory without SKILL.md is not a consumer skill. */ }
+    }
+    assert.deepEqual(planValue.availableSkills.map(skill => skill.name), onDiskSkills.sort());
+    assert.deepEqual(planValue.availableSkills.map(skill => skill.name), consumerSkills.map(skill => skill.name));
+    for (const skill of planValue.availableSkills) {
+      assert.deepEqual(Object.keys(skill).sort(), ['fetch', 'name', 'whenToUse']);
+      assert.deepEqual(Object.keys(skill.fetch).sort(), ['prompt']);
+      assert.ok(skill.whenToUse.length > 0 && skill.whenToUse.length <= 200 && !/[\r\n]/.test(skill.whenToUse));
+      assert.equal(skill.fetch.prompt, `skill/${skill.name}`);
+    }
     const leases = await client.callTool({ name: 'workspace_leases', arguments: {} });
     assert.ok(!leases.isError);
     assert.deepEqual(JSON.parse((leases.content as Array<{ text: string }>)[0].text), []);
@@ -114,12 +132,21 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     assert.match((deniedLogs.content as Array<{ text: string }>)[0].text, /not uniquely mapped to a registered root/);
     assert.match(planText, /every registered root group separately/);
     assert.match(planText, /never infer a common parent/);
-    assert.equal((await client.listPrompts()).prompts[0].name, 'workspace_onboarding');
+    const prompts = (await client.listPrompts()).prompts.map(item => item.name).sort();
+    assert.deepEqual(prompts, ['workspace_onboarding', ...consumerSkills.map(skill => `skill/${skill.name}`)].sort());
     const prompt = await client.getPrompt({ name: 'workspace_onboarding' });
     const promptText = (prompt.messages[0].content as { text: string }).text;
     assert.match(promptText, /workspace_register with \{name, roots\}/);
     assert.match(promptText, /Do not infer a common parent/);
     assert.match(promptText, /Jira is optional/);
+    const secretPattern = /(?:sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
+    for (const skill of consumerSkills) {
+      const fetched = await client.getPrompt({ name: `skill/${skill.name}` });
+      const servedText = (fetched.messages[0].content as { text: string }).text;
+      assert.equal(servedText, await readFile(new URL(`../skills/${skill.name}/SKILL.md`, import.meta.url), 'utf8'));
+      assert.doesNotMatch(servedText, secretPattern);
+    }
+    await assert.rejects(client.getPrompt({ name: 'skill/missing' }), /unknown prompt|not found|skill\/missing/i);
     await app.close();
     app = createApp(new WorkspaceService(new Store(store.directory), async () => ({ available: true, processes: [{ pmId: 7, name: 'fixture-api', namespace: 'default', status: 'online', cwd: project, restartCount: 1, startedAt: null }] })), { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
     origin = await app.listen(0);
