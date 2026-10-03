@@ -43,3 +43,7 @@ Return changed files, actual checks/results, the environment and real/fake bound
 ## Cleanup
 
 Remove the owned dummy registration through MCP or the dashboard, prove subsequent MCP access is denied, and preserve all prior registrations. Only then delete the owned fixture and close the named browser/MCP clients. Stop only task-owned disposable services; retain an explicitly handed-over preview. Do not retain session/MCP tokens, browser storage or HAR captures as test artifacts.
+
+## Shell-log flake diagnosis (dev-only)
+
+Join the opencode shell-observer log at `~/.local/share/opencode-shell-log/shell-events.jsonl` with run summaries by timestamp and workdir. Grep for `exit!=0` lines, duration outliers, and retry shapes (repeated identical commands). Join rule: match a verification run's timestamp within a small window and the same workdir. Honesty note: correlation is not causation, and an empty log proves nothing — the run may have bypassed the observer or never shelled out.

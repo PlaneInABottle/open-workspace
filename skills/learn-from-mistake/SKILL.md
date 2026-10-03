@@ -33,3 +33,11 @@ Milestones, verification, and learning run as one flow: mirror completed major m
 ### Assignment completion handoff
 
 Give each child assignment a coordinator-issued `assignmentId`. Before treating that assignment as handed off, query `workstream_context` with that ID and check its present/missing completion state. A completion is an append-only, idempotent result record; it does not change the coordinator-owned workstream status. If the assignment has no completion, ask the **same child** to record its result; never rerun tests, sends, or other side effects as a substitute for a missing handoff. Completion checks are `agent_report` claims, not independent proof or verified-by-us results. Existing `openworkspace_run` evidence is context-stamped separately; pasted/external evidence retains its unverified source and tone. Keep checks and evidence references bounded. Counts are queryable, but do not claim percentage rates from this bounded history.
+
+## Checkpoint nudge
+
+When a workstream stayed open a long time with no checkpoint update, close the session with a single-line reminder suggesting the owner write one checkpoint note (goal, blocker, next step). Suggested wording: "Consider writing one checkpoint note (goal, blocker, next step) before closing." Advisory only — never blocks closing, never repeats.
+
+## Shared-resource lease check
+
+Before end-to-end checks that touch shared resources (test mailbox, shared database), check held leases first. If the needed lease is unheld or held by another workstream, say so — e.g. "The test mailbox lease is unheld; results may collide with another run." Advisory only — warn and continue, never block.
