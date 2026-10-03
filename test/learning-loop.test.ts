@@ -40,17 +40,34 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
     'no more than **5 rules per invocation**',
     'active project', 'project-root `AGENTS.md`', 'shared ancestor outside the project requires explicit user authorization',
     'refuse that edit and report the boundary', 'skip the citation; never invent one',
-    'workstream_context', 'environment_verify',
     'nearest existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`', 'never runs automatically',
     'secrets', 'absolute user paths', 'customer data', 'SQL literals', 'log/transcript content',
   ]) {
     assert.ok(skill.includes(required), `skill must cover ${required}`);
   }
+  assert.ok(!skill.includes('workstream_context') && !skill.includes('environment_verify'), 'start/finish loop moved to new-task');
+  assert.ok(skill.includes('new-task'), 'learn-from-mistake points to new-task');
+  assert.ok(skill.includes('nudge') && skill.includes('lease'), 'pointer names the nudge/lease advisories');
+  const newTask = await readFile(new URL('../skills/new-task/SKILL.md', import.meta.url), 'utf8');
+  assert.match(newTask, /name: new-task/);
+  assert.ok(newTask.split('\n').length < 300, 'new-task skill must stay under 300 lines');
+  assert.ok(Buffer.byteLength(newTask, 'utf8') <= 8 * 1024, 'new-task skill stays within the size cap');
+  for (const required of [
+    'workstream_context', 'environment_verify', 'assignmentId', 'present/missing',
+    'agent_report', '500 characters or fewer', 'last 10', 'Advisory only',
+  ]) {
+    assert.ok(newTask.includes(required), `new-task must cover ${required}`);
+  }
+  assert.ok(!/topology/.test(newTask), 'new-task promises no topology it does not cover');
+  assert.ok(!/sk-|Bearer |@example\.com|\/Users\/|password\s*[:=]/.test(newTask), 'new-task carries no literal secrets or path values');
+  assert.ok(!/coordinator|subagent/i.test(newTask) && !/coordinator|subagent/i.test(skill), 'skills stay role-agnostic');
   assert.ok(!/sk-|Bearer |@example\.com|\/Users\/|password\s*[:=]/.test(skill), 'skill carries no literal secrets or path values');
   assert.ok(!skill.includes('learnings/_drafts') && !skill.includes('Status: draft'), 'learning guidance writes directly without a draft pipeline');
   const onboarding = await readFile(new URL('../skills/openworkspace-onboarding/SKILL.md', import.meta.url), 'utf8');
   assert.ok(onboarding.includes('learn-from-mistake'), 'onboarding skill references learn-from-mistake');
   assert.ok(onboarding.includes('never runs automatically') && onboarding.includes('creates no drafts'));
+  assert.ok(onboarding.includes('grouping ID supplied when the work was set up'), 'onboarding stays role-agnostic');
+  assert.ok(!/coordinator/i.test(onboarding), 'onboarding carries no role markers');
   const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
   assert.ok(mcpSource.includes('learn-from-mistake'), 'MCP instructions reference learn-from-mistake');
   assert.ok(mcpSource.includes('never runs automatically'));

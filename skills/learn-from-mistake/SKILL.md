@@ -24,30 +24,4 @@ Use only when the user explicitly invokes this skill. It never runs automaticall
 
 Write only patterns. Never record secrets, literal credentials, absolute user paths or path values, customer data, SQL literals, URLs containing credentials, or log/transcript content. Do not create a draft, quarantine file, or separate learning store. Do not modify product code, global configuration, or unrelated instruction files as a side effect.
 
-## Milestone notes
-
-When a major milestone lands, append one file under `OPENWORKSPACE_HOME/learnings/milestones/` named `<epoch-seconds>-<short-slug>.md` (at most 50 files, 2KiB each). Content is one pattern-only line of 500 characters or fewer after an optional `#` title — what changed for the user, never literals: no secrets, tokens, paths, SQL, URLs, or log output. The dashboard reads these files only; it never writes them.
-
-## Workflow framing
-
-Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then explicitly invoke this skill when a reusable lesson is wanted. Milestone notes remain the narrative timeline; skill and instruction edits hold durable reusable rules. Pause work with a bounded pattern-only checkpoint note (goal, blocker, next step, owner) so the workstream resumes later. Notes append to a bounded history (last 10, latest reads unchanged) and `workstream_context` returns the checkpoint plus scoped recent runs in one read-only call. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
-
-### Assignment completion handoff
-
-Give each child assignment a coordinator-issued `assignmentId`. Before treating that assignment as handed off, query `workstream_context` with that ID and check its present/missing completion state. A completion is an append-only, idempotent result record; it does not change the coordinator-owned workstream status. If the assignment has no completion, ask the **same child** to record its result; never rerun tests, sends, or other side effects as a substitute for a missing handoff. Completion checks are `agent_report` claims, not independent proof or verified-by-us results. Existing `openworkspace_run` evidence is context-stamped separately; pasted/external evidence retains its unverified source and tone. Keep checks and evidence references bounded. Counts are queryable, but do not claim percentage rates from this bounded history.
-
-### Coordinator loop fit (kickoff context, closeout receipt)
-
-When the coordinator runs its own delivery loop, fit OpenWorkspace into it with two touches; the loop itself is unchanged and no new tool is needed. At kickoff, call `workstream_context`; at closeout, attach an `environment_verify` receipt.
-
-**Kickoff — one `workstream_context` call.** Pass `{ workstreamId: "<workstream-id>", limit?, assignmentId? }` (`limit` 1–20, default 5; `assignmentId` is the coordinator-issued ID when one exists). Read the task reference from `name`/`checkouts`, prior state from `checkpoint.latest` plus `open`, and claimed proof from completion `checks` and `recentRuns` — completions are agent-reported (see above), so treat them as claims until backed by run evidence.
-
-**Closeout — one `environment_verify` call.** Pass `{ workspaceId: "<workspace-id>", environmentId: "<environment-id>", repositoryPath: "<repo-path>", scriptName: "<repo-script>" }`; it runs one repo-native script and returns the environment snapshot with the verification outcome and persisted run id. Tie the user-visible result to that receipt; a completion record alone is not proof.
-
-## Checkpoint nudge
-
-When a workstream stayed open a long time with no checkpoint update, close the session with a single-line reminder suggesting the owner write one checkpoint note (goal, blocker, next step). Suggested wording: "Consider writing one checkpoint note (goal, blocker, next step) before closing." Advisory only — never blocks closing, never repeats.
-
-## Shared-resource lease check
-
-Before end-to-end checks that touch shared resources (test mailbox, shared database), check held leases first. If the needed lease is unheld or held by another workstream, say so — e.g. "The test mailbox lease is unheld; results may collide with another run." Advisory only — warn and continue, never block.
+For task planning — opening context, closing with a verification receipt, milestone notes, handoff checks, and checkpoint-nudge plus shared-resource lease advisories — use the **new-task** skill instead; turning session surprises into durable reusable rules stays here.
