@@ -216,15 +216,23 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 
 | Order | Requested outcome | Status / next boundary |
 | --- | --- | --- |
-| Done (1–10) | Pivot cutover (c135dd2), M1 Steps 1–3, M2-1 workstreams, M2-2 leases, direct-MCP operations, plus `browser_check` (2a56742), `datastore_query` (50f477f), `service_logs` (2ccffd7), learning-loop capture (c2b25d9, 7a6e6af) and local-tools engine M1 (c45c5b2). Implemented; evidence in git log, not in this plan. |
-| 11 | DB onboarding asks for the user's existing role/database location (already-running projects, DBeaver-connected) instead of making them invent a role | Accepted follow-up, not yet implemented. M1 stays socket-only passwordless with explicit role+database; authenticated/TCP/private-connection slice stays deferred with its own credential-identity design. |
-| 12 | MCP proof package (one-click prove-it against owned fixtures) | Noted for later; user did not fully grasp it yet. Do not implement now; revisit after M2 with a concrete demo proposal. |
-| 13 | Token-cost worry | Deferred by user: no action until wire measurement shows manifest cost actually binding. Format budgets + byte-delta notes stay, no count cap, no dynamic discovery. |
-| 14 | Learning-loop v1: agent learns from mistakes (solo-dev, no team; todo-carrier dropped) | Accepted direction, not yet designed. Capture: (a) closing-note skill — agent writes a short surprise note before marking work done; (b) session-end/on-demand `/learn-from-mistake` mining over transcript + activity + verify history; (c) every user correction always drafts locally. Drafts are local/commit-excluded; promotion to shared skill only on reuse proof or batched approval. |
-| 15 | pnpm audit braces high (GHSA-vfj7-8cjw-p6xm, Patched: None) | Known residual, accepted by user. Build-time chain (shadcn>fast-glob>micromatch>braces), not server runtime; glob patterns are local-user/static-allowlist, not remotely controlled. Revisit when a patch lands. |
-| 16 | Local declarative tools: user-extensible MCP (gated, quarantined, provenance-tracked) | Accepted direction, not yet designed. Solo-local users (and their agents) may add MCP tools as declarations (name, description, strict schema, allowlisted executable + fixed flags, caps, timeout) executed only by the hardened runner — no arbitrary-code plugins. Conformance gate before activation; provenance per tool (origin learning, time, last use); auto-quarantine on failure; separate `local-tools/` dir (no upstream conflicts). Rationale: make our tools the preferred path over raw bash so calls flow through MCP and feed the learning loop. Multi-user would re-lock this door. |
+| Done | Pivot, M1–M3 workspace tools, learning-loop v1, declarative local tools, readiness UI, update-roots, checkpoint notes, budgets, fingerprints, POSIX scope. Evidence: git log. |
+| 11 | Stale-scope runs/ cleanup | Next round. Workspace removal leaves runs/ orphaned (disk + MCP startup scan cost). Remove scope dir on workspace removal + re-verify startup scan bounds. |
+| 12 | Token-cost worry | Deferred by user: no action until wire measurement shows manifest cost actually binding. Format budgets + byte-delta notes stay, no count cap, no dynamic discovery. |
+| 13 | Evidence pinning + correlation IDs (checkpoint kanıt zinciri) | Implementing. Checkpoint notes carry bounded `evidence: [runIds]`; pinned runs exempt from ring eviction (capped); note→run→draft→timeline linked by IDs, content never duplicated. Our-system evidence is pinnable, outside evidence described in-note only. Secret-free (IDs only). |
 
 New user requests amend this queue; they do not discard unfinished earlier requests. Mark outcomes verified from actual code/runtime evidence, not from a plan or a suggested UX.
 
-- Not yet verified: real external-client setup (Claude Code/Codex), fresh-machine prerequisite installation, Node 22 portability, independent security/browser gates. Platform scope is macOS + Linux (POSIX) only; Windows is deferred (sockets, permissions, picker, and path semantics differ — supporting it now would double the verification matrix with no Windows machine to prove it on). No Compose application operations or PostgreSQL/Elastic connection is implemented yet. `browser_check` (M3, loopback-only text snapshot over MCP) is implemented pending FINAL/commit; M2 remains next.
+### Thoughts (shelved ideas, not commitments — kept so nothing is lost, out of the queue so nothing confuses)
+
+- Transcript JSONL adapter + Stop-hook automation: skill-side mining already ships; machine-reading client transcript files is shelved (format fragility + secrets entering our process) until interactive use proves need.
+- DB onboarding (existing role/location + authenticated/TCP credential-identity): shelved until a ResAI trial proves a socket-only gap.
+- MCP proof package (one-click owned-fixture demo bundle): demo/YC value only, no daily value; revisit for demos.
+- Prove-it gate as enforcement: cut to skill-level convention; a hard gate would add friction to every "done".
+- Mistake inbox as separate screen: dropped — timeline + draft strip already cover it.
+- Masking extra shapes (Basic-auth, DSN userinfo, cookie, bare tokens): background hardening, opportunistic; labels remain the authoritative defense.
+- Token-cost worry: no action until wire measurement shows manifest cost binding; format budgets stay.
+- pnpm audit braces high (GHSA-vfj7-8cjw-p6xm, Patched: None): build-time chain only, not server runtime; revisit when a patch lands.
+
+- Not yet verified: real external-client setup (Claude Code/Codex), fresh-machine prerequisite installation, Node 22 portability, independent security/browser gates. Platform scope is macOS + Linux (POSIX) only; Windows is deferred (sockets, permissions, picker, and path semantics differ — supporting it now would double the verification matrix with no Windows machine to prove it on). No Compose application operations or PostgreSQL/Elastic connection is implemented yet.
 - Future milestone updates replace these compact lines rather than append an incident diary. Detailed transient observations stay in test output/session state.
