@@ -12,7 +12,7 @@ The source instructions below are for developing OpenWorkspace itself. Do not ru
 
 ## Develop from source
 
-Prerequisites: Node.js 22.12+ and pnpm 11.24.0. Node 26.8.1 was used for the initial checks; Node 22 compatibility has not been executed yet.
+Prerequisites: Node.js 22.20+ and pnpm 11.24.0. Node 26.8.1 was used for the initial checks; Node 22 compatibility has not been executed yet.
 
 ```sh
 pnpm install --frozen-lockfile

@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getAsset, isSea } from 'node:sea';
 
 export class DashboardBuildError extends Error {
   constructor() {
@@ -29,7 +30,11 @@ interface ManifestEntry {
   assets?: unknown;
 }
 
-const defaultAssetRoot = fileURLToPath(new URL('../web-dist/', import.meta.url));
+function defaultAssetRoot(): string {
+  // Lazily computed (never at module load): esbuild CJS empties
+  // import.meta.url, so evaluating this at load time crashes the bundle.
+  return fileURLToPath(new URL('../web-dist/', import.meta.url));
+}
 const mimeTypes: Record<string, string> = {
   '.avif': 'image/avif',
   '.css': 'text/css; charset=utf-8',
@@ -102,9 +107,93 @@ function referencedAssetPaths(html: string): string[] {
   return paths;
 }
 
-export async function loadStaticAssets(assetRoot = defaultAssetRoot): Promise<StaticAssets> {
+function seaAssetBytes(key: string): Buffer {
+  // getAsset(key) returns an ArrayBuffer; the encoding overload returns a
+  // string. Normalize both to Buffer so SEA bytes flow through the unchanged
+  // validators below.
+  let raw: unknown;
   try {
-    const rootPath = resolve(assetRoot);
+    raw = getAsset(key);
+  } catch {
+    throw new DashboardBuildError();
+  }
+  if (typeof raw === 'string') return Buffer.from(raw, 'utf8');
+  if (raw instanceof ArrayBuffer) return Buffer.from(raw);
+  if (ArrayBuffer.isView(raw)) return Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  throw new DashboardBuildError();
+}
+
+async function loadSeaStaticAssets(): Promise<StaticAssets> {
+  // Inside the read-only blob the symlink/O_NOFOLLOW filesystem proofs are
+  // vacuous and unreproducible; the manifest hash allowlist and the HTML
+  // cross-check below remain the enforcement. Validation mirrors the
+  // filesystem loader exactly (same helpers, same rejection order).
+  try {
+    const read = (relativePath: string) => Promise.resolve(seaAssetBytes(`web-dist/${relativePath}`));
+    const manifestText = (await read('manifest.json')).toString('utf8');
+    const manifest: unknown = JSON.parse(manifestText);
+    if (!record(manifest) || !record(manifest['index.html'])) throw new DashboardBuildError();
+
+    const htmlEntry = manifest['index.html'] as ManifestEntry;
+    if (!hashedAssetPath(htmlEntry.file) || !htmlEntry.file.endsWith('.js') || htmlEntry.isEntry !== true) throw new DashboardBuildError();
+
+    const keys = new Set(Object.keys(manifest));
+    const paths = new Set<string>();
+    let javascriptEntries = 0;
+    for (const [key, value] of Object.entries(manifest)) {
+      if (!record(value)) throw new DashboardBuildError();
+      const entry = value as ManifestEntry;
+      if (typeof entry.file !== 'string') throw new DashboardBuildError();
+      if (!hashedAssetPath(entry.file)) {
+        throw new DashboardBuildError();
+      } else {
+        paths.add(entry.file);
+        if (entry.isEntry === true && entry.file.endsWith('.js')) javascriptEntries++;
+      }
+      for (const keyReference of [...stringList(entry.imports), ...stringList(entry.dynamicImports)]) {
+        if (!keys.has(keyReference)) throw new DashboardBuildError();
+      }
+      for (const fileReference of [...stringList(entry.css), ...stringList(entry.assets)]) {
+        if (!hashedAssetPath(fileReference)) throw new DashboardBuildError();
+        paths.add(fileReference);
+      }
+    }
+    if (javascriptEntries !== 1) throw new DashboardBuildError();
+
+    const indexHtml = await read('index.html');
+    const html = indexHtml.toString('utf8');
+    if (!/<div\b[^>]*\bid=["']root["']/i.test(html)) throw new DashboardBuildError();
+
+    const files = new Map<string, StaticAsset>();
+    for (const path of paths) {
+      const contentType = mimeTypes[extname(path).toLowerCase()];
+      if (!contentType) throw new DashboardBuildError();
+      files.set(`/${path}`, { body: await read(path), contentType });
+    }
+
+    const htmlPaths = referencedAssetPaths(html);
+    const entryScript = Object.entries(manifest).find(([, value]) =>
+      record(value) && value.isEntry === true && typeof value.file === 'string' && value.file.endsWith('.js'))?.[1] as ManifestEntry | undefined;
+    if (!entryScript || !htmlPaths.includes(`/` + entryScript.file)) throw new DashboardBuildError();
+    for (const path of htmlPaths) {
+      if (!path.startsWith('/assets/') || path.includes('?') || path.includes('#') || !files.has(path)) {
+        throw new DashboardBuildError();
+      }
+    }
+
+    return { indexHtml, files };
+  } catch {
+    throw new DashboardBuildError();
+  }
+}
+
+export async function loadStaticAssets(assetRoot?: string): Promise<StaticAssets> {
+  // The SEA branch comes first: under a CJS bundle the default-root
+  // evaluation below must never run inside SEA (import.meta.url is empty).
+  if (isSea()) return loadSeaStaticAssets();
+  const rootArg = assetRoot ?? defaultAssetRoot();
+  try {
+    const rootPath = resolve(rootArg);
     const rootStat = await lstat(rootPath);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new DashboardBuildError();
     const root = await realpath(rootPath);

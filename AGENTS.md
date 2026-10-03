@@ -38,7 +38,7 @@ Keep development routing proportional: ordinary component styling, forms and cle
 
 ## Verified source commands
 
-Node.js 22.12+ is declared; macOS with Node 26.8.1 and pnpm 11.24.0 has been exercised. Do not claim Node 22, Windows or a fresh Node-free machine has passed merely from those declarations.
+Node.js 22.20+ is declared; macOS with Node 26.8.1 and pnpm 11.24.0 has been exercised. Do not claim Node 22, Windows or a fresh Node-free machine has passed merely from those declarations.
 
 Run package scripts **from this source directory**, never a registered project's directory:
 

@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@11.24.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.20.0"
   },
   "scripts": {
     "start": "tsx src/main.ts",

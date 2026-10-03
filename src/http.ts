@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { isSea } from 'node:sea';
 import { z } from 'zod';
 import { DashboardSessions } from './dashboard-sessions.js';
 import { WorkspaceService } from './workspace.js';
@@ -298,6 +299,29 @@ function json(response: ServerResponse, status: number, value: unknown) {
   response.end(JSON.stringify(value));
 }
 
+function clientConfig(stateDirectory: string) {
+  // The SEA branch comes first: under a CJS bundle import.meta.url is empty,
+  // so the companion-script evaluation below must never run inside SEA.
+  if (isSea()) {
+    return {
+      mcpServers: { openworkspace: {
+        command: process.execPath,
+        args: ['mcp', '--state-directory', stateDirectory],
+        env: { OPENWORKSPACE_HOME: stateDirectory },
+        sea: true,
+      } },
+    };
+  }
+  return {
+    mcpServers: { openworkspace: {
+      command: process.execPath,
+      args: [fileURLToPath(new URL('../bin/openworkspace.mjs', import.meta.url)),
+        'mcp', '--state-directory', stateDirectory],
+      env: { OPENWORKSPACE_HOME: stateDirectory },
+    } },
+  };
+}
+
 function parseRequestUrl(target: string, origin: string): URL | undefined {
   const rawPath = target.split(/[?#]/, 1)[0];
   if (!rawPath.startsWith('/') || rawPath.startsWith('//') || /[%\\\0]/.test(rawPath)) return undefined;
@@ -419,14 +443,7 @@ export function createApp(service: WorkspaceService, options: {
         if (url.pathname === '/api/overview' && request.method === 'GET') {
           json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview(actor)));
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
-          json(response, 200, {
-            mcpServers: { openworkspace: {
-              command: process.execPath,
-              args: [fileURLToPath(new URL('../bin/openworkspace.mjs', import.meta.url)),
-                'mcp', '--state-directory', service.store.directory],
-              env: { OPENWORKSPACE_HOME: service.store.directory },
-            } },
-          });
+          json(response, 200, clientConfig(service.store.directory));
         } else if (url.pathname === '/api/project-root-picker' && request.method === 'POST') {
           if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin)
             || !hasIntent(request, 'select-project-roots')) {
