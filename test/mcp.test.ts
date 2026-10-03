@@ -32,7 +32,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['activity_list','browser_check','datastore_query','lease_acquire','lease_release','local_tool_status','onboarding_plan','recent_runs','run_import','service_control','service_logs','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_update_roots','workspace_workstreams','workstream_context','workstream_create','workstream_status']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['activity_list','browser_check','datastore_query','lease_acquire','lease_release','lease_touch','local_tool_status','onboarding_plan','recent_runs','run_import','service_control','service_logs','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_update_roots','workspace_workstreams','workstream_context','workstream_create','workstream_status']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     const registerTool = tools.tools.find(tool => tool.name === 'workspace_register');
     assert.deepEqual(Object.keys((registerTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
@@ -116,6 +116,24 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     const leases = await client.callTool({ name: 'workspace_leases', arguments: {} });
     assert.ok(!leases.isError);
     assert.deepEqual(JSON.parse((leases.content as Array<{ text: string }>)[0].text), []);
+    const workstream = async (name: string) => {
+      const created = await client.callTool({ name: 'workstream_create', arguments: { name, workspaceId, checkouts: [project] } });
+      assert.ok(!created.isError);
+      return (JSON.parse((created.content as Array<{ text: string }>)[0].text) as { id: string }).id;
+    };
+    const holderId = await workstream('Lease holder');
+    const queuedId = await workstream('Lease waiter');
+    const acquired = await client.callTool({ name: 'lease_acquire', arguments: { resource: 'mcp:lease', workstreamId: holderId } });
+    assert.ok(!acquired.isError);
+    const queued = await client.callTool({ name: 'lease_acquire', arguments: { resource: 'mcp:lease', workstreamId: queuedId } });
+    assert.ok(!queued.isError);
+    assert.equal((JSON.parse((queued.content as Array<{ text: string }>)[0].text) as { lease: { status: string } }).lease.status, 'queued');
+    const refusedTouch = await client.callTool({ name: 'lease_touch', arguments: { resource: 'mcp:lease', workstreamId: queuedId } });
+    assert.equal(refusedTouch.isError, true);
+    assert.match((refusedTouch.content as Array<{ text: string }>)[0].text, /Only the holding workstream can touch a lease/);
+    const renewed = await client.callTool({ name: 'lease_touch', arguments: { resource: 'mcp:lease', workstreamId: holderId } });
+    assert.ok(!renewed.isError);
+    assert.equal((JSON.parse((renewed.content as Array<{ text: string }>)[0].text) as { resource: string; status: string }).status, 'held');
     const allowedControl = await client.callTool({
       name: 'service_control',
       arguments: { workspaceId, action: 'restart', target: { pmId: 999, name: 'absent-service' } },

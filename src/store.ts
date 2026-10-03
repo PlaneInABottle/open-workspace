@@ -56,6 +56,8 @@ const lease = z.object({
   status: z.enum(['held', 'queued']),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  // Additive: leases persisted before TTL support remain non-expiring.
+  expiresAt: z.string().datetime().nullable().optional().default(null),
 }).strict();
 const activityEntry = z.object({
   at: z.string().datetime(),

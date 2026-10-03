@@ -125,7 +125,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}/local-tools/call$`).test(pathname)
     || pathname === '/api/workstreams'
     || new RegExp(`^/api/workstreams/${uuidPath}/status$`).test(pathname)
-    || /^\/api\/leases\/(acquire|release)$/.test(pathname))) return true;
+    || /^\/api\/leases\/(acquire|touch|release)$/.test(pathname))) return true;
   if (method === 'DELETE' && new RegExp(`^/api/workspaces/${uuidPath}$`).test(pathname)) return true;
   return false;
 }
@@ -278,7 +278,7 @@ export function createApp(service: WorkspaceService, options: {
         };
         const shortId = (id: string) => id.slice(0, 8);
         if (url.pathname === '/api/overview' && request.method === 'GET') {
-          json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview()));
+          json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview(actor)));
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
           json(response, 200, {
             mcpServers: { openworkspace: {
@@ -453,7 +453,7 @@ export function createApp(service: WorkspaceService, options: {
               return;
             }
             const input = workstreamStatusSchema.parse(await body(request));
-            const updated = await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status, input.note);
+            const updated = await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status, input.note, actor);
             await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
             json(response, 200, updated);
             return;
@@ -471,18 +471,22 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/leases' && request.method === 'GET') {
-            json(response, 200, await recordRead('workspace-leases', null, 'workspace_leases', () => service.listLeases()));
+            json(response, 200, await recordRead('workspace-leases', null, 'workspace_leases', () => service.listLeases(actor)));
             return;
           }
-          const leaseMatch = /^\/api\/leases\/(acquire|release)$/.exec(url.pathname);
+          // Dashboard renewal UI wiring is a follow-up; this route preserves an explicit intent gate.
+          const leaseMatch = /^\/api\/leases\/(acquire|touch|release)$/.exec(url.pathname);
           if (leaseMatch && request.method === 'POST') {
-            const intent = leaseMatch[1] === 'acquire' ? 'acquire-lease' : 'release-lease';
+            const intent = leaseMatch[1] === 'acquire' ? 'acquire-lease'
+              : leaseMatch[1] === 'touch' ? 'touch-lease' : 'release-lease';
             if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, intent))) {
               json(response, 403, { error: 'Lease changes require the connected dashboard.' });
               return;
             }
             const input = leaseSchema.parse(await body(request));
-            const result = leaseMatch[1] === 'acquire' ? await service.acquireLease(input) : await service.releaseLease(input);
+            const result = leaseMatch[1] === 'acquire' ? await service.acquireLease(input, actor)
+              : leaseMatch[1] === 'touch' ? await service.touchLease(input, actor)
+                : await service.releaseLease(input, actor);
             const owner = await service.workstream(input.workstreamId).then(workstream => workstream.workspaceId).catch(() => null);
             await record(`lease-${leaseMatch[1]}`, owner, `${input.resource} → ${input.workstreamId.slice(0, 8)}`);
             json(response, 200, result);
@@ -615,6 +619,7 @@ export function createApp(service: WorkspaceService, options: {
         'Workstream limit reached.',
         'Name the resource with 1–80 lowercase letters, digits or :._- characters.',
         'Only the holding workstream can release a lease.',
+        'Only the holding workstream can touch a lease.',
         'A finished workstream cannot hold leases.',
         'Lease limit reached.',
         'Provide a database and role using 1–63 letters, digits or underscores.',

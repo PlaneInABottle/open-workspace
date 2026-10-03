@@ -6,11 +6,11 @@ import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readPm2ServiceLogs, runPm2Action, runPm2Logs, serviceInventory, type ServiceInventory, type ServiceLogStream } from './services.js';
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
-import { createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, checkpointEvidenceMessage, type CheckpointNote, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, checkpointEvidenceMessage, maxCheckpointHistory, type CheckpointNote, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
-import { acquireLease, releaseLease, type Lease } from './leases.js';
+import { acquireLease, expireLeasesOnRead, finishWorkstreamLeasesInState, listLeases, releaseLease, touchLease, type Lease, type LeaseActor } from './leases.js';
 import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listDrafts, listMilestones } from './milestones.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
@@ -37,7 +37,7 @@ export interface WorkstreamContext {
 
 export class WorkspaceService {
   readonly localTools: LocalToolRegistry;
-  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly revisionRunner?: CommandRunner, readonly datastoreRunner?: CommandRunner, readonly logRunner: typeof runPm2Logs = runPm2Logs) {
+  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly revisionRunner?: CommandRunner, readonly datastoreRunner?: CommandRunner, readonly logRunner: typeof runPm2Logs = runPm2Logs, readonly leaseClock: () => number = Date.now) {
     // The registry scans lazily on status/call (service-side only): the first
     // status fetch after service start performs the startup scan, and every
     // status call re-gates. The MCP process never touches local-tools/ files.
@@ -47,8 +47,8 @@ export class WorkspaceService {
     });
   }
 
-  async overview() {
-    const state = await this.store.read();
+  async overview(actor: LeaseActor = 'mcp') {
+    const state = await expireLeasesOnRead(this.store, actor, this.leaseClock);
     return {
       ...state,
       target: { id: 'local', kind: 'local', remoteConnections: false },
@@ -225,33 +225,53 @@ export class WorkspaceService {
     };
   }
 
-  async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }): Promise<Workstream> {
+  async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }, actor: LeaseActor = 'mcp'): Promise<Workstream> {
+    let sanitizedNote: ReturnType<typeof sanitizeCheckpointNote> | undefined;
     if (note !== undefined) {
       // Shape first (bounds/pattern refusal), then existence: every ref must
       // name a stored run in this workstream's workspace. Editing the note to
       // drop a ref unpins that run; there is no separate unpin tool.
-      const sanitized = sanitizeCheckpointNote(note);
-      if (sanitized.evidence.length > 0) {
+      sanitizedNote = sanitizeCheckpointNote(note);
+      if (sanitizedNote.evidence.length > 0) {
         const workstream = await this.workstream(id);
         const stored = await listRunIds(this.store.directory, workstream.workspaceId);
-        for (const ref of sanitized.evidence) {
+        for (const ref of sanitizedNote.evidence) {
           if (!stored.has(ref)) throw new Error(checkpointEvidenceMessage);
         }
       }
     }
-    return setWorkstreamStatus(this.store, id, status, note);
+    if (status !== 'done') return setWorkstreamStatus(this.store, id, status, note);
+
+    const now = this.leaseClock();
+    return this.store.update(state => {
+      const workstream = state.workstreams.find(workstream => workstream.id === id);
+      if (!workstream) throw new Error('Unknown workstream.');
+      workstream.status = 'done';
+      if (sanitizedNote) {
+        const entry: CheckpointNote = { ...sanitizedNote, at: new Date(now).toISOString() };
+        workstream.checkpointNote = entry;
+        workstream.checkpointHistory = [...checkpointHistoryOf(workstream), entry].slice(-maxCheckpointHistory);
+      }
+      workstream.updatedAt = new Date(now).toISOString();
+      finishWorkstreamLeasesInState(state, id, actor, now);
+      return workstream;
+    });
   }
 
-  async listLeases(): Promise<Lease[]> {
-    return (await this.store.read()).leases;
+  async listLeases(actor: LeaseActor = 'mcp'): Promise<Lease[]> {
+    return listLeases(this.store, actor, this.leaseClock);
   }
 
-  async acquireLease(input: { resource: string; workstreamId: string }) {
-    return acquireLease(this.store, input);
+  async acquireLease(input: { resource: string; workstreamId: string }, actor: LeaseActor = 'mcp') {
+    return acquireLease(this.store, input, actor, this.leaseClock);
   }
 
-  async releaseLease(input: { resource: string; workstreamId: string }) {
-    return releaseLease(this.store, input);
+  async touchLease(input: { resource: string; workstreamId: string }, actor: LeaseActor = 'mcp') {
+    return touchLease(this.store, input, actor, this.leaseClock);
+  }
+
+  async releaseLease(input: { resource: string; workstreamId: string }, actor: LeaseActor = 'mcp') {
+    return releaseLease(this.store, input, actor, this.leaseClock);
   }
 
   async recordActivity(entry: { actor: 'dashboard' | 'mcp'; operation: string; workspaceId: string | null; detail: string }): Promise<void> {

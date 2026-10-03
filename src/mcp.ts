@@ -176,6 +176,14 @@ server.registerTool('lease_release', {
   }).strict(),
   annotations: operateHints,
 }, ({ resource, workstreamId }) => request('/api/leases/release', { resource, workstreamId }));
+server.registerTool('lease_touch', {
+  description: 'Renew a held lease for ten minutes per touch; renewable indefinitely while holder lives. Queue progresses on crash/stop/finish/release. Only the holder may touch.',
+  inputSchema: z.object({
+    resource: z.string().min(1).max(80),
+    workstreamId: z.string().uuid(),
+  }).strict(),
+  annotations: operateHints,
+}, ({ resource, workstreamId }) => request('/api/leases/touch', { resource, workstreamId }));
 server.registerTool('workstream_create', {
   description: 'Create a workstream binding registered roots of one workspace with pinned revisions.',
   inputSchema: z.object({
