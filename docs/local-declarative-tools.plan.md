@@ -35,7 +35,7 @@
 - `src/run-summaries.ts:31-37` — `maskSecrets` for output before return/persist.
 - `src/services.ts` (whole) — process environments and raw argv are never exposed; this invariant is why no env-probe tool is allowed.
 - `src/mcp.ts:32-61` — `registerTool` with strict zod `inputSchema`, format-budget precedent (desc short, `≤5`-key flat schemas, `describe` sparingly); base instructions near byte cap — do NOT extend them.
-- `skills/learn-from-mistake/SKILL.md:20-33` — drafts under `OPENWORKSPACE_HOME/learnings/_drafts/`, ≤2KiB, ≤50 files, pattern-only rules; `sourceDraft` links this loop.
+- `skills/learn-from-mistake/SKILL.md:20-33` — drafts under `OPENWORKSPACE_HOME/learnings/_drafts/`, ≤2KiB, ≤50 files, pattern-only rules; `proposal` links this loop.
 - `ROADMAP.md:234` — queue row 16 fixes direction: declarations + hardened runner only, gate + provenance + quarantine, `local-tools/` separation, solo-local (multi-user would re-lock).
 
 ## Scope
@@ -67,7 +67,7 @@
 - Dependencies: Milestone 1.
 - Subphases:
   1. `skills/scaffold-local-tool/SKILL.md` implementing the Scaffold skill contract below (inputs/outputs/refusals incl. G6 imperative patterns; writes `pending/` only; ≤2KiB skill file per learning-loop precedent).
-  2. Hardening tests: gate-refusal matrix (unknown exe, class-name/binary confusion i.e. `"executable": "psql"`, 6th input key, custom pattern/kind field, enum `['-h']` / `['-c']`, integer `min<0`, `$1` placeholder in `statement` (G4), second statement in `statement`, `COPY` in `statement`, `-h`-shaped slot value, TCP-ish statement, oversized description, fenced/URL/imperative description (G6), reserved name, forged `sourceDraft`, 21st tool); server-argv audit via the G2 shared-construction + capture tests (no `-c`, `-f` only as `-f -`); description-confinement test (hostile description renders in the description field only, alters no instruction/prompt/SQL/argv); G5 classification test (probe-input failure → no increment + caller message; query-input failure ×3 → quarantined); quarantine re-gate cycle (quarantined → human moves to pending → fixed file re-gates to active); hot/cold rescan behavior per experiment E1 outcome.
+  2. Hardening tests: gate-refusal matrix (unknown exe, class-name/binary confusion i.e. `"executable": "psql"`, 6th input key, custom pattern/kind field, enum `['-h']` / `['-c']`, integer `min<0`, `$1` placeholder in `statement` (G4), second statement in `statement`, `COPY` in `statement`, `-h`-shaped slot value, TCP-ish statement, oversized description, fenced/URL/imperative description (G6), reserved name, forged `proposal`, 21st tool); server-argv audit via the G2 shared-construction + capture tests (no `-c`, `-f` only as `-f -`); description-confinement test (hostile description renders in the description field only, alters no instruction/prompt/SQL/argv); G5 classification test (probe-input failure → no increment + caller message; query-input failure ×3 → quarantined); quarantine re-gate cycle (quarantined → human moves to pending → fixed file re-gates to active); hot/cold rescan behavior per experiment E1 outcome.
   3. Byte-budget note: measure `listTools` delta with `db_tables` active vs absent (target: one tool ≈ server prefix + description + 2-key schema, no base-instructions change); record in plan file appendix.
   4. Final review pass at security-boundary level (negative-matrix + trust-boundary + transport + rollback rationale).
 - Files/behavior boundary: `skills/scaffold-local-tool/SKILL.md`, `test/local-tools.test.ts` additions, plan-file budget note.
@@ -103,8 +103,8 @@
     // Keep it a bare single SELECT — runDatastoreQuery adds BEGIN READ ONLY + statement_timeout.
   caps: { maxRows?: 1..100 default 50 } // (F7) timeout/outputLimit are class-owned constants,
     // NOT declarable; maxRows maps 1:1 onto runDatastoreQuery maxRows
-  provenance: { origin: 'handwritten'|'scaffolded', sourceDraft?: basename /^[a-z0-9-]{1,80}\.md$/,
-    createdAt: datetime } // sourceDraft required iff scaffolded; must exist under local-tools/proposals at gate.
+  provenance: { origin: 'handwritten'|'scaffolded', proposal?: basename /^[a-z0-9-]{1,80}\.md$/,
+    createdAt: datetime } // proposal required iff scaffolded; must exist under local-tools/proposals at gate.
     // origin is an informational label with ZERO trust weight — gate treats both identically (F10)
 }
 type SlotDecl =
@@ -129,7 +129,7 @@ Translated to a strict zod object at registration; `workspaceId` comes from the 
 7. Slots match the class `slotSpec` exactly (names, kinds, count) → `Local tool inputs do not match the executable class.`
 8. `statement`: `bindParams(statement, [])` (G4: rejects any `$n`), then `singleStatement`+`checkShape`+`checkDenied` on the FINAL text via the shared datastore functions (no copies) → `Local tool command shape is not allowed.`
 9. `caps.maxRows` range → `Local tool limits are out of range.`
-10. `provenance` cross-check (`sourceDraft` present iff scaffolded AND exists under `local-tools/proposals`) → `Local tool declaration failed validation.`
+10. `provenance` cross-check (`proposal` present iff scaffolded AND exists under `local-tools/proposals`) → `Local tool declaration failed validation.`
 11. Canonical-path resolve→`realpath`→verify→probe (class `probeArgs`, ≤5s, exit 0) against the class's owned binary → sets the `available` flag; unverifiable or probe-failing = `available:false`, never fatal.
 12. Tool-count cap (≤20 active+pending) → `Local tool limit reached.`
 All thirteen new messages (10 gate above + 3 call-time below) join the `http.ts` safe allowlist; pre-existing delegate/workspace messages are already listed; zod internals and absolute paths never reach clients.
@@ -173,7 +173,7 @@ Test obligation: every bullet above is exercised with a stubbed/capturing run an
 ### Scaffold skill contract (not the skill text)
 - Inputs: ≥3 observed raw-command repetitions (activity entries / transcript pattern) + originating draft basename + desired name/description/slots.
 - Outputs: exactly one JSON file ≤8KiB at `<OPENWORKSPACE_HOME>/local-tools/pending/<name>.json`; never writes `active/` or `quarantined/`; never edits the allowlist source; `executable` must name a compiled class (never a binary — G1 confusion case refused).
-- Refusals (must not draft, must explain which rule): secret-shaped values; multi-step chains (`|`, `&&`, `;`); executables outside the compiled allowlist; path/shell/free-text slots; >5 inputs; description violating the F5/G6 patterns (fences, links, URLs, imperative/prompt patterns); any statement beyond a single fixed SELECT-shape query with zero placeholders (psql class); forged or missing `sourceDraft` link.
+- Refusals (must not draft, must explain which rule): secret-shaped values; multi-step chains (`|`, `&&`, `;`); executables outside the compiled allowlist; path/shell/free-text slots; >5 inputs; description violating the F5/G6 patterns (fences, links, URLs, imperative/prompt patterns); any statement beyond a single fixed SELECT-shape query with zero placeholders (psql class); forged or missing `proposal` link.
 
 ### First-tool declaration (fixed, F6, G1)
 ```json
@@ -192,7 +192,7 @@ Gate walk-through: envelope strict OK; name/description OK (no fences/links/URLs
 ### Security boundary
 - Trust boundary: declaration files are untrusted data (agent-writable) — the compiled allowlist class + gate + closed classes + server-owned argv are the boundary, not file authorship. Human-only allowlist extension; agent can never add executables, flags, TCP options, or shell.
 - Descriptions are untrusted data (F5/G6): server-prefixed presentation (`Local tool <name>: …`), gate pattern refusals (bounded, non-exhaustive), description-field-only rendering (tested); a hostile description cannot alter instructions, prompts, SQL, or argv because the handler never reads it. Residual model-context visibility is explicitly accepted; confinement is the control.
-- Provenance origin is informational with zero trust weight (F10, explicitly accepted): both origins gate identically; the only enforced link is `sourceDraft` basename + existence.
+- Provenance origin is informational with zero trust weight (F10, explicitly accepted): both origins gate identically; the only enforced link is `proposal` basename + existence.
 - Secrets: no secret-shaped fields exist in the envelope; socket-only passwordless (parity with M1 DB policy); `-h`/`-p`/password/URL flags absent from all server argv; output passes `maskSecrets`; activity holds counts only.
 - Rollback: delete/rename files + restart (or service rescan; MCP restart per E1 if needed); quarantined tools stop immediately (in-memory drop before rename completes); no state repair needed since schema untouched.
 
@@ -200,7 +200,7 @@ Gate walk-through: envelope strict OK; name/description OK (no fences/links/URLs
 - No new processes, ports, watchers, or locks. Bounded CPU: gate ≤ (20 files × parse) + 1 probe ≤5s per tool at startup; per-call cost = one `runDatastoreQuery` delegation within class caps. No concurrency cap in v1 (MCP calls already serialized per client); documented for revisit if parallel agents emerge.
 
 ## Decision Authority and Open Questions
-- Fixed: solo-local scope; declarations-only (never arbitrary code); no declaration-supplied argv in v1; declarations name classes, never binaries (G1); reuse `runBoundedCommand`; `stateSchema.strict` untouched; secret blindness; dashboard secondary (no v1 views); no marketplace/discovery; bridge-to-drafts handoff point only (`pending/` + `sourceDraft` link, bridge itself out of scope).
+- Fixed: solo-local scope; declarations-only (never arbitrary code); no declaration-supplied argv in v1; declarations name classes, never binaries (G1); reuse `runBoundedCommand`; `stateSchema.strict` untouched; secret blindness; dashboard secondary (no v1 views); no marketplace/discovery; bridge-to-drafts handoff point only (`pending/` + `proposal` link, bridge itself out of scope).
 - Delegated: exact constant values within stated ranges; test file layout; reason-JSON field names; probe timeout ≤5s; status-field naming.
 - Unknown:
   - **E1 (bounded experiment, owner: implementer):** does MCP SDK `registerTool` after `connect()` propagate to an already-connected stdio client (`tools/list` reflects the new tool)? Procedure: temp harness, register-then-list, one retry. Decision rule: observed update → MCP process may rescan on a timer/status call; no update → documented MCP-restart-required for newly gated tools, status reports `restartRequired:true`. Stop after one harness session either way. Service-side gate/rescan works regardless. (ASSUMED interim: MCP-startup registration suffices; hot-plug is a bonus.)

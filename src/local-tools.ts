@@ -31,7 +31,7 @@ const slotKeyPattern = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 const toolNamePattern = /^[a-z][a-z0-9_]{0,39}$/;
 const reservedNamePrefixes = ['workspace_', 'service_', 'verification_', 'lease_', 'workstream_',
   'activity_', 'recent_', 'onboarding_', 'browser_', 'datastore_', 'local_'];
-const sourceDraftPattern = /^[a-z0-9-]{1,80}\.md$/;
+const proposalPattern = /^[a-z0-9-]{1,80}\.md$/;
 const proposalDraftLimit = 2048;
 const proposalDraftShape = /^# \S[^\r\n]{0,119}\r?\n\r?\n- Scope: \S[^\r\n]{0,199}\r?\n- Rule: \S[^\r\n]{0,499}\r?\n- Source: \S[^\r\n]{0,199}\r?\n- Status: proposal\r?\n?$/;
 const declarationSizeLimit = 8 * 1024;
@@ -64,7 +64,7 @@ const declarationSchema = z.object({
   caps: z.object({ maxRows: z.number().int().optional() }).strict().optional().default({}),
   provenance: z.object({
     origin: z.enum(['handwritten', 'scaffolded']),
-    sourceDraft: z.string().optional(),
+    proposal: z.string().optional(),
     createdAt: z.string().datetime(),
   }).strict(),
 }).strict();
@@ -327,11 +327,11 @@ export async function gateDeclaration(
     throw new Error(localToolGateMessages.badLimits);
   }
   if (decl.provenance.origin === 'scaffolded') {
-    if (!decl.provenance.sourceDraft || !sourceDraftPattern.test(decl.provenance.sourceDraft)) {
+    if (!decl.provenance.proposal || !proposalPattern.test(decl.provenance.proposal)) {
       throw new Error(localToolGateMessages.invalid);
     }
-    if (!(await isProposalDraft(options.homeDir, decl.provenance.sourceDraft))) throw new Error(localToolGateMessages.invalid);
-  } else if (decl.provenance.sourceDraft !== undefined) {
+    if (!(await isProposalDraft(options.homeDir, decl.provenance.proposal))) throw new Error(localToolGateMessages.invalid);
+  } else if (decl.provenance.proposal !== undefined) {
     throw new Error(localToolGateMessages.invalid);
   }
   // M2: the count cap is enforced before any resolve/probe work so excess
