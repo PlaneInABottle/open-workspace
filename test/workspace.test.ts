@@ -25,15 +25,10 @@ async function fixture() {
   return { root, project, store, service: new WorkspaceService(store), cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 
-test('proposal does not read a directory; only approved workspaces can be inspected', async t => {
+test('registration reads bounded metadata immediately without an approval queue', async t => {
   const f = await fixture(); t.after(f.cleanup);
-  const missing = await f.service.propose('Not present', [join(f.root, 'not-present')]);
-  assert.ok(missing.id);
-  await assert.rejects(f.service.inspect(missing.id), /not approved/);
-  await assert.rejects(f.service.approve(missing.id));
-  assert.equal((await f.store.read()).proposals.length, 1);
-  const proposal = await f.service.propose('Project', [f.project]);
-  const workspace = await f.service.approve(proposal.id);
+  await assert.rejects(f.service.register('Not present', [join(f.root, 'not-present')]), /real directory|absolute/);
+  const workspace = await f.service.register('Project', [f.project]);
   const found = await f.service.inspect(workspace.id);
   assert.deepEqual(found.roots[0].repositories.map(repo => repo.name).sort(), ['api','project','web']);
   assert.deepEqual(found.roots[0].repositories.find(repo => repo.name === 'web')?.scriptNames, ['dev','test']);
@@ -55,17 +50,15 @@ test('discovery skips symlinked repos and manifests, hidden secret folders and o
   await mkdir(join(f.project, '.secrets'));
   await writeFile(join(f.project, '.secrets/package.json'), '{}');
   await mkdir(join(f.project, 'large')); await writeFile(join(f.project, 'large/package.json'), 'X'.repeat(300 * 1024));
-  const proposal = await f.service.propose('Project', [f.project]);
-  const workspace = await f.service.approve(proposal.id);
+  const workspace = await f.service.register('Project', [f.project]);
   const found = await f.service.inspect(workspace.id);
   assert.ok(!found.roots[0].repositories.some(repo => /linked|secrets|large/.test(repo.name)));
   assert.equal(found.roots[0].warnings.length, 1);
 });
 
-test('approved root identity cannot be replaced with a symlink', async t => {
+test('registered root identity cannot be replaced with a symlink', async t => {
   const f = await fixture(); t.after(f.cleanup);
-  const proposal = await f.service.propose('Project', [f.project]);
-  const workspace = await f.service.approve(proposal.id);
+  const workspace = await f.service.register('Project', [f.project]);
   await rm(f.project, { recursive: true });
   await mkdir(join(f.root, 'replacement'));
   await symlink(join(f.root, 'replacement'), f.project);
@@ -74,10 +67,10 @@ test('approved root identity cannot be replaced with a symlink', async t => {
   assert.deepEqual(inspection.roots[0].repositories, []);
   assert.equal(inspection.roots[0].error?.includes('identity changed'), true);
   await assert.rejects(approvedRoot('/'));
-  await assert.rejects(f.service.propose('Relative', ['some/project']));
+  await assert.rejects(f.service.register('Relative', ['some/project']));
 });
 
-test('root approval rejects a symlink final component after path normalization and commits no roots on partial failure', async t => {
+test('registration rejects a symlink final component after path normalization and commits nothing on partial failure', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const outside = join(f.root, 'outside-target');
   const alias = join(f.root, 'project-alias');
@@ -90,35 +83,29 @@ test('root approval rejects a symlink final component after path normalization a
   assert.equal(await approvedRoot(`${f.project}/`), canonicalProject);
   assert.equal(await approvedRoot(`${f.project}/.`), canonicalProject);
 
-  const proposals: string[] = [];
   for (const selectedAlias of [alias, `${alias}/`, `${alias}/.`]) {
     await assert.rejects(approvedRoot(selectedAlias), /real directory, not a symlink/);
-    const proposal = await f.service.propose('Atomic roots', [`${f.project}/.`, selectedAlias]);
-    proposals.push(proposal.id);
-    await assert.rejects(f.service.approve(proposal.id), /real directory, not a symlink/);
+    await assert.rejects(f.service.register('Atomic roots', [`${f.project}/.`, selectedAlias]), /real directory, not a symlink/);
 
     const state = await f.store.read();
     assert.deepEqual(state.workspaces, []);
-    assert.ok(state.proposals.some(item => item.id === proposal.id));
-    assert.deepEqual(state.proposals.find(item => item.id === proposal.id)?.roots, [`${f.project}/.`, selectedAlias]);
-    await assert.rejects(f.service.inspect(proposal.id), /not approved/);
   }
 
   const state = await f.store.read();
   assert.deepEqual(state.workspaces, []);
-  assert.deepEqual(state.proposals.map(proposal => proposal.id), proposals);
   assert.equal(await readFile(outsideManifest, 'utf8'), '{"scripts":{"outside":"OUTSIDE_TARGET_SENTINEL"}}');
 });
 
-test('state persists and concurrent proposals are not lost', async t => {
+test('state persists and concurrent registrations are not lost', async t => {
   const f = await fixture(); t.after(f.cleanup);
-  await Promise.all(Array.from({ length: 20 }, (_, i) => f.service.propose(`Project ${i}`, [join(f.root, String(i))])));
+  for (let index = 0; index < 20; index++) await mkdir(join(f.root, String(index)));
+  await Promise.all(Array.from({ length: 20 }, (_, i) => f.service.register(`Project ${i}`, [join(f.root, String(i))])));
   const reopened = new Store(f.store.directory); await reopened.initialize();
-  assert.equal((await reopened.read()).proposals.length, 20);
-  const proposal = (await reopened.read()).proposals[0];
-  await f.service.reject(proposal.id);
-  assert.equal((await reopened.read()).proposals.length, 19);
-  await assert.rejects(f.service.reject(proposal.id));
+  assert.equal((await reopened.read()).workspaces.length, 20);
+  const first = (await reopened.read()).workspaces[0];
+  await f.service.remove(first.id);
+  assert.equal((await reopened.read()).workspaces.length, 19);
+  await assert.rejects(f.service.remove(first.id), /Workspace not found/);
 });
 
 test('private state rejects public permissions and symlinked files', async t => {
@@ -139,7 +126,7 @@ test('private state rejects public permissions and symlinked files', async t => 
 test('missing tools are explicit and checks execute nothing', async () => {
   const tools = await toolAvailability('');
   assert.ok(tools.every(tool => tool.status === 'missing' && !tool.verified));
-  assert.deepEqual(tools.map(tool => tool.id), ['git','pm2','docker','agent-browser']);
+  assert.deepEqual(tools.map(tool => tool.id), ['git','pm2','psql','docker','agent-browser']);
 });
 
 test('a second service cannot mutate the same state directory', async t => {
@@ -159,12 +146,11 @@ test('state setup rejects redirected ancestors before creating files', async t =
   await assert.rejects(readFile(join(target, 'state/state.json')));
 });
 
-test('revoking workspace access prevents subsequent discovery without touching the project', async t => {
+test('removing a registration prevents subsequent discovery without touching the project', async t => {
   const f = await fixture(); t.after(f.cleanup);
-  const proposal = await f.service.propose('Project', [f.project]);
-  const workspace = await f.service.approve(proposal.id);
-  await f.service.revoke(workspace.id);
-  await assert.rejects(f.service.inspect(workspace.id), /not approved/);
+  const workspace = await f.service.register('Project', [f.project]);
+  await f.service.remove(workspace.id);
+  await assert.rejects(f.service.inspect(workspace.id), /Workspace not found/);
   assert.equal(await readFile(join(f.project, 'api/pom.xml'), 'utf8'), '<project/>');
 });
 
@@ -182,15 +168,14 @@ test('unknown state shapes fail closed and stay byte-identical', async t => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const valid = {
     workspaces: [],
-    proposals: [],
     workstreams: [],
   };
   const cases: Buffer[] = [
     Buffer.from('{broken'),
-    Buffer.from(JSON.stringify({ ...valid, version: 2 })),
+    Buffer.from(JSON.stringify({ ...valid, proposals: [] })),
     Buffer.from(JSON.stringify({ ...valid, extra: true })),
     Buffer.from(JSON.stringify({ ...valid, workspaces: [{ id: '66666666-6666-4666-8666-666666666666', name: 'Unknown field', roots: ['/synthetic/repo'], createdAt: '2026-01-01T00:00:00.000Z', unknown: true }] })),
-    Buffer.from(JSON.stringify({ workspaces: [{ id: '44444444-4444-4444-8444-444444444444', name: 'Mixed', path: '/synthetic/repo', roots: ['/synthetic/other'], createdAt: '2026-01-01T00:00:00.000Z' }], proposals: [], workstreams: [] })),
+    Buffer.from(JSON.stringify({ workspaces: [{ id: '44444444-4444-4444-8444-444444444444', name: 'Mixed', path: '/synthetic/repo', roots: ['/synthetic/other'], createdAt: '2026-01-01T00:00:00.000Z' }], workstreams: [] })),
     Buffer.concat([Buffer.from(JSON.stringify(valid)), Buffer.from([0xff])]),
     Buffer.concat([Buffer.from(JSON.stringify(valid)), Buffer.alloc(1024 * 1024, 0x20)]),
   ];
@@ -218,10 +203,9 @@ test('oversized serialized state is rejected before replacing the prior bytes', 
       roots,
       createdAt: '2026-01-01T00:00:00.000Z',
     })),
-    proposals: [],
     workstreams: [],
   };
-  const expanded = { ...populated, proposals: [{ id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, createdAt: '2026-01-01T00:00:00.000Z' }] };
+  const expanded = { ...populated, workspaces: [...populated.workspaces, { id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, createdAt: '2026-01-01T00:00:00.000Z' }] };
   const currentBytes = Buffer.from(JSON.stringify(populated, null, 2));
   const expandedBytes = Buffer.from(JSON.stringify(expanded, null, 2));
   assert.ok(currentBytes.byteLength < 1024 * 1024);
@@ -230,13 +214,13 @@ test('oversized serialized state is rejected before replacing the prior bytes', 
   await writeFile(stateFile, currentBytes, { mode: 0o600 });
   await store.initialize();
   const before = await readFile(stateFile);
-  const service = new WorkspaceService(store);
-  await assert.rejects(service.propose('Overflow', roots), /size limit/);
+  const overflow = { id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, createdAt: '2026-01-01T00:00:00.000Z' };
+  await assert.rejects(store.update(state => { state.workspaces.push(overflow); }), /size limit/);
   assert.deepEqual(await readFile(stateFile), before);
   assert.equal((await readdir(store.directory)).some(name => name.endsWith('.tmp')), false);
 });
 
-test('multi-root approval is all-or-nothing, groups same-basename roots independently and allows cross-project reuse', async t => {
+test('multi-root registration is all-or-nothing, groups same-basename roots independently and allows cross-project reuse', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const firstParent = join(f.root, 'first-parent');
   const secondParent = join(f.root, 'second-parent');
@@ -250,10 +234,9 @@ test('multi-root approval is all-or-nothing, groups same-basename roots independ
   await writeFile(join(secondRoot, 'pom.xml'), '<project/>');
   await writeFile(join(outsideRoot, 'package.json'), '{"scripts":{"secret":"not-read"}}');
 
-  const proposal = await f.service.propose('Two repositories', [firstRoot, secondRoot]);
-  assert.deepEqual(proposal.roots, [firstRoot, secondRoot]);
-  const approved = await f.service.approve(proposal.id);
-  assert.deepEqual(approved.roots, [await realpath(firstRoot), await realpath(secondRoot)]);
+  const registered = await f.service.register('Two repositories', [firstRoot, secondRoot]);
+  assert.deepEqual(registered.roots, [await realpath(firstRoot), await realpath(secondRoot)]);
+  const approved = registered;
   const inspection = await f.service.inspect(approved.id);
   assert.deepEqual(inspection.roots.map(root => root.path), approved.roots);
   assert.deepEqual(inspection.roots.map(root => root.repositories.map(repository => repository.name)), [['same-name'], ['same-name']]);
@@ -267,51 +250,40 @@ test('multi-root approval is all-or-nothing, groups same-basename roots independ
   assert.deepEqual(partial.roots[1].repositories, []);
   assert.ok(!JSON.stringify(partial).includes('not-read'));
 
-  const sameRootProposal = await f.service.propose('Reused root', [firstRoot]);
-  const reused = await f.service.approve(sameRootProposal.id);
+  const reused = await f.service.register('Reused root', [firstRoot]);
   assert.notEqual(reused.id, approved.id);
   assert.deepEqual(reused.roots, [approved.roots[0]]);
   assert.equal((await f.store.read()).workspaces.length, 2);
 });
 
-test('overlapping selected roots are rejected and one invalid approved root grants none', async t => {
+test('overlapping selected roots are rejected and one invalid root registers nothing', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const child = join(f.project, 'web');
-  await assert.rejects(f.service.propose('Overlap', [f.project, child]), /parent and its child/);
-  await assert.rejects(f.service.propose('Duplicate', [f.project, join(f.project, '.', '')]), /parent and its child/);
+  await assert.rejects(f.service.register('Overlap', [f.project, child]), /parent and its child/);
+  await assert.rejects(f.service.register('Duplicate', [f.project, join(f.project, '.', '')]), /parent and its child/);
 
   const missingRoot = join(f.root, 'not-created');
-  const proposal = await f.service.propose('All roots', [f.project, missingRoot]);
-  await assert.rejects(f.service.approve(proposal.id));
+  await assert.rejects(f.service.register('All roots', [f.project, missingRoot]));
   const state = await f.store.read();
   assert.equal(state.workspaces.length, 0);
-  assert.equal(state.proposals.length, 1);
-  assert.deepEqual(state.proposals[0].roots, [f.project, missingRoot]);
 });
 
-test('projects keep bounded approved and pending counts and at most twenty roots', async t => {
+test('projects keep bounded counts and at most twenty roots', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const twentyOneRoots = Array.from({ length: 21 }, (_, index) => join(f.root, `candidate-${index}`));
-  await assert.rejects(f.service.propose('Too many roots', twentyOneRoots), /no more than 20/);
-  await assert.rejects(f.service.propose('Long root', [`/${'x'.repeat(4096)}`]), /4096 characters or fewer/);
-  await assert.rejects(f.service.propose('x'.repeat(101), [f.project]), /100 characters or fewer/);
-  await Promise.all(Array.from({ length: 50 }, (_, index) => f.service.propose(`Pending ${index}`, [join(f.root, `pending-${index}`)])));
-  assert.equal((await f.store.read()).proposals.length, 50);
-  await assert.rejects(f.service.propose('One too many', [join(f.root, 'pending-extra')]), /Too many pending requests/);
-  assert.equal((await f.store.read()).proposals.length, 50);
+  await assert.rejects(f.service.register('Too many roots', twentyOneRoots), /no more than 20/);
+  await assert.rejects(f.service.register('Long root', [`/${'x'.repeat(4096)}`]), /4096 characters or fewer/);
+  await assert.rejects(f.service.register('x'.repeat(101), [f.project]), /100 characters or fewer/);
 
   await f.store.update(state => {
-    state.proposals = [];
     state.workspaces = Array.from({ length: 50 }, (_, index) => ({
       id: `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
-      name: `Approved ${index}`,
-      roots: [join(f.root, `approved-${index}`)],
+      name: `Registered ${index}`,
+      roots: [join(f.root, `registered-${index}`)],
       createdAt: '2026-01-01T00:00:00.000Z',
     }));
   });
-  const lastProposal = await f.service.propose('Project limit', [f.project]);
-  await assert.rejects(f.service.approve(lastProposal.id), /Project limit reached/);
+  await assert.rejects(f.service.register('Project limit', [f.project]), /Project limit reached/);
   const after = await f.store.read();
   assert.equal(after.workspaces.length, 50);
-  assert.equal(after.proposals.length, 1);
 });

@@ -26,8 +26,7 @@ async function fixture(t: { after: (cleanup: () => void | Promise<void>) => void
   const store = new Store(join(root, 'state'));
   await store.initialize();
   const service = new WorkspaceService(store);
-  const proposal = await service.propose('Project', [project]);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', [project]);
   return { root, project, store, approved };
 }
 
@@ -90,7 +89,7 @@ test('verification refuses paths, scripts and repositories outside the approved 
   const service = new WorkspaceService(f.store, undefined, undefined, run);
   await assert.rejects(
     service.verify(f.approved.id, { repositoryPath: join(f.root, 'elsewhere'), scriptName: 'check' }),
-    /not inside an approved project root/,
+    /not inside an registered project root/,
   );
   await assert.rejects(
     service.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'deploy' }),
@@ -105,7 +104,7 @@ test('verification refuses paths, scripts and repositories outside the approved 
   await symlink(f.project, join(link, 'alias'));
   await assert.rejects(
     service.verify(f.approved.id, { repositoryPath: join(link, 'alias'), scriptName: 'check' }),
-    /not a real directory|not inside an approved project root/,
+    /not a real directory|not inside an registered project root/,
   );
   assert.equal(runs, 0);
 });

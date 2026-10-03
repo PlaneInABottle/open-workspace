@@ -32,7 +32,13 @@ async function regularFile(path: string): Promise<boolean> {
 export async function approvedRoot(path: string): Promise<string> {
   if (!isAbsolute(path) || path.includes('\0') || path.length > maxProjectRootLength) throw new Error('Use an absolute project directory.');
   const selectedPath = resolve(path);
-  const selectedInfo = await lstat(selectedPath);
+  let selectedInfo;
+  try {
+    selectedInfo = await lstat(selectedPath);
+  } catch (error) {
+    // Missing paths and I/O failures carry private absolute paths; report the safe reason instead.
+    throw new Error('Choose a real directory, not a symlink.');
+  }
   if (!selectedInfo.isDirectory() || selectedInfo.isSymbolicLink()) {
     throw new Error('Choose a real directory, not a symlink.');
   }
@@ -116,6 +122,7 @@ export async function toolAvailability(searchPath = process.env.PATH || '') {
   const definitions = [
     { id: 'git', name: 'Git', purpose: 'Repository operations', required: true },
     { id: 'pm2', name: 'PM2', purpose: 'Optional application runner', required: false },
+    { id: 'psql', name: 'PostgreSQL client', purpose: 'Optional read-only datastore queries', required: false },
     { id: 'docker', name: 'Docker', purpose: 'Optional container runner', required: false },
     { id: 'agent-browser', name: 'Agent Browser', purpose: 'Browser verification in M1', required: false },
   ];

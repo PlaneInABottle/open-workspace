@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { ConnectionView } from '@/features/connection/ConnectionView';
 import { AiSetupView } from '@/features/ai-setup/AiSetupView';
 import { projectRootLabel } from '@/features/projects/root-label';
-import { OverviewView, PendingRequests } from '@/features/projects/ProjectsView';
+import { OverviewView } from '@/features/projects/ProjectsView';
 import { PrivacyView } from '@/features/privacy/PrivacyView';
 import { ensureViewHash, viewFromHash, type View } from '@/hash-navigation';
 import { useWorkbench } from '@/use-workbench';
@@ -125,7 +125,7 @@ function ProjectRail({
           {workspaces.length > 0 && <span className="text-[0.7rem] text-muted-foreground">{workspaces.length}</span>}
         </div>
         {workspaces.length === 0 ? (
-          <p className="px-2 py-3 text-xs leading-5 text-muted-foreground">Projects appear here after you approve their selected folders.</p>
+          <p className="px-2 py-3 text-xs leading-5 text-muted-foreground">Projects appear here after you register their folders.</p>
         ) : (
           <ul className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
             {workspaces.map(workspace => (
@@ -216,10 +216,10 @@ export function App() {
     wasConnected.current = state.phase === 'connected';
   }, [replace, state.phase]);
 
-  const loadOperator = workbench.loadOperator;
+  const loadActivity = workbench.loadActivity;
   useEffect(() => {
-    if (view === 'setup' && state.phase === 'connected') void loadOperator();
-  }, [view, state.phase, loadOperator]);
+    if (view === 'setup' && state.phase === 'connected') void loadActivity();
+  }, [view, state.phase, loadActivity]);
 
   function selectProject(id: string) {
     navigate('overview');
@@ -305,12 +305,6 @@ export function App() {
         </header>
         <div className="workbench-content">
           {state.notice && <NoticeBanner notice={state.notice} dismiss={() => workbench.setNotice(null)} />}
-          <PendingRequests
-            proposals={state.proposals}
-            busyIds={state.busyIds}
-            onApprove={id => { navigate('overview'); void workbench.approve(id); }}
-            onDecline={id => void workbench.decline(id)}
-          />
           {view === 'overview' && (
             <OverviewView
               state={state}
@@ -328,10 +322,10 @@ export function App() {
               onGoToAi={() => navigate('setup')}
             />
           )}
-          {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} onSaveOperator={ids => { void workbench.saveOperatorScope(ids); }} />}
-          {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRevoke={id => void workbench.revoke(id)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
+          {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} />}
+          {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRemove={id => void workbench.removeWorkspace(id)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
         </div>
-        <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · human approval required for each project’s selected roots</footer>
+        <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · the dashboard records activity, it never gates execution</footer>
       </main>
     </div>
   );

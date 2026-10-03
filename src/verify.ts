@@ -76,9 +76,10 @@ export type CommandRunner = (command: string, args: string[], options: {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   spawn?: typeof spawn;
+  input?: string;
 }) => Promise<CommandOutcome>;
 
-function boundedEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+export function boundedEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return Object.fromEntries([
     ['PATH', process.env.PATH],
     ['HOME', process.env.HOME],
@@ -96,6 +97,7 @@ export async function runBoundedCommand(command: string, args: string[], options
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   spawn?: typeof spawn;
+  input?: string;
 }): Promise<CommandOutcome> {
   const startedAt = Date.now();
   let child;
@@ -103,10 +105,17 @@ export async function runBoundedCommand(command: string, args: string[], options
     child = (options.spawn ?? spawn)(command, args, {
       shell: false,
       detached: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options.cwd,
       env: options.env ?? boundedEnvironment(),
     });
+    if (options.input !== undefined && child.stdin) {
+      child.stdin.on('error', () => undefined);
+      child.stdin.write(options.input, 'utf8');
+      child.stdin.end();
+    } else if (child.stdin) {
+      child.stdin.end();
+    }
   } catch {
     return { exitCode: null, timedOut: false, aborted: false, truncated: false, stdout: '', stderr: '', durationMs: Date.now() - startedAt, spawnFailed: true };
   }
@@ -175,7 +184,7 @@ export async function runBoundedCommand(command: string, args: string[], options
 
 async function resolveRepository(workspaceRoots: string[], repositoryPath: string): Promise<{ repository: string; root: string }> {
   if (!isAbsolute(repositoryPath) || repositoryPath.includes('\0') || repositoryPath.length > 4096) {
-    throw new Error('The selected folder is not inside an approved project root.');
+    throw new Error('The selected folder is not inside an registered project root.');
   }
   const resolved = resolve(repositoryPath);
   let canonical: string;
@@ -186,14 +195,14 @@ async function resolveRepository(workspaceRoots: string[], repositoryPath: strin
     if (canonical !== resolved) throw new Error('The selected folder is not a real directory.');
   } catch (error) {
     if (error instanceof Error && error.message !== 'The selected folder is not a real directory.') {
-      throw new Error('The selected folder is not inside an approved project root.');
+      throw new Error('The selected folder is not inside an registered project root.');
     }
     throw error;
   }
   const group = await stableRootGroup(workspaceRoots, canonical);
   // Approval already rejects overlapping roots, so at most one root can own the folder.
   if (group.matchedRoots.length !== 1 || !group.exactRootPath) {
-    throw new Error('The selected folder is not inside an approved project root.');
+    throw new Error('The selected folder is not inside an registered project root.');
   }
   return { repository: canonical, root: group.exactRootPath };
 }
@@ -259,15 +268,15 @@ async function observeServiceLink(
   list: typeof listPm2Processes,
 ): Promise<VerificationServiceContext> {
   if (typeof link.pmId !== 'number' || !Number.isInteger(link.pmId) || link.pmId < 0 || !link.name.trim() || link.name.length > 200) {
-    throw new Error('The linked service is not uniquely mapped to an approved root.');
+    throw new Error('The linked service is not uniquely mapped to a registered root.');
   }
   const listed = await list();
-  if (!listed.available) throw new Error('The linked service is not uniquely mapped to an approved root.');
+  if (!listed.available) throw new Error('The linked service is not uniquely mapped to a registered root.');
   const mapped = await inspectPm2Services(workspaceRoots, listed.processes);
   const service = [...mapped.services, ...mapped.ambiguousServices]
     .find(service => service.pmId === link.pmId && service.name === link.name);
   if (!service?.exactRootPath || (link.namespace && service.namespace && service.namespace !== link.namespace)) {
-    throw new Error('The linked service is not uniquely mapped to an approved root.');
+    throw new Error('The linked service is not uniquely mapped to a registered root.');
   }
   return { pmId: service.pmId ?? link.pmId, name: service.name, namespace: service.namespace, status: service.status };
 }

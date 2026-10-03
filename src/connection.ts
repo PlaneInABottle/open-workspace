@@ -18,10 +18,10 @@ export async function connection(directory = stateDirectory()) {
   return value;
 }
 
-export async function serviceRequest(path: string, data?: unknown, timeoutMs = 10_000) {
+export async function serviceRequest(path: string, data?: unknown, timeoutMs = 10_000, method?: string) {
   const local = await connection();
   const response = await fetch(`${local.origin}${path}`, {
-    method: data === undefined ? 'GET' : 'POST',
+    method: method ?? (data === undefined ? 'GET' : 'POST'),
     headers: { Authorization: `Bearer ${local.mcpToken}`, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(data === undefined ? {} : { body: JSON.stringify(data) }),
     signal: AbortSignal.timeout(timeoutMs), redirect: 'error',

@@ -1,11 +1,9 @@
-export interface Proposal {
+export interface Workspace {
   id: string;
   name: string;
   roots: string[];
   createdAt: string;
 }
-
-export interface Workspace extends Proposal {}
 
 export interface Capability {
   id: string;
@@ -17,7 +15,6 @@ export interface Capability {
 }
 
 export interface Overview {
-  proposals: Proposal[];
   workspaces: Workspace[];
   capabilities: Capability[];
   milestone: string;
@@ -137,14 +134,9 @@ export interface Lease {
   updatedAt: string;
 }
 
-export interface OperatorScope {
-  workspaceIds: string[];
-  updatedAt: string;
-}
-
 export interface ActivityEntry {
   at: string;
-  actor: 'dashboard' | 'mcp-operator';
+  actor: 'dashboard' | 'mcp';
   operation: string;
   workspaceId: string | null;
   detail: string;
@@ -279,7 +271,10 @@ export class ApiClient {
   overview() { return this.request<Overview>('/api/overview'); }
   clientConfig() { return this.request<ClientConfig>('/api/client-config'); }
   inspect(workspaceId: string) { return this.request<Inspection>(`/api/workspaces/${safeId(workspaceId)}`); }
-  propose(name: string, roots: string[]) { return this.request<Proposal>('/api/proposals', { name, roots }); }
+  register(name: string, roots: string[]) { return this.request<Workspace>('/api/workspaces', { name, roots }); }
+  remove(workspaceId: string) {
+    return this.request<{ removed: true }>(`/api/workspaces/${safeId(workspaceId)}`, undefined, { method: 'DELETE', intent: 'remove-workspace' });
+  }
   async projectRootPicker(signal: AbortSignal): Promise<ProjectRootPickerResult> {
     const result = await this.request<ProjectRootPickerResult>('/api/project-root-picker', {}, {
       timeoutMs: 305_000,
@@ -294,9 +289,6 @@ export class ApiClient {
     }
     return result;
   }
-  approve(proposalId: string) { return this.request<Workspace>(`/api/proposals/${safeId(proposalId)}/approve`, {}); }
-  decline(proposalId: string) { return this.request<{ rejected: true }>(`/api/proposals/${safeId(proposalId)}/reject`, {}); }
-  revoke(workspaceId: string) { return this.request<{ revoked: true }>(`/api/workspaces/${safeId(workspaceId)}/revoke`, {}); }
   services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}, { intent: 'inspect-services' }); }
   serviceAction(workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
     return this.request<ServiceActionResult>(`/api/workspaces/${safeId(workspaceId)}/services/${action}`, target, { intent: 'control-service' });
@@ -318,10 +310,6 @@ export class ApiClient {
   }
   releaseLease(resource: string, workstreamId: string) {
     return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId }, { intent: 'release-lease' });
-  }
-  operatorScope() { return this.request<OperatorScope | null>('/api/operator'); }
-  setOperatorScope(workspaceIds: string[]) {
-    return this.request<OperatorScope | null>('/api/operator/delegate', { workspaceIds }, { intent: 'delegate-operator' });
   }
   activity() { return this.request<ActivityEntry[]>('/api/activity'); }
 
@@ -348,11 +336,12 @@ export class ApiClient {
     timeoutMs?: number;
     signal?: AbortSignal;
     intent?: string;
+    method?: string;
   } = {}): Promise<T> {
     const generation = this.generation;
     const token = this.token;
     const response = await fetch(path, {
-      method: data === undefined ? 'GET' : 'POST',
+      method: options.method ?? (data === undefined ? 'GET' : 'POST'),
       credentials: 'same-origin',
       cache: 'no-store',
       headers: {

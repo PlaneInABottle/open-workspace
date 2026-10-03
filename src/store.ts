@@ -41,23 +41,17 @@ const lease = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();
-const operatorScope = z.object({
-  workspaceIds: z.array(z.string().uuid()).max(50),
-  updatedAt: z.string().datetime(),
-}).strict().nullable();
 const activityEntry = z.object({
   at: z.string().datetime(),
-  actor: z.enum(['dashboard', 'mcp-operator']),
+  actor: z.enum(['dashboard', 'mcp']),
   operation: z.string().min(1).max(80),
   workspaceId: z.string().uuid().nullable(),
   detail: z.string().max(200),
 }).strict();
 const stateSchema = z.object({
   workspaces: z.array(registration).max(50),
-  proposals: z.array(registration).max(50),
   workstreams: z.array(workstream).max(50),
   leases: z.array(lease).max(50).optional().default([]),
-  operatorScope: operatorScope.optional().default(null),
   activity: z.array(activityEntry).max(50).optional().default([]),
 }).strict();
 export type Registration = z.infer<typeof registration>;
@@ -149,11 +143,11 @@ export class Store {
       stored = await readPrivateJson(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      await writePrivateJson(path, { workspaces: [], proposals: [], workstreams: [] });
+      await writePrivateJson(path, { workspaces: [], workstreams: [] });
       return;
     }
 
-    // No versioned upgrades: unknown shapes fail closed and the file is left byte-identical.
+    // Hard cutover, no migrations: unknown shapes fail closed and the file is left byte-identical.
     if (!stateSchema.safeParse(stored).success) throw new Error('Local workspace state is invalid.');
   }
 

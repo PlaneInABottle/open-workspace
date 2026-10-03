@@ -26,11 +26,10 @@ function process(cwd: string, name = 'api'): Pm2Process {
   return { pmId: 1, name, namespace: 'default', status: 'online', cwd, restartCount: 2, startedAt: null };
 }
 
-test('PM2 service metadata is scoped to approved project roots only', async t => {
+test('PM2 service metadata is scoped to registered project roots only', async t => {
   const f = await approvedProject(t);
   const service = new WorkspaceService(f.store, async () => ({ available: true, processes: [process(f.inner), process(f.outside, 'outside')] }));
-  const proposal = await service.propose('Project', [f.project]);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', [f.project]);
   const inventory = await service.services(approved.id);
   assert.equal(inventory.available, true);
   assert.equal(inventory.processCount, 2);
@@ -43,7 +42,7 @@ test('PM2 service metadata is scoped to approved project roots only', async t =>
   assert.ok(!JSON.stringify(inventory).includes(f.outside));
 });
 
-test('nested approved roots produce an explicit ambiguous service rather than a fake match', async () => {
+test('nested registered roots produce an explicit ambiguous service rather than a fake match', async () => {
   const processPath = await mkdtemp(join(tmpdir(), 'openworkspace-services-ambiguous-'));
   try {
     const parent = await realpath(processPath);
@@ -68,8 +67,7 @@ test('service control runs only against an exactly mapped PM2 process', async t 
     calls.push({ action, pmId });
     return { ok: true };
   });
-  const proposal = await service.propose('Project', [f.project]);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', [f.project]);
 
   const result = await service.serviceAction(approved.id, 'restart', { pmId: 1, name: 'api', namespace: 'default' });
   assert.deepEqual(calls, [{ action: 'restart', pmId: 1 }]);
@@ -90,8 +88,7 @@ test('service control refuses targets that are outside approved or ambiguous roo
     runnerCalls += 1;
     return { ok: true };
   });
-  const proposal = await service.propose('Project', [f.project]);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', [f.project]);
 
   const outside = await service.serviceAction(approved.id, 'stop', { pmId: 1, name: 'outside', namespace: 'default' });
   assert.equal(outside.status, 'failed');
@@ -123,8 +120,7 @@ test('service control does not claim success when PM2 or fresh metadata is unava
 
 async function serviceWithState(store: Store, root: string) {
   const service = new WorkspaceService(store, async (): Promise<Pm2ListResult> => ({ available: true, processes: [] }));
-  const proposal = await service.propose('Project', [root]);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', [root]);
   return approved;
 }
 

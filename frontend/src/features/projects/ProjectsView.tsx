@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRight, Check, CircleAlert, CircleDashed, CircleDot, FolderKanban, Plus } from 'lucide-react';
+import { ArrowRight, Check, CircleDashed, CircleDot, FolderKanban, Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
 import { projectRootLabel } from '@/features/projects/root-label';
-import type { Capability, Inspection, Lease, ProjectRootPickerResult, Proposal, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
+import type { Capability, Inspection, Lease, ProjectRootPickerResult, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -32,50 +32,6 @@ interface OverviewViewProps {
   onGoToAi: () => void;
 }
 
-interface PendingRequestsProps {
-  proposals: Proposal[];
-  busyIds: ReadonlySet<string>;
-  onApprove: (id: string) => void;
-  onDecline: (id: string) => void;
-}
-
-export function PendingRequests({ proposals, busyIds, onApprove, onDecline }: PendingRequestsProps) {
-  if (!proposals.length) return null;
-  return (
-    <section aria-labelledby="pending-requests-heading" className="mb-8 border-y border-warning/35 bg-warning-background/70 px-4 py-4 sm:px-5">
-      <div className="flex items-center gap-2">
-        <CircleAlert aria-hidden="true" className="size-4 shrink-0 text-warning" />
-        <h2 id="pending-requests-heading" className="text-sm font-semibold">Waiting for your approval</h2>
-        <span className="text-xs text-muted-foreground">{proposals.length}</span>
-      </div>
-      <ul className="mt-3 divide-y divide-warning/20">
-        {proposals.map(proposal => {
-          const busy = busyIds.has(`proposal:${proposal.id}`);
-          return (
-            <li key={proposal.id} className="grid gap-3 py-4 first:pt-1 last:pb-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-              <div className="min-w-0">
-                <h3 className="text-sm font-medium">{proposal.name}</h3>
-                <ul aria-label="Requested repository folders" className="mt-2 grid gap-1">
-                  {proposal.roots.map(root => <li key={root} className="whitespace-pre-wrap break-all font-mono text-xs leading-5 text-muted-foreground">{root}</li>)}
-                </ul>
-                <p className="mt-2 max-w-3xl text-xs leading-5 text-muted-foreground">Approval allows bounded metadata discovery in each listed folder only. It does not include a common parent, secret reads, commands, installs, or file changes.</p>
-              </div>
-              <div className="flex flex-wrap gap-2 sm:justify-end">
-                <Button type="button" size="sm" disabled={busy} onClick={() => onApprove(proposal.id)} aria-label={`Approve project access for ${proposal.name}`}>
-                  {busy ? 'Updating…' : 'Approve access'}
-                </Button>
-                <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onDecline(proposal.id)} aria-label={`Decline project request for ${proposal.name}`}>
-                  Decline
-                </Button>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
 export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi }: OverviewViewProps) {
   const [creating, setCreating] = useState(false);
   const selectProject = (id: string) => {
@@ -85,10 +41,10 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
   const selected = state.workspaces.find(workspace => workspace.id === state.selectedId);
   const title = selected?.name || 'Projects';
   const description = selected
-    ? 'Approved metadata inventory · no application has been started or health-checked.'
+    ? 'Registered metadata inventory · no application has been started or health-checked.'
     : state.workspaces.length
-      ? 'Choose a project to view its approved repository groups.'
-      : 'Create a named project from the repository folders you choose. Nothing is read until you approve the complete request.';
+      ? 'Choose a project to view its registered repository groups.'
+      : 'Create a named project from the repository folders you choose. Bounded metadata is read immediately.';
 
   return (
     <div className="space-y-8">
@@ -130,7 +86,7 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 id="project-selection-heading" className="text-base font-semibold">Choose a project</h2>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">Select a project to review its approved repository folders.</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">Select a project to review its registered repository folders.</p>
             </div>
             <Button type="button" onClick={() => setCreating(true)} disabled={creating}>
               <Plus aria-hidden="true" data-icon="inline-start" />Create new project
@@ -255,11 +211,11 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
 }) {
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) || 0;
   const unavailableCount = inspection?.roots.filter(root => root.unavailable).length || 0;
-  if (!inspection && loading) return <p role="status" className="border-y border-border py-5 text-sm text-muted-foreground">Reading approved project metadata…</p>;
+  if (!inspection && loading) return <p role="status" className="border-y border-border py-5 text-sm text-muted-foreground">Reading registered project metadata…</p>;
   if (!inspection) {
     return (
       <div role="alert" className="flex flex-wrap items-center justify-between gap-4 border-y border-destructive/40 py-5">
-        <p className="text-sm text-destructive">{error || 'Select an approved project to inspect its metadata.'}</p>
+        <p className="text-sm text-destructive">{error || 'Select a registered project to inspect its metadata.'}</p>
         <Button type="button" variant="outline" size="sm" onClick={onRetry}>Retry inspection</Button>
       </div>
     );
@@ -268,7 +224,7 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
   return (
     <div className="space-y-7">
       {loading && (
-        <p role="status" className="text-sm text-muted-foreground">Updating approved metadata; showing the last confirmed inventory.</p>
+        <p role="status" className="text-sm text-muted-foreground">Updating registered metadata; showing the last confirmed inventory.</p>
       )}
       {error && (
         <div role="alert" className="flex flex-wrap items-center justify-between gap-4 border-y border-destructive/40 py-3">
@@ -279,7 +235,7 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
       <section aria-labelledby="project-inventory-heading" className="min-w-0">
         <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
           <div>
-            <p className="eyebrow">APPROVED METADATA</p>
+            <p className="eyebrow">REGISTERED METADATA</p>
             <h2 id="project-inventory-heading" className="text-base font-semibold">Project inventory</h2>
             <p className="mt-1 text-sm text-muted-foreground">{inspection.roots.length} {inspection.roots.length === 1 ? 'root' : 'roots'} · {componentCount} {componentCount === 1 ? 'component' : 'components'} · no application was started or health-checked.</p>
           </div>
@@ -344,10 +300,10 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
           <h3 id={headingId} className="text-sm font-semibold">{rootDisplayName(root.path)}</h3>
           <p id={`${headingId}-path`} className="mt-1 whitespace-pre-wrap break-all font-mono text-xs leading-5 text-muted-foreground">{root.path}</p>
         </div>
-        <Badge variant="outline">{root.unavailable ? 'Unavailable' : 'Approved root'}</Badge>
+        <Badge variant="outline">{root.unavailable ? 'Unavailable' : 'Registered root'}</Badge>
       </header>
       {root.unavailable ? (
-        <p role="alert" className="mt-3 border-l-2 border-destructive px-3 py-2 text-sm text-destructive">{root.error || 'This approved root is unavailable. Other project roots remain available.'}</p>
+        <p role="alert" className="mt-3 border-l-2 border-destructive px-3 py-2 text-sm text-destructive">{root.error || 'This registered root is unavailable. Other project roots remain available.'}</p>
       ) : (
         <>
           {root.warnings.length > 0 && (
@@ -537,7 +493,7 @@ function WorkstreamsSection({ roots, workstreams, leases, loading, error, onCrea
           <p className="eyebrow">PARALLEL WORKSTREAMS</p>
           <h2 id="workstreams-heading" className="text-base font-semibold">Workstreams</h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Bind approved roots into a named workstream with pinned revisions. OpenWorkspace never creates checkouts or mutates repositories; it only records what you bind.
+            Bind registered roots into a named workstream with pinned revisions. OpenWorkspace never creates checkouts or mutates repositories; it only records what you bind.
           </p>
         </div>
       </header>
@@ -585,7 +541,7 @@ function WorkstreamsSection({ roots, workstreams, leases, loading, error, onCrea
           />
         </div>
         <fieldset className="grid gap-1">
-          <legend className="text-xs font-medium text-muted-foreground">Checkouts (approved roots only)</legend>
+          <legend className="text-xs font-medium text-muted-foreground">Checkouts (registered roots only)</legend>
           {roots.map(root => (
             <label key={root} className="flex items-center gap-2 break-all font-mono text-xs">
               <input type="checkbox" checked={selectedRoots.includes(root)} disabled={loading} onChange={() => toggleRoot(root)} />
@@ -639,12 +595,12 @@ function VerificationPanel({ inspection, services, result, loading, error, onVer
           <p className="eyebrow">REPOSITORY VERIFICATION</p>
           <h2 id="verification-heading" className="text-base font-semibold">Run one repository test</h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Runs one existing <span className="font-mono">package.json</span> script with a bounded runtime and records the checkout, worktree, service and time context. Dashboard-only; MCP can never run a test. A pass is local diagnostic context, not a CI verdict.
+            Runs one existing <span className="font-mono">package.json</span> script with a bounded runtime and records the checkout, worktree, service and time context. Execution is authorized by your client permission model; the dashboard only records that it ran. A pass is local diagnostic context, not a CI verdict.
           </p>
         </div>
       </header>
       {candidates.length === 0 && (
-        <p className="mt-4 text-sm text-muted-foreground">No runnable Node.js test candidate was discovered in this project. Approve a root containing a package.json with scripts first.</p>
+        <p className="mt-4 text-sm text-muted-foreground">No runnable Node.js test candidate was discovered in this project. Register a root containing a package.json with scripts first.</p>
       )}
       {candidates.length > 0 && !confirming && (
         <div className="mt-4 grid max-w-2xl gap-3">
@@ -731,7 +687,7 @@ function ServicesPanel({ services, loading, error, onInspectServices, onServiceA
         <div>
           <p className="eyebrow">LOCAL SERVICES</p>
           <h2 id="service-inspection-heading" className="text-base font-semibold">Connected services</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Restart or stop only the exactly mapped service selected here. Dashboard lifecycle control is separate from directory approval; it still does not prove health, readiness or test success.</p>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Restart or stop only the exactly mapped service selected here. Execution is authorized by your client permission model; the dashboard only records that it ran. This still does not prove health, readiness or test success.</p>
         </div>
         <Button type="button" variant="outline" onClick={onInspectServices} disabled={loading}>
           {loading ? 'Inspecting…' : services ? 'Refresh service information' : 'Inspect services'}
@@ -771,10 +727,10 @@ function ServicesPanel({ services, loading, error, onInspectServices, onServiceA
             </div>
           )}
           {services.services.length === 0 && services.ambiguousServices.length === 0 && (
-            <p className="text-sm text-muted-foreground">No PM2 process working directory matches an approved project root.</p>
+            <p className="text-sm text-muted-foreground">No PM2 process working directory matches a registered project root.</p>
           )}
           <p className="text-xs text-muted-foreground">
-            {services.processCount} local {services.processCount === 1 ? 'process' : 'processes'} scanned · {services.matchedProcessCount} matched this project · {services.unmatchedProcessCount} outside the project scope. Metadata is read-only; lifecycle buttons are dashboard-only, and readiness/tests are separate.
+            {services.processCount} local {services.processCount === 1 ? 'process' : 'processes'} scanned · {services.matchedProcessCount} matched this project · {services.unmatchedProcessCount} outside the project scope. Metadata is read-only; the dashboard only records lifecycle actions, and readiness/tests are separate.
           </p>
         </div>
       )}

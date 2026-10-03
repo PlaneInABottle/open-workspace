@@ -11,7 +11,7 @@ import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 
-test('real stdio MCP shares service state, cannot approve access and survives service recreation', async () => {
+test('real stdio MCP registers and operates without dashboard approval and survives service recreation', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-mcp-')));
   const store = new Store(join(root, 'state')); await store.initialize();
   const project = join(root, 'project'); await mkdir(project);
@@ -31,30 +31,48 @@ test('real stdio MCP shares service state, cannot approve access and survives se
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['lease_acquire','lease_release','onboarding_plan','service_control','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_propose','workspace_services','workspace_workstreams']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['datastore_query','lease_acquire','lease_release','onboarding_plan','service_control','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_workstreams','workstream_create','workstream_status']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
-    const proposalTool = tools.tools.find(tool => tool.name === 'workspace_propose');
-    assert.deepEqual(Object.keys((proposalTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
+    const registerTool = tools.tools.find(tool => tool.name === 'workspace_register');
+    assert.deepEqual(Object.keys((registerTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
     const listed = await client.callTool({ name: 'workspace_list', arguments: {} });
     assert.ok(!listed.isError);
-    const requested = await client.callTool({ name: 'workspace_propose', arguments: { name: 'Fixture', roots: [project] } });
-    const proposal = JSON.parse((requested.content as Array<{ text: string }>)[0].text) as { id: string };
-    const denied = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: proposal.id } });
-    assert.equal(denied.isError, true);
-    const deniedServices = await client.callTool({ name: 'workspace_services', arguments: { workspaceId: proposal.id } });
-    assert.equal(deniedServices.isError, true);
-    const mcpApproval = await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
+    const registered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project] } });
+    assert.ok(!registered.isError);
+    const workspace = JSON.parse((registered.content as Array<{ text: string }>)[0].text) as { id: string };
+    const inspected = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: workspace.id } });
+    assert.ok(!inspected.isError);
+    assert.match((inspected.content as Array<{ text: string }>)[0].text, /not_checked/);
+    assert.match((inspected.content as Array<{ text: string }>)[0].text, /"roots"/);
+    const services = await client.callTool({ name: 'workspace_services', arguments: { workspaceId: workspace.id } });
+    const servicesText = (services.content as Array<{ text: string }>)[0].text;
+    assert.ok(!services.isError);
+    assert.match(servicesText, /fixture-api/);
+    assert.match(servicesText, /"matchedProcessCount": 1/);
+    const mcpSessionDenied = await fetch(`${origin}/api/dashboard-session`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${app.mcpToken}`,
         Origin: origin,
         'Sec-Fetch-Site': 'same-origin',
+        'X-OpenWorkspace-Intent': 'connect-dashboard',
         'Content-Type': 'application/json',
       },
       body: '{}',
     });
-    assert.equal(mcpApproval.status, 403);
+    assert.equal(mcpSessionDenied.status, 403);
     assert.equal((await fetch(`${origin}/api/client-config`, { headers: { Authorization: `Bearer ${app.mcpToken}` } })).status, 403);
+    assert.equal((await fetch(`${origin}/api/project-root-picker`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${app.mcpToken}`,
+        Origin: origin,
+        'Sec-Fetch-Site': 'same-origin',
+        'X-OpenWorkspace-Intent': 'select-project-roots',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })).status, 403);
 
     const connected = await fetch(`${origin}/api/dashboard-session`, {
       method: 'POST',
@@ -63,38 +81,35 @@ test('real stdio MCP shares service state, cannot approve access and survives se
     });
     assert.equal(connected.status, 201);
     const dashboardSession = await connected.json() as { dashboardToken: string };
-    const approval = await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-      method: 'POST', headers: { Authorization: `Bearer ${dashboardSession.dashboardToken}`, 'Content-Type': 'application/json' }, body: '{}',
-    });
-    assert.equal(approval.status, 200);
-    const inspected = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: proposal.id } });
-    assert.ok(!inspected.isError);
-    assert.match((inspected.content as Array<{ text: string }>)[0].text, /not_checked/);
-    assert.match((inspected.content as Array<{ text: string }>)[0].text, /"roots"/);
-    const services = await client.callTool({ name: 'workspace_services', arguments: { workspaceId: proposal.id } });
-    const servicesText = (services.content as Array<{ text: string }>)[0].text;
-    assert.ok(!services.isError);
-    assert.match(servicesText, /fixture-api/);
-    assert.match(servicesText, /"matchedProcessCount": 1/);
-    const plan = await client.callTool({ name: 'onboarding_plan', arguments: { workspaceId: proposal.id } });
+    const removed = await client.callTool({ name: 'workspace_remove', arguments: { workspaceId: workspace.id } });
+    assert.ok(!removed.isError);
+    const gone = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: workspace.id } });
+    assert.equal(gone.isError, true);
+    const reregistered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project] } });
+    const workspaceId = (JSON.parse((reregistered.content as Array<{ text: string }>)[0].text) as { id: string }).id;
+    const reinspected = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId } });
+    assert.ok(!reinspected.isError);
+    assert.match((reinspected.content as Array<{ text: string }>)[0].text, /not_checked/);
+    assert.match((reinspected.content as Array<{ text: string }>)[0].text, /"roots"/);
+    const plan = await client.callTool({ name: 'onboarding_plan', arguments: { workspaceId } });
     const planText = (plan.content as Array<{ text: string }>)[0].text;
     assert.match(planText, /not_implemented/);
-    assert.match(planText, /dashboard-only/);
+    assert.match(planText, /only records what ran/);
     const leases = await client.callTool({ name: 'workspace_leases', arguments: {} });
     assert.ok(!leases.isError);
     assert.deepEqual(JSON.parse((leases.content as Array<{ text: string }>)[0].text), []);
-    const deniedControl = await client.callTool({
+    const allowedControl = await client.callTool({
       name: 'service_control',
-      arguments: { workspaceId: proposal.id, action: 'restart', target: { pmId: 7, name: 'fixture-api' } },
+      arguments: { workspaceId, action: 'restart', target: { pmId: 999, name: 'absent-service' } },
     });
-    assert.equal(deniedControl.isError, true);
-    assert.match((deniedControl.content as Array<{ text: string }>)[0].text, /grant it in the dashboard/);
-    assert.match(planText, /every approved root group separately/);
+    assert.ok(!allowedControl.isError);
+    assert.match((allowedControl.content as Array<{ text: string }>)[0].text, /not uniquely mapped to a registered root/);
+    assert.match(planText, /every registered root group separately/);
     assert.match(planText, /never infer a common parent/);
     assert.equal((await client.listPrompts()).prompts[0].name, 'workspace_onboarding');
     const prompt = await client.getPrompt({ name: 'workspace_onboarding' });
     const promptText = (prompt.messages[0].content as { text: string }).text;
-    assert.match(promptText, /workspace_propose with \{name, roots\}/);
+    assert.match(promptText, /workspace_register with \{name, roots\}/);
     assert.match(promptText, /Do not infer a common parent/);
     assert.match(promptText, /Jira is optional/);
     await app.close();
@@ -102,7 +117,7 @@ test('real stdio MCP shares service state, cannot approve access and survives se
     origin = await app.listen(0);
     await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
     assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${dashboardSession.dashboardToken}` } })).status, 401);
-    const resumed = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: proposal.id } });
+    const resumed = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId } });
     assert.ok(!resumed.isError);
     assert.ok(!stderr.includes('b'.repeat(64)));
     assert.ok(!stderr.includes('c'.repeat(64)));

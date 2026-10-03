@@ -22,8 +22,7 @@ async function twoStreams(t: { after: (cleanup: () => void | Promise<void>) => v
   const store = new Store(join(root, 'state'));
   await store.initialize();
   const service = new WorkspaceService(store, undefined, undefined, undefined, gitMissing);
-  const proposal = await service.propose('Project', [first, second]);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', [first, second]);
   const one = await service.createWorkstream({ name: 'One', workspaceId: approved.id, checkouts: [first] });
   const two = await service.createWorkstream({ name: 'Two', workspaceId: approved.id, checkouts: [second] });
   return { service, one, two };

@@ -169,7 +169,7 @@ test('dashboard consent requires exact same-origin browser context and no Author
   assert.equal((await fetch(`${origin}/api/bootstrap`, { headers: { Authorization: `Bearer ${mcpToken}` } })).status, 403);
 });
 
-test('dashboard and MCP credentials have separate capabilities and restart invalidates both', async t => {
+test('dashboard and MCP share workspace operations; only browser session management stays dashboard-only', async t => {
   const f = await fixture(t);
   let now = 1_800_000_000_000;
   let counter = 0;
@@ -192,35 +192,32 @@ test('dashboard and MCP credentials have separate capabilities and restart inval
   const dashboardConfigText = await dashboardConfig.text();
   assert.equal(dashboardConfigText.includes(firstMcpToken) || dashboardConfigText.includes(dashboardToken), false);
   assert.equal((await fetch(`${origin}/api/client-config`, { headers: mcpHeaders })).status, 403);
-  assert.equal((await fetch(`${origin}/api/workspaces/${'f'.repeat(36)}`, { headers: mcpHeaders })).status, 403);
+  assert.equal((await fetch(`${origin}/api/workspaces/ffffffff-ffff-4fff-8fff-ffffffffffff`, { headers: mcpHeaders })).status, 400);
 
-  const overbroadProposal = await fetch(`${origin}/api/proposals`, {
+  const overbroadRegistration = await fetch(`${origin}/api/workspaces`, {
     method: 'POST',
     headers: dashboardHeaders,
     body: JSON.stringify({ name: 'Invalid project', roots: [f.project], approve: true }),
   });
-  assert.equal(overbroadProposal.status, 400);
-  assert.equal((await f.store.read()).proposals.length, 0);
-  const legacyPathProposal = await fetch(`${origin}/api/proposals`, {
+  assert.equal(overbroadRegistration.status, 400);
+  assert.equal((await f.store.read()).workspaces.length, 0);
+  const legacyPathRegistration = await fetch(`${origin}/api/workspaces`, {
     method: 'POST',
     headers: dashboardHeaders,
     body: JSON.stringify({ name: 'Legacy project', path: f.project }),
   });
-  assert.equal(legacyPathProposal.status, 400);
-  assert.equal((await f.store.read()).proposals.length, 0);
+  assert.equal(legacyPathRegistration.status, 400);
+  assert.equal((await f.store.read()).workspaces.length, 0);
 
-  const proposalResponse = await fetch(`${origin}/api/proposals`, {
+  const registrationResponse = await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'MCP project', roots: [f.project] }),
   });
-  assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string };
-  for (const path of [
-    `/api/proposals/${proposal.id}/approve`,
-    `/api/proposals/${proposal.id}/reject`,
-    `/api/workspaces/${proposal.id}/revoke`,
-  ]) {
-    assert.equal((await fetch(`${origin}${path}`, { method: 'POST', headers: mcpHeaders, body: '{}' })).status, 403);
-  }
+  assert.equal(registrationResponse.status, 201);
+  const registered = await registrationResponse.json() as { id: string };
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}`, { headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}/onboarding`, { headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}`, { method: 'DELETE', headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}`, { headers: mcpHeaders })).status, 400);
   assert.equal((await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'connect-dashboard' }, body: JSON.stringify({ consent: true }),
   })).status, 403);
@@ -228,21 +225,19 @@ test('dashboard and MCP credentials have separate capabilities and restart inval
     method: 'DELETE', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'disconnect-dashboard' }, body: '{}',
   })).status, 403);
 
-  const approvedResponse = await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
+  const secondRegistration = await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Dashboard project', roots: [f.project] }),
   });
-  assert.equal(approvedResponse.status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${proposal.id}`, { headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${proposal.id}/onboarding`, { headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${proposal.id}/revoke`, {
-    method: 'POST', headers: mcpHeaders, body: '{}',
-  })).status, 403);
+  assert.equal(secondRegistration.status, 201);
+  const secondRegistered = await secondRegistration.json() as { id: string };
 
-  const serviceActionPath = `/api/workspaces/${proposal.id}/services/restart`;
+  const serviceActionPath = `/api/workspaces/${secondRegistered.id}/services/restart`;
   const serviceBody = JSON.stringify({ pmId: 1, name: 'api', namespace: 'default' });
-  assert.equal((await fetch(`${origin}${serviceActionPath}`, {
-    method: 'POST', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'control-service' }, body: serviceBody,
-  })).status, 403);
+  const mcpAction = await fetch(`${origin}${serviceActionPath}`, {
+    method: 'POST', headers: mcpHeaders, body: serviceBody,
+  });
+  assert.equal(mcpAction.status, 200);
+  assert.equal((await mcpAction.json() as { status: string }).status, 'failed');
   assert.equal((await fetch(`${origin}${serviceActionPath}`, {
     method: 'POST', headers: dashboardHeaders, body: serviceBody,
   })).status, 403);
@@ -258,17 +253,14 @@ test('dashboard and MCP credentials have separate capabilities and restart inval
     headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'control-service', Origin: 'http://localhost:4318' },
     body: serviceBody,
   })).status, 403);
-
-  const secondProposalResponse = await fetch(`${origin}/api/proposals`, {
-    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Dashboard project', roots: [f.project] }),
-  });
-  assert.equal(secondProposalResponse.status, 201);
-  const secondProposal = await secondProposalResponse.json() as { id: string };
-  assert.equal((await fetch(`${origin}/api/proposals/${secondProposal.id}/reject`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
-  })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${proposal.id}/revoke`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
+  assert.equal((await fetch(`${origin}/api/project-root-picker`, {
+    method: 'POST', headers: mcpHeaders, body: '{}',
+  })).status, 403);
+  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.id}`, {
+    method: 'DELETE', headers: dashboardHeaders, body: '{}',
+  })).status, 403);
+  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.id}`, {
+    method: 'DELETE', headers: { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'remove-workspace' },
   })).status, 200);
 
   const expiresAt = Date.parse(dashboardExpiresAt);
@@ -324,57 +316,60 @@ test('dashboard and MCP credentials have separate capabilities and restart inval
   assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${secondMcpToken}` } })).status, 200);
 });
 
-test('proposal bodies are byte-bounded and decoded once with fatal UTF-8', async t => {
+test('registration bodies are byte-bounded and decoded once with fatal UTF-8', async t => {
   const f = await fixture(t);
   const app = createApp(f.service, { mcpToken: '9'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
   const mcpHeaders = { Authorization: `Bearer ${app.mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const root = join(f.root, 'Unicode 🌱\nrepository');
+  await mkdir(root, { recursive: true });
   const unicodeBody = Buffer.from(JSON.stringify({ name: '🌱 Unicode project', roots: [root] }));
   const emojiOffset = unicodeBody.indexOf(Buffer.from('🌱'));
   assert.ok(emojiOffset > 0);
-  const splitResponse = await rawChunkRequest(origin, '/api/proposals', mcpHeaders, [
+  const splitResponse = await rawChunkRequest(origin, '/api/workspaces', mcpHeaders, [
     unicodeBody.subarray(0, emojiOffset + 2),
     unicodeBody.subarray(emojiOffset + 2),
   ]);
   assert.equal(splitResponse.status, 201);
-  const pending = JSON.parse(splitResponse.body) as { id: string; name: string; roots: string[] };
-  assert.equal(pending.name, '🌱 Unicode project');
-  assert.deepEqual(pending.roots, [root]);
+  const registered = JSON.parse(splitResponse.body) as { id: string; name: string; roots: string[] };
+  assert.equal(registered.name, '🌱 Unicode project');
+  assert.deepEqual(registered.roots, [root]);
 
   const invalidUtf8 = Buffer.concat([
     Buffer.from('{"name":"invalid'),
     Buffer.from([0xff]),
     Buffer.from('","roots":["/tmp/invalid"]}'),
   ]);
-  const invalidResponse = await rawChunkRequest(origin, '/api/proposals', mcpHeaders, [invalidUtf8]);
+  const invalidResponse = await rawChunkRequest(origin, '/api/workspaces', mcpHeaders, [invalidUtf8]);
   assert.equal(invalidResponse.status, 400);
-  assert.equal((await f.store.read()).proposals.length, 1);
+  assert.equal((await f.store.read()).workspaces.length, 1);
 
-  const exactLimitPrefix = JSON.stringify({ name: 'Maximum body', roots: ['/tmp/body-limit'] });
+  const limitRoot = join(f.root, 'body-limit');
+  await mkdir(limitRoot, { recursive: true });
+  const exactLimitPrefix = JSON.stringify({ name: 'Maximum body', roots: [limitRoot] });
   const exactLimit = Buffer.from(`${exactLimitPrefix}${' '.repeat(512 * 1024 - Buffer.byteLength(exactLimitPrefix))}`);
   assert.equal(exactLimit.byteLength, 512 * 1024);
-  const exactResponse = await fetch(`${origin}/api/proposals`, { method: 'POST', headers: mcpHeaders, body: exactLimit });
+  const exactResponse = await fetch(`${origin}/api/workspaces`, { method: 'POST', headers: mcpHeaders, body: exactLimit });
   assert.equal(exactResponse.status, 201);
 
   const oversized = Buffer.from(`${exactLimitPrefix}${' '.repeat(512 * 1024 + 1 - Buffer.byteLength(exactLimitPrefix))}`);
-  const oversizedResponse = await fetch(`${origin}/api/proposals`, { method: 'POST', headers: mcpHeaders, body: oversized });
+  const oversizedResponse = await fetch(`${origin}/api/workspaces`, { method: 'POST', headers: mcpHeaders, body: oversized });
   assert.equal(oversizedResponse.status, 400);
-  assert.equal((await f.store.read()).proposals.length, 2);
+  assert.equal((await f.store.read()).workspaces.length, 2);
 
   const connected = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
   });
   const { dashboardToken } = await connected.json() as { dashboardToken: string };
   const ordinaryBody = Buffer.from(`{}${' '.repeat(8192)}`);
-  const ordinaryOperation = await fetch(`${origin}/api/proposals/${pending.id}/reject`, {
+  const ordinaryOperation = await fetch(`${origin}/api/workstreams`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders },
+    headers: { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'create-workstream' },
     body: ordinaryBody,
   });
   assert.equal(ordinaryOperation.status, 400);
-  assert.equal((await f.store.read()).proposals.length, 2);
+  assert.equal((await f.store.read()).workspaces.length, 2);
 });
 
 test('native project-root picker requires an exact dashboard session and never grants roots', async t => {
@@ -425,7 +420,6 @@ test('native project-root picker requires an exact dashboard session and never g
   assert.equal(pickerCalls, 1);
   assert.equal(passedSignal?.aborted, false);
   const state = await f.store.read();
-  assert.equal(state.proposals.length, 0);
   assert.equal(state.workspaces.length, 0);
 });
 
@@ -480,11 +474,10 @@ test('closing a dashboard picker request aborts only its pending picker operatio
   if (timer) clearTimeout(timer);
   assert.equal(abortedInTime, true);
   assert.equal(passedSignal?.aborted, true);
-  assert.equal((await f.store.read()).proposals.length, 0);
   assert.equal((await f.store.read()).workspaces.length, 0);
 });
 
-test('dashboard repository verification runs only the approved manifest script', async t => {
+test('repository verification runs only the registered manifest script', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-verify-http-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
@@ -509,20 +502,17 @@ test('dashboard repository verification runs only the approved manifest script',
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
 
-  const proposalResponse = await fetch(`${origin}/api/proposals`, {
+  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Verify project', roots: [project] }),
   });
   assert.equal(proposalResponse.status, 201);
   const proposal = await proposalResponse.json() as { id: string };
-  assert.equal((await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
-  })).status, 200);
 
   const verifyPath = `${origin}/api/workspaces/${proposal.id}/verify`;
   const verifyBody = JSON.stringify({ repositoryPath: project, scriptName: 'check' });
-  assert.equal((await fetch(verifyPath, {
-    method: 'POST', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'run-verification' }, body: verifyBody,
-  })).status, 403);
+  const fromMcp = await fetch(verifyPath, { method: 'POST', headers: mcpHeaders, body: verifyBody });
+  assert.equal(fromMcp.status, 200);
+  assert.equal((await fromMcp.json() as { outcome: string }).outcome, 'passed');
   assert.equal((await fetch(verifyPath, { method: 'POST', headers: dashboardHeaders, body: verifyBody })).status, 403);
 
   const allowed = await fetch(verifyPath, {
@@ -550,7 +540,7 @@ test('dashboard repository verification runs only the approved manifest script',
   assert.equal(unknownScript.status, 400);
 });
 
-test('dashboard workstreams bind approved roots; MCP can only list', async t => {
+test('workstreams bind registered roots over every surface', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-workstreams-http-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
@@ -574,19 +564,19 @@ test('dashboard workstreams bind approved roots; MCP can only list', async t => 
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
 
-  const proposalResponse = await fetch(`${origin}/api/proposals`, {
+  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Stream project', roots: [project] }),
   });
   assert.equal(proposalResponse.status, 201);
   const proposal = await proposalResponse.json() as { id: string };
-  assert.equal((await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
-  })).status, 200);
 
   const createBody = JSON.stringify({ name: 'First stream', workspaceId: proposal.id, checkouts: [project] });
-  assert.equal((await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'create-workstream' }, body: createBody,
-  })).status, 403);
+  const fromMcp = await fetch(`${origin}/api/workstreams`, {
+    method: 'POST', headers: mcpHeaders, body: createBody,
+  });
+  assert.equal(fromMcp.status, 201);
+  const firstStream = await fromMcp.json() as { id: string; status: string };
+  assert.equal(firstStream.status, 'active');
   assert.equal((await fetch(`${origin}/api/workstreams`, {
     method: 'POST', headers: dashboardHeaders, body: createBody,
   })).status, 403);
@@ -601,13 +591,15 @@ test('dashboard workstreams bind approved roots; MCP can only list', async t => 
 
   const listed = await fetch(`${origin}/api/workstreams`, { headers: mcpHeaders });
   assert.equal(listed.status, 200);
-  assert.deepEqual((await listed.json() as Array<{ id: string }>).map(entry => entry.id), [workstream.id]);
+  assert.deepEqual((await listed.json() as Array<{ id: string }>).map(entry => entry.id), [firstStream.id, workstream.id]);
   assert.equal((await fetch(`${origin}/api/workstreams/${workstream.id}`, { headers: mcpHeaders })).status, 200);
 
   const statusPath = `${origin}/api/workstreams/${workstream.id}/status`;
-  assert.equal((await fetch(statusPath, {
-    method: 'POST', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'update-workstream' }, body: '{"status":"paused"}',
-  })).status, 403);
+  const pausedByMcp = await fetch(statusPath, {
+    method: 'POST', headers: mcpHeaders, body: '{"status":"paused"}',
+  });
+  assert.equal(pausedByMcp.status, 200);
+  assert.equal((await pausedByMcp.json() as { status: string }).status, 'paused');
   const paused = await fetch(statusPath, {
     method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'update-workstream' }, body: '{"status":"paused"}',
   });
@@ -621,7 +613,7 @@ test('dashboard workstreams bind approved roots; MCP can only list', async t => 
   assert.equal(outside.status, 400);
 });
 
-test('dashboard leases serialize shared resources; MCP can only list', async t => {
+test('leases serialize shared resources over every surface', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-leases-http-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const first = join(root, 'first');
@@ -647,14 +639,11 @@ test('dashboard leases serialize shared resources; MCP can only list', async t =
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
 
-  const proposalResponse = await fetch(`${origin}/api/proposals`, {
+  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Lease project', roots: [first, second] }),
   });
   assert.equal(proposalResponse.status, 201);
   const proposal = await proposalResponse.json() as { id: string };
-  assert.equal((await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
-  })).status, 200);
 
   const makeStream = async (name: string, checkout: string) => {
     const response = await fetch(`${origin}/api/workstreams`, {
@@ -673,7 +662,7 @@ test('dashboard leases serialize shared resources; MCP can only list', async t =
       headers: intent ? { ...token, 'X-OpenWorkspace-Intent': intent } : token,
       body: JSON.stringify(body),
     });
-  assert.equal((await acquire(mcpHeaders, 'acquire-lease', { resource: 'port:3000', workstreamId: one.id })).status, 403);
+  assert.equal((await acquire(mcpHeaders, 'acquire-lease', { resource: 'port:3000', workstreamId: one.id })).status, 200);
   assert.equal((await acquire(dashboardHeaders, undefined, { resource: 'port:3000', workstreamId: one.id })).status, 403);
 
   assert.equal((await acquire(dashboardHeaders, 'acquire-lease', { resource: 'port:3000', workstreamId: one.id })).status, 200);
@@ -690,109 +679,13 @@ test('dashboard leases serialize shared resources; MCP can only list', async t =
     fetch(`${origin}/api/leases/release`, {
       method: 'POST', headers: { ...token, 'X-OpenWorkspace-Intent': 'release-lease' }, body: JSON.stringify(body),
     });
-  assert.equal((await release(mcpHeaders, { resource: 'port:3000', workstreamId: one.id })).status, 403);
   assert.equal((await release(dashboardHeaders, { resource: 'port:3000', workstreamId: two.id })).status, 400);
-  const released = await release(dashboardHeaders, { resource: 'port:3000', workstreamId: one.id });
+  const released = await release(mcpHeaders, { resource: 'port:3000', workstreamId: one.id });
   assert.equal(released.status, 200);
   assert.deepEqual(await released.json(), { released: true, promoted: two.id });
 });
 
-test('delegated MCP credential operates only within granted workspaces', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-operator-http-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const first = join(root, 'first');
-  const second = join(root, 'second');
-  await mkdir(first, { recursive: true });
-  await mkdir(second, { recursive: true });
-  await writeFile(join(first, 'package.json'), JSON.stringify({ scripts: { check: 'node -e "process.exit(0)"' } }));
-  const store = new Store(join(root, 'state'));
-  await store.initialize();
-  const runnerCalls: string[] = [];
-  const service = new WorkspaceService(
-    store,
-    async () => ({ available: true, processes: [{ pmId: 11, name: 'api', namespace: 'default', status: 'online', cwd: first, restartCount: 0, startedAt: null }] }),
-    async (action, pmId) => { runnerCalls.push(`${action}:${pmId}`); return { ok: true }; },
-    async () => ({ exitCode: 0, timedOut: false, aborted: false, truncated: false, stdout: 'ok', stderr: '', durationMs: 3, spawnFailed: false }),
-    async () => ({ exitCode: 0, timedOut: false, aborted: false, truncated: false, stdout: '', stderr: '', durationMs: 1, spawnFailed: true }),
-  );
-
-  const mcpToken = 'f'.repeat(64);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const app = createApp(service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-
-  const proposalResponse = await fetch(`${origin}/api/proposals`, {
-    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Operator probe', roots: [first, second] }),
-  });
-  assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string };
-  assert.equal((await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
-  })).status, 200);
-
-  const restartPath = `${origin}/api/workspaces/${proposal.id}/services/restart`;
-  const restartBody = JSON.stringify({ pmId: 11, name: 'api', namespace: 'default' });
-  assert.equal((await fetch(restartPath, { method: 'POST', headers: mcpHeaders, body: restartBody })).status, 403);
-  assert.deepEqual(runnerCalls, []);
-
-  const delegate = await fetch(`${origin}/api/operator/delegate`, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'delegate-operator' },
-    body: JSON.stringify({ workspaceIds: [proposal.id] }),
-  });
-  assert.equal(delegate.status, 200);
-  assert.deepEqual(((await delegate.json()) as { workspaceIds: string[] }).workspaceIds, [proposal.id]);
-  assert.equal((await fetch(`${origin}/api/operator`, { headers: mcpHeaders })).status, 200);
-
-  const restarted = await fetch(restartPath, { method: 'POST', headers: mcpHeaders, body: restartBody });
-  assert.equal(restarted.status, 200);
-  assert.equal((await restarted.json() as { status: string }).status, 'completed');
-  assert.deepEqual(runnerCalls, ['restart:11']);
-
-  const verified = await fetch(`${origin}/api/workspaces/${proposal.id}/verify`, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ repositoryPath: first, scriptName: 'check' }),
-  });
-  assert.equal(verified.status, 200);
-  assert.equal((await verified.json() as { outcome: string }).outcome, 'passed');
-
-  const streamResponse = await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'create-workstream' },
-    body: JSON.stringify({ name: 'Op stream', workspaceId: proposal.id, checkouts: [first] }),
-  });
-  assert.equal(streamResponse.status, 201);
-  const stream = await streamResponse.json() as { id: string };
-  const acquired = await fetch(`${origin}/api/leases/acquire`, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ resource: 'port:5000', workstreamId: stream.id }),
-  });
-  assert.equal(acquired.status, 200);
-  assert.equal((await acquired.json() as { lease: { status: string } }).lease.status, 'held');
-
-  const activity = await fetch(`${origin}/api/activity`, { headers: dashboardHeaders });
-  assert.equal(activity.status, 200);
-  const operations = (await activity.json() as Array<{ actor: string; operation: string }>).map(entry => `${entry.actor}:${entry.operation}`);
-  assert.ok(operations.includes('dashboard:delegate-operator'));
-  assert.ok(operations.includes('mcp-operator:service-restart'));
-  assert.ok(operations.includes('mcp-operator:verify'));
-  assert.ok(operations.includes('mcp-operator:lease-acquire'));
-
-  assert.equal((await fetch(`${origin}/api/operator/delegate`, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'delegate-operator' },
-    body: JSON.stringify({ workspaceIds: [] }),
-  })).status, 200);
-  assert.equal((await fetch(restartPath, { method: 'POST', headers: mcpHeaders, body: restartBody })).status, 403);
-  assert.deepEqual(runnerCalls, ['restart:11']);
-});
-
-test('dashboard service control reaches only the designated approved-root process', async t => {
+test('service control reaches only the designated registered-root process', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-service-action-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
@@ -824,23 +717,19 @@ test('dashboard service control reaches only the designated approved-root proces
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
 
-  const proposalResponse = await fetch(`${origin}/api/proposals`, {
+  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Service project', roots: [project] }),
   });
   assert.equal(proposalResponse.status, 201);
   const proposal = await proposalResponse.json() as { id: string };
-  const approved = await fetch(`${origin}/api/proposals/${proposal.id}/approve`, {
-    method: 'POST', headers: dashboardHeaders, body: '{}',
-  });
-  assert.equal(approved.status, 200);
 
   const actionPath = `${origin}/api/workspaces/${proposal.id}/services/restart`;
   const actionBody = JSON.stringify({ pmId: 7, name: 'api', namespace: 'default' });
-  assert.equal((await fetch(actionPath, {
-    method: 'POST', headers: { ...mcpHeaders, 'X-OpenWorkspace-Intent': 'control-service' }, body: actionBody,
-  })).status, 403);
+  const fromMcp = await fetch(actionPath, { method: 'POST', headers: mcpHeaders, body: actionBody });
+  assert.equal(fromMcp.status, 200);
+  assert.equal((await fromMcp.json() as { status: string }).status, 'completed');
   assert.equal((await fetch(actionPath, { method: 'POST', headers: dashboardHeaders, body: actionBody })).status, 403);
-  assert.deepEqual(runnerCalls, []);
+  assert.deepEqual(runnerCalls, [{ action: 'restart', pmId: 7 }]);
 
   const allowed = await fetch(actionPath, {
     method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'control-service' }, body: actionBody,
@@ -850,5 +739,5 @@ test('dashboard service control reaches only the designated approved-root proces
   assert.equal(result.status, 'completed');
   assert.equal(result.serviceStatus, 'online');
   assert.match(result.message, /not readiness/);
-  assert.deepEqual(runnerCalls, [{ action: 'restart', pmId: 7 }]);
+  assert.deepEqual(runnerCalls, [{ action: 'restart', pmId: 7 }, { action: 'restart', pmId: 7 }]);
 });

@@ -215,11 +215,11 @@ export function ProjectRequestForm({ onSubmit, onPickRoots, onCancel }: ProjectR
       </fieldset>
 
       <div className="grid gap-4 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Review the exact folders above. Your request stays pending until you approve the whole project; each selected root receives bounded metadata discovery only. No project files are changed.</p>
+        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Review the exact folders above. Registration reads bounded metadata immediately. No project files are changed.</p>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {onCancel && <Button type="button" variant="ghost" disabled={submitting || picking} onClick={onCancel}>Cancel</Button>}
           <Button type="submit" disabled={submitting || picking || roots.length === 0} className="shrink-0">
-            {submitting ? 'Requesting approval…' : 'Request project access'}
+            {submitting ? 'Registering…' : 'Register project'}
           </Button>
         </div>
       </div>

@@ -52,8 +52,9 @@ describe('formatSetupRequest', () => {
   it('uses generic list-first context when no workspace is selected and emits no material while configuration is missing', () => {
     const generic = formatSetupRequest(config, null);
     expect(generic?.copyText).toContain('workspace_list first');
-    expect(generic?.copyText).toContain('workspace_propose with {name, roots}');
-    expect(generic?.copyText).toContain('separate approval of every requested root');
+    expect(generic?.copyText).toContain('workspace_register with {name, roots}');
+    expect(generic?.copyText).toContain('Registration reads bounded metadata immediately');
+    expect(generic?.copyText).toContain('the dashboard only records what ran');
     expect(generic?.copyText).toContain('Never infer a shared parent');
     expect(generic?.copyText).not.toContain(selectedId);
     expect(formatSetupRequest(config, 'stale-id')?.copyText).not.toContain(selectedId);

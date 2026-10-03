@@ -6,84 +6,38 @@ import { Badge } from '@/components/ui/badge';
 import type { WorkbenchState } from '@/use-workbench';
 import { formatSetupRequest } from './format-setup';
 
-function OperatorCard({ state, onSave }: {
+function ActivityTrail({ state }: {
   state: WorkbenchState;
-  onSave: (workspaceIds: string[]) => void;
 }) {
-  const granted = state.operatorScope?.workspaceIds ?? [];
-  const [checked, setChecked] = useState<string[] | null>(null);
-  const selection = checked ?? granted;
-  const toggle = (id: string) => {
-    setChecked(current => {
-      const base = current ?? granted;
-      return base.includes(id) ? base.filter(entry => entry !== id) : [...base, id];
-    });
-  };
-  const dirty = checked !== null && [...checked].sort().join() !== [...granted].sort().join();
+  if (!state.activity.length) return null;
   return (
-    <section className="max-w-4xl" aria-labelledby="operator-heading">
-      <p className="eyebrow">02 / OPERATOR ACCESS</p>
-      <h2 id="operator-heading" className="text-base font-semibold">Let your assistant operate</h2>
+    <section className="max-w-4xl" aria-labelledby="activity-heading">
+      <p className="eyebrow">02 / RECENT OPERATIONS</p>
+      <h2 id="activity-heading" className="text-base font-semibold">What ran here</h2>
       <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-        Read-only by default. Grant once per workspace and your assistant can restart mapped services,
-        run manifest tests and hold leases there — bounded, logged and visible below. Revoke anytime;
-        revoking a project also removes it here.
+        Every mutation is recorded with its actor, whether it came from this dashboard or your assistant.
+        Execution itself is authorized by your assistant client.
       </p>
-      {state.workspaces.length === 0 && (
-        <p className="mt-4 text-sm text-muted-foreground">Approve a project first, then choose where your assistant may operate.</p>
-      )}
-      {state.workspaces.length > 0 && (
-        <form
-          className="mt-4 grid max-w-2xl gap-2"
-          onSubmit={event => {
-            event.preventDefault();
-            onSave(selection);
-            setChecked(null);
-          }}
-        >
-          {state.workspaces.map(workspace => (
-            <label key={workspace.id} className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={selection.includes(workspace.id)}
-                disabled={state.operatorLoading}
-                onChange={() => toggle(workspace.id)}
-              />
-              <span className="font-medium">{workspace.name}</span>
-              {granted.includes(workspace.id) && <Badge variant="outline">operator</Badge>}
-            </label>
+      <div className="mt-4 max-w-3xl">
+        <ul className="mt-2 divide-y divide-border border-y border-border">
+          {state.activity.slice().reverse().slice(0, 10).map((entry, index) => (
+            <li key={`${entry.at}-${index}`} className="flex flex-wrap items-baseline gap-x-3 py-1.5 text-xs">
+              <span className="text-muted-foreground">{new Date(entry.at).toLocaleString()}</span>
+              <Badge variant="outline">{entry.actor === 'dashboard' ? 'you' : 'assistant'}</Badge>
+              <span className="font-mono">{entry.operation}</span>
+              {entry.detail && <span className="break-all text-muted-foreground">{entry.detail}</span>}
+            </li>
           ))}
-          <div>
-            <Button type="submit" variant="outline" size="sm" disabled={state.operatorLoading || !dirty}>
-              {state.operatorLoading ? 'Saving…' : granted.length === 0 ? 'Grant operator access' : 'Update operator access'}
-            </Button>
-          </div>
-        </form>
-      )}
-      {state.activity.length > 0 && (
-        <div className="mt-6 max-w-3xl">
-          <h3 className="text-sm font-semibold">Recent operations</h3>
-          <ul className="mt-2 divide-y divide-border border-y border-border">
-            {state.activity.slice().reverse().slice(0, 10).map((entry, index) => (
-              <li key={`${entry.at}-${index}`} className="flex flex-wrap items-baseline gap-x-3 py-1.5 text-xs">
-                <span className="text-muted-foreground">{new Date(entry.at).toLocaleString()}</span>
-                <Badge variant="outline">{entry.actor === 'dashboard' ? 'you' : 'assistant'}</Badge>
-                <span className="font-mono">{entry.operation}</span>
-                {entry.detail && <span className="break-all text-muted-foreground">{entry.detail}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+        </ul>
+      </div>
     </section>
   );
 }
 
-export function AiSetupView({ state, selectedId, onCopyText, onSaveOperator }: {
+export function AiSetupView({ state, selectedId, onCopyText }: {
   state: WorkbenchState;
   selectedId: string | null;
   onCopyText: (text: string, successMessage: string) => Promise<boolean>;
-  onSaveOperator: (workspaceIds: string[]) => void;
 }) {
   const [copying, setCopying] = useState(false);
   const material = formatSetupRequest(state.clientConfig, selectedId);
@@ -109,7 +63,7 @@ export function AiSetupView({ state, selectedId, onCopyText, onSaveOperator }: {
       <section className="max-w-4xl" aria-labelledby="setup-request-heading">
         <p className="eyebrow">01 / SETUP REQUEST</p>
         <h2 id="setup-request-heading" className="text-base font-semibold">Prepare the connection in your assistant</h2>
-        <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">One message includes the generated local stdio entry and the right approved-workspace context. Ask your assistant to adapt it to the client you choose while preserving existing settings.</p>
+        <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">One message includes the generated local stdio entry and the right registered-workspace context. Ask your assistant to adapt it to the client you choose while preserving existing settings.</p>
         {material ? (
           <pre role="region" aria-label="Setup request preview" tabIndex={0} className="code-panel mt-4">{material.copyText}</pre>
         ) : (
@@ -124,7 +78,7 @@ export function AiSetupView({ state, selectedId, onCopyText, onSaveOperator }: {
 
       <Separator />
 
-      <OperatorCard state={state} onSave={onSaveOperator} />
+      <ActivityTrail state={state} />
 
       {material && (
         <>

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
 import { dashboardSessionStorageKey } from '../api';
-import type { ClientConfig, Overview, Proposal, Workspace } from '../api';
+import type { ClientConfig, Overview, Workspace } from '../api';
 
 const dashboardToken = 'd'.repeat(64);
 const clientConfig: ClientConfig = {
@@ -19,11 +19,10 @@ function workspace(id: string, name: string, roots: string | string[]): Workspac
 
 function overview(values: Partial<Overview> = {}): Overview {
   return {
-    proposals: [],
     workspaces: [],
     capabilities: [],
-    milestone: 'M0 · read-only foundation',
-    limits: ['No secrets are read', 'No application is started', 'No tools are installed'],
+    milestone: 'M1 · operate and verify',
+    limits: ['No secrets are read', 'Dangerous operations are authorized by your assistant client', 'No tools are installed'],
     ...values,
   };
 }
@@ -90,6 +89,7 @@ async function connectedEmptyWorkspace() {
 afterEach(() => {
   Reflect.deleteProperty(navigator, 'clipboard');
   sessionStorage.clear();
+  window.location.hash = '#overview';
 });
 
 describe('project-first workbench', () => {
@@ -105,7 +105,7 @@ describe('project-first workbench', () => {
       }
       if (path === '/api/overview') return json(overview());
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === '/api/proposals' && init.method === 'POST') return json({ id: 'proposal-id', name: 'Storefront', roots: ['/tmp/storefront'], createdAt: '2026-01-01T00:00:00.000Z' }, 201);
+      if (path === '/api/workspaces' && init.method === 'POST') return json({ id: '11111111-1111-4111-8111-111111111111', name: 'Storefront', roots: ['/tmp/storefront'], createdAt: '2026-01-01T00:00:00.000Z' }, 201);
       return json({ error: 'Not found.' }, 404);
     });
 
@@ -113,7 +113,7 @@ describe('project-first workbench', () => {
     render(<App />);
     expect(await screen.findByRole('heading', { name: 'Connect to your local workspace' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect this browser' })).toBeEnabled();
-    expect(screen.getByText(/does not approve a project or any of its repository folders/i)).toBeInTheDocument();
+    expect(screen.getByText(/register and remove projects/i)).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/pairing key|pairing command|password/i);
     expect(sessionStorage.getItem('openworkspace.pairing')).toBeNull();
@@ -128,7 +128,7 @@ describe('project-first workbench', () => {
     expect(screen.getByRole('button', { name: 'Choose folders…' })).toBeVisible();
     expect(screen.getByText('Add folders manually')).toBeVisible();
     expect(screen.getByLabelText('Absolute repository folder path')).not.toBeVisible();
-    expect(screen.getByRole('button', { name: 'Request project access' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Register project' })).toBeDisabled();
     expect(screen.getByRole('link', { name: /Use your AI instead/ })).toHaveAttribute('href', '#setup');
     expect(document.body.textContent).not.toContain(token);
     expect(exchangeCalls).toBe(1);
@@ -141,20 +141,20 @@ describe('project-first workbench', () => {
     expect(new Headers(exchange?.[1]?.headers).has('Authorization')).toBe(false);
     expect(JSON.parse(String(exchange?.[1]?.body))).toEqual({ consent: true });
     expect(exchange?.[1]?.credentials).toBe('same-origin');
-    expect(screen.getByText(/nothing is read until you approve the complete request/i)).toBeInTheDocument();
+    expect(screen.getByText(/Bounded metadata is read immediately/i)).toBeInTheDocument();
   });
 
   it('focuses invalid root lists and preserves the project name and folders after a server failure', async () => {
-    let rejectProposal = false;
-    let proposalCalls = 0;
+    let rejectRegistration = false;
+    let registrationCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/overview') return json(overview());
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === '/api/proposals' && init.method === 'POST') {
-        proposalCalls++;
-        return rejectProposal
+      if (path === '/api/workspaces' && init.method === 'POST') {
+        registrationCalls++;
+        return rejectRegistration
           ? json({ error: 'Operation could not complete safely. Check the project name and roots, then retry.' }, 400)
-          : json({ id: 'proposal-id', name: 'Storefront', roots: ['/tmp/storefront'], createdAt: '2026-01-01T00:00:00.000Z' }, 201);
+          : json({ id: '22222222-2222-4222-8222-222222222222', name: 'Storefront', roots: ['/tmp/storefront'], createdAt: '2026-01-01T00:00:00.000Z' }, 201);
       }
       return json({ error: 'Not found.' }, 404);
     });
@@ -169,24 +169,24 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
     expect(await screen.findByText(/absolute path of 4096 characters or fewer/i)).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Repository folders' })).toHaveAttribute('aria-describedby', 'project-roots-error');
-    expect(proposalCalls).toBe(0);
+    expect(registrationCalls).toBe(0);
 
-    rejectProposal = true;
+    rejectRegistration = true;
     fireEvent.change(path, { target: { value: '/tmp/storefront' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Request project access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Register project' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not complete safely/i);
     expect(name).toHaveValue('Storefront');
     expect(screen.getByText('/tmp/storefront')).toBeInTheDocument();
-    expect(proposalCalls).toBe(1);
+    expect(registrationCalls).toBe(1);
   });
 
-  it('preserves a local project draft on picker cancel, adds selected roots, and submits one exact proposal', async () => {
+  it('preserves a local project draft on picker cancel, adds selected roots, and registers one exact project', async () => {
     const roots = ['/tmp/unrelated web 🌱', "/private/api's root\nwith newline", '/opt/worker'];
     let pickerCalls = 0;
-    let proposalBody: unknown;
+    let registrationBody: unknown;
     let overviewCalls = 0;
-    const submitted: Proposal = {
+    const submitted: Workspace = {
       id: '55555555-5555-4555-8555-555555555555',
       name: 'Local services',
       roots: [roots[0], roots[2]],
@@ -195,7 +195,7 @@ describe('project-first workbench', () => {
     const { fetchMock } = installFetch(async (path, init) => {
       if (path === '/api/overview') {
         overviewCalls++;
-        return json(overview({ proposals: proposalBody ? [submitted] : [] }));
+        return json(overview({ workspaces: registrationBody ? [submitted] : [] }));
       }
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/project-root-picker' && init.method === 'POST') {
@@ -207,9 +207,12 @@ describe('project-first workbench', () => {
           ? json({ status: 'cancelled' })
           : json({ status: 'selected', roots: [roots[1], roots[2]] });
       }
-      if (path === '/api/proposals' && init.method === 'POST') {
-        proposalBody = JSON.parse(String(init.body));
+      if (path === '/api/workspaces' && init.method === 'POST') {
+        registrationBody = JSON.parse(String(init.body));
         return json(submitted, 201);
+      }
+      if (path === `/api/workspaces/${submitted.id}` && init.method === 'GET') {
+        return json(inspection(submitted, 'local-service'));
       }
       return json({ error: 'Not found.' }, 404);
     });
@@ -227,7 +230,7 @@ describe('project-first workbench', () => {
     expect(await screen.findByText(/Folder selection was cancelled/i)).toBeInTheDocument();
     expect(name).toHaveValue(submitted.name);
     expect(screen.getByText(roots[0])).toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([input]) => new URL(String(input), window.location.href).pathname === '/api/proposals')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([input, init]) => new URL(String(input), window.location.href).pathname === '/api/workspaces' && init?.method === 'POST')).toHaveLength(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose folders…' }));
     expect(await screen.findByText(/2 folders added/i)).toBeInTheDocument();
@@ -236,20 +239,21 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove folder 2' }));
     expect(screen.queryByText(roots[1])).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Request project access' }));
-    expect(await screen.findByRole('region', { name: 'Waiting for your approval' })).toBeInTheDocument();
-    expect(proposalBody).toEqual({ name: submitted.name, roots: [roots[0], roots[2]] });
+    fireEvent.click(screen.getByRole('button', { name: 'Register project' }));
+    expect(await screen.findByRole('heading', { level: 1, name: submitted.name })).toBeInTheDocument();
+    expect(registrationBody).toEqual({ name: submitted.name, roots: [roots[0], roots[2]] });
     expect(overviewCalls).toBeGreaterThanOrEqual(2);
     expect(screen.queryByRole('heading', { name: 'Name the project and choose its repositories' })).not.toBeInTheDocument();
+    expect((await screen.findAllByText('local-service')).length).toBeGreaterThan(0);
   });
 
-  it('offers manual root entry when the host-native picker is unavailable without posting a proposal', async () => {
-    let proposalCalls = 0;
+  it('offers manual root entry when the host-native picker is unavailable without registering a project', async () => {
+    let registrationCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/overview') return json(overview());
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/project-root-picker' && init.method === 'POST') return json({ status: 'unavailable' });
-      if (path === '/api/proposals' && init.method === 'POST') { proposalCalls++; return json({ id: 'unexpected' }, 201); }
+      if (path === '/api/workspaces' && init.method === 'POST') { registrationCalls++; return json({ id: 'unexpected' }, 201); }
       return json({ error: 'Not found.' }, 404);
     });
     await connectedEmptyWorkspace();
@@ -258,11 +262,11 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Choose folders…' }));
     expect(await screen.findByText(/native folder picker is unavailable/i)).toBeInTheDocument();
     expect(screen.getByLabelText('Absolute repository folder path')).toBeVisible();
-    expect(proposalCalls).toBe(0);
+    expect(registrationCalls).toBe(0);
   });
 
-  it('does not restore a declined request from an overview response started before the mutation', async () => {
-    const proposal: Proposal = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', name: 'Decline fixture', roots: ['/tmp/decline-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
+  it('does not restore a removed project from an overview response started before the mutation', async () => {
+    const registered: Workspace = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', name: 'Removed fixture', roots: ['/tmp/removed-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
     const stale = deferred<Response>();
     const staleStarted = deferred<void>();
     let overviewCalls = 0;
@@ -270,41 +274,42 @@ describe('project-first workbench', () => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') {
         overviewCalls++;
-        if (overviewCalls === 1) return json(overview({ proposals: [proposal] }));
+        if (overviewCalls === 1) return json(overview({ workspaces: [registered] }));
         if (overviewCalls === 2) return stale.promise.then(result => { staleStarted.resolve(); return result; });
         return json(overview());
       }
-      if (path === `/api/proposals/${proposal.id}/reject` && init.method === 'POST') return json({ rejected: true });
+      if (path === `/api/workspaces/${registered.id}` && init.method === 'DELETE') return json({ removed: true });
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
     render(<App />);
-    expect(await screen.findByText(proposal.name)).toBeInTheDocument();
+    expect((await screen.findAllByText(registered.name)).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Refresh workspace' })[0]);
     await waitFor(() => expect(overviewCalls).toBe(2));
-    fireEvent.click(screen.getByRole('button', { name: `Decline project request for ${proposal.name}` }));
+    fireEvent.click(screen.getAllByRole('link', { name: 'Access & privacy' })[0]);
+    expect(await screen.findByRole('heading', { name: 'Projects & privacy' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: `Remove project registration for ${registered.name}` }));
     await waitFor(() => expect(overviewCalls).toBe(3));
-    expect(await screen.findByText('Project access request declined.')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Waiting for your approval' })).not.toBeInTheDocument();
+    expect(await screen.findByText('No projects are registered in this browser session.')).toBeInTheDocument();
+    expect(screen.queryByText(registered.name)).not.toBeInTheDocument();
 
     await act(async () => {
-      stale.resolve(json(overview({ proposals: [proposal] })));
+      stale.resolve(json(overview({ workspaces: [registered] })));
       await staleStarted.promise;
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(screen.queryByText(proposal.name)).not.toBeInTheDocument();
+    expect(screen.queryByText(registered.name)).not.toBeInTheDocument();
     expect(overviewCalls).toBe(3);
   });
 
-  it('reconciles an approved workspace and inspects it before the pre-approval overview can return', async () => {
-    const proposal: Proposal = { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', name: 'Approved fixture', roots: ['/tmp/approved-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
-    const approved = workspace(proposal.id, proposal.name, proposal.roots);
+  it('reconciles a registered workspace and inspects it before the pre-registration overview can return', async () => {
+    const registered = workspace('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'Registered fixture', '/tmp/registered-fixture');
     const stale = deferred<Response>();
     const staleStarted = deferred<void>();
     let overviewCalls = 0;
-    let approveCalls = 0;
+    let registrationCalls = 0;
     let inspectionCalls = 0;
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -312,49 +317,52 @@ describe('project-first workbench', () => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') {
         overviewCalls++;
-        if (overviewCalls === 1) return json(overview({ proposals: [proposal] }));
+        if (overviewCalls === 1) return json(overview());
         if (overviewCalls === 2) return stale.promise.then(result => { staleStarted.resolve(); return result; });
-        return json(overview({ workspaces: [approved] }));
+        return json(overview({ workspaces: [registered] }));
       }
-      if (path === `/api/proposals/${proposal.id}/approve` && init.method === 'POST') { approveCalls++; return json(approved); }
-      if (path === `/api/workspaces/${approved.id}` && init.method !== 'POST') { inspectionCalls++; return json(inspection(approved, 'approved-service')); }
+      if (path === '/api/workspaces' && init.method === 'POST') { registrationCalls++; return json(registered, 201); }
+      if (path === `/api/workspaces/${registered.id}` && init.method !== 'POST') { inspectionCalls++; return json(inspection(registered, 'registered-service')); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
     render(<App />);
-    expect(await screen.findByText(proposal.name)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh workspace' }));
     await waitFor(() => expect(overviewCalls).toBe(2));
-    fireEvent.click(screen.getByRole('button', { name: `Approve project access for ${proposal.name}` }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create new project' }));
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: registered.name } });
+    fireEvent.click(screen.getByText('Add folders manually'));
+    fireEvent.change(screen.getByLabelText('Absolute repository folder path'), { target: { value: registered.roots[0] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Register project' }));
     await waitFor(() => expect(overviewCalls).toBe(3));
-    expect(approveCalls).toBe(1);
+    expect(registrationCalls).toBe(1);
     await waitFor(() => expect(inspectionCalls).toBe(1));
-    expect(await screen.findByRole('heading', { name: proposal.name })).toBeInTheDocument();
-    expect((await screen.findAllByText('approved-service')).length).toBeGreaterThan(0);
+    expect(await screen.findByRole('heading', { name: registered.name })).toBeInTheDocument();
+    expect((await screen.findAllByText('registered-service')).length).toBeGreaterThan(0);
     expect(screen.getByRole('heading', { name: 'Connect your AI to prepare this project' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Waiting for your approval' })).not.toBeInTheDocument();
 
     await act(async () => {
-      stale.resolve(json(overview({ proposals: [proposal] })));
+      stale.resolve(json(overview()));
       await staleStarted.promise;
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(screen.getByRole('heading', { name: proposal.name })).toBeInTheDocument();
-    expect(screen.queryByText(proposal.name, { selector: 'li h3' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: registered.name })).toBeInTheDocument();
     expect(overviewCalls).toBe(3);
 
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
     expect(await screen.findByRole('heading', { name: 'Connect your AI' })).toBeInTheDocument();
     const setupRequest = screen.getByRole('region', { name: 'Setup request preview' });
-    expect(setupRequest).toHaveTextContent(approved.id);
+    expect(setupRequest).toHaveTextContent(registered.id);
     expect(setupRequest).toHaveTextContent('Verify the MCP connection with workspace_list');
     expect(setupRequest).toHaveTextContent('workspace_inspect and onboarding_plan');
     expect(setupRequest).toHaveTextContent('mcpServers');
     expect(setupRequest).toHaveTextContent('OPENWORKSPACE_HOME');
-    expect(setupRequest.textContent).not.toContain(approved.name);
-    expect(setupRequest.textContent).not.toContain(approved.roots[0]);
+    expect(setupRequest.textContent).not.toContain(registered.name);
+    expect(setupRequest.textContent).not.toContain(registered.roots[0]);
     expect(screen.getByRole('button', { name: 'Copy setup request' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy MCP configuration' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy onboarding request' })).not.toBeInTheDocument();
@@ -368,89 +376,90 @@ describe('project-first workbench', () => {
     expect(await screen.findByText('Copied the setup request. Review the proposed client configuration before applying it.')).toBeInTheDocument();
   });
 
-  it('shows a confirmed approval and inspected inventory when the follow-up workspace refresh fails', async () => {
-    const proposal: Proposal = { id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', name: 'Partially refreshed fixture', roots: ['/tmp/partially-refreshed'], createdAt: '2026-01-01T00:00:00.000Z' };
-    const approved = workspace(proposal.id, proposal.name, proposal.roots);
+  it('asks for a confirming refresh when registration succeeds but the follow-up refresh fails', async () => {
+    const registered = workspace('ffffffff-ffff-4fff-8fff-ffffffffffff', 'Partially refreshed fixture', '/tmp/partially-refreshed');
     let overviewCalls = 0;
-    let clientConfigCalls = 0;
-    let approveCalls = 0;
+    let registrationCalls = 0;
     let inspectionCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/overview') {
         overviewCalls++;
-        return overviewCalls === 1
-          ? json(overview({ proposals: [proposal] }))
-          : json({ error: 'The overview refresh is temporarily unavailable.' }, 503);
-      }
-      if (path === '/api/client-config') {
-        clientConfigCalls++;
-        return clientConfigCalls === 1
-          ? json(clientConfig)
-          : json({ error: 'The configuration refresh is temporarily unavailable.' }, 503);
-      }
-      if (path === `/api/proposals/${proposal.id}/approve` && init.method === 'POST') {
-        approveCalls++;
-        return json(approved);
-      }
-      if (path === `/api/workspaces/${approved.id}` && init.method !== 'POST') {
-        inspectionCalls++;
-        return json(inspection(approved, 'confirmed-approved-service'));
-      }
-      return json({ error: 'Not found.' }, 404);
-    });
-    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
-    render(<App />);
-    expect(await screen.findByText(proposal.name)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: `Approve project access for ${proposal.name}` }));
-
-    expect(await screen.findByRole('heading', { level: 1, name: proposal.name })).toBeInTheDocument();
-    expect(await screen.findByRole('heading', { name: 'Project inventory' })).toBeInTheDocument();
-    expect((await screen.findAllByText('confirmed-approved-service')).length).toBeGreaterThan(0);
-    expect(screen.queryByRole('heading', { name: 'Waiting for your approval' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: `Approve project access for ${proposal.name}` })).not.toBeInTheDocument();
-
-    const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent('Project access was approved');
-    expect(alert).toHaveTextContent('The approved roots are shown from the approval response');
-    expect(alert).toHaveTextContent('refresh to confirm the current state');
-    expect(screen.getByRole('button', { name: 'Refresh workspace' })).toBeEnabled();
-    expect(approveCalls).toBe(1);
-    expect(overviewCalls).toBe(2);
-    expect(clientConfigCalls).toBe(2);
-    expect(inspectionCalls).toBe(1);
-  });
-
-  it('does not show an approved workspace when the approval POST fails', async () => {
-    const proposal: Proposal = { id: 'abababab-abab-4bab-8bab-abababababab', name: 'Rejected approval fixture', roots: ['/tmp/rejected-approval'], createdAt: '2026-01-01T00:00:00.000Z' };
-    let overviewCalls = 0;
-    let approveCalls = 0;
-    let inspectionCalls = 0;
-    installFetch(async (path, init) => {
-      if (path === '/api/overview') {
-        overviewCalls++;
-        return json(overview({ proposals: [proposal] }));
+        return overviewCalls === 2
+          ? json({ error: 'The overview refresh is temporarily unavailable.' }, 503)
+          : json(overview({ workspaces: overviewCalls >= 3 ? [registered] : [] }));
       }
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === `/api/proposals/${proposal.id}/approve` && init.method === 'POST') {
-        approveCalls++;
-        return json({ error: 'The approval could not be confirmed.' }, 500);
+      if (path === '/api/workspaces' && init.method === 'POST') {
+        registrationCalls++;
+        return json(registered, 201);
       }
-      if (path === `/api/workspaces/${proposal.id}` && init.method !== 'POST') inspectionCalls++;
+      if (path === `/api/workspaces/${registered.id}` && init.method !== 'POST') {
+        inspectionCalls++;
+        return json(inspection(registered, 'confirmed-registered-service'));
+      }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
     render(<App />);
-    expect(await screen.findByText(proposal.name)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: `Approve project access for ${proposal.name}` }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create new project' }));
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: registered.name } });
+    fireEvent.click(screen.getByText('Add folders manually'));
+    fireEvent.change(screen.getByLabelText('Absolute repository folder path'), { target: { value: registered.roots[0] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Register project' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('The approval could not be confirmed.');
-    expect(screen.getByRole('heading', { name: 'Waiting for your approval' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: `Approve project access for ${proposal.name}` })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { level: 1, name: proposal.name })).not.toBeInTheDocument();
+    await waitFor(() => expect(overviewCalls).toBe(2));
+    expect(screen.queryByRole('heading', { name: 'Name the project and choose its repositories' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 1, name: registered.name })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Start with a project' })).toBeInTheDocument();
+    expect(registrationCalls).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh workspace' }));
+    expect(await screen.findByRole('heading', { level: 1, name: registered.name })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Project inventory' })).toBeInTheDocument();
+    expect((await screen.findAllByText('confirmed-registered-service')).length).toBeGreaterThan(0);
+    expect(screen.getByText('Workspace refreshed.')).toBeInTheDocument();
+    expect(overviewCalls).toBe(3);
+    expect(inspectionCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not show a registered workspace when the registration POST fails', async () => {
+    const name = 'Rejected registration fixture';
+    const root = '/tmp/rejected-registration';
+    let overviewCalls = 0;
+    let registrationCalls = 0;
+    let inspectionCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/overview') {
+        overviewCalls++;
+        return json(overview());
+      }
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/workspaces' && init.method === 'POST') {
+        registrationCalls++;
+        return json({ error: 'The registration could not be confirmed.' }, 500);
+      }
+      if (path === '/api/workspaces/abababab-abab-4bab-8bab-abababababab' && init.method !== 'POST') inspectionCalls++;
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create new project' }));
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: name } });
+    fireEvent.click(screen.getByText('Add folders manually'));
+    fireEvent.change(screen.getByLabelText('Absolute repository folder path'), { target: { value: root } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Register project' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The registration could not be confirmed.');
+    expect(screen.getByRole('heading', { name: 'Name the project and choose its repositories' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Register project' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Project inventory' })).not.toBeInTheDocument();
-    expect(approveCalls).toBe(1);
+    expect(registrationCalls).toBe(1);
     expect(overviewCalls).toBe(2);
     expect(inspectionCalls).toBe(0);
   });
@@ -476,11 +485,11 @@ describe('project-first workbench', () => {
       roots: [
         { path: roots[0], repositories: [repository('web', `${roots[0]}/web`)], warnings: [], unavailable: false },
         { path: roots[1], repositories: [repository('api', `${roots[1]}/api`)], warnings: [], unavailable: false },
-        { path: roots[2], repositories: [], warnings: [], unavailable: true, error: 'This approved root is unavailable or its directory identity changed.' },
+        { path: roots[2], repositories: [], warnings: [], unavailable: true, error: 'This registered root is unavailable or its directory identity changed.' },
       ],
     };
     let overviewCalls = 0;
-    let revokeCalls = 0;
+    let removeCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') {
@@ -488,7 +497,7 @@ describe('project-first workbench', () => {
         return overviewCalls === 1 ? json(overview({ workspaces: [approved] })) : json(overview());
       }
       if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(groupedInspection);
-      if (path === `/api/workspaces/${approved.id}/revoke` && init.method === 'POST') { revokeCalls++; return json({ revoked: true }); }
+      if (path === `/api/workspaces/${approved.id}` && init.method === 'DELETE') { removeCalls++; return json({ removed: true }); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -512,12 +521,12 @@ describe('project-first workbench', () => {
     expect(choice).toHaveTextContent('second/services');
 
     fireEvent.click(screen.getAllByRole('link', { name: 'Access & privacy' })[0]);
-    expect(await screen.findByRole('heading', { name: 'Access & privacy' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Projects & privacy' })).toBeInTheDocument();
     expect(screen.getAllByText(roots[0]).length).toBeGreaterThan(0);
     expect(screen.getAllByText(roots[1]).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button', { name: `Revoke project access for ${approved.name}` }));
+    fireEvent.click(screen.getByRole('button', { name: `Remove project registration for ${approved.name}` }));
     await waitFor(() => expect(overviewCalls).toBe(2));
-    expect(revokeCalls).toBe(1);
+    expect(removeCalls).toBe(1);
     expect(document.body.textContent).not.toContain(roots[0]);
     expect(document.body.textContent).not.toContain(roots[1]);
   });
@@ -561,7 +570,7 @@ describe('project-first workbench', () => {
     expect(screen.getByText('online')).toBeInTheDocument();
     expect(screen.getByText(/Working directory: \/tmp\/service-fixture\/worker/)).toBeInTheDocument();
     expect(screen.queryByText(/no runtime was started or checked/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Dashboard lifecycle control is separate from directory approval/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart or stop only the exactly mapped service/i)).toBeInTheDocument();
     expect(screen.getByText(/3 local processes scanned/)).toBeInTheDocument();
     expect(servicesCalls).toBe(1);
 
@@ -651,7 +660,7 @@ describe('project-first workbench', () => {
     expect(verifyCalls).toBe(1);
   });
 
-  it('creates workstreams on approved roots and moves their status forward', async () => {
+  it('creates workstreams on registered roots and moves their status forward', async () => {
     const approved = workspace('33333333-3333-4333-8333-333333333333', 'Stream fixture', ['/tmp/stream-a', '/tmp/stream-b']);
     const streamInspection = {
       workspace: approved,
@@ -726,22 +735,16 @@ describe('project-first workbench', () => {
     await waitFor(() => expect(within(workstreamsRegion).queryByText(/port:3000 · held/)).not.toBeInTheDocument());
   });
 
-  it('grants and revokes operator access from the AI setup screen', async () => {
-    const approved = workspace('55555555-5555-4555-8555-555555555555', 'Operator fixture', '/tmp/operator-fixture');
-    let scope: { workspaceIds: string[] } | null = null;
-    let saveCalls = 0;
+  it('records dashboard and assistant operations in the AI setup activity trail', async () => {
+    const registered = workspace('55555555-5555-4555-8555-555555555555', 'Activity fixture', '/tmp/activity-fixture');
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
-      if (path === '/api/operator' && init.method === 'GET') return json(scope);
+      if (path === '/api/overview') return json(overview({ workspaces: [registered] }));
       if (path === '/api/activity' && init.method === 'GET') {
-        return json(scope ? [{ at: '2026-10-02T00:00:00.000Z', actor: 'dashboard', operation: 'delegate-operator', workspaceId: null, detail: '1 workspaces' }] : []);
-      }
-      if (path === '/api/operator/delegate' && init.method === 'POST') {
-        saveCalls++;
-        const input = JSON.parse(String(init.body)) as { workspaceIds: string[] };
-        scope = input.workspaceIds.length > 0 ? { workspaceIds: input.workspaceIds } : null;
-        return json(scope);
+        return json([
+          { at: '2026-10-02T00:00:00.000Z', actor: 'dashboard', operation: 'register', workspaceId: registered.id, detail: 'Activity fixture' },
+          { at: '2026-10-02T00:01:00.000Z', actor: 'mcp', operation: 'verify', workspaceId: registered.id, detail: 'check → passed' },
+        ]);
       }
       return json({ error: 'Not found.' }, 404);
     });
@@ -750,22 +753,17 @@ describe('project-first workbench', () => {
     await screen.findByRole('complementary', { name: 'Workspace rail' });
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
 
-    expect(await screen.findByText('Let your assistant operate')).toBeInTheDocument();
-    const setupRegion = screen.getByRole('region', { name: 'Let your assistant operate' });
-    fireEvent.click(within(setupRegion).getByRole('checkbox', { name: /Operator fixture/ }));
-    fireEvent.click(within(setupRegion).getByRole('button', { name: 'Grant operator access' }));
-    expect(await within(setupRegion).findByText('operator')).toBeInTheDocument();
-    expect(saveCalls).toBe(1);
-    expect(await within(setupRegion).findByText('delegate-operator')).toBeInTheDocument();
-
-    fireEvent.click(within(setupRegion).getByRole('checkbox', { name: /Operator fixture/ }));
-    fireEvent.click(within(setupRegion).getByRole('button', { name: 'Update operator access' }));
-    await waitFor(() => expect(saveCalls).toBe(2));
-    expect(await within(setupRegion).findByRole('button', { name: 'Grant operator access' })).toBeInTheDocument();
+    expect(await screen.findByText('What ran here')).toBeInTheDocument();
+    const trail = screen.getByRole('heading', { name: 'What ran here' }).closest('section')!;
+    expect(within(trail).getByText('register')).toBeInTheDocument();
+    expect(within(trail).getByText('verify')).toBeInTheDocument();
+    expect(within(trail).getByText('you')).toBeInTheDocument();
+    expect(within(trail).getByText('assistant')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(registered.roots[0]);
   });
 
-  it('does not restore revoked access or selected inventory from a pre-revocation refresh', async () => {
-    const approved = workspace('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Revocation fixture', '/tmp/revocation-fixture');
+  it('does not restore removed registration or selected inventory from a pre-removal refresh', async () => {
+    const registered = workspace('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Removal fixture', '/tmp/removal-fixture');
     const stale = deferred<Response>();
     const staleStarted = deferred<void>();
     let overviewCalls = 0;
@@ -773,37 +771,37 @@ describe('project-first workbench', () => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') {
         overviewCalls++;
-        if (overviewCalls === 1) return json(overview({ workspaces: [approved] }));
+        if (overviewCalls === 1) return json(overview({ workspaces: [registered] }));
         if (overviewCalls === 2) return stale.promise.then(result => { staleStarted.resolve(); return result; });
         return json(overview());
       }
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(inspection(approved, 'old-sentinel-service'));
-      if (path === `/api/workspaces/${approved.id}/revoke` && init.method === 'POST') return json({ revoked: true });
+      if (path === `/api/workspaces/${registered.id}` && init.method === 'GET') return json(inspection(registered, 'old-sentinel-service'));
+      if (path === `/api/workspaces/${registered.id}` && init.method === 'DELETE') return json({ removed: true });
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
     render(<App />);
     const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
-    fireEvent.click(within(rail).getByRole('button', { name: new RegExp(approved.name) }));
+    fireEvent.click(within(rail).getByRole('button', { name: new RegExp(registered.name) }));
     expect((await screen.findAllByText('old-sentinel-service')).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Refresh workspace' })[0]);
     await waitFor(() => expect(overviewCalls).toBe(2));
     fireEvent.click(screen.getAllByRole('link', { name: 'Access & privacy' })[0]);
-    expect(await screen.findByRole('heading', { name: 'Access & privacy' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: `Revoke project access for ${approved.name}` }));
+    expect(await screen.findByRole('heading', { name: 'Projects & privacy' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: `Remove project registration for ${registered.name}` }));
     await waitFor(() => expect(overviewCalls).toBe(3));
-    expect(await screen.findByText('No projects are approved in this browser session.')).toBeInTheDocument();
+    expect(await screen.findByText('No projects are registered in this browser session.')).toBeInTheDocument();
 
     await act(async () => {
-      stale.resolve(json(overview({ workspaces: [approved] })));
+      stale.resolve(json(overview({ workspaces: [registered] })));
       await staleStarted.promise;
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(document.body.textContent).not.toContain(approved.name);
+    expect(document.body.textContent).not.toContain(registered.name);
     expect(document.body.textContent).not.toContain('old-sentinel-service');
-    expect(screen.queryByRole('button', { name: `Revoke project access for ${approved.name}` })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: `Remove project registration for ${registered.name}` })).not.toBeInTheDocument();
   });
 
   it('clears private state on disconnect and ignores old-session inventory and 401 responses after same-origin reconnect', async () => {
@@ -980,7 +978,7 @@ describe('project-first workbench', () => {
     fireEvent.click(within(rail).getByRole('button', { name: new RegExp(first.name) }));
     expect((await screen.findAllByText('first-session-service')).length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByRole('link', { name: 'Access & privacy' })[0]);
-    expect(await screen.findByRole('heading', { name: 'Access & privacy' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Projects & privacy' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect this browser tab' }));
 
     expect(await screen.findByRole('heading', { name: 'Connect to your local workspace' })).toBeInTheDocument();
@@ -994,7 +992,7 @@ describe('project-first workbench', () => {
     fireEvent.click(within(secondRail).getByRole('button', { name: new RegExp(second.name) }));
     expect(await screen.findByRole('heading', { level: 1, name: second.name })).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('link', { name: 'Access & privacy' })[0]);
-    expect(await screen.findByRole('heading', { name: 'Access & privacy' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Projects & privacy' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect this browser tab' }));
     expect(await screen.findByRole('heading', { name: 'Connect to your local workspace' })).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(second.name);
@@ -1032,7 +1030,7 @@ describe('project-first workbench', () => {
     const refreshButton = screen.getByRole('button', { name: 'Refresh workspace' });
     fireEvent.click(refreshButton);
     await updateStarted.promise;
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Updating approved metadata'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Updating registered metadata'));
 
     expect(screen.getByRole('heading', { name: 'Project inventory' })).toBe(inventoryHeading);
     expect(screen.getAllByText('last-confirmed-service').length).toBeGreaterThan(0);
@@ -1102,7 +1100,7 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
     const genericSetupRequest = await screen.findByRole('region', { name: 'Setup request preview' });
     expect(genericSetupRequest).toHaveTextContent('workspace_list first');
-    expect(genericSetupRequest).toHaveTextContent('workspace_inspect and onboarding_plan only after project approval');
+    expect(genericSetupRequest).toHaveTextContent('workspace_register with {name, roots}');
     expect(genericSetupRequest.textContent).not.toContain(approved.id);
     expect(genericSetupRequest.textContent).not.toContain(approved.name);
     expect(genericSetupRequest.textContent).not.toContain(approved.roots[0]);

@@ -336,7 +336,7 @@ export async function controlPm2Service(workspaceRoots: string[], action: Servic
   const candidates = [...mapped.services, ...mapped.ambiguousServices];
   const service = candidates.find(service => service.pmId === target.pmId && service.name === target.name);
   // Ambiguous roots are not controllable until the human resolves the service owner.
-  if (!service || !service.exactRootPath || (target.namespace && service.pmId === null)) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? null }, status: 'failed', serviceStatus: null, message: 'That PM2 service is not uniquely mapped to an approved root.' };
+  if (!service || !service.exactRootPath || (target.namespace && service.pmId === null)) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? null }, status: 'failed', serviceStatus: null, message: 'That PM2 service is not uniquely mapped to a registered root.' };
   if (target.namespace && service.namespace && service.namespace !== target.namespace) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace }, status: 'failed', serviceStatus: service.status, message: 'The service identity changed; review it again in the dashboard.' };
   const result = await runner(action, target.pmId);
   if (!result.ok) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'failed', serviceStatus: service.status, message: result.error === 'missing' ? 'PM2 is unavailable.' : 'The PM2 action did not complete.' };

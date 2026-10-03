@@ -31,12 +31,11 @@ async function approvedWorkspace(t: { after: (cleanup: () => void | Promise<void
   const store = new Store(join(root, 'state'));
   await store.initialize();
   const service = new WorkspaceService(store);
-  const proposal = await service.propose('Project', paths);
-  const approved = await service.approve(proposal.id);
+  const approved = await service.register('Project', paths);
   return { root, paths, store, approved };
 }
 
-test('workstreams bind approved roots and pin observed revisions', async t => {
+test('workstreams bind registered roots and pin observed revisions', async t => {
   const f = await approvedWorkspace(t);
   const service = new WorkspaceService(f.store, undefined, undefined, undefined, gitSha);
   const workstream = await service.createWorkstream({ name: 'Checkout one', workspaceId: f.approved.id, checkouts: [f.paths[0]] });
@@ -65,7 +64,7 @@ test('workstreams refuse unapproved, redirected and duplicate checkouts without 
   await mkdir(outside);
   await assert.rejects(
     service.createWorkstream({ name: 'Outside', workspaceId: f.approved.id, checkouts: [outside] }),
-    /approved roots/,
+    /registered roots/,
   );
   await assert.rejects(
     service.createWorkstream({ name: 'Unknown', workspaceId: '00000000-0000-4000-8000-000000000000', checkouts: [f.paths[0]] }),
@@ -83,14 +82,14 @@ test('workstreams refuse unapproved, redirected and duplicate checkouts without 
   await mkdir(subdir);
   await assert.rejects(
     service.createWorkstream({ name: 'Subdir', workspaceId: f.approved.id, checkouts: [subdir] }),
-    /approved roots/,
+    /registered roots/,
   );
   const link = join(f.root, 'linked');
   await mkdir(link);
   await symlink(f.paths[1], join(link, 'alias'));
   await assert.rejects(
     service.createWorkstream({ name: 'Linked', workspaceId: f.approved.id, checkouts: [join(link, 'alias')] }),
-    /approved roots/,
+    /registered roots/,
   );
   const doubled = await service.createWorkstream({ name: 'Doubled', workspaceId: f.approved.id, checkouts: [f.paths[0], f.paths[0]] });
   assert.deepEqual(doubled.checkouts.map(checkout => checkout.root), [f.paths[0]]);

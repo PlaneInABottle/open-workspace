@@ -29,18 +29,18 @@ const maxWorkstreams = 50;
 
 async function canonicalCheckoutRoot(candidate: string): Promise<string> {
   if (typeof candidate !== 'string' || !candidate || candidate.includes('\0') || candidate.length > 4096) {
-    throw new Error('Checkouts must be approved roots of this workspace.');
+    throw new Error('Checkouts must be registered roots of this workspace.');
   }
   const resolved = resolve(candidate);
   try {
     const info = await lstat(resolved);
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Checkouts must be approved roots of this workspace.');
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Checkouts must be registered roots of this workspace.');
     const canonical = await realpath(resolved);
-    if (canonical !== resolved) throw new Error('Checkouts must be approved roots of this workspace.');
+    if (canonical !== resolved) throw new Error('Checkouts must be registered roots of this workspace.');
     return canonical;
   } catch (error) {
-    if (error instanceof Error && error.message === 'Checkouts must be approved roots of this workspace.') throw error;
-    throw new Error('Checkouts must be approved roots of this workspace.');
+    if (error instanceof Error && error.message === 'Checkouts must be registered roots of this workspace.') throw error;
+    throw new Error('Checkouts must be registered roots of this workspace.');
   }
 }
 
@@ -77,8 +77,8 @@ export async function createWorkstream(
     const roots: string[] = [];
     for (const candidate of input.checkouts) {
       const canonical = await canonicalCheckoutRoot(candidate);
-      // A workstream binds whole approved roots, never subdirectories: ownership stays unambiguous.
-      if (!workspace.roots.includes(canonical)) throw new Error('Checkouts must be approved roots of this workspace.');
+      // A workstream binds whole registered roots, never subdirectories: ownership stays unambiguous.
+      if (!workspace.roots.includes(canonical)) throw new Error('Checkouts must be registered roots of this workspace.');
       if (!roots.includes(canonical)) roots.push(canonical);
     }
     if (roots.length === 0) throw new Error('Select at least one checkout and no more than twenty.');

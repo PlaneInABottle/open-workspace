@@ -6,11 +6,9 @@ import {
   type Capability,
   type ClientConfig,
   type Inspection,
-  type Proposal,
   type ServiceInventory,
   type ActivityEntry,
   type Lease,
-  type OperatorScope,
   type VerificationRequest,
   type VerificationResult,
   type Workspace,
@@ -23,7 +21,6 @@ export type ConnectionPhase = 'disconnected' | 'connecting' | 'loading' | 'conne
 
 export interface WorkbenchState {
   phase: ConnectionPhase;
-  proposals: Proposal[];
   workspaces: Workspace[];
   capabilities: Capability[];
   clientConfig: ClientConfig | null;
@@ -42,9 +39,7 @@ export interface WorkbenchState {
   workstreamsLoading: boolean;
   leases: Lease[];
   leasesError: string | null;
-  operatorScope: OperatorScope | null;
   activity: ActivityEntry[];
-  operatorLoading: boolean;
   refreshing: boolean;
   busyIds: ReadonlySet<string>;
   notice: Notice | null;
@@ -53,7 +48,6 @@ export interface WorkbenchState {
 function initialState(phase: ConnectionPhase): WorkbenchState {
   return {
     phase,
-    proposals: [],
     workspaces: [],
     capabilities: [],
     clientConfig: null,
@@ -72,9 +66,7 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     workstreamsLoading: false,
     leases: [],
     leasesError: null,
-    operatorScope: null,
     activity: [],
-    operatorLoading: false,
     refreshing: false,
     busyIds: new Set(),
     notice: null,
@@ -90,7 +82,6 @@ function errorMessage(error: unknown) {
   return 'The request could not be completed. Retry when the local service is available.';
 }
 
-function busyKeyForProposal(id: string) { return `proposal:${id}`; }
 function busyKeyForWorkspace(id: string) { return `workspace:${id}`; }
 
 export function useWorkbench() {
@@ -155,7 +146,6 @@ export function useWorkbench() {
       commit(current => ({
         ...current,
         phase: api.isConfirmed ? 'connected' : current.phase,
-        proposals: overview.proposals,
         workspaces: overview.workspaces,
         capabilities: overview.capabilities,
         clientConfig,
@@ -420,51 +410,19 @@ export function useWorkbench() {
     }
   }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
 
-  const loadOperator = useCallback(async () => {
+  const loadActivity = useCallback(async () => {
     const session = api.sessionGeneration;
     if (!api.isConfirmed) return false;
-    commit(current => ({ ...current, operatorLoading: true }));
     try {
-      const [scope, trail] = await Promise.all([api.operatorScope(), api.activity()]);
+      const trail = await api.activity();
       if (!api.isCurrent(session)) return false;
-      commit(current => ({ ...current, operatorLoading: false, operatorScope: scope, activity: trail }));
+      commit(current => ({ ...current, activity: trail }));
       return true;
     } catch (error) {
       if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session)) {
-        commit(current => ({ ...current, operatorLoading: false }));
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
       return false;
     }
-  }, [api, commit, handleSessionExpired, setNotice]);
-
-  const saveOperatorScope = useCallback(async (workspaceIds: string[]) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    commit(current => ({ ...current, operatorLoading: true }));
-    try {
-      const scope = await api.setOperatorScope(workspaceIds);
-      if (!api.isCurrent(session)) return false;
-      const trail = await api.activity().catch(() => null);
-      if (!api.isCurrent(session)) return false;
-      commit(current => ({ ...current, operatorLoading: false, operatorScope: scope, activity: trail ?? current.activity }));
-      setNotice({
-        kind: 'success',
-        message: scope
-          ? `Your assistant can now operate services, run tests and hold leases in ${scope.workspaceIds.length} workspace${scope.workspaceIds.length === 1 ? '' : 's'}. Revoke anytime from this screen.`
-          : 'Operator access revoked. Your assistant is back to read-only.',
-      });
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session)) {
-        commit(current => ({ ...current, operatorLoading: false }));
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, commit, handleSessionExpired, setNotice]);
+  }, [api, commit, handleSessionExpired]);
 
   const refreshSelected = useCallback(async () => {
     const selection = selectedId.current;
@@ -550,11 +508,16 @@ export function useWorkbench() {
       : { ok: true as const, value: value as T, reconciliationFailed };
   }, [api, commit, handleSessionExpired, refresh]);
 
-  const requestProject = useCallback((value: ProjectRequest) => mutate(
-    'project-request',
-    () => api.propose(value.name, value.roots),
-    'Project access requested. Review and approve every listed root before metadata is read.',
-  ), [api, mutate]);
+  const requestProject = useCallback(async (value: ProjectRequest) => {
+    const session = api.sessionGeneration;
+    const result = await mutate(
+      'project-request',
+      () => api.register(value.name, value.roots),
+      'Project registered. Bounded metadata was read immediately; nothing was started or changed.',
+    );
+    if (result.ok && api.isCurrent(session)) await inspectProject(result.value.id);
+    return result;
+  }, [api, inspectProject, mutate]);
 
   const pickProjectRoots = useCallback(async (signal: AbortSignal) => {
     try {
@@ -570,49 +533,9 @@ export function useWorkbench() {
     }
   }, [api, handleSessionExpired, resetPrivateState]);
 
-  const approve = useCallback(async (proposalId: string) => {
-    const session = api.sessionGeneration;
-    const selectionAtStart = selectionRevision.current;
-    const mutation = mutate(busyKeyForProposal(proposalId), () => api.approve(proposalId), 'Project access approved for all selected roots. Metadata only; nothing was started or changed.');
-    const operationRevision = mutationRevision.current;
-    const result = await mutation;
-    if (!result.ok || !api.isCurrent(session)) return;
-
-    if (result.reconciliationFailed) {
-      if (mutationRevision.current !== operationRevision) return;
-      const approved = result.value;
-      commit(current => ({
-        ...current,
-        workspaces: [...current.workspaces.filter(workspace => workspace.id !== approved.id), approved],
-        proposals: current.proposals.filter(proposal => proposal.id !== proposalId),
-      }));
-    }
-
-    if (result.value && selectionRevision.current === selectionAtStart) {
-      const inspection = inspectProject(result.value.id);
-      const inspectionSelectionRevision = selectionRevision.current;
-      await inspection;
-      if (result.reconciliationFailed
-        && api.isCurrent(session)
-        && mutationRevision.current === operationRevision
-        && selectionRevision.current === inspectionSelectionRevision) {
-        setNotice({
-          kind: 'error',
-           message: 'Project access was approved, but the workspace could not be refreshed. The approved roots are shown from the approval response; refresh to confirm the current state.',
-        });
-      }
-    }
-  }, [api, commit, inspectProject, mutate, setNotice]);
-
-  const decline = useCallback((proposalId: string) => mutate(
-    busyKeyForProposal(proposalId),
-    () => api.decline(proposalId),
-    'Project access request declined.',
-  ), [api, mutate]);
-
-  const revoke = useCallback(async (workspaceId: string) => {
+  const removeWorkspace = useCallback(async (workspaceId: string) => {
     if (selectedId.current === workspaceId) clearSelection();
-    await mutate(busyKeyForWorkspace(workspaceId), () => api.revoke(workspaceId), 'All project roots were revoked. No project files or runtime resources were deleted.');
+    await mutate(busyKeyForWorkspace(workspaceId), () => api.remove(workspaceId), 'Project registration removed. No project files or runtime resources were deleted.');
   }, [api, clearSelection, mutate]);
 
   const copyText = useCallback(async (text: string, successMessage: string): Promise<boolean> => {
@@ -640,14 +563,11 @@ export function useWorkbench() {
     setWorkstreamStatus,
     acquireLease,
     releaseLease,
-    loadOperator,
-    saveOperatorScope,
+    loadActivity,
     clearSelection,
     requestProject,
     pickProjectRoots,
-    approve,
-    decline,
-    revoke,
+    removeWorkspace,
     copyText,
     setNotice,
   };

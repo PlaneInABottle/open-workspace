@@ -150,8 +150,8 @@ export function formatSetupRequest(configuration: ClientConfig | null, selectedI
   if (!server) return null;
 
   const workspaceContext = selectedId && workspaceIdPattern.test(selectedId)
-    ? `Context: This named project was separately approved (UUID ${selectedId}) with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this UUID only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
-    : 'Context: Verify the MCP connection with workspace_list first. If my project is absent, ask me to choose its name and exact repository folders in the dashboard, then call workspace_propose with {name, roots}. Wait for my separate approval of every requested root before inspecting. Never infer a shared parent. Use workspace_inspect and onboarding_plan only after project approval.';
+    ? `Context: This named project is registered (UUID ${selectedId}) with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this UUID only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
+    : 'Context: Verify the MCP connection with workspace_list first. If my project is absent, ask me to choose its name and exact repository folders, then call workspace_register with {name, roots}. Registration reads bounded metadata immediately. Never infer a shared parent. Mutations need my approval per my client settings; the dashboard only records what ran.';
   const copyText = [
     'Identify the assistant client I am using and adapt only this generated OpenWorkspace stdio entry to that client’s documented project-local format. Use the current project only; do not write user-wide or global MCP settings. For Claude Code, use Claude’s local scope (private to this project in ~/.claude.json), not user scope or a shared .mcp.json unless I explicitly ask. Preserve every existing server and setting, show the exact proposed change, and ask for my review before writing configuration.',
     'Generated local MCP entry:',
@@ -159,7 +159,7 @@ export function formatSetupRequest(configuration: ClientConfig | null, selectedI
     jsonConfig(server, false),
     '```',
     workspaceContext,
-    'Every requested root still requires my separate dashboard approval. This M0 source preview requires the existing OpenWorkspace Node runtime; it is not a Node-free installer. Do not run project commands, install tools, read secrets, write project files, or claim setup is complete. OPENWORKSPACE_HOME is machine-local and must not be committed as a reusable team path.',
+    'This source preview requires the existing OpenWorkspace Node runtime; it is not a Node-free installer. Do not run project commands, install tools, read secrets, write project files, or claim setup is complete. OPENWORKSPACE_HOME is machine-local and must not be committed as a reusable team path.',
     'Jira is optional; discuss Atlassian MCP only if I use Jira.',
   ].join('\n\n');
 

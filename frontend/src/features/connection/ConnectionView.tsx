@@ -27,9 +27,9 @@ export function ConnectionView({ state, onConnect }: {
           <p className="eyebrow">THIS BROWSER TAB</p>
           <h1 id="connection-heading" className="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">Connect to your local workspace</h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">
-            By selecting Connect this browser, you allow this tab to view approved project metadata, submit access requests, and approve, decline, or revoke them. It can also show the local MCP client configuration.
+            By selecting Connect this browser, you allow this tab to view registered project metadata, register and remove projects, and run workspace operations. It can also show the local MCP client configuration.
           </p>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Connecting does not approve a project or any of its repository folders. Each project request still requires your separate approval. This preview does not read secrets, run commands, install tools, or change project files.</p>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Connecting registers nothing by itself. Registering a project reads bounded metadata immediately; execution is authorized by your assistant client, and the dashboard only records what ran. This preview does not read secrets, install tools, or change project files.</p>
           <Button type="button" className="mt-6" disabled={connecting} aria-busy={connecting} onClick={onConnect}>
             {connecting ? 'Connecting…' : 'Connect this browser'}
             {!connecting && <ArrowRight aria-hidden="true" data-icon="inline-end" />}
@@ -39,10 +39,10 @@ export function ConnectionView({ state, onConnect }: {
         </section>
         <aside className="self-start border-t border-border pt-6 lg:border-l lg:border-t-0 lg:pl-7 lg:pt-0" aria-label="Local connection boundaries">
           <h2 className="text-sm font-semibold">Local, not a sandbox</h2>
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">The session connects this dashboard to the local OpenWorkspace service. It does not grant an assistant permission to approve its own project roots.</p>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">The session connects this dashboard to the local OpenWorkspace service. It records activity; it does not gate what your assistant may do.</p>
           <p className="mt-5 text-xs leading-5 text-muted-foreground">A user with access to this machine can imitate local browser requests; this consent is not an operating-system access boundary.</p>
           <p className="mt-4 text-xs leading-5 text-muted-foreground">Use the canonical local URL printed by OpenWorkspace. Dashboard consent accepts the 127.0.0.1 host, not the localhost alias.</p>
-          <p className="mt-4 text-xs leading-5 text-muted-foreground">Project metadata may be sensitive. Approve only directories you intend to inspect and share with your assistant.</p>
+          <p className="mt-4 text-xs leading-5 text-muted-foreground">Project metadata may be sensitive. Register only directories you intend to inspect and share with your assistant.</p>
         </aside>
       </main>
     </div>
