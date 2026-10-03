@@ -1,0 +1,206 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { Store, writePrivateJson } from '../src/store.js';
+import { WorkspaceService } from '../src/workspace.js';
+import { createApp } from '../src/http.js';
+import { DashboardSessions } from '../src/dashboard-sessions.js';
+import { fixtureStaticAssets } from './helpers/static-assets.js';
+
+async function fixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-update-roots-')));
+  const project = join(root, 'project');
+  await mkdir(project);
+  await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
+  // A worktree-style second checkout: a real directory that appears later.
+  const worktree = join(root, 'project-worktree');
+  await mkdir(worktree);
+  await writeFile(join(worktree, 'package.json'), '{"scripts":{"test":"node --test"}}');
+  const store = new Store(join(root, 'state'));
+  await store.initialize();
+  return {
+    root,
+    project,
+    worktree,
+    store,
+    service: new WorkspaceService(store),
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+const jsonHeaders = { 'Content-Type': 'application/json' };
+
+test('updateRoots replaces the full list while preserving UUID, name, timestamps, leases, workstreams and activity', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const workspace = await f.service.register('Project', [f.project]);
+  const workstream = await f.service.createWorkstream({ name: 'Stream', workspaceId: workspace.id, checkouts: [f.project] });
+  const { lease } = await f.service.acquireLease({ resource: 'port:3000', workstreamId: workstream.id });
+  await f.service.recordActivity({ actor: 'mcp', operation: 'register', workspaceId: workspace.id, detail: 'Project' });
+  const activityBefore = await f.service.recentActivity();
+
+  const { workspace: updated, previousRoots } = await f.service.updateRoots(workspace.id, [f.project, f.worktree]);
+  assert.equal(previousRoots, 1);
+  assert.equal(updated.id, workspace.id);
+  assert.equal(updated.name, 'Project');
+  assert.equal(updated.createdAt, workspace.createdAt);
+  assert.deepEqual(updated.roots, [await realpath(f.project), await realpath(f.worktree)]);
+
+  const state = await f.store.read();
+  assert.equal(state.workspaces.length, 1);
+  assert.deepEqual(state.workspaces[0].roots, updated.roots);
+  // Continuity: leases, workstreams and prior activity entries are intact.
+  assert.deepEqual(await f.service.listWorkstreams(), [workstream]);
+  assert.deepEqual(await f.service.listLeases(), [lease]);
+  assert.deepEqual(await f.service.recentActivity(), activityBefore);
+});
+
+test('updateRoots failures commit nothing: the state file stays byte-identical and the old list is intact', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const workspace = await f.service.register('Project', [f.project]);
+  const stateFile = join(f.store.directory, 'state.json');
+  const before = await readFile(stateFile);
+
+  // Unknown/missing root refuses like registration.
+  await assert.rejects(f.service.updateRoots(workspace.id, [f.project, join(f.root, 'not-created')]), /real directory, not a symlink/);
+  // Within-project overlap (parent + child, duplicates) refuses.
+  await assert.rejects(f.service.updateRoots(workspace.id, [f.project, join(f.project, 'child')]), /parent and its child/);
+  await assert.rejects(f.service.updateRoots(workspace.id, [f.project, `${f.project}/.`]), /parent and its child/);
+  // Symlink root refuses.
+  const outside = join(f.root, 'outside'); await mkdir(outside);
+  const alias = join(f.root, 'alias'); await symlink(outside, alias);
+  await assert.rejects(f.service.updateRoots(workspace.id, [alias]), /real directory, not a symlink/);
+  // Count/length parity with registration.
+  await assert.rejects(
+    f.service.updateRoots(workspace.id, Array.from({ length: 21 }, (_, index) => join(f.root, `candidate-${index}`))),
+    /no more than 20/,
+  );
+  await assert.rejects(f.service.updateRoots(workspace.id, []), /at least one/);
+  // Unknown workspace reuses the existing safe error.
+  await assert.rejects(
+    f.service.updateRoots('99999999-9999-4999-8999-999999999999', [f.project]),
+    /Workspace not found\. Register it first\./,
+  );
+
+  assert.deepEqual(await readFile(stateFile), before);
+  assert.deepEqual((await f.store.read()).workspaces[0].roots, [await realpath(f.project)]);
+});
+
+test('HTTP roots route serves MCP directly and gates the dashboard by canonical context plus intent', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  let now = 1_800_000_000_000;
+  let counter = 0;
+  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
+  const mcpToken = 'd'.repeat(64);
+  const app = createApp(f.service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+
+  const registered = await (await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'Roots project', roots: [f.project] }),
+  })).json() as { id: string };
+  const path = `${origin}/api/workspaces/${registered.id}/roots`;
+
+  // Strict schema: extra keys and empty lists are refused without touching state.
+  assert.equal((await fetch(path, { method: 'POST', headers: mcpHeaders, body: JSON.stringify({ roots: [f.project], extra: true }) })).status, 400);
+  assert.equal((await fetch(path, { method: 'POST', headers: mcpHeaders, body: JSON.stringify({ roots: [] }) })).status, 400);
+  assert.equal((await fetch(path, { method: 'POST', headers: mcpHeaders, body: JSON.stringify({ roots: [join(f.root, 'missing')] }) })).status, 400);
+  assert.deepEqual((await f.store.read()).workspaces[0].roots, [await realpath(f.project)]);
+
+  // Unknown workspace reuses the existing safe error over HTTP.
+  const unknown = await fetch(`${origin}/api/workspaces/99999999-9999-4999-8999-999999999999/roots`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ roots: [f.project] }),
+  });
+  assert.equal(unknown.status, 400);
+  assert.match((await unknown.json() as { error: string }).error, /Workspace not found/);
+
+  // Happy path over MCP: id preserved, activity records counts only.
+  const updated = await fetch(path, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ roots: [f.project, f.worktree] }),
+  });
+  assert.equal(updated.status, 200);
+  const body = await updated.json() as { id: string; name: string; roots: string[] };
+  assert.equal(body.id, registered.id);
+  assert.equal(body.name, 'Roots project');
+  assert.deepEqual(body.roots, [await realpath(f.project), await realpath(f.worktree)]);
+  const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${mcpToken}` } })).json() as Array<{
+    at: string; actor: string; operation: string; workspaceId: string | null; detail: string;
+  }>;
+  const entry = activity.find(candidate => candidate.operation === 'roots-update');
+  assert.deepEqual(entry, { at: entry?.at, actor: 'mcp', operation: 'roots-update', workspaceId: registered.id, detail: '1 → 2 roots' });
+  assert.ok(!entry.detail.includes(f.project), 'activity must carry counts only, never raw paths');
+
+  // Dashboard without intent is refused; with the update-workspace-roots
+  // intent and exact canonical context it succeeds.
+  const issued = await fetch(`${origin}/api/dashboard-session`, {
+    method: 'POST',
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    body: JSON.stringify({ consent: true }),
+  });
+  const { dashboardToken } = await issued.json() as { dashboardToken: string };
+  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  assert.equal((await fetch(path, {
+    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ roots: [f.project] }),
+  })).status, 403);
+  const allowed = await fetch(path, {
+    method: 'POST',
+    headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'update-workspace-roots' },
+    body: JSON.stringify({ roots: [f.project] }),
+  });
+  assert.equal(allowed.status, 200);
+  assert.equal((await allowed.json() as { id: string }).id, registered.id);
+  void now;
+  void counter;
+});
+
+test('MCP workspace_update_roots adds a worktree directory to the existing project end to end', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-update-roots-mcp-')));
+  const store = new Store(join(root, 'state')); await store.initialize();
+  const project = join(root, 'project'); await mkdir(project);
+  await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
+  const worktree = join(root, 'project-worktree'); await mkdir(worktree);
+  await writeFile(join(worktree, 'package.json'), '{"scripts":{"test":"node --test"}}');
+  const app = createApp(new WorkspaceService(store), { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url)),
+      fileURLToPath(new URL('../src/mcp.ts', import.meta.url))],
+    env: { PATH: process.env.PATH || '', OPENWORKSPACE_HOME: store.directory },
+    stderr: 'pipe',
+  });
+  const client = new Client({ name: 'openworkspace-test', version: '1.0.0' });
+  try {
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const tool = tools.tools.find(candidate => candidate.name === 'workspace_update_roots');
+    assert.ok(tool, 'workspace_update_roots is listed');
+    assert.deepEqual(Object.keys((tool?.inputSchema.properties || {}) as object).sort(), ['roots', 'workspaceId']);
+
+    const registered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project] } });
+    assert.ok(!registered.isError);
+    const workspace = JSON.parse((registered.content as Array<{ text: string }>)[0].text) as { id: string; roots: string[] };
+
+    const updated = await client.callTool({ name: 'workspace_update_roots', arguments: { workspaceId: workspace.id, roots: [project, worktree] } });
+    assert.ok(!updated.isError);
+    const body = JSON.parse((updated.content as Array<{ text: string }>)[0].text) as { id: string; roots: string[] };
+    assert.equal(body.id, workspace.id);
+    assert.deepEqual(body.roots, [await realpath(project), await realpath(worktree)]);
+
+    const invalid = await client.callTool({ name: 'workspace_update_roots', arguments: { workspaceId: workspace.id, roots: [join(root, 'missing')] } });
+    assert.equal(invalid.isError, true);
+    const inspected = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId: workspace.id } });
+    assert.ok(!inspected.isError);
+    assert.deepEqual(JSON.parse((inspected.content as Array<{ text: string }>)[0].text).workspace.roots, body.roots);
+  } finally {
+    await client.close();
+    await app.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

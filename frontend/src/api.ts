@@ -301,6 +301,9 @@ export class ApiClient {
   clientConfig() { return this.request<ClientConfig>('/api/client-config'); }
   inspect(workspaceId: string) { return this.request<Inspection>(`/api/workspaces/${safeId(workspaceId)}`); }
   register(name: string, roots: string[]) { return this.request<Workspace>('/api/workspaces', { name, roots }); }
+  updateRoots(workspaceId: string, roots: string[]) {
+    return this.request<Workspace>(`/api/workspaces/${safeId(workspaceId)}/roots`, { roots }, { intent: 'update-workspace-roots' });
+  }
   remove(workspaceId: string) {
     return this.request<{ removed: true }>(`/api/workspaces/${safeId(workspaceId)}`, undefined, { method: 'DELETE', intent: 'remove-workspace' });
   }

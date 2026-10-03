@@ -9,7 +9,7 @@ import { stateDirectory } from './store.js';
 // Base instructions stay well under the 760-byte cap so the optional
 // learning-loop line below still fits; per-tool detail lives in each tool
 // description and in the lazily fetched onboarding_plan text.
-const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. The service cannot install tools. Mutations need user approval per client settings; the dashboard only records what ran. Surprises and user corrections become local drafts via the learn-from-mistake skill; drafts never self-promote. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
+const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. Mutations need user approval per client settings; the dashboard only records what ran. Surprises and user corrections become local drafts via the learn-from-mistake skill; drafts never self-promote. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
 let instructions = baseInstructions;
 try {
   const suffix = await learningInstructionSuffix(stateDirectory());
@@ -70,6 +70,14 @@ server.registerTool('workspace_remove', {
   inputSchema: { workspaceId: z.string().uuid() },
   annotations: operateHints,
 }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}`, undefined, undefined, 'DELETE'));
+server.registerTool('workspace_update_roots', {
+  description: 'Replace the full root list of a registered project with 1–20 explicitly selected absolute repository roots. Supply the complete new list: worktrees come and go, but this is a full replacement, not a delta. Validated exactly like registration; all roots must be valid or nothing changes. The project id, leases, workstreams and activity are preserved. Never infer or register a common parent.',
+  inputSchema: z.object({
+    workspaceId: z.string().uuid(),
+    roots: z.array(z.string().min(1).max(4096)).min(1).max(20),
+  }).strict(),
+  annotations: operateHints,
+}, ({ workspaceId, roots }) => request(`/api/workspaces/${workspaceId}/roots`, { roots }));
 server.registerTool('workspace_workstreams', {
   description: 'List parallel workstreams bound to registered project roots with pinned revisions.',
   inputSchema: z.object({}).strict(),

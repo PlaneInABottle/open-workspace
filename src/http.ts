@@ -18,6 +18,9 @@ const proposalSchema = z.object({
   name: z.string().min(1).max(100),
   roots: z.array(z.string().min(1).max(maxProjectRootLength)).min(1).max(maxProjectRoots),
 }).strict();
+const rootsUpdateSchema = z.object({
+  roots: z.array(z.string().min(1).max(maxProjectRootLength)).min(1).max(maxProjectRoots),
+}).strict();
 const consentSchema = z.object({ consent: z.literal(true) }).strict();
 const disconnectSchema = z.object({}).strict();
 const projectRootPickerSchema = z.object({}).strict();
@@ -102,6 +105,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
     || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
+    || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
@@ -484,6 +488,23 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           const workspaceMatch = new RegExp(`^/api/workspaces/(${uuidPath})$`).exec(url.pathname);
+          // Full-list root replacement uses POST like the other workspace
+          // mutations (services, verify, ...), not PUT: the client helper
+          // defaults to POST for bodies and no PUT handling exists.
+          const rootsMatch = new RegExp(`^/api/workspaces/(${uuidPath})/roots$`).exec(url.pathname);
+          if (rootsMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'update-workspace-roots'))) {
+              json(response, 403, { error: 'Updating project roots requires the connected dashboard.' });
+              return;
+            }
+            const input = rootsUpdateSchema.parse(await body(request, proposalBodyLimit));
+            const { workspace, previousRoots } = await service.updateRoots(rootsMatch[1], input.roots);
+            // Activity records counts only (N→M roots), never raw paths —
+            // matching registration, which records the name alone.
+            await record('roots-update', workspace.id, `${previousRoots} → ${workspace.roots.length} roots`);
+            json(response, 200, workspace);
+            return;
+          }
           if (url.pathname === '/api/workspaces' && request.method === 'POST') {
             const input = proposalSchema.parse(await body(request, proposalBodyLimit));
             const registered = await service.register(input.name, input.roots);

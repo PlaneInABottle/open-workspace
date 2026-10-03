@@ -60,6 +60,26 @@ export class WorkspaceService {
     });
   }
 
+  async updateRoots(id: string, roots: string[]) {
+    // Full-list replacement: the caller supplies the complete new exact root
+    // list (worktrees come and go). Validation mirrors registration exactly
+    // and runs before any state write, so a failure commits nothing.
+    const rootsError = projectRootsError(roots);
+    if (rootsError) throw new Error(rootsError);
+    const canonicalRoots = await Promise.all(roots.map(root => approvedRoot(root)));
+    const canonicalError = projectRootsError(canonicalRoots);
+    if (canonicalError) throw new Error(canonicalError);
+    return this.store.update(state => {
+      const workspace = state.workspaces.find(workspace => workspace.id === id);
+      if (!workspace) throw new Error('Workspace not found. Register it first.');
+      const previousRoots = workspace.roots.length;
+      workspace.roots = canonicalRoots;
+      // UUID, name, timestamps, leases, workstreams and activity are untouched:
+      // only the root list is replaced.
+      return { workspace, previousRoots };
+    });
+  }
+
   async inspect(id: string) {
     const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
     if (!workspace) throw new Error('Workspace not found. Register it first.');
