@@ -54,8 +54,10 @@ export function ProjectRequestForm({ onSubmit, onPickRoots, onCancel }: ProjectR
         const rootError = validateProjectRoots(selectedRoots);
         setErrors(current => ({ ...current, roots: rootError }));
         setPickerMessage(rootError ? 'Review the selected folder list before requesting approval.' : `${result.roots.length} folder${result.roots.length === 1 ? '' : 's'} added to this project draft.`);
-      } else if (result.status === 'cancelled') {
-        setPickerMessage('Folder selection was cancelled. Your project name and selected folders are unchanged.');
+      } else if (result.status === 'cancelled' || result.status === 'aborted') {
+        setPickerMessage(result.status === 'aborted'
+          ? 'Folder selection was stopped. Your project name and selected folders are unchanged.'
+          : 'Folder selection was cancelled. Your project name and selected folders are unchanged.');
       } else if (result.status === 'unavailable') {
         setManualEntryOpen(true);
         setPickerMessage('The native folder picker is unavailable here. Add absolute folder paths manually below.');

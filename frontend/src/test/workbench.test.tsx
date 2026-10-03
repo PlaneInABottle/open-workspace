@@ -265,6 +265,24 @@ describe('project-first workbench', () => {
     expect(registrationCalls).toBe(0);
   });
 
+  it('keeps the project draft unchanged when the host-native picker reports an aborted selection', async () => {
+    let registrationCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/overview') return json(overview());
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/project-root-picker' && init.method === 'POST') return json({ status: 'aborted' });
+      if (path === '/api/workspaces' && init.method === 'POST') { registrationCalls++; return json({ id: 'unexpected' }, 201); }
+      return json({ error: 'Not found.' }, 404);
+    });
+    await connectedEmptyWorkspace();
+    fireEvent.click(screen.getByRole('button', { name: 'Create new project' }));
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Aborted project' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose folders…' }));
+    expect(await screen.findByText(/Folder selection was stopped/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Project name')).toHaveValue('Aborted project');
+    expect(registrationCalls).toBe(0);
+  });
+
   it('does not restore a removed project from an overview response started before the mutation', async () => {
     const registered: Workspace = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', name: 'Removed fixture', roots: ['/tmp/removed-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
     const stale = deferred<Response>();

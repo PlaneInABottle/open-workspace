@@ -671,6 +671,10 @@ export function createApp(service: WorkspaceService, options: {
         'Select at least one checkout and no more than twenty.',
         'Checkouts must be registered roots of this workspace.',
         'Unknown workstream.',
+        // Owner literal in workstreams.ts createWorkstream (unregistered
+        // workspaceId); unlike the checkpoint/completion messages it has no
+        // exported constant, so this allowlist entry carries the literal.
+        'Workspace access not found.',
         'Unknown workstream status.',
         'A finished workstream cannot be reopened.',
         'Checkpoint notes hold 2000 characters or fewer.',

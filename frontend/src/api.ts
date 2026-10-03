@@ -118,12 +118,47 @@ export interface WorkstreamCheckout {
   observedAt: string;
 }
 
+export interface CheckpointNote {
+  goal: string;
+  blocker: string;
+  next: string;
+  owner: 'agent' | 'user';
+  at: string;
+  evidence: string[];
+}
+
+export interface WorkstreamCompletionCheck {
+  name: string;
+  result: 'passed' | 'failed' | 'error';
+  environment: string;
+  evidenceIds: string[];
+  evidenceSource: string;
+  evidenceLabel: string;
+}
+
+export interface WorkstreamCompletion {
+  assignmentId: string;
+  completionId: string;
+  outcome: 'passed' | 'blocked' | 'failed';
+  revision: string | null;
+  dirty: boolean | null;
+  dirtyFingerprint: { diffHash: string; files: string[]; truncated: boolean } | null;
+  checks: WorkstreamCompletionCheck[];
+  recordedAt: string;
+}
+
 export interface Workstream {
   id: string;
   name: string;
   workspaceId: string;
   checkouts: WorkstreamCheckout[];
   status: 'active' | 'paused' | 'done';
+  /** Latest checkpoint entry; absent on older server responses. */
+  checkpointNote?: CheckpointNote | null;
+  /** Append-only bounded history (oldest-first); absent on older server responses. */
+  checkpointHistory?: CheckpointNote[];
+  /** Independent bounded completion ring; absent on older server responses. */
+  completions?: WorkstreamCompletion[];
   createdAt: string;
   updatedAt: string;
 }
@@ -132,6 +167,8 @@ export interface Lease {
   resource: string;
   workstreamId: string;
   status: 'held' | 'queued';
+  /** Renewal deadline for held leases; absent on older server responses. */
+  expiresAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -181,7 +218,9 @@ export interface RunListEntry {
 
 export type ProjectRootPickerResult =
   | { status: 'selected'; roots: string[] }
-  | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' };
+  // 'aborted' mirrors the server picker's disconnect/abort outcome
+  // (project-root-picker.ts); the form treats it like a cancellation.
+  | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' | 'aborted' };
 
 export interface ProjectRootRequest {
   name: string;
@@ -321,7 +360,7 @@ export class ApiClient {
       signal,
       intent: 'select-project-roots',
     });
-    if (typeof result !== 'object' || result === null || !['selected', 'cancelled', 'unavailable', 'timeout', 'error'].includes(result.status)) {
+    if (typeof result !== 'object' || result === null || !['selected', 'cancelled', 'unavailable', 'timeout', 'error', 'aborted'].includes(result.status)) {
       throw new ApiError('The local folder picker returned an invalid response.');
     }
     if (result.status === 'selected' && (!Array.isArray(result.roots) || result.roots.some(root => typeof root !== 'string'))) {

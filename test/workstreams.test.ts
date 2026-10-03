@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
+import { createApp } from '../src/http.js';
+import { fixtureStaticAssets } from './helpers/static-assets.js';
 import type { CommandOutcome, CommandRunner } from '../src/verify.js';
 
 const SHA = 'b'.repeat(40);
@@ -122,4 +124,23 @@ test('workstream creation is bounded at fifty entries', async t => {
     /Workstream limit reached/,
   );
   assert.equal((await service.listWorkstreams()).length, 50);
+});
+
+test('HTTP workstream creation surfaces the unregistered-workspace denial instead of the generic fallback', async t => {
+  const f = await approvedWorkspace(t);
+  const service = new WorkspaceService(f.store);
+  const app = createApp(service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const response = await fetch(`${origin}/api/workstreams`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${'f'.repeat(64)}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Unknown workspace',
+      workspaceId: '00000000-0000-4000-8000-000000000000',
+      checkouts: [f.paths[0]],
+    }),
+  });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: 'Workspace access not found.' });
 });
