@@ -41,6 +41,10 @@ Two read-only MCP tools feed mining without widening your permissions:
 
 Reading either tool never records new activity, so mining leaves no feedback loop.
 
+## Workflow framing
+
+Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then mine surprises via this skill. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
+
 ## Promotion (manual only)
 
 Drafts never self-promote. A draft becomes a shared skill update only when the user explicitly approves it in chat — for example after the rule proves itself on a second real task, or during a batched review the user asked for. On approval, move the rule text into the skill the user names, following that skill's own format. Until then the draft stays local, uncommitted, and invisible to other machines.

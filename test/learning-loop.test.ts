@@ -43,6 +43,7 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   assert.ok(onboarding.includes('learn-from-mistake'), 'onboarding skill references learn-from-mistake');
   const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
   assert.ok(mcpSource.includes('learn-from-mistake'), 'MCP instructions reference learn-from-mistake');
+  assert.ok(mcpSource.includes('Mirror major milestones'), 'MCP instructions mirror major milestones');
   const base = mcpSource.match(/const baseInstructions = '((?:[^'\\]|\\.)*)'/)?.[1];
   assert.ok(base, 'base instructions literal found');
   const baseBytes = Buffer.byteLength(base, 'utf8');
