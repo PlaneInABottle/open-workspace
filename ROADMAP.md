@@ -216,7 +216,7 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 
 | Order | Requested outcome | Status / next boundary |
 | --- | --- | --- |
-| Done | Pivot, M1–M3 workspace tools, learning-loop v1, declarative local tools, readiness UI, update-roots, checkpoint notes, budgets, fingerprints, stale-scope cleanup, POSIX scope. Evidence: git log. |
+| Done | Pivot, M1–M3 workspace tools, learning-loop v1, declarative local tools, readiness UI, update-roots, checkpoint notes, budgets, fingerprints, stale-scope cleanup, subagent bundle, evidence pinning, POSIX scope. Evidence: git log. |
 | 11 | Subagent package: note history + workstream_context bundle | Implementing. (a) Checkpoint notes append with actor+timestamp (bounded 10, latest = current behavior) so subagent completions never clobber the coordinator checkpoint. (b) workstream_context read tool: checkpoint + revision + recent runs + related drafts in one call for narrowly-scoped subagents. Additive only; single-agent flow unchanged. |
 | 12 | Token-cost worry | Deferred by user: no action until wire measurement shows manifest cost actually binding. Format budgets + byte-delta notes stay, no count cap, no dynamic discovery. |
 | 13 | Evidence pinning + correlation IDs (checkpoint kanıt zinciri) | Implementing. Checkpoint notes carry bounded `evidence: [runIds]`; pinned runs exempt from ring eviction (capped); note→run→draft→timeline linked by IDs, content never duplicated. Our-system evidence is pinnable, outside evidence described in-note only. Secret-free (IDs only). |
@@ -232,6 +232,7 @@ New user requests amend this queue; they do not discard unfinished earlier reque
 - Mistake inbox as separate screen: dropped — timeline + draft strip already cover it.
 - Masking extra shapes (Basic-auth, DSN userinfo, cookie, bare tokens): background hardening, opportunistic; labels remain the authoritative defense.
 - Token-cost worry: no action until wire measurement shows manifest cost binding; format budgets stay.
+- Browser automation wrapper (session + actions + evidence suite): plan reviewed, shelved. Builds only on demand — first real QA claim that shim observation + repo e2e cannot prove. Shim observer is the active track.
 - pnpm audit braces high (GHSA-vfj7-8cjw-p6xm, Patched: None): build-time chain only, not server runtime; revisit when a patch lands.
 
 - Not yet verified: real external-client setup (Claude Code/Codex), fresh-machine prerequisite installation, Node 22 portability, independent security/browser gates. Platform scope is macOS + Linux (POSIX) only; Windows is deferred (sockets, permissions, picker, and path semantics differ — supporting it now would double the verification matrix with no Windows machine to prove it on). No Compose application operations or PostgreSQL/Elastic connection is implemented yet.
