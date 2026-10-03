@@ -561,9 +561,8 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/learnings' && request.method === 'GET') {
-            // Reader-only narrative spine: agent-written milestone notes plus
-            // unprocessed draft titles. Like activity/run reads, reading never
-            // records activity (viewing the record must not append to it).
+            // Reader-only narrative spine. Like activity/run reads, viewing
+            // these agent-written notes never records activity.
             json(response, 200, await service.learnings());
             return;
           }

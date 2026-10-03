@@ -66,7 +66,7 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     leases: [],
     leasesError: null,
     activity: [],
-    learnings: { milestones: [], drafts: [] },
+    learnings: { milestones: [] },
     runs: [],
     recordsLoading: false,
     recordsError: null,

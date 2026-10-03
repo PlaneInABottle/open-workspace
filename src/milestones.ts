@@ -8,15 +8,9 @@ export interface MilestoneNote {
   source: string;
 }
 
-export interface LearningDraft {
-  name: string;
-  title: string;
-}
-
 const maxFiles = 50;
 const maxFileBytes = 2048;
 const maxNoteChars = 500;
-const maxTitleChars = 120;
 
 /**
  * Bounded read enforcing the declared 2KiB cap before parsing: at most
@@ -63,17 +57,6 @@ function firstNoteLine(content: string): string {
   return '';
 }
 
-function firstTitle(content: string, fallback: string): string {
-  for (const raw of content.split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('#')) {
-      const title = line.replace(/^#+\s*/, '').trim();
-      if (title) return title;
-    }
-  }
-  return fallback.replace(/\.md$/, '').replace(/[-_]+/g, ' ');
-}
-
 /**
  * Reader-only view over agent-written learning files. The dashboard never
  * writes these; agents append milestone notes per the learn-from-mistake
@@ -105,28 +88,4 @@ export async function listMilestones(homeDirectory: string): Promise<MilestoneNo
     }
   }
   return notes.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, maxFiles);
-}
-
-/** Draft strip is titles only; rule bodies stay in the files until conversational promotion. */
-export async function listDrafts(homeDirectory: string): Promise<LearningDraft[]> {
-  let files: string[];
-  try {
-    files = (await readdir(join(homeDirectory, 'learnings', '_drafts'))).filter(name => name.endsWith('.md')).sort();
-  } catch {
-    return [];
-  }
-  const drafts: LearningDraft[] = [];
-  for (const name of files.slice(0, maxFiles)) {
-    try {
-      const content = await readCappedFile(join(homeDirectory, 'learnings', '_drafts', name));
-      if (content === undefined) continue;
-      drafts.push({
-        name: name.slice(0, 80),
-        title: maskSecrets(firstTitle(content, name)).slice(0, maxTitleChars),
-      });
-    } catch {
-      continue;
-    }
-  }
-  return drafts;
 }

@@ -7,10 +7,6 @@ const workspaceId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 const learnings: Learnings = {
   milestones: [{ at: '2026-10-02T00:05:00.000Z', text: 'Checkout flow live for reviewers.', source: '1700000000-checkout.md' }],
-  drafts: [
-    { name: 'restart.md', title: 'Restart needs mapping' },
-    { name: 'roots.md', title: 'Never infer a common parent' },
-  ],
 };
 
 const activity: ActivityEntry[] = [
@@ -65,18 +61,15 @@ function renderRecords(overrides: Partial<Parameters<typeof RecordsView>[0]> = {
 }
 
 describe('records timeline', () => {
-  it('merges notes, receipts and runs newest-first with a summary card and draft strip', () => {
+  it('merges notes, receipts and runs newest-first without a draft strip', () => {
     const { onReload } = renderRecords();
     expect(onReload).toHaveBeenCalledWith(workspaceId);
 
     const summary = screen.getByRole('heading', { name: 'Record summary', hidden: true }).closest('section')!;
     expect(within(summary).getByText('Runs')).toBeInTheDocument();
     expect(within(summary).getByText('50%')).toBeInTheDocument();
-    expect(screen.getByText('2 pending')).toBeInTheDocument();
-
-    expect(screen.getByRole('heading', { name: 'Unprocessed learnings' })).toBeInTheDocument();
-    expect(screen.getByText('Restart needs mapping')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /promote|approve/i })).not.toBeInTheDocument();
+    expect(within(summary).getByText('Notes')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/draft|unprocessed learnings/i);
 
     const timeline = screen.getByRole('heading', { name: 'What happened here' }).closest('section')!;
     const items = within(timeline).getAllByRole('listitem');
@@ -104,11 +97,10 @@ describe('records timeline', () => {
   });
 
   it('shows empty states and the no-notes honesty hint', () => {
-    renderRecords({ activity: [], learnings: { milestones: [], drafts: [] }, runs: [] });
-    expect(screen.getByText(/No unprocessed drafts/)).toBeInTheDocument();
+    renderRecords({ activity: [], learnings: { milestones: [] }, runs: [] });
     expect(screen.getByText(/Nothing recorded for this project yet/)).toBeInTheDocument();
 
-    renderRecords({ learnings: { milestones: [], drafts: [] } });
+    renderRecords({ learnings: { milestones: [] } });
     expect(screen.getByText(/No agent notes in this interval/)).toBeInTheDocument();
   });
 
@@ -132,7 +124,7 @@ describe('records timeline', () => {
       const base = {
         workspaceId,
         activity: [] as ActivityEntry[],
-        learnings: { milestones: [], drafts: [] } as Learnings,
+        learnings: { milestones: [] } as Learnings,
         runs: [] as RunListEntry[],
         loading: false,
         error: null,
@@ -170,7 +162,7 @@ describe('records timeline', () => {
     expect(rows[0].kind).toBe('other');
     expect(rows[0].outcome).toBe('ok');
     expect(filterTimeline(rows, { kind: 'verify', outcome: 'all' })).toHaveLength(0);
-    expect(summarizeTimeline([], 3, 0)).toEqual({ runCount: 0, passRate: null, draftCount: 3, noteCount: 0 });
+    expect(summarizeTimeline([], 0)).toEqual({ runCount: 0, passRate: null, noteCount: 0 });
   });
 
   it('renders pasted results as imported, never verified, and excludes them from pass rate', () => {
@@ -205,8 +197,8 @@ describe('records timeline', () => {
       imported,
       { ...imported, outcome: 'failed', at: '2026-10-02T00:09:00.000Z' },
     ];
-    expect(summarizeTimeline(mixed, 0, 0)).toEqual({ runCount: 3, passRate: 100, draftCount: 0, noteCount: 0 });
-    expect(summarizeTimeline([imported, tampered], 0, 0).passRate).toBeNull();
+    expect(summarizeTimeline(mixed, 0)).toEqual({ runCount: 3, passRate: 100, noteCount: 0 });
+    expect(summarizeTimeline([imported, tampered], 0).passRate).toBeNull();
 
     renderRecords({ runs: [imported] });
     const pasted = within(screen.getByRole('heading', { name: 'What happened here' }).closest('section')!)

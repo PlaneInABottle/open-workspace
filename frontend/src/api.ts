@@ -150,14 +150,8 @@ export interface MilestoneNote {
   source: string;
 }
 
-export interface LearningDraft {
-  name: string;
-  title: string;
-}
-
 export interface Learnings {
   milestones: MilestoneNote[];
-  drafts: LearningDraft[];
 }
 
 export interface RunListEntry {

@@ -144,7 +144,7 @@ test('legacy single-note files read history[0] and preserve it on first append',
   }
 });
 
-test('workstream_context bundles checkpoint, revision, runs and drafts in one read-only call', async t => {
+test('workstream_context bundles checkpoint, revision and runs in one read-only call', async t => {
   const f = await approvedFixture('openworkspace-subagent-bundle-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await f.service.setWorkstreamStatus(f.workstream.id, 'paused', coordinatorNote);
@@ -152,10 +152,6 @@ test('workstream_context bundles checkpoint, revision, runs and drafts in one re
   const summary = await persistRunSummary(f.store.directory, {
     workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 5, output: 'ok', outputTruncated: false,
   });
-  const draftsDir = join(f.store.directory, 'learnings', '_drafts');
-  await mkdir(draftsDir, { recursive: true });
-  await writeFile(join(draftsDir, 'probe-note.md'), '# Probe retry rule\n\n- Scope: *\n- Rule: retry the mapped probe once\n- Source: test\n- Status: draft\n');
-
   const bundle = await f.service.workstreamContext(f.workstream.id);
   assert.equal(bundle.workstreamId, f.workstream.id);
   assert.equal(bundle.name, 'Stream');
@@ -166,7 +162,6 @@ test('workstream_context bundles checkpoint, revision, runs and drafts in one re
   assert.ok(bundle.checkouts.length >= 1 && bundle.checkouts.every(checkout => typeof checkout.root === 'string'));
   assert.ok(bundle.recentRuns.some(entry => entry.id === summary.id), 'scoped recent runs included');
   assert.ok(bundle.recentRuns.every(entry => entry.excerptPreview.length <= 200), 'existing run caps apply');
-  assert.deepEqual(bundle.relatedDrafts, ['Probe retry rule'], 'draft titles only, no bodies');
 
   // Limit passthrough honors existing recent_runs caps.
   assert.equal((await f.service.workstreamContext(f.workstream.id, 1)).recentRuns.length, 1);
@@ -444,5 +439,6 @@ test('workstream_context travels HTTP GET without recording activity and within 
   const description = mcpSource.match(/workstream_context', \{\n\s+description: '((?:[^'\\]|\\.)*)'/)?.[1];
   assert.ok(description, 'workstream_context description found');
   assert.ok(Buffer.byteLength(description, 'utf8') <= 200, `context tool description stays within 200B (got ${Buffer.byteLength(description, 'utf8')}B)`);
+  assert.doesNotMatch(description, /draft/i, 'context description covers only fields that are returned');
   assert.match(mcpSource, /workstreamId: z\.string\(\)\.uuid\(\),\n\s+limit: z\.number\(\)\.int\(\)\.min\(1\)\.max\(20\)\.optional\(\)/);
 });

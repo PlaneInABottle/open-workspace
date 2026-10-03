@@ -13,7 +13,7 @@ import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, expireLeasesOnRead, finishWorkstreamLeasesInState, listLeases, releaseLease, touchLease, type Lease, type LeaseActor } from './leases.js';
 import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
-import { listDrafts, listMilestones } from './milestones.js';
+import { listMilestones } from './milestones.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 import { availableSkills } from './consumer-skills.js';
 
@@ -36,7 +36,6 @@ export interface WorkstreamContext {
   open: { blocker: string; next: string };
   checkouts: Workstream['checkouts'];
   recentRuns: Array<RunListEntry & { evidenceSource: 'openworkspace_run' | 'external_import' | 'unknown_source' }>;
-  relatedDrafts: string[];
 }
 
 export class WorkspaceService {
@@ -253,7 +252,7 @@ export class WorkspaceService {
   /**
    * One-call handoff bundle for a narrowly-scoped subagent: the latest
    * checkpoint plus history depth, open blocker/next from the latest note,
-   * pinned checkouts, scoped recent runs (existing caps) and draft titles.
+    * pinned checkouts and scoped recent runs (existing caps).
    * Read-only: never records activity, like recentRuns/recentActivity.
    */
   async workstreamContext(id: string, limit = 5, assignmentId?: string): Promise<WorkstreamContext> {
@@ -290,9 +289,6 @@ export class WorkspaceService {
         evidenceSource: run.source === 'openworkspace-run' ? 'openworkspace_run'
           : run.source === 'external-import' ? 'external_import' : 'unknown_source',
       })),
-      // Titles only (rule bodies stay in the files); capped so the bundle
-      // stays bounded however many drafts accumulate.
-      relatedDrafts: (await listDrafts(this.store.directory)).slice(0, 10).map(draft => draft.title),
     };
   }
 
@@ -372,9 +368,8 @@ export class WorkspaceService {
     return importExternalRun(this.store.directory, parsed, pinnedRunIds(state.workstreams, parsed.workspaceId), this.store);
   }
 
-  async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>>; drafts: Awaited<ReturnType<typeof listDrafts>> }> {
-    const [milestones, drafts] = await Promise.all([listMilestones(this.store.directory), listDrafts(this.store.directory)]);
-    return { milestones, drafts };
+  async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>> }> {
+    return { milestones: await listMilestones(this.store.directory) };
   }
 
   async remove(id: string) {

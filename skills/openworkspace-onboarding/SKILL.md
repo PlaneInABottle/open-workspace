@@ -30,7 +30,7 @@ Jira is optional. Only offer Atlassian MCP when the user actually uses Jira. Exp
 
 Return a compact summary: registered directories, detected components, observed vs unverified prerequisites, limitations and the next human action. Do not create an evidence.md or duplicate the workspace data into another runbook.
 
-Before reporting work done, follow the **learn-from-mistake** skill: if anything surprised you (a retry, denial, or correction), write the 3-line closing note and file a local draft under `OPENWORKSPACE_HOME/learnings/_drafts/`; every explicit user correction always drafts. Drafts stay local and never self-promote — promotion to a shared skill needs the user's explicit approval.
+Use **learn-from-mistake** only when explicitly invoked. Review the visible transcript and available sanitized activity/run evidence, then write only reusable patterns directly to the relevant skill and nearest applicable `AGENTS.md`; one-off incidents stay out. It never runs automatically and creates no drafts.
 
 If the service is unavailable, retry once after the connection condition changes; otherwise report the blocker. Missing optional tools must not block unrelated discovery.
 

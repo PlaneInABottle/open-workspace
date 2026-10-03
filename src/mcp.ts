@@ -10,7 +10,7 @@ import { consumerSkills } from './consumer-skills.js';
 // Base instructions stay well under the 760-byte cap so the optional
 // learning-loop line below still fits; per-tool detail lives in each tool
 // description and in the lazily fetched onboarding_plan text.
-const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. Mutations need user approval per client settings; the dashboard only records what ran. Surprises and user corrections become local drafts via the learn-from-mistake skill; drafts never self-promote. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
+const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. Mutations need user approval per client settings; the dashboard only records what ran. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
 let instructions = baseInstructions;
 try {
   const suffix = await learningInstructionSuffix(stateDirectory());
@@ -257,7 +257,7 @@ server.registerTool('workstream_status', {
     : note === undefined ? { status } : { status, note });
 });
 server.registerTool('workstream_context', {
-  description: 'One-call handoff: checkpoint, assignment completions by ID/latest, optional assignment present/missing, checkouts, runs and draft titles. Read-only.',
+  description: 'One-call handoff: checkpoint, assignment completions by ID/latest, optional assignment present/missing, checkouts and scoped recent runs. Read-only.',
   inputSchema: z.object({
     workstreamId: z.string().uuid(),
     limit: z.number().int().min(1).max(20).optional().describe('Recent runs to include, default 5.'),

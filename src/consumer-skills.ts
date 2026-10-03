@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const defaultSkillsDirectory = fileURLToPath(new URL('../skills/', import.meta.url));
 const maxSkillBytes = 8 * 1024;
 const shortDescriptions: Record<string, string> = {
-  'learn-from-mistake': 'Use to turn session surprises or user corrections into local learning drafts.',
+  'learn-from-mistake': 'Use on demand to write reusable skill and AGENTS.md guidance from session evidence.',
   'openworkspace-onboarding': 'Use to connect an existing assistant to OpenWorkspace and onboard selected projects.',
 };
 

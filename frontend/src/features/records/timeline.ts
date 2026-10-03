@@ -95,10 +95,9 @@ export function filterTimeline(rows: TimelineRow[], filter: TimelineFilter): Tim
   );
 }
 
-export function summarizeTimeline(runs: RunListEntry[], draftCount: number, noteCount: number): {
+export function summarizeTimeline(runs: RunListEntry[], noteCount: number): {
   runCount: number;
   passRate: number | null;
-  draftCount: number;
   noteCount: number;
 } {
   // Pass rate covers executed runs only: pasted external-import results — and
@@ -110,7 +109,6 @@ export function summarizeTimeline(runs: RunListEntry[], draftCount: number, note
   return {
     runCount: runs.length,
     passRate: outcomes.length === 0 ? null : Math.round((outcomes.filter(run => run.outcome === 'passed').length / outcomes.length) * 100),
-    draftCount,
     noteCount,
   };
 }

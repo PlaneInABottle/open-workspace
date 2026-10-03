@@ -131,7 +131,7 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
 
   const rows = useMemo(() => buildTimeline(learnings.milestones, activity, runs, workspaceId), [learnings, activity, runs, workspaceId]);
   const visible = useMemo(() => filterTimeline(rows, filter), [rows, filter]);
-  const summary = useMemo(() => summarizeTimeline(runs, learnings.drafts.length, learnings.milestones.length), [runs, learnings]);
+  const summary = useMemo(() => summarizeTimeline(runs, learnings.milestones.length), [runs, learnings]);
 
   const toggleExpanded = (key: string) => {
     setExpanded(current => {
@@ -146,7 +146,7 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
     <div className="space-y-6">
       <section aria-labelledby="records-summary-heading" className="max-w-4xl">
         <h2 id="records-summary-heading" className="sr-only">Record summary</h2>
-        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <div className="rounded-lg border border-border px-3 py-2.5">
             <dt className="text-[0.7rem] font-medium uppercase tracking-[0.08em] text-muted-foreground">Runs</dt>
             <dd className="mt-0.5 text-lg font-semibold">{summary.runCount}</dd>
@@ -156,34 +156,10 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
             <dd className="mt-0.5 text-lg font-semibold">{summary.passRate === null ? '—' : `${summary.passRate}%`}</dd>
           </div>
           <div className="rounded-lg border border-border px-3 py-2.5">
-            <dt className="text-[0.7rem] font-medium uppercase tracking-[0.08em] text-muted-foreground">Drafts</dt>
-            <dd className="mt-0.5 text-lg font-semibold">{summary.draftCount}</dd>
-          </div>
-          <div className="rounded-lg border border-border px-3 py-2.5">
             <dt className="text-[0.7rem] font-medium uppercase tracking-[0.08em] text-muted-foreground">Notes</dt>
             <dd className="mt-0.5 text-lg font-semibold">{summary.noteCount}</dd>
           </div>
         </dl>
-      </section>
-
-      <section aria-labelledby="draft-strip-heading" className="max-w-4xl rounded-lg border border-warning/50 px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="draft-strip-heading" className="text-sm font-semibold">Unprocessed learnings</h2>
-          <Badge variant="outline">{learnings.drafts.length} pending</Badge>
-        </div>
-        {learnings.drafts.length === 0 ? (
-          <p className="mt-1 text-sm text-muted-foreground">No unprocessed drafts. Surprises become drafts via the learn-from-mistake skill.</p>
-        ) : (
-          <ul className="mt-2 grid gap-1">
-            {learnings.drafts.map(draft => (
-              <li key={draft.name} className="break-words text-sm leading-6">
-                <span aria-hidden="true" className="mr-2 inline-block size-1.5 rounded-full bg-warning" />
-                {draft.title}
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="mt-2 text-xs text-muted-foreground">Read-only in this view. A draft becomes shared guidance only when you approve it in chat with your assistant.</p>
       </section>
 
       <section aria-labelledby="records-timeline-heading" className="max-w-4xl">
