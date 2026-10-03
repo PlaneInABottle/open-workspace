@@ -591,7 +591,7 @@ export function createApp(service: WorkspaceService, options: {
         'Unknown workstream.',
         'Unknown workstream status.',
         'A finished workstream cannot be reopened.',
-        'Checkpoint notes hold 500 characters or fewer.',
+        'Checkpoint notes hold 2000 characters or fewer.',
         'Checkpoint notes accept patterns only, never secrets or literals.',
         'Imported results are not valid.',
         'Imported results are accepted on trust and never marked verified.',

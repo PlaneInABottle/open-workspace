@@ -26,9 +26,9 @@ const workstreamCheckout = z.object({
   observedAt: z.string().datetime(),
 }).strict();
 const checkpointNote = z.object({
-  goal: z.string().min(1).max(500),
-  blocker: z.string().max(500),
-  next: z.string().min(1).max(500),
+  goal: z.string().min(1).max(1000),
+  blocker: z.string().max(1000),
+  next: z.string().min(1).max(1000),
   owner: z.enum(['agent', 'user']),
   at: z.string().datetime(),
 }).strict();

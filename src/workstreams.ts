@@ -109,10 +109,11 @@ export async function createWorkstream(
   });
 }
 
-export const checkpointBoundsMessage = 'Checkpoint notes hold 500 characters or fewer.';
+export const checkpointBoundsMessage = 'Checkpoint notes hold 2000 characters or fewer.';
 export const checkpointPatternMessage = 'Checkpoint notes accept patterns only, never secrets or literals.';
 
-const maxCheckpointTotal = 500;
+const maxCheckpointTotal = 2000;
+const maxCheckpointField = 1000;
 // Pattern-only notes never carry filesystem literals: any whitespace- or
 // quote-delimited token beginning with /, a drive prefix (C:\ or C:/) or a
 // UNC share is refused, case-insensitively, without maintaining a per-root
@@ -120,7 +121,7 @@ const maxCheckpointTotal = 500;
 const absolutePathPattern = /(^|[\s"'=(])(\/[^\s"';)]+|[A-Za-z]:[\\/][^\s]*|\\\\[^\s]+)/i;
 
 function checkpointField(name: string, value: unknown, allowEmpty: boolean): string {
-  if (typeof value !== 'string' || (!allowEmpty && !value.trim()) || value.length > 500) {
+  if (typeof value !== 'string' || (!allowEmpty && !value.trim()) || value.length > maxCheckpointField) {
     throw new Error(checkpointBoundsMessage);
   }
   if (/[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)

@@ -41,16 +41,44 @@ test('checkpoint notes refuse oversized, empty and control-char input', async t 
   const f = await approvedFixture('openworkspace-checkpoint-bounds-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ goal: 'g'.repeat(501) })),
+    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ goal: 'g'.repeat(1001) })),
     new RegExp(checkpointBoundsMessage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').slice(0, 20)),
   );
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ goal: 'g'.repeat(300), next: 'n'.repeat(300) })),
-    /500 characters or fewer/,
+    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ next: 'n'.repeat(1001) })),
+    /2000 characters or fewer/,
+  );
+  // Combined budget boundary: exactly 2000 accepted, 2001 refused.
+  const atLimit = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+    goal: 'g'.repeat(700), blocker: 'b'.repeat(600), next: 'n'.repeat(700),
+  }));
+  assert.equal(
+    (atLimit.checkpointNote?.goal.length ?? 0) + (atLimit.checkpointNote?.blocker.length ?? 0) + (atLimit.checkpointNote?.next.length ?? 0),
+    2000,
+  );
+  await assert.rejects(
+    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+      goal: 'g'.repeat(700), blocker: 'b'.repeat(601), next: 'n'.repeat(700),
+    })),
+    /2000 characters or fewer/,
+  );
+  // A legitimate ~1500-char note fits the raised budget.
+  const roomy = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+    goal: 'g'.repeat(500), blocker: 'b'.repeat(500), next: 'n'.repeat(500),
+  }));
+  assert.equal(roomy.checkpointNote?.goal.length, 500);
+  assert.equal(roomy.checkpointNote?.blocker.length, 500);
+  assert.equal(roomy.checkpointNote?.next.length, 500);
+  // Combined over budget with every field individually in range.
+  await assert.rejects(
+    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+      goal: 'g'.repeat(800), blocker: 'b'.repeat(700), next: 'n'.repeat(600),
+    })),
+    /2000 characters or fewer/,
   );
   await assert.rejects(
     f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ goal: '   ' })),
-    /500 characters or fewer/,
+    /2000 characters or fewer/,
   );
   await assert.rejects(
     f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ next: 'line\u0007bell' })),
@@ -58,10 +86,10 @@ test('checkpoint notes refuse oversized, empty and control-char input', async t 
   );
   await assert.rejects(
     f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ owner: 'bot' })),
-    /500 characters or fewer/,
+    /2000 characters or fewer/,
   );
-  assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote, null);
-  assert.equal(checkpointBoundsMessage, 'Checkpoint notes hold 500 characters or fewer.');
+  assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote?.goal.length, 500);
+  assert.equal(checkpointBoundsMessage, 'Checkpoint notes hold 2000 characters or fewer.');
 });
 
 test('checkpoint notes refuse secret-shaped and literal paths', async t => {
