@@ -93,14 +93,33 @@ function dockerFailureFromSpawn(error: unknown): DockerFailure {
   return 'failed';
 }
 
+// Canonical Docker-path messages. The metadata family is client-visible via
+// the http allowlist (composed in http.ts); the log-tail family is returned
+// directly in log-result bodies, never via throw→allowlist, and is recorded
+// out-of-allowlist in test/safe-messages.test.ts.
+export const dockerMetadataMessages = {
+  cliUnavailable: 'Docker CLI is unavailable.',
+  daemonUnreachable: 'Docker daemon is unreachable.',
+  accessDenied: 'Docker access was denied.',
+  metadataTimeout: 'Docker metadata did not finish within the bounded runtime.',
+  metadataInvalid: 'Docker metadata was invalid or exceeded its bound.',
+  metadataUnreadable: 'Docker metadata could not be read.',
+} as const;
+
+export const dockerLogMessages = {
+  logTimeout: 'The Docker log tail did not finish within the bounded runtime.',
+  logInvalid: 'The Docker log tail was invalid.',
+  logIncomplete: 'The Docker log tail did not complete.',
+} as const;
+
 export function dockerFailureMessage(error: DockerFailure, operation: 'metadata' | 'logs'): string {
   switch (error) {
-    case 'executable-missing': return 'Docker CLI is unavailable.';
-    case 'daemon-unreachable': return 'Docker daemon is unreachable.';
-    case 'access-denied': return 'Docker access was denied.';
-    case 'timeout': return operation === 'metadata' ? 'Docker metadata did not finish within the bounded runtime.' : 'The Docker log tail did not finish within the bounded runtime.';
-    case 'invalid': return operation === 'metadata' ? 'Docker metadata was invalid or exceeded its bound.' : 'The Docker log tail was invalid.';
-    case 'failed': return operation === 'metadata' ? 'Docker metadata could not be read.' : 'The Docker log tail did not complete.';
+    case 'executable-missing': return dockerMetadataMessages.cliUnavailable;
+    case 'daemon-unreachable': return dockerMetadataMessages.daemonUnreachable;
+    case 'access-denied': return dockerMetadataMessages.accessDenied;
+    case 'timeout': return operation === 'metadata' ? dockerMetadataMessages.metadataTimeout : dockerLogMessages.logTimeout;
+    case 'invalid': return operation === 'metadata' ? dockerMetadataMessages.metadataInvalid : dockerLogMessages.logInvalid;
+    case 'failed': return operation === 'metadata' ? dockerMetadataMessages.metadataUnreadable : dockerLogMessages.logIncomplete;
   }
 }
 

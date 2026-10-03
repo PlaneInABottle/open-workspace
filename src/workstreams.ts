@@ -87,20 +87,32 @@ const maxWorkstreams = 50;
 // Assignment records outlive more checkpoint notes but remain strictly bounded.
 export const maxWorkstreamCompletions = 20;
 
+// Canonical workstream-path messages. leases.ts and workspace.ts reference
+// the shared 'Unknown workstream.' const (never a literal); http.ts composes
+// its allowlist from these exports, so a rename propagates.
+export const unknownWorkstreamMessage = 'Unknown workstream.';
+export const unknownWorkstreamStatusMessage = 'Unknown workstream status.';
+export const workstreamReopenMessage = 'A finished workstream cannot be reopened.';
+export const workspaceAccessMessage = 'Workspace access not found.';
+export const workstreamLimitMessage = 'Workstream limit reached.';
+export const workstreamNameMessage = 'Provide a workstream name with 100 characters or fewer.';
+export const workstreamCheckoutCountMessage = 'Select at least one checkout and no more than twenty.';
+export const workstreamCheckoutRootMessage = 'Checkouts must be registered roots of this workspace.';
+
 async function canonicalCheckoutRoot(candidate: string): Promise<string> {
   if (typeof candidate !== 'string' || !candidate || candidate.includes('\0') || candidate.length > 4096) {
-    throw new Error('Checkouts must be registered roots of this workspace.');
+    throw new Error(workstreamCheckoutRootMessage);
   }
   const resolved = resolve(candidate);
   try {
     const info = await lstat(resolved);
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Checkouts must be registered roots of this workspace.');
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(workstreamCheckoutRootMessage);
     const canonical = await realpath(resolved);
-    if (canonical !== resolved) throw new Error('Checkouts must be registered roots of this workspace.');
+    if (canonical !== resolved) throw new Error(workstreamCheckoutRootMessage);
     return canonical;
   } catch (error) {
-    if (error instanceof Error && error.message === 'Checkouts must be registered roots of this workspace.') throw error;
-    throw new Error('Checkouts must be registered roots of this workspace.');
+    if (error instanceof Error && error.message === workstreamCheckoutRootMessage) throw error;
+    throw new Error(workstreamCheckoutRootMessage);
   }
 }
 
@@ -126,22 +138,22 @@ export async function createWorkstream(
   run: CommandRunner = runBoundedCommand,
 ): Promise<Workstream> {
   const name = input.name.trim();
-  if (!name || name.length > 100) throw new Error('Provide a workstream name with 100 characters or fewer.');
+  if (!name || name.length > 100) throw new Error(workstreamNameMessage);
   if (!Array.isArray(input.checkouts) || input.checkouts.length === 0 || input.checkouts.length > maxCheckouts) {
-    throw new Error('Select at least one checkout and no more than twenty.');
+    throw new Error(workstreamCheckoutCountMessage);
   }
   return store.update(async state => {
     const workspace = state.workspaces.find(workspace => workspace.id === input.workspaceId);
-    if (!workspace) throw new Error('Workspace access not found.');
-    if (state.workstreams.length >= maxWorkstreams) throw new Error('Workstream limit reached.');
+    if (!workspace) throw new Error(workspaceAccessMessage);
+    if (state.workstreams.length >= maxWorkstreams) throw new Error(workstreamLimitMessage);
     const roots: string[] = [];
     for (const candidate of input.checkouts) {
       const canonical = await canonicalCheckoutRoot(candidate);
       // A workstream binds whole registered roots, never subdirectories: ownership stays unambiguous.
-      if (!workspace.roots.includes(canonical)) throw new Error('Checkouts must be registered roots of this workspace.');
+      if (!workspace.roots.includes(canonical)) throw new Error(workstreamCheckoutRootMessage);
       if (!roots.includes(canonical)) roots.push(canonical);
     }
-    if (roots.length === 0) throw new Error('Select at least one checkout and no more than twenty.');
+    if (roots.length === 0) throw new Error(workstreamCheckoutCountMessage);
     const observedAt = new Date().toISOString();
     const checkouts: WorkstreamCheckout[] = [];
     for (const root of roots) {
@@ -331,7 +343,7 @@ export async function appendWorkstreamCompletion(
   const sanitized = sanitizeCompletion(input);
   return store.update(async state => {
     const workstream = state.workstreams.find(entry => entry.id === id);
-    if (!workstream) throw new Error('Unknown workstream.');
+    if (!workstream) throw new Error(unknownWorkstreamMessage);
     const completions = workstream.completions ?? [];
     const duplicate = completions.find(entry => entry.completionId.toLowerCase() === sanitized.completionId);
     if (duplicate) {
@@ -387,12 +399,12 @@ export async function setWorkstreamStatus(
   readAccessibleRunIds: (workspaceId: string) => Promise<ReadonlySet<string>>,
   note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown },
 ): Promise<Workstream> {
-  if (status !== 'active' && status !== 'paused' && status !== 'done') throw new Error('Unknown workstream status.');
+  if (status !== 'active' && status !== 'paused' && status !== 'done') throw new Error(unknownWorkstreamStatusMessage);
   const sanitized = note === undefined ? undefined : sanitizeCheckpointNote(note);
   return store.update(async state => {
     const workstream = state.workstreams.find(workstream => workstream.id === id);
-    if (!workstream) throw new Error('Unknown workstream.');
-    if (workstream.status === 'done' && status !== 'done') throw new Error('A finished workstream cannot be reopened.');
+    if (!workstream) throw new Error(unknownWorkstreamMessage);
+    if (workstream.status === 'done' && status !== 'done') throw new Error(workstreamReopenMessage);
     if (sanitized?.evidence.length) {
       assertCheckpointEvidence(sanitized.evidence, await readAccessibleRunIds(workstream.workspaceId));
     }

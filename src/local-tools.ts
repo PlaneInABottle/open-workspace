@@ -11,6 +11,7 @@ import {
   checkDenied,
   checkShape,
   datastoreErrorStage,
+  datastoreMessages,
   runDatastoreQuery,
   singleStatement,
   type DatastoreQueryResult,
@@ -676,7 +677,7 @@ export class LocalToolRegistry {
     // canonical-path change is honest-unavailable, never a bare-name fallback.
     const canonical = await resolveCanonicalBinary(toolClass.binary, process.env.PATH ?? '');
     if (!canonical || canonical !== decl.canonical) {
-      throw new Error('PostgreSQL client is unavailable.');
+      throw new Error(datastoreMessages.unavailable);
     }
     try {
       const outcome = await runDatastoreQuery(workspaceRoots, {
@@ -709,7 +710,7 @@ export class LocalToolRegistry {
       // run-time unavailable (however staged) never increment.
       const stage = datastoreErrorStage(error);
       const message = error instanceof Error ? error.message : '';
-      if (stage === 'query' && message !== 'PostgreSQL client is unavailable.') {
+      if (stage === 'query' && message !== datastoreMessages.unavailable) {
         record.consecFailures += 1;
         if (record.consecFailures >= quarantineThreshold) {
           await this.quarantineForRuntimeFailures(workspaceId, actor, record);

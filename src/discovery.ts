@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { access, lstat, open, opendir, realpath, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { maxProjectRootLength } from './project-roots.js';
+import { maxProjectRootLength, projectRootMessages } from './project-roots.js';
 
 const manifests = ['package.json', 'pyproject.toml', 'pom.xml', 'Cargo.toml', 'go.mod', 'Gemfile'] as const;
 const composeFiles = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
@@ -30,20 +30,20 @@ async function regularFile(path: string): Promise<boolean> {
 }
 
 export async function approvedRoot(path: string): Promise<string> {
-  if (!isAbsolute(path) || path.includes('\0') || path.length > maxProjectRootLength) throw new Error('Use an absolute project directory.');
+  if (!isAbsolute(path) || path.includes('\0') || path.length > maxProjectRootLength) throw new Error(projectRootMessages.absoluteDir);
   const selectedPath = resolve(path);
   let selectedInfo;
   try {
     selectedInfo = await lstat(selectedPath);
   } catch (error) {
     // Missing paths and I/O failures carry private absolute paths; report the safe reason instead.
-    throw new Error('Choose a real directory, not a symlink.');
+    throw new Error(projectRootMessages.symlink);
   }
   if (!selectedInfo.isDirectory() || selectedInfo.isSymbolicLink()) {
-    throw new Error('Choose a real directory, not a symlink.');
+    throw new Error(projectRootMessages.symlink);
   }
   const root = await realpath(selectedPath);
-  if (root === parse(root).root || root === homedir()) throw new Error('Choose a project, not your home or filesystem root.');
+  if (root === parse(root).root || root === homedir()) throw new Error(projectRootMessages.homeRoot);
   // Filesystem roots/aliases such as macOS /var are canonicalized for stored access.
   return root;
 }
@@ -85,7 +85,7 @@ async function inspectDirectory(directory: string, name: string): Promise<Reposi
 
 export async function discover(path: string): Promise<{ root: string; repositories: Repository[]; warnings: string[] }> {
   const root = await approvedRoot(path);
-  if (root !== path) throw new Error('Approved directory identity changed. Request access again.');
+  if (root !== path) throw new Error(projectRootMessages.approvedIdentity);
   const warnings: string[] = [];
   const repositories: Repository[] = [];
   const inspect = async (directory: string, name: string) => {

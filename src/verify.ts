@@ -7,6 +7,18 @@ import { inspectPm2Services, listPm2Processes, stableRootGroup } from './service
 
 export const verifyCommandTimeoutMs = 120_000;
 export const verifySocketTimeoutMs = 180_000;
+// Canonical owner of the workspace-not-found family (browser, datastore,
+// workspace and http already import this module — zero new edges) plus the
+// verification-path messages thrown below. http.ts composes its allowlist
+// from this object, so a rename propagates.
+export const verifyMessages = {
+  notFoundRegister: 'Workspace not found. Register it first.',
+  notFoundBare: 'Workspace not found.',
+  folderInsideRoot: 'The selected folder is not inside an registered project root.',
+  folderRealDirectory: 'The selected folder is not a real directory.',
+  noScript: 'This repository has no runnable test script with that name.',
+  serviceNotMapped: 'The linked service is not uniquely mapped to a registered root.',
+} as const;
 const gitCommandTimeoutMs = 10_000;
 const dirtyDiffTimeoutMs = 5_000;
 const dirtyDiffOutputLimit = 1024 * 1024;
@@ -207,50 +219,50 @@ export async function runBoundedCommand(command: string, args: string[], options
 
 async function resolveRepository(workspaceRoots: string[], repositoryPath: string): Promise<{ repository: string; root: string }> {
   if (!isAbsolute(repositoryPath) || repositoryPath.includes('\0') || repositoryPath.length > 4096) {
-    throw new Error('The selected folder is not inside an registered project root.');
+    throw new Error(verifyMessages.folderInsideRoot);
   }
   const resolved = resolve(repositoryPath);
   let canonical: string;
   try {
     const info = await lstat(resolved);
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('The selected folder is not a real directory.');
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(verifyMessages.folderRealDirectory);
     canonical = await realpath(resolved);
-    if (canonical !== resolved) throw new Error('The selected folder is not a real directory.');
+    if (canonical !== resolved) throw new Error(verifyMessages.folderRealDirectory);
   } catch (error) {
-    if (error instanceof Error && error.message !== 'The selected folder is not a real directory.') {
-      throw new Error('The selected folder is not inside an registered project root.');
+    if (error instanceof Error && error.message !== verifyMessages.folderRealDirectory) {
+      throw new Error(verifyMessages.folderInsideRoot);
     }
     throw error;
   }
   const group = await stableRootGroup(workspaceRoots, canonical);
   // Approval already rejects overlapping roots, so at most one root can own the folder.
   if (group.matchedRoots.length !== 1 || !group.exactRootPath) {
-    throw new Error('The selected folder is not inside an registered project root.');
+    throw new Error(verifyMessages.folderInsideRoot);
   }
   return { repository: canonical, root: group.exactRootPath };
 }
 
 async function readTestScript(repository: string, scriptName: string): Promise<{ body: string; hash: string }> {
-  if (!/^[\w:.-]{1,80}$/.test(scriptName)) throw new Error('This repository has no runnable test script with that name.');
+  if (!/^[\w:.-]{1,80}$/.test(scriptName)) throw new Error(verifyMessages.noScript);
   const manifestPath = resolve(repository, 'package.json');
   let parsed: unknown;
   try {
     const file = await open(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const info = await file.stat();
-      if (!info.isFile() || info.size > manifestSizeLimit) throw new Error('This repository has no runnable test script with that name.');
+      if (!info.isFile() || info.size > manifestSizeLimit) throw new Error(verifyMessages.noScript);
       parsed = JSON.parse(await file.readFile('utf8'));
     } finally {
       await file.close();
     }
   } catch {
-    throw new Error('This repository has no runnable test script with that name.');
+    throw new Error(verifyMessages.noScript);
   }
   const scripts = (parsed as { scripts?: unknown }).scripts;
   const body = scripts && typeof scripts === 'object' && !Array.isArray(scripts)
     ? (scripts as Record<string, unknown>)[scriptName] : undefined;
   if (typeof body !== 'string' || !body || body.length > scriptBodyLimit) {
-    throw new Error('This repository has no runnable test script with that name.');
+    throw new Error(verifyMessages.noScript);
   }
   return { body, hash: createHash('sha256').update(body, 'utf8').digest('hex') };
 }
@@ -343,15 +355,15 @@ async function observeServiceLink(
   list: typeof listPm2Processes,
 ): Promise<VerificationServiceContext> {
   if (typeof link.pmId !== 'number' || !Number.isInteger(link.pmId) || link.pmId < 0 || !link.name.trim() || link.name.length > 200) {
-    throw new Error('The linked service is not uniquely mapped to a registered root.');
+    throw new Error(verifyMessages.serviceNotMapped);
   }
   const listed = await list();
-  if (!listed.available) throw new Error('The linked service is not uniquely mapped to a registered root.');
+  if (!listed.available) throw new Error(verifyMessages.serviceNotMapped);
   const mapped = await inspectPm2Services(workspaceRoots, listed.processes);
   const service = [...mapped.services, ...mapped.ambiguousServices]
     .find(service => service.pmId === link.pmId && service.name === link.name);
   if (!service?.exactRootPath || (link.namespace && service.namespace && service.namespace !== link.namespace)) {
-    throw new Error('The linked service is not uniquely mapped to a registered root.');
+    throw new Error(verifyMessages.serviceNotMapped);
   }
   return { pmId: service.pmId ?? link.pmId, name: service.name, namespace: service.namespace, status: service.status };
 }

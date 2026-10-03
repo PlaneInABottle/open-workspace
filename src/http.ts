@@ -6,13 +6,34 @@ import { z } from 'zod';
 import { DashboardSessions } from './dashboard-sessions.js';
 import { WorkspaceService } from './workspace.js';
 import type { StaticAssets } from './static-assets.js';
-import { maxProjectRootLength, maxProjectRoots } from './project-roots.js';
+import { maxProjectRootLength, maxProjectRoots, projectRootMessages } from './project-roots.js';
 import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-picker.js';
-import { verifySocketTimeoutMs } from './verify.js';
-import { datastoreQuerySchema, datastoreSocketTimeoutMs } from './datastore.js';
+import { verifyMessages, verifySocketTimeoutMs } from './verify.js';
+import { datastoreMessages, datastoreQuerySchema, datastoreSocketTimeoutMs } from './datastore.js';
 import { localToolSocketTimeoutMs } from './local-tools-allowlist.js';
-import { localToolCallBodySchema } from './local-tools.js';
-import { browserCheckSchema, browserSocketTimeoutMs } from './browser.js';
+import { localToolCallBodySchema, localToolCallMessages, localToolGateMessages } from './local-tools.js';
+import { browserCheckSchema, browserMessages, browserSocketTimeoutMs } from './browser.js';
+import { dockerMetadataMessages } from './services-docker.js';
+import { leaseMessages } from './leases.js';
+import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
+import { workspaceMessages } from './workspace.js';
+import {
+  checkpointBoundsMessage,
+  checkpointEvidenceMessage,
+  checkpointPatternMessage,
+  completionBoundsMessage,
+  completionEvidenceMessage,
+  completionIdConflictMessage,
+  completionPatternMessage,
+  unknownWorkstreamMessage,
+  unknownWorkstreamStatusMessage,
+  workspaceAccessMessage,
+  workstreamCheckoutCountMessage,
+  workstreamCheckoutRootMessage,
+  workstreamLimitMessage,
+  workstreamNameMessage,
+  workstreamReopenMessage,
+} from './workstreams.js';
 
 const proposalSchema = z.object({
   name: z.string().min(1).max(100),
@@ -103,6 +124,78 @@ const workstreamStatusBodyLimit = 64 * 1024;
 // Schema-valid datastore calls carry up to 8000 SQL chars plus 20 params of
 // up to 1000 chars, so the default 8 KiB JSON cap would reject them.
 const datastoreBodyLimit = 32 * 1024;
+
+// Transport-owned messages: the only allowlist entries defined in this
+// module (thrown by body() above). Everything else is composed from owner
+// exports so a rename propagates instead of degrading to the generic error.
+export const httpTransportMessages = {
+  json: 'Use application/json.',
+  bodyTooLarge: 'Request body is too large.',
+} as const;
+
+// Rename-proof allowlist: every entry traces to exactly one owner export
+// (definition-site guard in test/safe-messages.test.ts). No hand-copied
+// literals here — Object.values plus explicit owner-const references.
+export const safeMessages: readonly string[] = [
+  workspaceMessages.projectName,
+  projectRootMessages.absoluteDir,
+  projectRootMessages.homeRoot,
+  projectRootMessages.symlink,
+  projectRootMessages.empty,
+  projectRootMessages.tooMany,
+  projectRootMessages.badPath,
+  projectRootMessages.overlap,
+  workspaceMessages.projectLimit,
+  verifyMessages.notFoundRegister,
+  verifyMessages.notFoundBare,
+  workspaceMessages.containerIdShape,
+  workspaceMessages.containerNotFound,
+  workspaceMessages.containerAmbiguous,
+  workspaceMessages.containerLinkedElsewhere,
+  workspaceMessages.containerNotLinked,
+  workspaceMessages.containerLinkLimit,
+  ...Object.values(dockerMetadataMessages),
+  workspaceMessages.removeBlocked,
+  verifyMessages.folderInsideRoot,
+  verifyMessages.folderRealDirectory,
+  verifyMessages.noScript,
+  verifyMessages.serviceNotMapped,
+  workstreamNameMessage,
+  workstreamCheckoutCountMessage,
+  workstreamCheckoutRootMessage,
+  unknownWorkstreamMessage,
+  workspaceAccessMessage,
+  unknownWorkstreamStatusMessage,
+  workstreamReopenMessage,
+  checkpointBoundsMessage,
+  checkpointPatternMessage,
+  checkpointEvidenceMessage,
+  completionBoundsMessage,
+  completionPatternMessage,
+  completionEvidenceMessage,
+  completionIdConflictMessage,
+  workspaceMessages.assignmentId,
+  externalImportInvalidMessage,
+  externalImportClaimMessage,
+  workstreamLimitMessage,
+  ...Object.values(leaseMessages),
+  datastoreMessages.identifier,
+  datastoreMessages.shape,
+  datastoreMessages.superuser,
+  datastoreMessages.timeout,
+  datastoreMessages.failed,
+  datastoreMessages.unavailable,
+  browserMessages.loopbackUrl,
+  browserMessages.redirect,
+  browserMessages.unavailable,
+  browserMessages.timeout,
+  browserMessages.navFailed,
+  projectRootMessages.approvedIdentity,
+  ...Object.values(localToolGateMessages),
+  ...Object.values(localToolCallMessages),
+  workspaceMessages.resultLimit,
+  ...Object.values(httpTransportMessages),
+];
 type ApiRole = 'dashboard' | 'mcp';
 
 function hasAuthorizationHeader(request: IncomingMessage) {
@@ -175,12 +268,12 @@ function hasIntent(request: IncomingMessage, intent: string) {
 }
 
 async function body(request: IncomingMessage, limit = 8192): Promise<unknown> {
-  if (request.headers['content-type'] !== 'application/json') throw new Error('Use application/json.');
+  if (request.headers['content-type'] !== 'application/json') throw new Error(httpTransportMessages.json);
   const chunks: Buffer[] = [];
   let byteLength = 0;
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    if (byteLength + bytes.length > limit) throw new Error('Request body is too large.');
+    if (byteLength + bytes.length > limit) throw new Error(httpTransportMessages.bodyTooLarge);
     byteLength += bytes.length;
     chunks.push(bytes);
   }
@@ -448,7 +541,7 @@ export function createApp(service: WorkspaceService, options: {
             try {
               input = localToolCallBodySchema.parse(await body(request));
             } catch (error) {
-              if (error instanceof z.ZodError) throw new Error('Local tool call is not valid.');
+              if (error instanceof z.ZodError) throw new Error(localToolCallMessages.invalidCall);
               throw error;
             }
             if (request.aborted || response.destroyed) return;
@@ -469,7 +562,7 @@ export function createApp(service: WorkspaceService, options: {
             const limitRaw = url.searchParams.get('limit');
             const limit = limitRaw === null ? 5 : Number(limitRaw);
             if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
-              throw new Error('Use a result limit within the allowed range.');
+              throw new Error(workspaceMessages.resultLimit);
             }
             const assignmentId = url.searchParams.get('assignmentId') ?? undefined;
             json(response, 200, await service.workstreamContext(workstreamContextMatch[1], limit, assignmentId));
@@ -555,7 +648,7 @@ export function createApp(service: WorkspaceService, options: {
             }
             const limit = Number(limitRaw);
             if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
-              throw new Error('Use a result limit within the allowed range.');
+              throw new Error(workspaceMessages.resultLimit);
             }
             json(response, 200, entries.slice(-limit));
             return;
@@ -569,12 +662,12 @@ export function createApp(service: WorkspaceService, options: {
           if (url.pathname === '/api/runs/recent' && request.method === 'GET') {
             const scope = url.searchParams.get('scope') ?? '';
             if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(scope)) {
-              throw new Error('Workspace not found. Register it first.');
+              throw new Error(verifyMessages.notFoundRegister);
             }
             const limitRaw = url.searchParams.get('limit');
             const limit = limitRaw === null ? 5 : Number(limitRaw);
             if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
-              throw new Error('Use a result limit within the allowed range.');
+              throw new Error(workspaceMessages.resultLimit);
             }
             json(response, 200, await service.recentRuns(scope.toLowerCase(), limit));
             return;
@@ -644,84 +737,8 @@ export function createApp(service: WorkspaceService, options: {
       json(response, 404, { error: 'Resource not found.' });
     } catch (error) {
       // Filesystem, schema and SDK errors may contain private paths or payloads.
-      const safeMessages = [
-        'Provide a project name with 100 characters or fewer.', 'Use an absolute project directory.',
-        'Choose a project, not your home or filesystem root.', 'Choose a real directory, not a symlink.',
-        'Select at least one repository folder.', 'Select no more than 20 repository folders.',
-        'Each repository folder must be an absolute path of 4096 characters or fewer.',
-        'Choose distinct folders without selecting a parent and its child.',
-        'Project limit reached.',
-        'Workspace not found. Register it first.',
-        'Workspace not found.',
-        'Provide a full Docker container ID or a hexadecimal ID prefix of at least 12 characters.',
-        'Docker container was not found.',
-        'Docker container ID prefix is ambiguous.',
-        'Docker container is already linked to another workspace.',
-        'That Docker container is not linked to this workspace.',
-        'Project container link limit reached.',
-        'Docker CLI is unavailable.', 'Docker daemon is unreachable.', 'Docker access was denied.',
-        'Docker metadata did not finish within the bounded runtime.', 'Docker metadata was invalid or exceeded its bound.',
-        'Docker metadata could not be read.',
-        'Remove its workstreams first.',
-        'The selected folder is not inside an registered project root.',
-        'The selected folder is not a real directory.',
-        'This repository has no runnable test script with that name.',
-        'The linked service is not uniquely mapped to a registered root.',
-        'Provide a workstream name with 100 characters or fewer.',
-        'Select at least one checkout and no more than twenty.',
-        'Checkouts must be registered roots of this workspace.',
-        'Unknown workstream.',
-        // Owner literal in workstreams.ts createWorkstream (unregistered
-        // workspaceId); unlike the checkpoint/completion messages it has no
-        // exported constant, so this allowlist entry carries the literal.
-        'Workspace access not found.',
-        'Unknown workstream status.',
-        'A finished workstream cannot be reopened.',
-        'Checkpoint notes hold 2000 characters or fewer.',
-        'Checkpoint notes accept patterns only, never secrets or literals.',
-        'Checkpoint evidence must reference existing runs in this workspace.',
-        'Completion records exceed the allowed bounds.',
-        'Completion records accept safe metadata only, never secrets or literals.',
-        'Completion evidence must reference existing runs in this workspace.',
-        'Completion ID already exists with different content.',
-        'Assignment ID is not valid.',
-        'Imported results are not valid.',
-        'Imported results are accepted on trust and never marked verified.',
-        'Workstream limit reached.',
-        'Name the resource with 1–80 lowercase letters, digits or :._- characters.',
-        'Only the holding workstream can release a lease.',
-        'Only the holding workstream can touch a lease.',
-        'A finished workstream cannot hold leases.',
-        'Lease limit reached.',
-        'Provide a database and role using 1–63 letters, digits or underscores.',
-        'Only a single read-only SELECT-style statement is allowed.',
-        'Superuser database roles cannot be used for read-only queries.',
-        'The database query did not finish within the bounded runtime.',
-        'The database query failed without returning rows.',
-        'PostgreSQL client is unavailable.',
-        'Provide an http(s) loopback URL.',
-        'The page redirected outside loopback; refused.',
-        'Browser check is unavailable.',
-        'The browser check did not finish within the bounded runtime.',
-        'The browser navigation failed safely without a snapshot.',
-        'Approved directory identity changed. Request access again.',
-        'Local tool file could not be read safely.',
-        'Local tool declaration is not valid JSON.',
-        'Local tool declaration failed validation.',
-        'Local tool name is not allowed.',
-        'Local tool description is not allowed.',
-        'Local tool executable is not allowlisted.',
-        'Local tool inputs do not match the executable class.',
-        'Local tool command shape is not allowed.',
-        'Local tool limits are out of range.',
-        'Local tool limit reached.',
-        'Local tool is not available.',
-        'Local tool call is not valid.',
-        'Local tool inputs are not valid.',
-        'Use a result limit within the allowed range.',
-        'Use application/json.', 'Request body is too large.',
-      ];
-      const message = error instanceof Error && safeMessages.includes(error.message)
+      // safeMessages is the module-level composed allowlist (owner constants only).
+      const message = error instanceof Error && (safeMessages as readonly string[]).includes(error.message)
         ? error.message : 'Operation could not complete safely. Check the directory and input, then retry.';
       json(response, 400, { error: message });
     }

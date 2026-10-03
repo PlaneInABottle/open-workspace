@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import { isIP } from 'node:net';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { z } from 'zod';
-import { boundedEnvironment, runBoundedCommand, type CommandRunner } from './verify.js';
+import { boundedEnvironment, runBoundedCommand, verifyMessages, type CommandRunner } from './verify.js';
 
 // Single-shot loopback text snapshot. One ephemeral agent-browser session per
 // call: goto url, snapshot, read the final URL, then close. No profiles,
@@ -65,13 +65,13 @@ async function requireLoopbackUrl(raw: string, lookupHost: (host: string) => Pro
   try {
     parsed = new URL(raw);
   } catch {
-    throw new Error('Provide an http(s) loopback URL.');
+    throw new Error(browserMessages.loopbackUrl);
   }
   if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password) {
-    throw new Error('Provide an http(s) loopback URL.');
+    throw new Error(browserMessages.loopbackUrl);
   }
   const host = parsed.hostname.replace(/^\[(.*)\]$/, '$1');
-  if (!host) throw new Error('Provide an http(s) loopback URL.');
+  if (!host) throw new Error(browserMessages.loopbackUrl);
   let addresses: string[];
   if (isIP(host)) {
     addresses = [host];
@@ -79,11 +79,11 @@ async function requireLoopbackUrl(raw: string, lookupHost: (host: string) => Pro
     try {
       addresses = await lookupHost(host);
     } catch {
-      throw new Error('Provide an http(s) loopback URL.');
+      throw new Error(browserMessages.loopbackUrl);
     }
   }
   if (!addresses.length || !addresses.every(isLoopbackAddress)) {
-    throw new Error('Provide an http(s) loopback URL.');
+    throw new Error(browserMessages.loopbackUrl);
   }
   return parsed;
 }
@@ -107,6 +107,17 @@ interface BatchEntry {
   success: unknown;
 }
 
+// Canonical browser-path messages. http.ts composes its allowlist from this
+// object; the workspace-not-found throw below references verifyMessages
+// instead (this module already imports verify.ts).
+export const browserMessages = {
+  loopbackUrl: 'Provide an http(s) loopback URL.',
+  redirect: 'The page redirected outside loopback; refused.',
+  unavailable: 'Browser check is unavailable.',
+  timeout: 'The browser check did not finish within the bounded runtime.',
+  navFailed: 'The browser navigation failed safely without a snapshot.',
+} as const;
+
 export async function runBrowserCheck(
   workspaceRoots: string[],
   raw: unknown,
@@ -114,13 +125,13 @@ export async function runBrowserCheck(
 ): Promise<BrowserCheckResult> {
   const input = browserCheckSchema.parse(raw);
   if (!workspaceRoots.length || typeof workspaceRoots[0] !== 'string' || !workspaceRoots[0]) {
-    throw new Error('Workspace not found. Register it first.');
+    throw new Error(verifyMessages.notFoundRegister);
   }
   const anchor = workspaceRoots[0];
   const lookupHost = options.lookupHost ?? defaultLookupHost;
   await requireLoopbackUrl(input.url, lookupHost);
   const binary = await resolveAgentBrowser(options.searchPath ?? process.env.PATH ?? '');
-  if (!binary) throw new Error('Browser check is unavailable.');
+  if (!binary) throw new Error(browserMessages.unavailable);
   const run = options.run ?? runBoundedCommand;
   const sessionId = options.sessionId ?? `ow-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
   const startedAt = Date.now();
@@ -136,7 +147,7 @@ export async function runBrowserCheck(
       input: batchInput,
     });
   } catch {
-    throw new Error('Browser check is unavailable.');
+    throw new Error(browserMessages.unavailable);
   } finally {
     // Owned session cleanup is best-effort and never masks the check result.
     try {
@@ -148,34 +159,34 @@ export async function runBrowserCheck(
       });
     } catch { /* The ephemeral session is already gone or closing. */ }
   }
-  if (outcome.spawnFailed) throw new Error('Browser check is unavailable.');
-  if (outcome.timedOut) throw new Error('The browser check did not finish within the bounded runtime.');
-  if (outcome.exitCode !== 0) throw new Error('The browser navigation failed safely without a snapshot.');
+  if (outcome.spawnFailed) throw new Error(browserMessages.unavailable);
+  if (outcome.timedOut) throw new Error(browserMessages.timeout);
+  if (outcome.exitCode !== 0) throw new Error(browserMessages.navFailed);
   let entries: BatchEntry[];
   try {
     const parsed: unknown = JSON.parse(outcome.stdout);
     if (!Array.isArray(parsed)) throw new Error('unshaped');
     entries = parsed as BatchEntry[];
   } catch {
-    throw new Error('The browser navigation failed safely without a snapshot.');
+    throw new Error(browserMessages.navFailed);
   }
   const opened = entries[0];
   if (!opened || !Array.isArray(opened.command) || opened.command[0] !== 'open' || opened.success !== true) {
-    throw new Error('The browser navigation failed safely without a snapshot.');
+    throw new Error(browserMessages.navFailed);
   }
   const snapshotEntry = entries.find(entry => Array.isArray(entry.command) && entry.command[0] === 'snapshot');
   const urlEntry = entries.find(entry => Array.isArray(entry.command) && entry.command[0] === 'get');
   const finalUrl = urlEntry && typeof urlEntry.result === 'object' && urlEntry.result !== null
     ? (urlEntry.result as { url?: unknown }).url
     : undefined;
-  if (typeof finalUrl !== 'string') throw new Error('The browser navigation failed safely without a snapshot.');
+  if (typeof finalUrl !== 'string') throw new Error(browserMessages.navFailed);
   // The browser may follow redirects, so the landed URL is re-required to be
   // loopback. Observed agent-browser 0.38.1 aborts server-side 302s instead
   // (leaving about:blank), which this check also refuses.
   try {
     await requireLoopbackUrl(finalUrl, lookupHost);
   } catch {
-    throw new Error('The page redirected outside loopback; refused.');
+    throw new Error(browserMessages.redirect);
   }
   const snapshot = snapshotEntry && typeof snapshotEntry.result === 'object' && snapshotEntry.result !== null
     ? String((snapshotEntry.result as { snapshot?: unknown }).snapshot ?? '')

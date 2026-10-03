@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { boundedEnvironment, runBoundedCommand, type CommandOutcome, type CommandRunner } from './verify.js';
+import { boundedEnvironment, runBoundedCommand, verifyMessages, type CommandOutcome, type CommandRunner } from './verify.js';
 
 // Unix-socket-only read-only queries. The API schema carries explicit role and
 // database identifiers and rejects host/port/socket/password/URL fields via
@@ -223,6 +223,19 @@ export function bindParams(sql: string, params: DatastoreParam[]): string {
 
 const shapeTitle = 'Only a single read-only SELECT-style statement is allowed.';
 
+// Canonical datastore-path messages (shapeTitle above is the single
+// definition site for the shape message). http.ts composes its allowlist
+// from this object; the workspace-not-found throw below references
+// verifyMessages instead (this module already imports verify.ts).
+export const datastoreMessages = {
+  shape: shapeTitle,
+  identifier: 'Provide a database and role using 1–63 letters, digits or underscores.',
+  superuser: 'Superuser database roles cannot be used for read-only queries.',
+  timeout: 'The database query did not finish within the bounded runtime.',
+  failed: 'The database query failed without returning rows.',
+  unavailable: 'PostgreSQL client is unavailable.',
+} as const;
+
 export function singleStatement(sql: string): string {
   const stripped = stripComments(sql).trim();
   const withoutTrailing = stripped.endsWith(';') ? stripped.slice(0, -1) : stripped;
@@ -324,12 +337,12 @@ export async function runDatastoreQuery(
     input = datastoreQuerySchema.parse(raw);
   } catch (error) {
     if (error instanceof z.ZodError && error.issues.some(issue => issue.path[0] === 'database' || issue.path[0] === 'role')) {
-      throw new Error('Provide a database and role using 1–63 letters, digits or underscores.');
+      throw new Error(datastoreMessages.identifier);
     }
     throw error;
   }
   if (!workspaceRoots.length || typeof workspaceRoots[0] !== 'string' || !workspaceRoots[0]) {
-    throw new Error('Workspace not found. Register it first.');
+    throw new Error(verifyMessages.notFoundRegister);
   }
   const run = options.run ?? runBoundedCommand;
   const anchor = workspaceRoots[0];
@@ -356,12 +369,12 @@ export async function runDatastoreQuery(
   try {
     probe = await run(executable, args, { ...base, input: superuserProbeSql });
   } catch {
-    throw new DatastoreStagedError('connect', 'PostgreSQL client is unavailable.');
+    throw new DatastoreStagedError('connect', datastoreMessages.unavailable);
   }
-  if (probe.spawnFailed) throw new DatastoreStagedError('connect', 'PostgreSQL client is unavailable.');
-  if (probe.exitCode !== 0) throw new DatastoreStagedError('connect', 'The database query failed without returning rows.');
+  if (probe.spawnFailed) throw new DatastoreStagedError('connect', datastoreMessages.unavailable);
+  if (probe.exitCode !== 0) throw new DatastoreStagedError('connect', datastoreMessages.failed);
   if (/^\s*t\s*$/im.test(probe.stdout)) {
-    throw new DatastoreStagedError('connect', 'Superuser database roles cannot be used for read-only queries.');
+    throw new DatastoreStagedError('connect', datastoreMessages.superuser);
   }
   const wrapped = `BEGIN READ ONLY;\nSET LOCAL statement_timeout = '${datastoreStatementTimeout}';\n${finalSql};\nCOMMIT;\n`;
   const startedAt = Date.now();
@@ -369,13 +382,13 @@ export async function runDatastoreQuery(
   try {
     outcome = await run(executable, args, { ...base, input: wrapped });
   } catch {
-    throw new DatastoreStagedError('query', 'PostgreSQL client is unavailable.');
+    throw new DatastoreStagedError('query', datastoreMessages.unavailable);
   }
   const durationMs = Date.now() - startedAt;
-  if (outcome.spawnFailed) throw new DatastoreStagedError('query', 'PostgreSQL client is unavailable.');
+  if (outcome.spawnFailed) throw new DatastoreStagedError('query', datastoreMessages.unavailable);
   if (outcome.exitCode !== 0 || outcome.truncated) {
-    if (timeoutFailure(outcome)) throw new DatastoreStagedError('query', 'The database query did not finish within the bounded runtime.');
-    throw new DatastoreStagedError('query', 'The database query failed without returning rows.');
+    if (timeoutFailure(outcome)) throw new DatastoreStagedError('query', datastoreMessages.timeout);
+    throw new DatastoreStagedError('query', datastoreMessages.failed);
   }
   const parsed = parseRows(new TextDecoder('utf-8', { fatal: false }).decode(Buffer.from(outcome.stdout, 'utf8')), input.maxRows ?? 50);
   return {

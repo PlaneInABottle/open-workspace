@@ -1,4 +1,5 @@
 import type { State, Store } from './store.js';
+import { unknownWorkstreamMessage } from './workstreams.js';
 
 export type LeaseStatus = 'held' | 'queued';
 
@@ -15,6 +16,17 @@ const maxLeases = 50;
 // There is no cumulative tenure cap: a live holder may renew by this TTL indefinitely.
 export const leaseTtlMs = 10 * 60 * 1000;
 const resourcePattern = /^[a-z0-9][a-z0-9:._-]{0,79}$/;
+// Canonical lease-path messages. http.ts composes its allowlist from this
+// object; the shared 'Unknown workstream.' below stays owned by
+// workstreams.ts (this leases→workstreams edge is acyclic: workstreams.ts
+// never imports leases.ts).
+export const leaseMessages = {
+  invalidResource: 'Name the resource with 1–80 lowercase letters, digits or :._- characters.',
+  releaseHolder: 'Only the holding workstream can release a lease.',
+  touchHolder: 'Only the holding workstream can touch a lease.',
+  finishedHolder: 'A finished workstream cannot hold leases.',
+  limitReached: 'Lease limit reached.',
+} as const;
 export type LeaseActor = 'dashboard' | 'mcp';
 type Clock = () => number;
 
@@ -71,14 +83,14 @@ export async function acquireLease(
   actor: LeaseActor = 'mcp',
   clock: Clock = Date.now,
 ): Promise<{ lease: Lease; position: number }> {
-  if (!validResource(input.resource)) throw new Error('Name the resource with 1–80 lowercase letters, digits or :._- characters.');
+  if (!validResource(input.resource)) throw new Error(leaseMessages.invalidResource);
   const now = clock();
   const result = await store.update(state => {
     expireLeases(state, actor, now);
     const workstream = state.workstreams.find(workstream => workstream.id === input.workstreamId);
-    if (!workstream) return { error: 'Unknown workstream.' } as const;
-    if (workstream.status === 'done') return { error: 'A finished workstream cannot hold leases.' } as const;
-    if (state.leases.length >= maxLeases) return { error: 'Lease limit reached.' } as const;
+    if (!workstream) return { error: unknownWorkstreamMessage } as const;
+    if (workstream.status === 'done') return { error: leaseMessages.finishedHolder } as const;
+    if (state.leases.length >= maxLeases) return { error: leaseMessages.limitReached } as const;
     const entries = state.leases.filter(lease => lease.resource === input.resource);
     const existing = entries.find(lease => lease.workstreamId === input.workstreamId);
     if (existing) {
@@ -121,15 +133,15 @@ export async function touchLease(
   actor: LeaseActor = 'mcp',
   clock: Clock = Date.now,
 ): Promise<Lease> {
-  if (!validResource(input.resource)) throw new Error('Name the resource with 1–80 lowercase letters, digits or :._- characters.');
+  if (!validResource(input.resource)) throw new Error(leaseMessages.invalidResource);
   const now = clock();
   const result = await store.update(state => {
     expireLeases(state, actor, now);
     const lease = state.leases.find(entry => entry.resource === input.resource
       && entry.workstreamId === input.workstreamId && entry.status === 'held');
-    if (!lease) return { error: 'Only the holding workstream can touch a lease.' } as const;
+    if (!lease) return { error: leaseMessages.touchHolder } as const;
     if (state.workstreams.find(workstream => workstream.id === input.workstreamId)?.status === 'done') {
-      return { error: 'A finished workstream cannot hold leases.' } as const;
+      return { error: leaseMessages.finishedHolder } as const;
     }
     lease.updatedAt = new Date(now).toISOString();
     lease.expiresAt = new Date(now + leaseTtlMs).toISOString();
@@ -184,14 +196,14 @@ export async function releaseLease(
   actor: LeaseActor = 'mcp',
   clock: Clock = Date.now,
 ): Promise<{ released: boolean; promoted: string | null }> {
-  if (!validResource(input.resource)) throw new Error('Name the resource with 1–80 lowercase letters, digits or :._- characters.');
+  if (!validResource(input.resource)) throw new Error(leaseMessages.invalidResource);
   const now = clock();
   const result = await store.update(state => {
     expireLeases(state, actor, now);
     const index = state.leases.findIndex(
       lease => lease.resource === input.resource && lease.workstreamId === input.workstreamId && lease.status === 'held',
     );
-    if (index === -1) return { error: 'Only the holding workstream can release a lease.' } as const;
+    if (index === -1) return { error: leaseMessages.releaseHolder } as const;
     state.leases.splice(index, 1);
     const next = state.leases
       .filter(lease => lease.resource === input.resource && lease.status === 'queued')
