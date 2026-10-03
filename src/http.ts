@@ -94,6 +94,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   if (method === 'GET' && (pathname === '/api/overview'
     || pathname === '/api/leases'
     || pathname === '/api/activity'
+    || pathname === '/api/runs/recent'
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
     || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
@@ -240,8 +241,24 @@ export function createApp(service: WorkspaceService, options: {
           service.recordActivity({ actor, operation, workspaceId, detail }).catch((error: unknown) => {
             console.error('Activity record failed:', error instanceof Error ? error.message : error);
           });
+        // Read descriptors carry only the tool name, target ids and an outcome
+        // class (ok/denied/failed); literals, SQL, URLs and log text never
+        // enter activity. Activity and run reads never record (viewing the
+        // audit trail must not append to it — no feedback loop).
+        const recordRead = async <T>(operation: string, workspaceId: string | null, descriptor: string, work: () => Promise<T>): Promise<T> => {
+          try {
+            const value = await work();
+            await record(operation, workspaceId, `${descriptor} → ok`.slice(0, 200));
+            return value;
+          } catch (error) {
+            const outcome = error instanceof Error && /not found|Register it first/i.test(error.message) ? 'denied' : 'failed';
+            await record(operation, workspaceId, `${descriptor} → ${outcome}`.slice(0, 200));
+            throw error;
+          }
+        };
+        const shortId = (id: string) => id.slice(0, 8);
         if (url.pathname === '/api/overview' && request.method === 'GET') {
-          json(response, 200, await service.overview());
+          json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview()));
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
           json(response, 200, {
             mcpServers: { openworkspace: {
@@ -356,7 +373,9 @@ export function createApp(service: WorkspaceService, options: {
           }
           const workstreamMatch = new RegExp(`^/api/workstreams(?:/(${uuidPath}))?$`).exec(url.pathname);
           if (workstreamMatch && request.method === 'GET') {
-            json(response, 200, workstreamMatch[1] ? await service.workstream(workstreamMatch[1]) : await service.listWorkstreams());
+            json(response, 200, workstreamMatch[1]
+              ? await recordRead('workspace-workstreams', null, `workspace_workstreams ${shortId(workstreamMatch[1])}`, () => service.workstream(workstreamMatch[1] as string))
+              : await recordRead('workspace-workstreams', null, 'workspace_workstreams', () => service.listWorkstreams()));
             return;
           }
           if (workstreamMatch && !workstreamMatch[1] && request.method === 'POST' && url.pathname === '/api/workstreams') {
@@ -383,7 +402,7 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/leases' && request.method === 'GET') {
-            json(response, 200, await service.listLeases());
+            json(response, 200, await recordRead('workspace-leases', null, 'workspace_leases', () => service.listLeases()));
             return;
           }
           const leaseMatch = /^\/api\/leases\/(acquire|release)$/.exec(url.pathname);
@@ -401,7 +420,30 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/activity' && request.method === 'GET') {
-            json(response, 200, await service.recentActivity());
+            const limitRaw = url.searchParams.get('limit');
+            const entries = await service.recentActivity();
+            if (limitRaw === null) {
+              json(response, 200, entries);
+              return;
+            }
+            const limit = Number(limitRaw);
+            if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+              throw new Error('Use a result limit within the allowed range.');
+            }
+            json(response, 200, entries.slice(-limit));
+            return;
+          }
+          if (url.pathname === '/api/runs/recent' && request.method === 'GET') {
+            const scope = url.searchParams.get('scope') ?? '';
+            if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(scope)) {
+              throw new Error('Workspace not found. Register it first.');
+            }
+            const limitRaw = url.searchParams.get('limit');
+            const limit = limitRaw === null ? 5 : Number(limitRaw);
+            if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+              throw new Error('Use a result limit within the allowed range.');
+            }
+            json(response, 200, await service.recentRuns(scope.toLowerCase(), limit));
             return;
           }
           const workspaceMatch = new RegExp(`^/api/workspaces/(${uuidPath})$`).exec(url.pathname);
@@ -424,10 +466,12 @@ export function createApp(service: WorkspaceService, options: {
           }
           const match = new RegExp(`^/api/workspaces/(${uuidPath})(?:/(onboarding|services))?$`).exec(url.pathname);
           if (match && request.method === 'GET' && (!match[2] || match[2] === 'onboarding')) {
-            json(response, 200, match[2] ? await service.onboarding(match[1]) : await service.inspect(match[1]));
+            json(response, 200, match[2]
+              ? await recordRead('onboarding-plan', match[1], `onboarding_plan ${shortId(match[1])}`, () => service.onboarding(match[1]))
+              : await recordRead('workspace-inspect', match[1], `workspace_inspect ${shortId(match[1])}`, () => service.inspect(match[1])));
           } else if (match && request.method === 'POST' && match[2] === 'services') {
             z.object({}).strict().parse(await body(request));
-            json(response, 200, await service.services(match[1]));
+            json(response, 200, await recordRead('workspace-services', match[1], `workspace_services ${shortId(match[1])}`, () => service.services(match[1])));
           } else {
             json(response, 404, { error: 'Operation not found.' });
           }
@@ -487,6 +531,7 @@ export function createApp(service: WorkspaceService, options: {
         'The browser check did not finish within the bounded runtime.',
         'The browser navigation failed safely without a snapshot.',
         'Approved directory identity changed. Request access again.',
+        'Use a result limit within the allowed range.',
         'Use application/json.', 'Request body is too large.',
       ];
       const message = error instanceof Error && safeMessages.includes(error.message)

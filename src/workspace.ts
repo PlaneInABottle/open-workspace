@@ -8,6 +8,7 @@ import { createWorkstream, setWorkstreamStatus, type Workstream, type Workstream
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, releaseLease, type Lease } from './leases.js';
+import { listRecentRuns, persistRunSummary, type RunListEntry } from './run-summaries.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 
 export interface RootInspection {
@@ -89,7 +90,22 @@ export class WorkspaceService {
   async verify(id: string, request: VerificationRequest, signal?: AbortSignal): Promise<VerificationResult> {
     const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
     if (!workspace) throw new Error('Workspace not found. Register it first.');
-    return runVerification(workspace.roots, request, { list: this.listPm2, runCommand: this.verifyRunner, signal });
+    const result = await runVerification(workspace.roots, request, { list: this.listPm2, runCommand: this.verifyRunner, signal });
+    // Bounded run summaries feed the learning loop; a persist failure is loud
+    // in server logs but never fails the verification that succeeded.
+    try {
+      await persistRunSummary(this.store.directory, {
+        workspaceId: id,
+        scriptName: request.scriptName,
+        outcome: result.outcome,
+        durationMs: result.durationMs,
+        output: result.output,
+        outputTruncated: result.truncated,
+      });
+    } catch (error) {
+      console.error('Run summary persist failed:', error instanceof Error ? error.message : error);
+    }
+    return result;
   }
 
   async datastoreQuery(id: string, request: unknown, options: DatastoreRunnerOptions = {}): Promise<DatastoreQueryResult> {
@@ -140,6 +156,15 @@ export class WorkspaceService {
 
   async recentActivity(): Promise<ActivityEntry[]> {
     return recentActivity(this.store);
+  }
+
+  async recentRuns(scopeId: string, limit: number): Promise<RunListEntry[]> {
+    const state = await this.store.read();
+    const workspaceId = state.workspaces.some(workspace => workspace.id === scopeId)
+      ? scopeId
+      : state.workstreams.find(workstream => workstream.id === scopeId)?.workspaceId;
+    if (!workspaceId) throw new Error('Workspace not found. Register it first.');
+    return listRecentRuns(this.store.directory, workspaceId, limit);
   }
 
   async remove(id: string) {
