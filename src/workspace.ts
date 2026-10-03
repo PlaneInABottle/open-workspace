@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Store } from './store.js';
 import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
@@ -242,7 +244,7 @@ export class WorkspaceService {
   }
 
   async remove(id: string) {
-    return this.store.update(state => {
+    const result = await this.store.update(state => {
       if (!state.workspaces.some(workspace => workspace.id === id)) throw new Error('Workspace not found.');
       if (state.workstreams.some(workstream => workstream.workspaceId === id)) {
         throw new Error('Remove its workstreams first.');
@@ -252,6 +254,16 @@ export class WorkspaceService {
       // workstream references this workspace, so no lease can reference it here.
       return { removed: true };
     });
+    // Stale-scope cleanup: the scope dir (including any pinned runs, which
+    // live under the workspace scope) goes with the registration. Best-effort
+    // after the state commit: a cleanup failure is logged by path only and
+    // never fails the removal itself.
+    try {
+      await rm(join(this.store.directory, 'runs', id), { recursive: true, force: true });
+    } catch (error) {
+      console.error(`Run cleanup failed for scope ${id.slice(0, 8)}:`, error instanceof Error ? error.message : error);
+    }
+    return result;
   }
 
   async onboarding(id: string) {

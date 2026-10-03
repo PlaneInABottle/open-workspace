@@ -61,6 +61,12 @@ const maxSummariesPerScope = 20;
  * ceiling is reached. Pins are IDs only, never content.
  */
 export const maxPinnedSummariesPerScope = 30;
+/**
+ * Hard ceiling on scopes examined by the MCP startup scan. Matches the
+ * 50-workspace registration limit so live state always fits while orphaned
+ * or junk entries cannot grow startup cost without bound.
+ */
+export const maxScopesPerStartupScan = 50;
 const excerptLimit = 2048;
 const listExcerptLimit = 200;
 const maxFailingNames = 20;
@@ -360,7 +366,15 @@ export function buildLearningLine(signal: ReturnType<typeof evaluateLearningSign
 export async function learningInstructionSuffix(homeDirectory: string): Promise<string | undefined> {
   let scopes: string[];
   try {
-    scopes = await readdir(join(homeDirectory, 'runs'));
+    // Bounded startup scan: directories only, UUID scope names only (scope
+    // dirs are workspace UUIDs), capped at the registration limit so orphaned
+    // or junk entries cannot grow MCP startup cost without bound. Per-scope
+    // reads stay small: the ring caps stored summaries per scope.
+    scopes = (await readdir(join(homeDirectory, 'runs'), { withFileTypes: true }))
+      .filter(entry => entry.isDirectory() && uuidPattern.test(entry.name))
+      .map(entry => entry.name)
+      .sort()
+      .slice(0, maxScopesPerStartupScan);
   } catch {
     scopes = [];
   }

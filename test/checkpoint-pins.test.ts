@@ -241,7 +241,7 @@ test('notes written before evidence links parse with no links', async t => {
   }
 });
 
-test('removal behavior stays consistent: runs files are never cleaned up', async t => {
+test('removal cleans up the scope dir, including pinned runs', async t => {
   const f = await approvedFixture('openworkspace-pin-removal-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   const summary = await persistRunSummary(f.store.directory, {
@@ -259,13 +259,14 @@ test('removal behavior stays consistent: runs files are never cleaned up', async
   const before = await runFiles(bare.store, bare.workspace.id);
   assert.equal(before.length, 1);
   // Remove the workstream record directly (no workstream-removal operation
-  // exists), then remove the workspace: run files stay on disk as before.
+  // exists), then remove the workspace: the scope dir — pins included, since
+  // pinned runs live under the workspace scope — is removed with it.
   await bare.store.update(state => {
     state.workstreams = state.workstreams.filter(workstream => workstream.workspaceId !== bare.workspace.id);
   });
   await bare.service.remove(bare.workspace.id);
-  assert.deepEqual(await runFiles(bare.store, bare.workspace.id), before, 'run files untouched by removal');
-  assert.deepEqual(await listRunIds(bare.store.directory, bare.workspace.id), new Set(before.map(name => name.replace(/\.json$/, ''))));
+  await assert.rejects(readdir(join(bare.store.directory, 'runs', bare.workspace.id)), /ENOENT/);
+  assert.deepEqual(await listRunIds(bare.store.directory, bare.workspace.id), new Set());
 });
 
 test('evidence links travel the HTTP boundary with safe errors', async t => {
