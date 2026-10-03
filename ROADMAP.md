@@ -4,9 +4,9 @@ Status: active; decisions may change with pilot evidence. This is the single pro
 
 ## Promise and audience
 
-Keep your own AI agent. Give it a workspace where it can understand the whole project, work within your assistant's own permissions, and verify real results.
+Keep your own AI agent. Give it an execution layer where it does your work faster and more structured — across services, data, and verification — and keeps learning from its mistakes so the next task goes better.
 
-Start with developers in multi-service projects who already use a coding assistant but do not maintain elaborate skills/MCP setups. Keep the UX approachable: one next action, clear project context, human-readable failures, and no fabricated green states. The core is reusable; the first workflow is deliberately narrow.
+Start with developers in multi-service projects who already use a coding assistant but do not maintain elaborate skills/MCP setups. Inventory, receipts, and guardrails exist to serve that loop: do the task, prove it, learn from it. The core is reusable; scope grows only where pilot evidence shows leverage.
 
 ## Fixed direction
 

@@ -1,6 +1,6 @@
 # OpenWorkspace
 
-Keep your AI agent. Give it a local workspace where it can understand the whole project, work within explicit access, and eventually verify real results.
+Keep your AI agent. Give it a local execution layer where it does your tasks faster and more structured — and learns from its mistakes so the next one goes better.
 
 **Source preview:** a host-native local service, React/TypeScript dashboard with Tailwind 4 and source-owned shadcn/Base UI components, direct project registration, bounded project discovery, PM2 service control plus read-only PM2/Docker inspection and logs, repository test runs, socket-only read-only datastore query, loopback browser snapshot, workstreams with resource leases, a gated declarative local-tool engine, and an actual stdio MCP bridge. Docker/Compose control, packaged distribution and fresh-machine setup remain later gates. See [ROADMAP.md](ROADMAP.md) for the evolving milestones and plugin direction.
 
