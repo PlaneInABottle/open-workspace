@@ -172,4 +172,49 @@ describe('records timeline', () => {
     expect(filterTimeline(rows, { kind: 'verify', outcome: 'all' })).toHaveLength(0);
     expect(summarizeTimeline([], 3, 0)).toEqual({ runCount: 0, passRate: null, draftCount: 3, noteCount: 0 });
   });
+
+  it('renders pasted results as imported, never verified, and excludes them from pass rate', () => {
+    const imported: RunListEntry = {
+      workspaceId,
+      scriptName: 'upstream-check',
+      outcome: 'passed',
+      durationMs: 1200,
+      at: '2026-10-02T00:07:00.000Z',
+      failingNames: [],
+      failingTruncated: false,
+      excerptPreview: 'upstream green',
+      excerptTruncated: false,
+      outputTruncated: true,
+      source: 'external-import',
+      sourceLabel: 'Pasted result — not verified here',
+    };
+    const tampered: RunListEntry = { ...imported, scriptName: 'odd-check', at: '2026-10-02T00:08:00.000Z', source: 'unknown-source', sourceLabel: 'Unknown source — not verified here' };
+    const rows = buildTimeline([], [], [imported, tampered], workspaceId);
+    for (const row of rows) {
+      expect(row.kind).toBe('import');
+      expect(row.outcome).toBe('neutral');
+    }
+    expect(rows[0].summary).toContain('Unknown source — not verified here');
+    expect(rows[1].summary).toContain('Pasted result — not verified here');
+    expect(filterTimeline(rows, { kind: 'verify', outcome: 'all' })).toHaveLength(0);
+    expect(filterTimeline(rows, { kind: 'import', outcome: 'all' })).toHaveLength(2);
+    // One executed pass plus two pasted passes/failures: the rate covers the
+    // executed run only while the count still reports every receipt.
+    const mixed: RunListEntry[] = [
+      { ...imported, source: undefined, sourceLabel: undefined, scriptName: 'check', outcome: 'passed', at: '2026-10-02T00:06:00.000Z' },
+      imported,
+      { ...imported, outcome: 'failed', at: '2026-10-02T00:09:00.000Z' },
+    ];
+    expect(summarizeTimeline(mixed, 0, 0)).toEqual({ runCount: 3, passRate: 100, draftCount: 0, noteCount: 0 });
+    expect(summarizeTimeline([imported, tampered], 0, 0).passRate).toBeNull();
+
+    renderRecords({ runs: [imported] });
+    const pasted = within(screen.getByRole('heading', { name: 'What happened here' }).closest('section')!)
+      .getAllByRole('listitem')
+      .find(item => within(item).queryByText(/upstream-check → passed/));
+    if (!pasted) throw new Error('expected the pasted run row to render');
+    expect(within(pasted).getByText('imported')).toBeInTheDocument();
+    expect(within(pasted).getByText(/Pasted result — not verified here/)).toBeInTheDocument();
+    expect(within(pasted).queryByText('verify')).not.toBeInTheDocument();
+  });
 });

@@ -9,7 +9,7 @@ import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptio
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, releaseLease, type Lease } from './leases.js';
-import { listRecentRuns, persistRunSummary, type RunListEntry } from './run-summaries.js';
+import { listRecentRuns, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listDrafts, listMilestones } from './milestones.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 
@@ -176,8 +176,8 @@ export class WorkspaceService {
     return workstream;
   }
 
-  async setWorkstreamStatus(id: string, status: WorkstreamStatus): Promise<Workstream> {
-    return setWorkstreamStatus(this.store, id, status);
+  async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown }): Promise<Workstream> {
+    return setWorkstreamStatus(this.store, id, status, note);
   }
 
   async listLeases(): Promise<Lease[]> {
@@ -207,6 +207,13 @@ export class WorkspaceService {
       : state.workstreams.find(workstream => workstream.id === scopeId)?.workspaceId;
     if (!workspaceId) throw new Error('Workspace not found. Register it first.');
     return listRecentRuns(this.store.directory, workspaceId, limit);
+  }
+
+  async importExternalRun(raw: unknown): Promise<RunSummary> {
+    const parsed = parseExternalRunImport(raw);
+    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === parsed.workspaceId);
+    if (!workspace) throw new Error('Workspace not found. Register it first.');
+    return importExternalRun(this.store.directory, parsed);
   }
 
   async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>>; drafts: Awaited<ReturnType<typeof listDrafts>> }> {

@@ -3,6 +3,8 @@ import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensurePrivateDirectory } from './store.js';
 
+export type RunSource = 'openworkspace-run' | 'external-import' | 'unknown-source';
+
 export interface RunSummary {
   workspaceId: string;
   scriptName: string;
@@ -15,11 +17,17 @@ export interface RunSummary {
   failureExcerpt: string;
   excerptTruncated: boolean;
   outputTruncated: boolean;
+  /** Evidence source: executed here vs pasted on trust. Older files omit it. */
+  source?: RunSource;
 }
 
 export interface RunListEntry extends Omit<RunSummary, 'failureExcerpt'> {
   /** failureExcerpt capped at 200 chars for list views. */
   excerptPreview: string;
+  /** Evidence source, defaulting to openworkspace-run for older files. */
+  source: RunSource;
+  /** Distinct human wording for the source; never a verification claim for imports. */
+  sourceLabel: string;
 }
 
 const maxSummariesPerScope = 20;
@@ -83,7 +91,13 @@ export async function persistRunSummary(homeDirectory: string, entry: {
     failureExcerpt: masked.slice(0, excerptLimit),
     excerptTruncated: masked.length > excerptLimit,
     outputTruncated: entry.outputTruncated,
+    source: 'openworkspace-run',
   };
+  await storeSummaryFile(directory, summary);
+  return summary;
+}
+
+async function storeSummaryFile(directory: string, summary: RunSummary): Promise<void> {
   const serialized = JSON.stringify(summary);
   if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
     summary.failureExcerpt = summary.failureExcerpt.slice(0, excerptLimit);
@@ -91,6 +105,87 @@ export async function persistRunSummary(homeDirectory: string, entry: {
   await writeFile(join(directory, `${Date.now()}-${randomUUID().slice(0, 8)}.json`), JSON.stringify(summary), { mode: 0o600 });
   const files = (await readdir(directory)).filter(name => name.endsWith('.json')).sort().reverse();
   await Promise.all(files.slice(maxSummariesPerScope).map(stale => rm(join(directory, stale), { force: true })));
+}
+
+/** Distinct wording key for each evidence source; anything not executed here never claims verification. */
+export function sourceLabel(source: RunSource): string {
+  if (source === 'external-import') return 'Pasted result — not verified here';
+  if (source === 'unknown-source') return 'Unknown source — not verified here';
+  return 'Executed here — context-stamped';
+}
+
+function readSource(raw: unknown): RunSource {
+  if (raw === 'external-import') return 'external-import';
+  // Legacy omission still defaults to openworkspace-run, but a present
+  // unknown value degrades to a distinct unverified source, never a pass.
+  if (raw === undefined || raw === null) return 'openworkspace-run';
+  return raw === 'openworkspace-run' ? 'openworkspace-run' : 'unknown-source';
+}
+
+export const externalImportInvalidMessage = 'Imported results are not valid.';
+export const externalImportClaimMessage = 'Imported results are accepted on trust and never marked verified.';
+
+const maxImportExcerpt = 500;
+const maxImportDurationMs = 86_400_000;
+const allowedImportKeys = ['workspaceId', 'scriptName', 'outcome', 'durationMs', 'excerpt'];
+const forbiddenImportKeys = /verif|attest|proof|signatur|revision|hash|trust|certif/i;
+const uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export interface ExternalRunImport {
+  workspaceId: string;
+  scriptName: string;
+  outcome: 'passed' | 'failed' | 'error';
+  durationMs: number;
+  excerpt: string;
+}
+
+/**
+ * Strict bounded parse for a pasted external result. Claim-like keys are
+ * refused as verification claims (not generic invalid input), every other
+ * unknown key is refused outright, and a "verified" assertion in the excerpt
+ * is refused: imports are accepted on trust and must never read as
+ * verified-by-us.
+ */
+export function parseExternalRunImport(raw: unknown): ExternalRunImport {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(externalImportInvalidMessage);
+  const record = raw as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (forbiddenImportKeys.test(key)) throw new Error(externalImportClaimMessage);
+    if (!allowedImportKeys.includes(key)) throw new Error(externalImportInvalidMessage);
+  }
+  const { workspaceId, scriptName, outcome, durationMs, excerpt } = record;
+  if (typeof workspaceId !== 'string' || !uuidPattern.test(workspaceId)) throw new Error(externalImportInvalidMessage);
+  if (typeof scriptName !== 'string' || !/^[\w:.-]{1,80}$/.test(scriptName)) throw new Error(externalImportInvalidMessage);
+  if (outcome !== 'passed' && outcome !== 'failed' && outcome !== 'error') throw new Error(externalImportInvalidMessage);
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0 || durationMs > maxImportDurationMs) {
+    throw new Error(externalImportInvalidMessage);
+  }
+  if (typeof excerpt !== 'string' || excerpt.length > maxImportExcerpt || /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(excerpt)) {
+    throw new Error(externalImportInvalidMessage);
+  }
+  if (/\bverified\b/i.test(excerpt)) throw new Error(externalImportClaimMessage);
+  return { workspaceId: workspaceId.toLowerCase(), scriptName, outcome, durationMs, excerpt };
+}
+
+export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport): Promise<RunSummary> {
+  const directory = scopeDirectory(homeDirectory, parsed.workspaceId);
+  await ensurePrivateDirectory(directory);
+  const masked = maskSecrets(parsed.excerpt);
+  const failing = parseFailingNames(masked);
+  const summary: RunSummary = {
+    workspaceId: parsed.workspaceId,
+    scriptName: parsed.scriptName,
+    outcome: parsed.outcome,
+    durationMs: parsed.durationMs,
+    at: new Date().toISOString(),
+    failingNames: failing.names,
+    failingTruncated: failing.truncated,
+    failureExcerpt: masked.slice(0, maxImportExcerpt),
+    excerptTruncated: parsed.excerpt.length > maxImportExcerpt,
+    outputTruncated: true,
+    source: 'external-import',
+  };
+  await storeSummaryFile(directory, summary);
   return summary;
 }
 
@@ -104,7 +199,11 @@ export async function readRunDurations(homeDirectory: string, workspaceId: strin
   const durations: number[] = [];
   for (const file of files) {
     try {
-      const parsed = JSON.parse(await readFile(join(scopeDirectory(homeDirectory, workspaceId), file), 'utf8')) as { durationMs?: unknown };
+      const parsed = JSON.parse(await readFile(join(scopeDirectory(homeDirectory, workspaceId), file), 'utf8')) as { durationMs?: unknown; source?: unknown };
+      // Pasted external-import durations — and any unknown-source value —
+      // never feed the learning signal: the "last verify run" line must only
+      // describe runs executed here. Legacy files without a source still count.
+      if (parsed.source !== undefined && parsed.source !== null && parsed.source !== 'openworkspace-run') continue;
       if (typeof parsed.durationMs === 'number' && Number.isFinite(parsed.durationMs)) durations.push(parsed.durationMs);
     } catch {
       continue;
@@ -125,7 +224,8 @@ export async function listRecentRuns(homeDirectory: string, workspaceId: string,
     try {
       const summary = JSON.parse(await readFile(join(scopeDirectory(homeDirectory, workspaceId), file), 'utf8')) as RunSummary;
       const { failureExcerpt, ...rest } = summary;
-      entries.push({ ...rest, excerptPreview: (failureExcerpt ?? '').slice(0, listExcerptLimit) });
+      const source = readSource(summary.source);
+      entries.push({ ...rest, source, sourceLabel: sourceLabel(source), excerptPreview: (failureExcerpt ?? '').slice(0, listExcerptLimit) });
     } catch {
       continue;
     }

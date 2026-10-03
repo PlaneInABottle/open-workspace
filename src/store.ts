@@ -25,12 +25,20 @@ const workstreamCheckout = z.object({
   revisionState: z.enum(['observed', 'unknown']),
   observedAt: z.string().datetime(),
 }).strict();
+const checkpointNote = z.object({
+  goal: z.string().min(1).max(500),
+  blocker: z.string().max(500),
+  next: z.string().min(1).max(500),
+  owner: z.enum(['agent', 'user']),
+  at: z.string().datetime(),
+}).strict();
 const workstream = z.object({
   id: z.string().uuid(),
   name,
   workspaceId: z.string().uuid(),
   checkouts: z.array(workstreamCheckout).min(1).max(20),
   status: z.enum(['active', 'paused', 'done']),
+  checkpointNote: checkpointNote.nullable().optional().default(null),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();

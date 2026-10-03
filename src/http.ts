@@ -51,6 +51,12 @@ const workstreamSchema = z.object({
 }).strict();
 const workstreamStatusSchema = z.object({
   status: z.enum(['active', 'paused', 'done']),
+  note: z.object({
+    goal: z.string(),
+    blocker: z.string(),
+    next: z.string(),
+    owner: z.enum(['agent', 'user']),
+  }).strict().optional(),
 }).strict();
 const leaseSchema = z.object({
   resource: z.string().min(1).max(80),
@@ -105,6 +111,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
     || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
+    || pathname === '/api/runs/import'
     || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
@@ -430,9 +437,21 @@ export function createApp(service: WorkspaceService, options: {
               return;
             }
             const input = workstreamStatusSchema.parse(await body(request));
-            const updated = await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status);
+            const updated = await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status, input.note);
             await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
             json(response, 200, updated);
+            return;
+          }
+          if (url.pathname === '/api/runs/import' && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'import-run'))) {
+              json(response, 403, { error: 'Recording a pasted result requires the connected dashboard.' });
+              return;
+            }
+            const imported = await service.importExternalRun(await body(request));
+            // Activity records the script name and trust class only; the
+            // pasted excerpt itself is never persisted outside the masked file.
+            await record('run-import', imported.workspaceId, `${imported.scriptName} → external-import`);
+            json(response, 201, imported);
             return;
           }
           if (url.pathname === '/api/leases' && request.method === 'GET') {
@@ -572,6 +591,10 @@ export function createApp(service: WorkspaceService, options: {
         'Unknown workstream.',
         'Unknown workstream status.',
         'A finished workstream cannot be reopened.',
+        'Checkpoint notes hold 500 characters or fewer.',
+        'Checkpoint notes accept patterns only, never secrets or literals.',
+        'Imported results are not valid.',
+        'Imported results are accepted on trust and never marked verified.',
         'Workstream limit reached.',
         'Name the resource with 1–80 lowercase letters, digits or :._- characters.',
         'Only the holding workstream can release a lease.',

@@ -2,6 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Store } from './store.js';
+import { maskSecrets } from './run-summaries.js';
 import { runBoundedCommand, type CommandRunner } from './verify.js';
 
 export type WorkstreamStatus = 'active' | 'paused' | 'done';
@@ -13,12 +14,22 @@ export interface WorkstreamCheckout {
   observedAt: string;
 }
 
+export interface CheckpointNote {
+  goal: string;
+  blocker: string;
+  next: string;
+  owner: 'agent' | 'user';
+  at: string;
+}
+
 export interface Workstream {
   id: string;
   name: string;
   workspaceId: string;
   checkouts: WorkstreamCheckout[];
   status: WorkstreamStatus;
+  /** Bounded pattern-only pause note so later sessions resume; never literals. */
+  checkpointNote: CheckpointNote | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,20 +102,66 @@ export async function createWorkstream(
     const now = new Date().toISOString();
     const workstream: Workstream = {
       id: randomUUID(), name, workspaceId: workspace.id, checkouts,
-      status: 'active', createdAt: now, updatedAt: now,
+      status: 'active', checkpointNote: null, createdAt: now, updatedAt: now,
     };
     state.workstreams.push(workstream);
     return workstream;
   });
 }
 
-export async function setWorkstreamStatus(store: Store, id: string, status: WorkstreamStatus): Promise<Workstream> {
+export const checkpointBoundsMessage = 'Checkpoint notes hold 500 characters or fewer.';
+export const checkpointPatternMessage = 'Checkpoint notes accept patterns only, never secrets or literals.';
+
+const maxCheckpointTotal = 500;
+// Pattern-only notes never carry filesystem literals: any whitespace- or
+// quote-delimited token beginning with /, a drive prefix (C:\ or C:/) or a
+// UNC share is refused, case-insensitively, without maintaining a per-root
+// allowlist (/opt, /root, /Users and \\server\share all match).
+const absolutePathPattern = /(^|[\s"'=(])(\/[^\s"';)]+|[A-Za-z]:[\\/][^\s]*|\\\\[^\s]+)/i;
+
+function checkpointField(name: string, value: unknown, allowEmpty: boolean): string {
+  if (typeof value !== 'string' || (!allowEmpty && !value.trim()) || value.length > 500) {
+    throw new Error(checkpointBoundsMessage);
+  }
+  if (/[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)
+    || maskSecrets(value) !== value
+    || absolutePathPattern.test(value)) {
+    throw new Error(checkpointPatternMessage);
+  }
+  return value;
+}
+
+/** Validate a bounded pattern-only pause note; the caller stamps `at`. */
+export function sanitizeCheckpointNote(note: { goal: unknown; blocker: unknown; next: unknown; owner: unknown }): {
+  goal: string; blocker: string; next: string; owner: 'agent' | 'user';
+} {
+  if (!note || typeof note !== 'object') throw new Error(checkpointBoundsMessage);
+  const goal = checkpointField('goal', note.goal, false);
+  const blocker = checkpointField('blocker', note.blocker, true);
+  const next = checkpointField('next', note.next, false);
+  if (note.owner !== 'agent' && note.owner !== 'user') throw new Error(checkpointBoundsMessage);
+  if (goal.length + blocker.length + next.length > maxCheckpointTotal) throw new Error(checkpointBoundsMessage);
+  return { goal, blocker, next, owner: note.owner };
+}
+
+export async function setWorkstreamStatus(
+  store: Store,
+  id: string,
+  status: WorkstreamStatus,
+  note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown },
+): Promise<Workstream> {
   if (status !== 'active' && status !== 'paused' && status !== 'done') throw new Error('Unknown workstream status.');
+  const sanitized = note === undefined ? undefined : sanitizeCheckpointNote(note);
   return store.update(state => {
     const workstream = state.workstreams.find(workstream => workstream.id === id);
     if (!workstream) throw new Error('Unknown workstream.');
     if (workstream.status === 'done' && status !== 'done') throw new Error('A finished workstream cannot be reopened.');
     workstream.status = status;
+    // A supplied note replaces the previous one; omitting it preserves the
+    // pause context across resume so a later session still finds it.
+    if (sanitized !== undefined) {
+      workstream.checkpointNote = { ...sanitized, at: new Date().toISOString() };
+    }
     workstream.updatedAt = new Date().toISOString();
     return workstream;
   });

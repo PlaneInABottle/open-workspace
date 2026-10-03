@@ -36,7 +36,7 @@ The rule states the pattern, never literals: no secrets, tokens, absolute user p
 Two read-only MCP tools feed mining without widening your permissions:
 
 - `activity_list` (limit 1–50, default 20): recent sanitized tool/target/outcome descriptors. No payloads are stored, so absence of detail is expected.
-- `recent_runs` (scope workspace or workstream ID, limit 1–20, default 5): recent bounded verification summaries with at most 200 characters of excerpt each.
+- `recent_runs` (scope workspace or workstream ID, limit 1–20, default 5): recent bounded verification summaries with at most 200 characters of excerpt each. Entries carry source openworkspace-run (executed here, context-stamped) or external-import (pasted on trust, never verified here).
 
 Reading either tool never records new activity, so mining leaves no feedback loop.
 
@@ -46,7 +46,7 @@ When a major milestone lands, append one file under `OPENWORKSPACE_HOME/learning
 
 ## Workflow framing
 
-Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then mine surprises via this skill. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
+Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then mine surprises via this skill. Pause work with a bounded pattern-only checkpoint note (goal, blocker, next step, owner) so the workstream resumes later. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
 
 ## Promotion (manual only)
 

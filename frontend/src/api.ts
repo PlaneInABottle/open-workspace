@@ -169,6 +169,10 @@ export interface RunListEntry {
   excerptPreview: string;
   excerptTruncated: boolean;
   outputTruncated: boolean;
+  /** Evidence source: executed here vs pasted on trust. Older fixtures may omit it. */
+  source?: 'openworkspace-run' | 'external-import' | 'unknown-source';
+  /** Distinct human wording for the source; never a verification claim for imports. */
+  sourceLabel?: string;
 }
 
 export type ProjectRootPickerResult =

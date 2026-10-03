@@ -96,7 +96,7 @@ server.registerTool('activity_list', {
   annotations: readHints,
 }, ({ limit }) => request(`/api/activity${limit !== undefined ? `?limit=${limit}` : ''}`));
 server.registerTool('recent_runs', {
-  description: 'List recent bounded verification summaries for a workspace or workstream scope. Excerpts are capped at 200 chars per entry. Reading runs never records activity.',
+  description: 'List recent bounded run summaries for a workspace or workstream scope, each labeled source openworkspace-run (executed here) or external-import (pasted on trust, not verified here). Excerpts are capped at 200 chars per entry. Reading runs never records activity.',
   inputSchema: z.object({
     scope: z.string().uuid(),
     limit: z.number().int().min(1).max(20).optional().describe('Summaries to return, default 5.'),
@@ -185,13 +185,30 @@ server.registerTool('workstream_create', {
   annotations: operateHints,
 }, ({ name, workspaceId, checkouts }) => request('/api/workstreams', { name, workspaceId, checkouts }));
 server.registerTool('workstream_status', {
-  description: 'Move a workstream between active, paused and done. A finished workstream cannot reopen.',
+  description: 'Move a workstream between active, paused and done. A finished workstream cannot reopen. An optional bounded pattern-only note (goal, blocker, next, owner) records pause context for later resume; notes never carry secrets.',
   inputSchema: z.object({
     workstreamId: z.string().uuid(),
     status: z.enum(['active', 'paused', 'done']),
+    note: z.object({
+      goal: z.string().min(1).max(500),
+      blocker: z.string().max(500),
+      next: z.string().min(1).max(500),
+      owner: z.enum(['agent', 'user']),
+    }).strict().optional(),
   }).strict(),
   annotations: operateHints,
-}, ({ workstreamId, status }) => request(`/api/workstreams/${workstreamId}/status`, { status }));
+}, ({ workstreamId, status, note }) => request(`/api/workstreams/${workstreamId}/status`, note === undefined ? { status } : { status, note }));
+server.registerTool('run_import', {
+  description: 'Record a pasted external result as external-import: accepted on trust, NEVER presented as verified here. Strict bounded fields with a masked excerpt; verification claims are refused.',
+  inputSchema: z.object({
+    workspaceId: z.string().uuid(),
+    scriptName: z.string().min(1).max(80),
+    outcome: z.enum(['passed', 'failed', 'error']),
+    durationMs: z.number().finite().min(0).max(86_400_000),
+    excerpt: z.string().max(500),
+  }).strict(),
+  annotations: operateHints,
+}, ({ workspaceId, scriptName, outcome, durationMs, excerpt }) => request('/api/runs/import', { workspaceId, scriptName, outcome, durationMs, excerpt }));
 // Declared local tools: the service owns the registry; this process only
 // mirrors active entries. Newly gated tools appear after a status sync (or an
 // MCP restart when the SDK cannot hot-plug post-connect — see E1).

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BadgeCheck,
   CircleDot,
+  ClipboardPaste,
   Database,
   Globe,
   RotateCw,
@@ -25,6 +26,7 @@ const pollIntervalMs = 8000;
 const kindIcons: Record<TimelineKind, typeof CircleDot> = {
   note: StickyNote,
   verify: BadgeCheck,
+  import: ClipboardPaste,
   service: RotateCw,
   data: Database,
   log: ScrollText,
@@ -35,6 +37,7 @@ const kindIcons: Record<TimelineKind, typeof CircleDot> = {
 const kindLabels: Record<TimelineKind, string> = {
   note: 'note',
   verify: 'verify',
+  import: 'imported',
   service: 'service',
   data: 'data',
   log: 'log',
@@ -44,6 +47,9 @@ const kindLabels: Record<TimelineKind, string> = {
 
 function rowTone(row: TimelineRow) {
   if (row.kind === 'note') return 'text-warning';
+  // Pasted results stay warning-toned with explicit not-verified wording in
+  // the summary: tone plus text, never color alone.
+  if (row.kind === 'import') return 'text-warning';
   if (row.outcome === 'ok') return 'text-success';
   if (row.outcome === 'fail') return 'text-destructive';
   if (row.kind === 'service') return 'text-muted-foreground';
@@ -201,6 +207,7 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
                 <option value="all">All kinds</option>
                 <option value="note">Notes</option>
                 <option value="verify">Verify</option>
+                <option value="import">Imported</option>
                 <option value="service">Service</option>
                 <option value="data">Data</option>
                 <option value="log">Logs</option>
