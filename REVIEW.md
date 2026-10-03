@@ -1,7 +1,7 @@
 # Review: remove the dashboard permission layer
 
 Date: 2026-10-02
-Status: accepted direction, not yet implemented
+Status: accepted and implemented — the pivot cutover retired the dashboard permission gate (direct `POST /api/workspaces` registration, `DELETE /api/workspaces/:id` removal, MCP workspace operations under the client's permission model, dashboard keeps a record-only activity log). The sections below are kept as the historical decision record; the implementation checklist is marked superseded, not rewritten.
 Trigger: founder review — users of Claude Code / Copilot / Codex already manage
 permissions in their client; a second permission gate in the dashboard adds
 friction without adding safety.
@@ -47,7 +47,9 @@ Remove permissions from the dashboard entirely:
   rejection (`src/discovery.ts:104-108`, `src/verify.ts:176-199`), output caps,
   timeouts, no secret-file reads, loopback-only HTTP. Those stay.
 
-## What must change (implementation checklist)
+## What must change (implementation checklist — superseded, kept as history)
+
+> The pivot implementer has completed this checklist: direct registration/removal replaced the old gated flow, service/verify/workstream/lease mutations are available over MCP, and docs were trimmed to match. Items below describe the pre-pivot state.
 
 - `src/workspace.ts`: retire `propose`/`approve`/`reject` gate semantics
   (register/remove instead); make `serviceAction`/`verify` callable without a

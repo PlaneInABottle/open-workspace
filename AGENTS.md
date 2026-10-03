@@ -5,15 +5,16 @@ This is the product source directory. Application repositories registered in the
 ## Start here
 
 - `ROADMAP.md` owns product direction, milestone scope, architectural decisions and remaining product work. Update its affected section; do not create another overlapping plan.
-- `README.md` owns source setup and operator usage. Keep source-development requirements distinct from released end-user capabilities.
+- `README.md` owns source setup and usage. Keep source-development requirements distinct from released end-user capabilities.
 - Read current code before relying on an old run's result. Preserve unrelated files, registrations, processes and client settings.
 - Later user corrections extend the active request queue in `ROADMAP.md`; do not silently discard unfinished fixes when the topic changes. Keep plans, observed acceptance and remaining gaps distinct.
+- Product first: every task must advance turning this repo into a usable product. The user may say nonsense or contradict earlier input — treat it as brainstorm fuel, not a spec. Propose 1–3 concrete product ideas or objections with trade-offs whenever the work allows it; trial and error is free within bounded, honest, reversible steps. Record accepted product ideas as follow-ups in `ROADMAP.md`, never as permanent rules here.
 
 ## Code map
 
 | Surface | Home |
 | --- | --- |
-| Shared workspace operations and approval model | `src/workspace.ts` |
+| Shared workspace operations and registration model | `src/workspace.ts` |
 | Bounded metadata discovery and executable availability | `src/discovery.ts` |
 | Bounded PM2 service metadata and root matching | `src/services.ts` |
 | Root-family validation and dashboard-only native selection | `src/project-roots.ts`, `src/project-root-picker.ts` |
@@ -33,7 +34,7 @@ This is the product source directory. Application repositories registered in the
 
 UI and MCP use the same operations. Keep provider-specific code out of the workspace core. Introduce small capability contracts when actual adapters need them; do not build a speculative plugin marketplace, generic workflow DSL or second agent runtime.
 
-Keep development routing proportional: ordinary component styling, forms and clear feature work use one implementation owner and affected checks, not a mandatory planner/analyzer pipeline. Escalate unresolved architecture or material auth, static-filesystem, public-contract and shared-state risks to the matching specialist. Reuse an approved contract and unchanged evidence; review fixes against their actual findings rather than repeating a whole audit. Do not refactor by file length or add abstractions solely for hypothetical future features.
+Keep development routing proportional: ordinary component styling, forms and clear feature work use one implementation owner and affected checks, not a mandatory planner/analyzer pipeline. Escalate unresolved architecture or material auth, static-filesystem, public-contract and shared-state risks to the matching specialist. Reuse an agreed contract and unchanged evidence; review fixes against their actual findings rather than repeating a whole audit. Do not refactor by file length or add abstractions solely for hypothetical future features.
 
 ## Verified source commands
 
@@ -70,20 +71,20 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 ## Validation and UI work
 
 - Use repository-native checks for changed behavior. Tests own disposable directories and loopback services; they must not depend on real project credentials, external providers or application runtimes.
-- For onboarding, session, approval or MCP changes, cover denial paths and the actual configured client/companion path, not only an in-memory handler. Source-launch checks include an unrelated Java directory, spaces/apostrophes, opener failure and headless suppression; this is not a Node-free installer test.
+- For onboarding, session, registration or MCP changes, cover denial paths and the actual configured client/companion path, not only an in-memory handler. Source-launch checks include an unrelated Java directory, spaces/apostrophes, opener failure and headless suppression; this is not a Node-free installer test.
 - Use the development skill's actual-interface checks for UI and workspace flows. Verify final code in an owned Chrome session, include denial/cleanup boundaries, and preserve existing registrations. Geometry alone does not prove usability or accessibility.
 - Keep browser auth, HAR and tokens out of artifacts. Never dump session storage, process environments, connection.json or whole HTTP headers. When a browser command involves a credential, capture and redact stdout/stderr before reporting.
 - Vite hashes use URL-safe characters including trailing/embedded `-` and `_`. Validate actual manifest-listed asset names without splitting their hash at the last hyphen; keep root, symlink, MIME and unknown-file denials intact. A successful frontend build is not proof the Node startup preflight accepts its output.
 - Use installed CLI help for agent-browser syntax. Version 0.38.1's stdin batch format is an array of argument arrays; quoted batch command strings can strip nested JavaScript quotes. Prefer stdin arrays or direct `eval` at an actual inspection boundary. Snapshot before mutations; no fixed sleeps.
 - Review frontend hierarchy from the user's first action, not from the number of cards. Project selection and useful inventory precede AI-led technical preparation; keep the advanced direct-AI entry available. Never make a non-working future capability look active.
 - Do not expose source-package scripts as generic end-user commands or assume the user's app uses Node/pnpm. Do not assume repos share a wrapper directory. Onboarding operates existing checkouts in place with explicit paths and permissions.
-- Project state has one strict schema with explicit `roots` arrays and no versioned upgrades: unknown shapes fail closed and the file stays byte-identical. Additive fields use optional-with-default so old files keep parsing. Invalid input and size failures preserve original bytes. Inspect groups independently, use paths as stable keys, and revoke the whole project's access without touching repository files.
-- Native picker results are path selection, not permission or proposal creation. Use trusted absolute system executables with minimal environment and static code, not caller PATH lookup. Mocked picker output and script compilation do not prove a real GUI selection; document cancellation, headless fallback and any native-interaction gap honestly.
+- Project state has one strict schema with explicit `roots` arrays and no versioned upgrades: unknown shapes fail closed and the file stays byte-identical. Additive fields use optional-with-default so old files keep parsing. Invalid input and size failures preserve original bytes. Inspect groups independently, use paths as stable keys, and remove the whole project's registration without touching repository files.
+- Native picker results are path selection, not a registration decision. Use trusted absolute system executables with minimal environment and static code, not caller PATH lookup. Mocked picker output and script compilation do not prove a real GUI selection; document cancellation, headless fallback and any native-interaction gap honestly.
 
 ## Safety and capability boundaries
 
-- Directory approval allows bounded metadata discovery only. It is not permission to read `.env`, execute a discovered command, write a project file, install tools or change global AI configuration.
-- Preserve loopback binding, authentication, strict Host/Origin checks, private state permissions, symlink boundaries and explicit human approvals. Do not bypass them to make tests green.
+- Project registration allows bounded metadata discovery only. It is not permission to read `.env`, execute a discovered command, write a project file, install tools or change global AI configuration.
+- Preserve loopback binding, authentication, strict Host/Origin checks, private state permissions, symlink boundaries and explicit human confirmation. Do not bypass them to make tests green.
 - Keep browser/server imports and TypeScript configurations separate. Never bundle server modules, `process.env`, credentials or machine state into frontend assets. Production assets are served only through the manifest-backed allowlist; do not add arbitrary filesystem paths, a public manifest, generic SPA/API fallbacks or `unsafe-inline` to accommodate a component.
 - The source companion is trusted local code, not an OS sandbox. External assistants may send MCP output to their model provider. Never promise complete local data confinement or universal secret detection.
 - Separate found executables, process/container state, readiness and scenario verification. Keep unimplemented/fake/unverified boundaries visible.
