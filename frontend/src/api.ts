@@ -67,6 +67,17 @@ export interface ServiceActionResult {
   message: string;
 }
 
+export interface ServiceStartResult {
+  action: 'start';
+  target: { pmId: number; name: string; namespace: string | null };
+  repositoryPath: string;
+  rootPath: string;
+  scriptName: string;
+  status: 'completed' | 'failed' | 'unknown';
+  serviceStatus: string | null;
+  message: string;
+}
+
 export interface ServiceInventory {
   inspectedAt: string;
   runner: 'pm2';
@@ -371,6 +382,9 @@ export class ApiClient {
   services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}, { intent: 'inspect-services' }); }
   serviceAction(workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
     return this.request<ServiceActionResult>(`/api/workspaces/${safeId(workspaceId)}/services/${action}`, target, { intent: 'control-service' });
+  }
+  serviceStart(workspaceId: string, start: { repositoryPath: string; scriptName: string; name?: string }) {
+    return this.request<ServiceStartResult>(`/api/workspaces/${safeId(workspaceId)}/services/start`, start, { intent: 'control-service' });
   }
   verify(workspaceId: string, verification: VerificationRequest) {
     return this.request<VerificationResult>(`/api/workspaces/${safeId(workspaceId)}/verify`, verification, { intent: 'run-verification', timeoutMs: 170_000 });

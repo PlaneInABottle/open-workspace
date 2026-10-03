@@ -53,6 +53,11 @@ const serviceTargetSchema = z.object({
   namespace: z.string().max(80).nullable().optional(),
 }).strict();
 const serviceActionSchema = serviceTargetSchema;
+const serviceStartSchema = z.object({
+  repositoryPath: z.string().min(1).max(4096),
+  scriptName: z.string().min(1).max(80),
+  name: z.string().min(1).max(80).optional(),
+}).strict();
 const serviceLogsSchema = z.object({
   target: z.union([
     serviceTargetSchema,
@@ -257,7 +262,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/learnings/record'
     || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|start|logs)$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/containers/link$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
@@ -489,6 +494,18 @@ export function createApp(service: WorkspaceService, options: {
             const result = await service.serviceLogs(serviceLogsMatch[1], input.target, { lines: input.lines, stream: input.stream });
             // Activity records counts only; raw log text is never persisted.
             await record('service-logs', serviceLogsMatch[1], `${input.target.name} → ${result.linesReturned} lines${result.truncated ? ' (truncated)' : ''}`);
+            json(response, 200, result);
+            return;
+          }
+          const serviceStartMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/start$/.exec(url.pathname);
+          if (serviceStartMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service'))) {
+              json(response, 403, { error: 'Service actions require the connected dashboard.' });
+              return;
+            }
+            const input = serviceStartSchema.parse(await body(request));
+            const result = await service.serviceStart(serviceStartMatch[1], input);
+            await record('service-start', serviceStartMatch[1], `${input.scriptName} → ${result.status}`);
             json(response, 200, result);
             return;
           }

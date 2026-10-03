@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, resolve, sep } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
@@ -34,6 +35,23 @@ export interface Pm2Process {
 }
 
 export type ServiceAction = 'restart' | 'stop';
+
+export interface ServiceStartRequest {
+  repositoryPath: string;
+  scriptName: string;
+  name?: string;
+}
+
+export interface ServiceStartResult {
+  action: 'start';
+  target: { pmId: number; name: string; namespace: string | null };
+  repositoryPath: string;
+  rootPath: string;
+  scriptName: string;
+  status: 'completed' | 'failed' | 'unknown';
+  serviceStatus: string | null;
+  message: string;
+}
 
 export interface ServiceActionTarget {
   pmId: number | null;
@@ -357,6 +375,176 @@ export async function controlPm2Service(workspaceRoots: string[], action: Servic
   const matchedAfter = [...afterMapped.services, ...afterMapped.ambiguousServices].find(service => service.pmId === target.pmId && service.name === target.name);
   if (matchedAfter?.exactRootPath !== service.exactRootPath) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'unknown', serviceStatus: matchedAfter?.status ?? null, message: 'The service could not be uniquely matched after the action.' };
   return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'completed', serviceStatus: matchedAfter?.status ?? null, message: action === 'restart' ? 'PM2 accepted the restart. Process state is not readiness.' : 'PM2 accepted the stop request.' };
+}
+
+const pm2StartTimeoutMs = 15_000;
+const serviceStartNamePattern = /^[\w:.-]{1,80}$/;
+const serviceStartScriptPattern = /^[\w:.-]{1,80}$/;
+const serviceStartManifestLimit = 256 * 1024;
+
+export type Pm2StartRunner = (input: {
+  name: string;
+  scriptName: string;
+  cwd: string;
+}, options?: { spawn?: typeof spawn; timeoutMs?: number }) => Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }>;
+
+async function readStartScripts(manifestPath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const file = await open(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || info.size > serviceStartManifestLimit) return null;
+      const scripts = (JSON.parse(await file.readFile('utf8')) as { scripts?: unknown }).scripts;
+      return scripts && typeof scripts === 'object' && !Array.isArray(scripts)
+        ? scripts as Record<string, unknown> : null;
+    } finally {
+      await file.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+export async function runPm2Start(input: {
+  name: string;
+  scriptName: string;
+  cwd: string;
+}, options: { spawn?: typeof spawn; timeoutMs?: number } = {}): Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }> {
+  // Fixed argv shape: `pm2 start npm --name <name> -- run <script> --silent`.
+  // The script body never reaches argv — only its manifest-listed name does —
+  // so a hostile package.json script value cannot inject flags or commands.
+  const args = ['start', 'npm', '--name', input.name, '--', 'run', input.scriptName, '--silent'];
+  let child;
+  try {
+    child = (options.spawn ?? spawn)('pm2', args, {
+      shell: false,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: input.cwd,
+      env: safePm2Environment(),
+    });
+  } catch {
+    return { ok: false, error: 'missing' };
+  }
+  return new Promise(resolveResult => {
+    let settled = false;
+    let failure: 'timeout' | 'failed' | undefined;
+    let totalBytes = 0;
+    const finish = (value: { ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearTimeout(killDeadline);
+      resolveResult(value);
+    };
+    const fail = (status: 'timeout' | 'failed') => {
+      if (settled || failure) return;
+      failure = status;
+      child.kill('SIGTERM');
+      killDeadline = setTimeout(() => child.kill('SIGKILL'), 1000);
+    };
+    let killDeadline: NodeJS.Timeout | undefined;
+    const deadline = setTimeout(() => fail('timeout'), options.timeoutMs ?? pm2StartTimeoutMs);
+    const consume = (chunk: Buffer | string) => {
+      if (failure) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += bytes.length;
+      if (totalBytes > maximumPm2MetadataBytes) {
+        fail('failed');
+      }
+    };
+    child.stdout?.on('data', consume);
+    child.stderr?.on('data', consume);
+    child.once('error', () => finish({ ok: false, error: 'missing' }));
+    child.once('close', code => {
+      if (settled) return;
+      if (failure) return finish({ ok: false, error: failure });
+      if (code !== 0) return finish({ ok: false, error: 'failed' });
+      finish({ ok: true });
+    });
+  });
+}
+
+// Service start derives the command from an already-registered,
+// already-discovered source only: an existing package.json script name in a
+// repository inside exactly one registered root (the verification_run
+// precedent). There is deliberately no explicit-argv path: no caller field
+// ever reaches a shell or an interpreter choice, so arbitrary shell,
+// out-of-root binaries and non-allowlisted interpreters are refused by
+// construction — the runner stays `pm2`, cwd is the owning repository, and
+// the started process re-enters the same inventory/mapping/log path as every
+// other PM2 service. Readiness is not polled here: a completed start means
+// PM2 accepted the process, not that it is ready.
+export async function startPm2Service(workspaceRoots: string[], request: ServiceStartRequest, list = listPm2Processes, starter: Pm2StartRunner = runPm2Start): Promise<ServiceStartResult> {
+  const name = (request.name ?? request.scriptName).trim();
+  const fail = (message: string, status: ServiceStartResult['status']): ServiceStartResult => ({
+    action: 'start',
+    target: { pmId: -1, name: name.slice(0, 200) || request.scriptName.slice(0, 80), namespace: null },
+    repositoryPath: typeof request.repositoryPath === 'string' ? request.repositoryPath.slice(0, 4096) : '',
+    rootPath: '',
+    scriptName: typeof request.scriptName === 'string' ? request.scriptName.slice(0, 80) : '',
+    status,
+    serviceStatus: null,
+    message,
+  });
+  if (typeof request.repositoryPath !== 'string' || !isAbsolute(request.repositoryPath)
+    || request.repositoryPath.includes('\0') || request.repositoryPath.length > 4096) {
+    return fail('The selected folder is not inside a registered project root.', 'failed');
+  }
+  if (typeof request.scriptName !== 'string' || !serviceStartScriptPattern.test(request.scriptName)) {
+    return fail('This repository has no runnable script with that name.', 'failed');
+  }
+  if (!serviceStartNamePattern.test(name)) {
+    return fail('Provide a service name with 80 characters or fewer.', 'failed');
+  }
+  const resolved = resolve(request.repositoryPath);
+  let repository: string;
+  try {
+    repository = resolve(await realpath(resolved));
+  } catch {
+    return fail('The selected folder is not inside a registered project root.', 'failed');
+  }
+  const group = await stableRootGroup(workspaceRoots, repository);
+  // Approval already rejects overlapping roots, so at most one root can own
+  // the folder; nested registrations stay ambiguous and unstartable.
+  if (group.matchedRoots.length !== 1 || !group.exactRootPath) {
+    return fail('The selected folder is not inside a registered project root.', 'failed');
+  }
+  const manifestPath = resolve(repository, 'package.json');
+  const scripts = await readStartScripts(manifestPath);
+  if (!scripts) {
+    return fail('This repository has no runnable script with that name.', 'failed');
+  }
+  const body = scripts[request.scriptName];
+  if (typeof body !== 'string' || !body) {
+    return fail('This repository has no runnable script with that name.', 'failed');
+  }
+  const started = await starter({ name, scriptName: request.scriptName, cwd: repository });
+  const resolvedTarget = (pmId: number, namespace: string | null, serviceStatus: string | null, status: ServiceStartResult['status'], message: string): ServiceStartResult => ({
+    action: 'start',
+    target: { pmId, name, namespace },
+    repositoryPath: repository,
+    rootPath: group.exactRootPath as string,
+    scriptName: request.scriptName,
+    status,
+    serviceStatus,
+    message,
+  });
+  if (!started.ok) {
+    return resolvedTarget(-1, null, null, 'failed', started.error === 'missing' ? 'PM2 is unavailable.' : started.error === 'timeout' ? 'The PM2 start did not finish within the bounded runtime.' : 'PM2 did not start the service.');
+  }
+  const after = await list();
+  if (!after.available) {
+    return resolvedTarget(-1, null, null, 'unknown', 'PM2 accepted the start; fresh service metadata is unavailable.');
+  }
+  const mapped = await inspectPm2Services(workspaceRoots, after.processes);
+  const matched = [...mapped.services, ...mapped.ambiguousServices]
+    .filter(service => service.name === name && service.exactRootPath === group.exactRootPath)
+    .sort((a, b) => (b.pmId ?? -1) - (a.pmId ?? -1))[0];
+  if (!matched || matched.pmId === null) {
+    return resolvedTarget(-1, null, null, 'unknown', 'PM2 accepted the start; the new service could not be matched to its root.');
+  }
+  return resolvedTarget(matched.pmId, matched.namespace, matched.status, 'completed', 'PM2 accepted the start. Process state is not readiness.');
 }
 
 const pm2LogTimeoutMs = 10_000;

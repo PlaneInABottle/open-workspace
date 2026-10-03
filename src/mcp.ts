@@ -145,15 +145,35 @@ export async function runMcpBridge(): Promise<void> {
     name: z.string().min(1).max(200),
     namespace: z.string().max(80).nullable().optional(),
   }).strict();
+  // service_control carries restart/stop and start in one tool: restart/stop
+  // address an exactly mapped process via target, while start launches one
+  // existing package.json script as a PM2 process via start. The strict
+  // object schema is advertised (ZodEffects JSON Schema conversion drops
+  // properties) and the cross-field XOR is enforced when the handler parses.
+  const serviceStartInput = z.object({
+    repositoryPath: z.string().min(1).max(4096),
+    scriptName: z.string().min(1).max(80),
+    name: z.string().min(1).max(80).optional(),
+  }).strict();
+  const serviceControlObjectSchema = z.object({
+    workspaceId: z.string().uuid(),
+    action: z.enum(['restart', 'stop', 'start']),
+    target: serviceTarget.optional(),
+    start: serviceStartInput.optional(),
+  }).strict();
+  const serviceControlSchema = serviceControlObjectSchema.refine(input =>
+    (input.action === 'start' && input.start !== undefined && input.target === undefined)
+    || (input.action !== 'start' && input.target !== undefined && input.start === undefined));
   server.registerTool('service_control', {
-    description: 'Restart or stop an exactly mapped PM2 service of a registered workspace. Authorize this with the user per their client approval settings; the dashboard only records that it ran.',
-    inputSchema: z.object({
-      workspaceId: z.string().uuid(),
-      action: z.enum(['restart', 'stop']),
-      target: serviceTarget,
-    }).strict(),
+    description: 'Control an exactly mapped PM2 service: restart/stop it, or start one existing package.json script as a PM2 process. Needs user approval; dashboard only records it.',
+    inputSchema: serviceControlObjectSchema,
     annotations: operateHints,
-  }, ({ workspaceId, action, target }) => request(`/api/workspaces/${workspaceId}/services/${action}`, target));
+  }, args => {
+    const { workspaceId, action, target, start } = serviceControlSchema.parse(args);
+    return action === 'start'
+      ? request(`/api/workspaces/${workspaceId}/services/start`, start)
+      : request(`/api/workspaces/${workspaceId}/services/${action}`, target);
+  });
   server.registerTool('service_logs', {
     description: 'Read bounded PM2 tails for mapped services and Docker tails for mapped or explicitly linked containers. Docker streams are combined. Logs may contain app-printed secrets and are never persisted.',
     inputSchema: z.object({
