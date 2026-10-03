@@ -184,6 +184,8 @@ export async function listPm2Processes(options: {
 
 export type Pm2ActionRunner = (action: ServiceAction, pmId: number, options?: { spawn?: typeof spawn; timeoutMs?: number }) => Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }>;
 
+export type ServiceLogStream = 'out' | 'err' | 'both';
+
 export async function runPm2Action(action: ServiceAction, pmId: number, options: { spawn?: typeof spawn; timeoutMs?: number } = {}): Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }> {
   let child;
   try {
@@ -346,4 +348,179 @@ export async function controlPm2Service(workspaceRoots: string[], action: Servic
   const matchedAfter = [...afterMapped.services, ...afterMapped.ambiguousServices].find(service => service.pmId === target.pmId && service.name === target.name);
   if (matchedAfter?.exactRootPath !== service.exactRootPath) return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'unknown', serviceStatus: matchedAfter?.status ?? null, message: 'The service could not be uniquely matched after the action.' };
   return { action, target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace }, status: 'completed', serviceStatus: matchedAfter?.status ?? null, message: action === 'restart' ? 'PM2 accepted the restart. Process state is not readiness.' : 'PM2 accepted the stop request.' };
+}
+
+const pm2LogTimeoutMs = 10_000;
+const maximumPm2LogBytes = 64 * 1024;
+export const maximumServiceLogLines = 200;
+export const defaultServiceLogLines = 100;
+
+export type Pm2LogRunner = (pmId: number, stream: ServiceLogStream, lines: number, options?: { spawn?: typeof spawn; timeoutMs?: number }) => Promise<{ ok: true; output: string; truncated: boolean } | { ok: false; error: 'missing' | 'failed' | 'timeout' }>;
+
+export async function runPm2Logs(pmId: number, stream: ServiceLogStream, lines: number, options: { spawn?: typeof spawn; timeoutMs?: number } = {}): Promise<{ ok: true; output: string; truncated: boolean } | { ok: false; error: 'missing' | 'failed' | 'timeout' }> {
+  const args = ['logs', String(pmId), '--nostream', '--lines', String(lines)];
+  if (stream === 'out') args.push('--out');
+  else if (stream === 'err') args.push('--err');
+  let child;
+  try {
+    child = (options.spawn ?? spawn)('pm2', args, {
+      shell: false,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: safePm2Environment(),
+    });
+  } catch {
+    return { ok: false, error: 'missing' };
+  }
+  return new Promise(resolveResult => {
+    let settled = false;
+    let failure: 'timeout' | 'failed' | undefined;
+    let truncated = false;
+    let totalBytes = 0;
+    const chunks: Buffer[] = [];
+    const finish = (value: { ok: true; output: string; truncated: boolean } | { ok: false; error: 'missing' | 'failed' | 'timeout' }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearTimeout(killDeadline);
+      resolveResult(value);
+    };
+    const fail = (status: 'timeout' | 'failed') => {
+      if (settled || failure) return;
+      failure = status;
+      child.kill('SIGTERM');
+      killDeadline = setTimeout(() => child.kill('SIGKILL'), 1000);
+    };
+    let killDeadline: NodeJS.Timeout | undefined;
+    const deadline = setTimeout(() => fail('timeout'), options.timeoutMs ?? pm2LogTimeoutMs);
+    const consume = (chunk: Buffer | string) => {
+      if (failure) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(bytes);
+      totalBytes += bytes.length;
+      if (totalBytes > maximumPm2LogBytes) {
+        // pm2 emits the oldest records first, so drop from the front: the
+        // newest records (usually the tail of the requested window) are kept.
+        // Log text may contain app-printed secrets, so the kept window is
+        // flagged truncated and never persisted anywhere.
+        truncated = true;
+        let excess = totalBytes - maximumPm2LogBytes;
+        while (excess > 0 && chunks.length > 0) {
+          const oldest = chunks[0];
+          if (oldest.length <= excess) {
+            chunks.shift();
+            totalBytes -= oldest.length;
+            excess -= oldest.length;
+          } else {
+            chunks[0] = oldest.subarray(excess);
+            totalBytes -= excess;
+            excess = 0;
+          }
+        }
+      }
+    };
+    child.stdout?.on('data', consume);
+    child.stderr?.on('data', consume);
+    child.once('error', () => finish({ ok: false, error: 'missing' }));
+    child.once('close', code => {
+      if (settled) return;
+      if (failure) return finish({ ok: false, error: failure });
+      if (code !== 0) return finish({ ok: false, error: 'failed' });
+      const decode = () => new TextDecoder('utf-8', { fatal: false }).decode(Buffer.concat(chunks, totalBytes)).replace(/\n+$/, '');
+      finish({ ok: true, output: decode(), truncated });
+    });
+  });
+}
+
+export interface ServiceLogTarget {
+  pmId: number | null;
+  name: string;
+  namespace?: string | null;
+}
+
+const pm2AnsiPattern = /\x1b\[[0-9;]*[A-Za-z]/g;
+const pm2BannerPattern = /^\[TAILING\] Tailing last \d+ lines? for \[.*\] process.*$/;
+const pm2SectionHeaderPattern = /^.+\.log last \d+ lines?:$/;
+
+// pm2 --nostream decorates its tail with CLI chrome: a [TAILING] banner, one
+// "<abs path> last N lines:" header per tailed file, and a "<pmId>|<name> | "
+// prefix on every record line, all wrapped in ANSI color codes. Only genuine
+// log records are returned: headers would otherwise leak absolute PM2 log
+// paths and inflate line counts, and a service with no output would report
+// chrome as content. Blank separator lines between pm2 sections carry no
+// record content and are dropped. The record prefix is removed for this
+// service's own pmId, accepting pm2's truncation of long process names (the
+// printed name must match this service's name in either truncation direction),
+// so lookalike record text from other processes survives.
+export function stripPm2LogChrome(raw: string, pmId: number, name: string): string {
+  const exactPrefix = `${pmId}|${name} | `;
+  const loosePrefixPattern = /^(\d+)\|([^|]*) \| /;
+  const records: string[] = [];
+  for (const line of raw.split('\n')) {
+    const plain = line.replace(pm2AnsiPattern, '').replace(/\r$/, '');
+    if (!plain || pm2BannerPattern.test(plain) || pm2SectionHeaderPattern.test(plain)) continue;
+    if (plain.startsWith(exactPrefix)) {
+      records.push(plain.slice(exactPrefix.length));
+      continue;
+    }
+    const loose = loosePrefixPattern.exec(plain);
+    if (loose && Number(loose[1]) === pmId && loose[2] && (name.startsWith(loose[2]) || loose[2].startsWith(name))) {
+      records.push(plain.slice(loose[0].length));
+      continue;
+    }
+    records.push(plain);
+  }
+  return records.join('\n');
+}
+
+export interface ServiceLogResult {
+  target: { pmId: number; name: string; namespace: string | null };
+  stream: ServiceLogStream;
+  linesRequested: number;
+  linesReturned: number;
+  truncated: boolean;
+  output: string;
+  message: string;
+}
+
+export async function readPm2ServiceLogs(workspaceRoots: string[], target: ServiceLogTarget, options: { lines?: number; stream?: ServiceLogStream; list?: typeof listPm2Processes; runner?: Pm2LogRunner } = {}): Promise<ServiceLogResult> {
+  const lines = options.lines ?? defaultServiceLogLines;
+  const stream = options.stream ?? 'both';
+  const validStream = stream === 'out' || stream === 'err' || stream === 'both';
+  const validLines = Number.isInteger(lines) && (lines as number) >= 1 && (lines as number) <= maximumServiceLogLines;
+  const fail = (message: string): ServiceLogResult => ({
+    target: { pmId: target.pmId ?? -1, name: target.name, namespace: target.namespace ?? null },
+    stream: validStream ? stream : 'both',
+    linesRequested: validLines ? (lines as number) : defaultServiceLogLines,
+    linesReturned: 0,
+    truncated: false,
+    output: '',
+    message,
+  });
+  if (typeof target.pmId !== 'number' || !Number.isInteger(target.pmId) || target.pmId < 0) return fail('PM2 process identity is unavailable.');
+  if (!target.name.trim() || target.name.length > 200) return fail('Service name is invalid.');
+  if (!validLines) return fail(`Request between 1 and ${maximumServiceLogLines} log lines.`);
+  if (!validStream) return fail('Select the out, err or combined log stream.');
+  const list = options.list ?? listPm2Processes;
+  const runner = options.runner ?? runPm2Logs;
+  const before = await list();
+  if (!before.available) return fail('PM2 service metadata could not be read before the log tail.');
+  const mapped = await inspectPm2Services(workspaceRoots, before.processes);
+  const candidates = [...mapped.services, ...mapped.ambiguousServices];
+  const service = candidates.find(candidate => candidate.pmId === target.pmId && candidate.name === target.name);
+  // Ambiguous roots are not readable until the human resolves the service owner.
+  if (!service || !service.exactRootPath) return { ...fail('That PM2 service is not uniquely mapped to a registered root.'), target: { pmId: target.pmId, name: target.name, namespace: target.namespace ?? null } };
+  if (target.namespace && service.namespace && service.namespace !== target.namespace) return { ...fail('The service identity changed; review it again in the dashboard.'), target: { pmId: target.pmId, name: target.name, namespace: target.namespace } };
+  const result = await runner(target.pmId, stream, lines as number);
+  const resolvedTarget = { pmId: target.pmId, name: target.name, namespace: target.namespace ?? service.namespace };
+  if (!result.ok) return {
+    target: resolvedTarget, stream, linesRequested: lines as number, linesReturned: 0, truncated: false, output: '',
+    message: result.error === 'missing' ? 'PM2 is unavailable.' : result.error === 'timeout' ? 'The PM2 log tail did not finish within the bounded runtime.' : 'The PM2 log tail did not complete.',
+  };
+  const output = stripPm2LogChrome(result.output, target.pmId, target.name);
+  const linesReturned = output === '' ? 0 : output.split('\n').length;
+  return {
+    target: resolvedTarget, stream, linesRequested: lines as number, linesReturned, truncated: result.truncated, output,
+    message: linesReturned === 0 ? 'PM2 returned no log output for this service.' : 'PM2 returned a bounded log tail.',
+  };
 }

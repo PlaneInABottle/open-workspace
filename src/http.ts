@@ -18,10 +18,16 @@ const proposalSchema = z.object({
 const consentSchema = z.object({ consent: z.literal(true) }).strict();
 const disconnectSchema = z.object({}).strict();
 const projectRootPickerSchema = z.object({}).strict();
-const serviceActionSchema = z.object({
+const serviceTargetSchema = z.object({
   pmId: z.number().int().nonnegative().nullable(),
   name: z.string().min(1).max(200),
   namespace: z.string().max(80).nullable().optional(),
+}).strict();
+const serviceActionSchema = serviceTargetSchema;
+const serviceLogsSchema = z.object({
+  target: serviceTargetSchema,
+  lines: z.number().int().min(1).max(200).optional(),
+  stream: z.enum(['out', 'err', 'both']).optional(),
 }).strict();
 const verificationSchema = z.object({
   repositoryPath: z.string().min(1).max(4096),
@@ -91,7 +97,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
     || pathname === '/api/workstreams'
@@ -270,6 +276,15 @@ export function createApp(service: WorkspaceService, options: {
             response.removeListener('close', abortIfDisconnected);
           }
         } else {
+          const serviceLogsMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/logs$/.exec(url.pathname);
+          if (serviceLogsMatch && request.method === 'POST') {
+            const input = serviceLogsSchema.parse(await body(request));
+            const result = await service.serviceLogs(serviceLogsMatch[1], input.target, { lines: input.lines, stream: input.stream });
+            // Activity records counts only; raw log text is never persisted.
+            await record('service-logs', serviceLogsMatch[1], `${input.target.name} → ${result.linesReturned} lines${result.truncated ? ' (truncated)' : ''}`);
+            json(response, 200, result);
+            return;
+          }
           const serviceActionMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/(restart|stop)$/.exec(url.pathname);
           if (serviceActionMatch && request.method === 'POST') {
             if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service'))) {

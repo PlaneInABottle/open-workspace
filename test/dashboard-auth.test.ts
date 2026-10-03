@@ -741,3 +741,54 @@ test('service control reaches only the designated registered-root process', asyn
   assert.match(result.message, /not readiness/);
   assert.deepEqual(runnerCalls, [{ action: 'restart', pmId: 7 }, { action: 'restart', pmId: 7 }]);
 });
+
+test('service logs return bounded output while activity records counts only', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-service-logs-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = join(root, 'project');
+  await mkdir(join(project, 'api'), { recursive: true });
+  const store = new Store(join(root, 'state'));
+  await store.initialize();
+
+  const logCalls: Array<{ pmId: number; stream: string; lines: number }> = [];
+  const service = new WorkspaceService(store, async () => ({
+    available: true,
+    processes: [{ pmId: 7, name: 'api', namespace: 'default', status: 'online', cwd: join(project, 'api'), restartCount: 0, startedAt: null }],
+  }), undefined, undefined, undefined, undefined, async (pmId, stream, lines) => {
+    logCalls.push({ pmId, stream, lines });
+    return { ok: true, output: 'hello\nsk-test-secret-marker', truncated: false };
+  });
+
+  const mcpToken = 'b'.repeat(64);
+  const app = createApp(service, { mcpToken, assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, 'Content-Type': 'application/json' };
+
+  const proposal = await (await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'Logs project', roots: [project] }),
+  })).json() as { id: string };
+
+  const logsPath = `${origin}/api/workspaces/${proposal.id}/services/logs`;
+  const denied = await fetch(logsPath, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: { pmId: 99, name: 'api' } }),
+  });
+  assert.equal(denied.status, 200);
+  assert.match((await denied.json() as { message: string }).message, /not uniquely mapped/);
+  assert.deepEqual(logCalls, []);
+
+  const tailed = await fetch(logsPath, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: { pmId: 7, name: 'api', namespace: 'default' }, lines: 10, stream: 'out' }),
+  });
+  assert.equal(tailed.status, 200);
+  const tail = await tailed.json() as { output: string; linesReturned: number; truncated: boolean; stream: string };
+  assert.equal(tail.output, 'hello\nsk-test-secret-marker');
+  assert.equal(tail.linesReturned, 2);
+  assert.equal(tail.truncated, false);
+  assert.equal(tail.stream, 'out');
+  assert.deepEqual(logCalls, [{ pmId: 7, stream: 'out', lines: 10 }]);
+
+  const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${mcpToken}` } })).json() as Array<{ detail: string }>;
+  assert.ok(activity.some(entry => entry.detail === 'api → 2 lines'));
+  assert.ok(!JSON.stringify(activity).includes('sk-test-secret-marker'), 'activity must never carry log text');
+});

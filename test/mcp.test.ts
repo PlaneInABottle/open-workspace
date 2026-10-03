@@ -31,7 +31,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['datastore_query','lease_acquire','lease_release','onboarding_plan','service_control','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_workstreams','workstream_create','workstream_status']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['datastore_query','lease_acquire','lease_release','onboarding_plan','service_control','service_logs','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_workstreams','workstream_create','workstream_status']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     const registerTool = tools.tools.find(tool => tool.name === 'workspace_register');
     assert.deepEqual(Object.keys((registerTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
@@ -104,6 +104,14 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     });
     assert.ok(!allowedControl.isError);
     assert.match((allowedControl.content as Array<{ text: string }>)[0].text, /not uniquely mapped to a registered root/);
+    const logsTool = tools.tools.find(tool => tool.name === 'service_logs');
+    assert.deepEqual(Object.keys((logsTool?.inputSchema.properties || {}) as object).sort(), ['lines', 'stream', 'target', 'workspaceId']);
+    const deniedLogs = await client.callTool({
+      name: 'service_logs',
+      arguments: { workspaceId, target: { pmId: 999, name: 'absent-service' } },
+    });
+    assert.ok(!deniedLogs.isError);
+    assert.match((deniedLogs.content as Array<{ text: string }>)[0].text, /not uniquely mapped to a registered root/);
     assert.match(planText, /every registered root group separately/);
     assert.match(planText, /never infer a common parent/);
     assert.equal((await client.listPrompts()).prompts[0].name, 'workspace_onboarding');

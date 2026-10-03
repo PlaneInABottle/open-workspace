@@ -499,7 +499,7 @@ test('real stdio MCP and HTTP serve datastore_query without leaking SQL', async 
   const tools = await client.listTools();
   const registered = tools.tools.find(tool => tool.name === 'datastore_query');
   assert.ok(registered, 'datastore_query is advertised');
-  assert.ok(!tools.tools.some(tool => /service_logs|browser_check/.test(tool.name)), 'M2/M3 tools stay unadvertised');
+  assert.ok(!tools.tools.some(tool => /browser_check/.test(tool.name)), 'M3 browser check stays unadvertised');
   assert.ok(Object.keys((registered?.inputSchema as { properties: object }).properties).length <= 5);
   const called = await client.callTool({
     name: 'datastore_query',
