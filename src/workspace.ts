@@ -16,6 +16,7 @@ import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parse
 import { listMilestones } from './milestones.js';
 import { appendLearningRule, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
+import { environmentStatus, getEnvironment, listEnvironments, proposeForWorkspace, setEnvironment } from './environment.js';
 import { availableSkills } from './consumer-skills.js';
 
 export interface RootInspection {
@@ -208,6 +209,28 @@ export class WorkspaceService {
       linkedContainerIds: workspace.linkedContainers,
     });
     return readPm2ServiceLogs(workspace.roots, target, { ...options, list: this.listPm2, runner: this.logRunner });
+  }
+
+  // Environment topology (M1: propose/set/get/status-read only — no spawn).
+  // HTTP + MCP are thin: parse → call → recordActivity → respond.
+  async environmentPropose(id: string) {
+    return proposeForWorkspace(this.store, id);
+  }
+
+  async environmentSet(id: string, input: unknown) {
+    return setEnvironment(this.store, id, input);
+  }
+
+  async environmentGet(id: string, environmentId: string) {
+    return getEnvironment(this.store, id, environmentId);
+  }
+
+  async environmentList(id: string) {
+    return listEnvironments(this.store, id);
+  }
+
+  async environmentStatus(id: string, environmentId: string) {
+    return environmentStatus(this.store, id, environmentId, this.listPm2);
   }
 
   async verify(id: string, request: VerificationRequest, signal?: AbortSignal): Promise<VerificationResult> {
@@ -422,6 +445,10 @@ export class WorkspaceService {
         throw new Error(workspaceMessages.removeBlocked);
       }
       state.workspaces = state.workspaces.filter(workspace => workspace.id !== id);
+      // Environment topologies are workspace-scoped private state (stored
+      // repository paths included): dropping the entry reclaims the outer
+      // ≤50 cap and leaves no orphan behind. Runs-dir cleanup stays below.
+      state.environments = state.environments.filter(entry => entry.workspaceId !== id);
       // Leases belong to workstreams, and removal is already refused while any
       // workstream references this workspace, so no lease can reference it here.
       return { removed: true };

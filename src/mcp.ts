@@ -6,6 +6,7 @@ import { localToolDescription, slotValueSchemas, type LocalToolStatusEntry } fro
 import { learningInstructionSuffix } from './run-summaries.js';
 import { learningLessonLine, learningTotalCap } from './rule-index.js';
 import { stateDirectory } from './store.js';
+import { environmentSetInput } from './environment.js';
 import { consumerSkills, initConsumerSkills } from './consumer-skills.js';
 
 export async function runMcpBridge(): Promise<void> {
@@ -212,6 +213,34 @@ export async function runMcpBridge(): Promise<void> {
     }).strict(),
     annotations: operateHints,
   }, ({ workspaceId, repositoryPath, scriptName, service }) => request(`/api/workspaces/${workspaceId}/verify`, { repositoryPath, scriptName, ...(service ? { service } : {}) }, 170_000));
+  // M1 environment topology: discovery-proposed candidates (read-only),
+  // chat-approved set (full replacement per env name), and read-only status.
+  // No intent header — the in-chat user confirmation plus the client
+  // permission model is the authority, and the mutating call itself
+  // (visible in activity_list) is the audit record. Compose files are
+  // presence-only, never controlled; readiness/E2E stay loopback-only.
+  // Tool schemas reuse the canonical environment inputs (single definition
+  // site in environment.ts): the set tool spreads environmentSetInput's
+  // shape alongside the path-scoped workspaceId, so charset/caps/defaults
+  // cannot diverge between MCP and HTTP.
+  server.registerTool('environment_propose', {
+    description: 'Derive owned multi-service topology candidates from workspace discovery (scripts, compose presence, Procfile/Makefile/port hints). Read-only: nothing is executed, stored or spawned.',
+    inputSchema: z.object({ workspaceId: z.string().uuid() }).strict(),
+    annotations: readHints,
+  }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/environments/propose`, {}));
+  server.registerTool('environment_set', {
+    description: 'Persist the chat-approved environment topology (full replacement per env name). Present propose candidates in chat and confirm before calling; this call is the record.',
+    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentSetInput.shape }).strict(),
+    annotations: operateHints,
+  }, ({ workspaceId, name, services }) => request(`/api/workspaces/${workspaceId}/environments/set`, { name, services }));
+  server.registerTool('environment_status', {
+    description: 'Read per-service environment status (down/starting/stale in M1; never starts or stops anything). Process-alive services report at most starting.',
+    inputSchema: z.object({
+      workspaceId: z.string().uuid(),
+      environmentId: z.string().uuid(),
+    }).strict(),
+    annotations: readHints,
+  }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/status?environmentId=${environmentId}`));
   server.registerTool('lease_acquire', {
     description: 'Hold a named exclusive resource for a workstream, or join its visible queue when busy.',
     inputSchema: z.object({

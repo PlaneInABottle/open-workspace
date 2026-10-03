@@ -7,7 +7,7 @@ import { TextDecoder } from 'node:util';
 import { z } from 'zod';
 import { maxProjectRootLength, maxProjectRoots, projectRootsError } from './project-roots.js';
 
-const privateJsonLimit = 1024 * 1024;
+export const privateJsonLimit = 1024 * 1024;
 const name = z.string().min(1).max(100);
 const rootPath = z.string().min(1).max(maxProjectRootLength).refine(value => isAbsolute(value) && !value.includes('\0'));
 const registration = z.object({
@@ -98,11 +98,60 @@ const activityEntry = z.object({
   workspaceId: z.string().uuid().nullable(),
   detail: z.string().max(200),
 }).strict();
+// Local environment orchestration (M1: topology + store only, no runtime).
+// All additive, optional-with-default so files written before environments
+// parse with an empty list; unknown shapes still fail closed. Readiness is an
+// explicit union: 'process-alive' is the honest non-HTTP kind and is NEVER
+// reported 'ready' (ceiling: 'starting').
+const environmentReadiness = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('http-200'),
+    path: z.string().min(1).max(256).regex(/^\/\S*$/).optional().default('/'),
+    timeoutSecs: z.number().int().min(5).max(120).optional().default(30),
+  }).strict(),
+  z.object({
+    kind: z.literal('process-alive'),
+  }).strict(),
+]);
+const environmentService = z.object({
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$/),
+  name: z.string().regex(/^[\w:.-]{1,80}$/).optional(),
+  repositoryPath: rootPath,
+  scriptName: z.string().regex(/^[\w:.-]{1,80}$/),
+  port: z.number().int().min(1).max(65535).nullable(),
+  dependsOn: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$/)).max(10).optional().default([]),
+  readiness: environmentReadiness,
+}).strict();
+// Owned persists expectedRoot (canonical exactRootPath frozen at start time):
+// stop-time compares fresh exactRootPath === expectedRoot BEFORE any runner
+// call, because the topology's repositoryPath is user-supplied
+// pre-canonicalization and may be re-set between up and down. pmId null is
+// the pre-spawn intent (phase a); it never addresses a runner.
+const environmentOwned = z.object({
+  serviceId: z.string().min(1).max(80),
+  pmId: z.number().int().nonnegative().nullable(),
+  name: z.string().min(1).max(200),
+  namespace: z.string().max(80).nullable(),
+  expectedRoot: rootPath,
+}).strict();
+const environmentRecord = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  services: z.array(environmentService).min(1).max(10),
+  owned: z.array(environmentOwned).max(10).optional().default([]),
+  state: z.enum(['down', 'partial', 'up']).optional().default('down'),
+  updatedAt: z.string().datetime(),
+}).strict();
+const workspaceEnvironments = z.object({
+  workspaceId: z.string().uuid(),
+  items: z.array(environmentRecord).max(5),
+}).strict();
 const stateSchema = z.object({
   workspaces: z.array(registration).max(50),
   workstreams: z.array(workstream).max(50),
   leases: z.array(lease).max(50).optional().default([]),
   activity: z.array(activityEntry).max(50).optional().default([]),
+  environments: z.array(workspaceEnvironments).max(50).optional().default([]),
 }).strict().superRefine((state, context) => {
   const linkedIds = new Set<string>();
   state.workspaces.forEach((workspace, workspaceIndex) => {
@@ -118,6 +167,10 @@ const stateSchema = z.object({
 export type Registration = z.infer<typeof registration>;
 export type WorkstreamRecord = z.infer<typeof workstream>;
 export type LeaseRecord = z.infer<typeof lease>;
+export type EnvironmentService = z.infer<typeof environmentService>;
+export type EnvironmentOwned = z.infer<typeof environmentOwned>;
+export type EnvironmentRecord = z.infer<typeof environmentRecord>;
+export type WorkspaceEnvironments = z.infer<typeof workspaceEnvironments>;
 export type State = z.infer<typeof stateSchema>;
 
 export function stateDirectory(): string {

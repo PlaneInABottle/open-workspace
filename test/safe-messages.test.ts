@@ -35,6 +35,7 @@ import { dockerLogMessages, dockerMetadataMessages } from '../src/services-docke
 import { externalImportClaimMessage, externalImportInvalidMessage } from '../src/run-summaries.js';
 import { learningMessages } from '../src/rule-index.js';
 import { localToolCallMessages, localToolGateMessages } from '../src/local-tools.js';
+import { environmentMessages } from '../src/environment.js';
 
 const workstreamMessages: readonly string[] = [
   unknownWorkstreamMessage,
@@ -68,6 +69,7 @@ const ownerGroups: ReadonlyArray<{ file: string; values: readonly string[] }> = 
   { file: 'run-summaries.ts', values: [externalImportInvalidMessage, externalImportClaimMessage] },
   { file: 'rule-index.ts', values: Object.values(learningMessages) },
   { file: 'local-tools.ts', values: [...Object.values(localToolGateMessages), ...Object.values(localToolCallMessages)] },
+  { file: 'environment.ts', values: Object.values(environmentMessages) },
   { file: 'http.ts', values: Object.values(httpTransportMessages) },
 ];
 

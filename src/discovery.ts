@@ -118,6 +118,76 @@ export async function discover(path: string): Promise<{ root: string; repositori
   return { root, repositories, warnings };
 }
 
+// Proposal hints for environment topology derivation: read-only, bounded,
+// never executed. Procfile contributes up to 20 `name: command` lines,
+// Makefile contributes up to 30 target names, and package.json contributes
+// script bodies for port-hint grepping. Dot-env files are never read; bodies
+// are hints only — execution stays on the manifest-script path.
+export interface ProposalHints {
+  scripts: Record<string, string>;
+  procfile: Array<{ name: string; command: string }>;
+  makefileTargets: string[];
+}
+
+const proposalFileLimit = 4 * 1024;
+
+async function readBoundedFile(directory: string, file: string, limit = proposalFileLimit): Promise<string | null> {
+  let handle;
+  try {
+    handle = await open(join(directory, file), constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return null;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > limit) return null;
+    return await handle.readFile('utf8');
+  } catch {
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readProposalHints(directory: string): Promise<ProposalHints> {
+  const scripts: Record<string, string> = {};
+  const manifest = await readBoundedFile(directory, 'package.json', 256 * 1024);
+  if (manifest) {
+    try {
+      const parsed = JSON.parse(manifest) as { scripts?: unknown };
+      if (parsed.scripts && typeof parsed.scripts === 'object' && !Array.isArray(parsed.scripts)) {
+        for (const [name, body] of Object.entries(parsed.scripts as Record<string, unknown>)) {
+          if (!/^[\w:.-]{1,80}$/.test(name) || typeof body !== 'string' || !body) continue;
+          if (Object.keys(scripts).length >= 60) break;
+          scripts[name] = body.slice(0, 8192);
+        }
+      }
+    } catch {
+      // Unparseable manifests contribute no hints; discovery already warned.
+    }
+  }
+  const procfile: ProposalHints['procfile'] = [];
+  const procfileBody = await readBoundedFile(directory, 'Procfile');
+  if (procfileBody) {
+    for (const line of procfileBody.split('\n')) {
+      if (procfile.length >= 20) break;
+      const match = /^([A-Za-z0-9_-]{1,80}):\s*(.{1,500})$/.exec(line.trim());
+      if (match) procfile.push({ name: match[1], command: match[2] });
+    }
+  }
+  const makefileTargets: string[] = [];
+  const makefileBody = (await readBoundedFile(directory, 'Makefile'))
+    ?? (await readBoundedFile(directory, 'makefile'));
+  if (makefileBody) {
+    for (const line of makefileBody.split('\n')) {
+      if (makefileTargets.length >= 30) break;
+      const match = /^([\w:.-]{1,80})\s*:[^=]*$/.exec(line);
+      if (match && !line.startsWith('\t') && !match[1].startsWith('.')) makefileTargets.push(match[1]);
+    }
+  }
+  return { scripts, procfile, makefileTargets };
+}
+
 export async function toolAvailability(searchPath = process.env.PATH || '') {
   const definitions = [
     { id: 'git', name: 'Git', purpose: 'Repository operations', required: true },

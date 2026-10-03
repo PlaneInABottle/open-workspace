@@ -19,6 +19,7 @@ import { leaseMessages } from './leases.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
 import { learningMessages } from './rule-index.js';
 import { workspaceMessages } from './workspace.js';
+import { environmentMessages, environmentSetInput } from './environment.js';
 import {
   checkpointBoundsMessage,
   checkpointEvidenceMessage,
@@ -211,6 +212,7 @@ export const safeMessages: readonly string[] = [
   ...Object.values(localToolGateMessages),
   ...Object.values(localToolCallMessages),
   workspaceMessages.resultLimit,
+  ...Object.values(environmentMessages),
   ...Object.values(httpTransportMessages),
 ];
 type ApiRole = 'dashboard' | 'mcp';
@@ -256,7 +258,8 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/local-tools/status'
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
     || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname)
-    || new RegExp(`^/api/workstreams/${uuidPath}/context$`).test(pathname))) return true;
+    || new RegExp(`^/api/workstreams/${uuidPath}/context$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/environments(?:/status)?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
     || pathname === '/api/runs/import'
     || pathname === '/api/learnings/record'
@@ -268,6 +271,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/local-tools/call$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/environments/(propose|set)$`).test(pathname)
     || pathname === '/api/workstreams'
     || new RegExp(`^/api/workstreams/${uuidPath}/status$`).test(pathname)
     || /^\/api\/leases\/(acquire|touch|release)$/.test(pathname))) return true;
@@ -746,6 +750,45 @@ export function createApp(service: WorkspaceService, options: {
             // matching registration, which records the name alone.
             await record('roots-update', workspace.id, `${previousRoots} → ${workspace.roots.length} roots`);
             json(response, 200, workspace);
+            return;
+          }
+          // M1 environment topology: propose/status/list are reads (no intent
+          // beyond auth, like other reads); set keeps the standard dashboard
+          // intent gate (manage-environment) because dashboard calls bypass
+          // chat confirmation. MCP carries no intent header — the in-chat
+          // confirmation plus the client permission model is the authority.
+          const envProposeMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/propose$`).exec(url.pathname);
+          if (envProposeMatch && request.method === 'POST') {
+            z.object({}).strict().parse(await body(request));
+            json(response, 200, await recordRead('environment-propose', envProposeMatch[1], `environment_propose ${shortId(envProposeMatch[1])}`, () => service.environmentPropose(envProposeMatch[1])));
+            return;
+          }
+          const envSetMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/set$`).exec(url.pathname);
+          if (envSetMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-environment'))) {
+              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
+              return;
+            }
+            const input = environmentSetInput.parse(await body(request, proposalBodyLimit));
+            const created = await service.environmentSet(envSetMatch[1], input);
+            // Activity records the env name and service count only — never
+            // paths, ports, or script bodies.
+            await record('environment-set', envSetMatch[1], `${created.name.slice(0, 100)} → ${created.services.length} services`);
+            json(response, 200, created);
+            return;
+          }
+          const envStatusMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/status$`).exec(url.pathname);
+          if (envStatusMatch && request.method === 'GET') {
+            const environmentId = url.searchParams.get('environmentId') ?? '';
+            if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(environmentId)) {
+              throw new Error(environmentMessages.envNotFound);
+            }
+            json(response, 200, await recordRead('environment-status', envStatusMatch[1], `environment_status ${shortId(envStatusMatch[1])}`, () => service.environmentStatus(envStatusMatch[1], environmentId.toLowerCase())));
+            return;
+          }
+          const envListMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments$`).exec(url.pathname);
+          if (envListMatch && request.method === 'GET') {
+            json(response, 200, await recordRead('environment-list', envListMatch[1], `environment_list ${shortId(envListMatch[1])}`, () => service.environmentList(envListMatch[1])));
             return;
           }
           if (url.pathname === '/api/workspaces' && request.method === 'POST') {

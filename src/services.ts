@@ -388,7 +388,7 @@ export type Pm2StartRunner = (input: {
   cwd: string;
 }, options?: { spawn?: typeof spawn; timeoutMs?: number }) => Promise<{ ok: true } | { ok: false; error: 'missing' | 'failed' | 'timeout' }>;
 
-async function readStartScripts(manifestPath: string): Promise<Record<string, unknown> | null> {
+export async function readStartScripts(manifestPath: string): Promise<Record<string, unknown> | null> {
   try {
     const file = await open(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
