@@ -42,6 +42,10 @@ const serviceLogsSchema = z.object({
   lines: z.number().int().min(1).max(200).optional(),
   stream: z.enum(['out', 'err', 'both']).optional(),
 }).strict();
+const containerLinkSchema = z.object({
+  action: z.enum(['link', 'unlink']),
+  containerId: z.string().regex(/^[a-f\d]{12,64}$/i),
+}).strict();
 const verificationSchema = z.object({
   repositoryPath: z.string().min(1).max(4096),
   scriptName: z.string().min(1).max(80),
@@ -148,6 +152,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/containers/link$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
@@ -344,6 +349,18 @@ export function createApp(service: WorkspaceService, options: {
             response.removeListener('close', abortIfDisconnected);
           }
         } else {
+          const containerLinkMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/containers\/link$/.exec(url.pathname);
+          if (containerLinkMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-container-link'))) {
+              json(response, 403, { error: 'Container link changes require the connected dashboard.' });
+              return;
+            }
+            const input = containerLinkSchema.parse(await body(request));
+            const result = await service.containerLink(containerLinkMatch[1], input.action, input.containerId);
+            await record('container-link', containerLinkMatch[1], `${result.containerId.slice(0, 12)} → ${result.action}${result.changed ? '' : ' (unchanged)'}`);
+            json(response, 200, result);
+            return;
+          }
           const serviceLogsMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/logs$/.exec(url.pathname);
           if (serviceLogsMatch && request.method === 'POST') {
             const input = serviceLogsSchema.parse(await body(request));
@@ -604,8 +621,8 @@ export function createApp(service: WorkspaceService, options: {
               ? await recordRead('onboarding-plan', match[1], `onboarding_plan ${shortId(match[1])}`, () => service.onboarding(match[1]))
               : await recordRead('workspace-inspect', match[1], `workspace_inspect ${shortId(match[1])}`, () => service.inspect(match[1])));
           } else if (match && request.method === 'POST' && match[2] === 'services') {
-            z.object({}).strict().parse(await body(request));
-            json(response, 200, await recordRead('workspace-services', match[1], `workspace_services ${shortId(match[1])}`, () => service.services(match[1])));
+            const input = z.object({ includeUnmanaged: z.boolean().optional() }).strict().parse(await body(request));
+            json(response, 200, await recordRead('workspace-services', match[1], `workspace_services ${shortId(match[1])}`, () => service.services(match[1], input)));
           } else {
             json(response, 404, { error: 'Operation not found.' });
           }
@@ -637,6 +654,15 @@ export function createApp(service: WorkspaceService, options: {
         'Project limit reached.',
         'Workspace not found. Register it first.',
         'Workspace not found.',
+        'Provide a full Docker container ID or a hexadecimal ID prefix of at least 12 characters.',
+        'Docker container was not found.',
+        'Docker container ID prefix is ambiguous.',
+        'Docker container is already linked to another workspace.',
+        'That Docker container is not linked to this workspace.',
+        'Project container link limit reached.',
+        'Docker CLI is unavailable.', 'Docker daemon is unreachable.', 'Docker access was denied.',
+        'Docker metadata did not finish within the bounded runtime.', 'Docker metadata was invalid or exceeded its bound.',
+        'Docker metadata could not be read.',
         'Remove its workstreams first.',
         'The selected folder is not inside an registered project root.',
         'The selected folder is not a real directory.',

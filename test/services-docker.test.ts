@@ -82,6 +82,22 @@ test('Docker mapping uses only exact Compose labels; disagreement is ambiguous a
   assert.ok(!JSON.stringify(mapped).includes('nested'));
 });
 
+test('an explicit exact-ID link overrides label mapping without guessing a root', async t => {
+  const f = await rootsFixture(t);
+  const mapped = await mapDockerContainers([f.project, f.other], [
+    dockerContainer(containerId, 'task-db', {
+      'com.docker.compose.project.working_dir': f.project,
+      'com.docker.compose.project.config_files': join(f.other, 'compose.yaml'),
+    }),
+  ], [containerId]);
+  assert.equal(mapped.services.length, 1);
+  assert.equal(mapped.services[0].mappingSource, 'explicit-link');
+  assert.equal(mapped.services[0].exactRootPath, null, 'workspace linkage does not invent a specific root');
+  assert.deepEqual(mapped.services[0].matchedRoots, []);
+  assert.deepEqual(mapped.unmanagedContainers, []);
+  assert.equal(mapped.ambiguousContainerCount, 0);
+});
+
 test('Docker list invokes bounded read-only argv and maps inspect metadata without exposing labels', async t => {
   const f = await rootsFixture(t);
   const calls: Array<{ command: string; args: string[]; shell: unknown }> = [];
@@ -99,7 +115,14 @@ test('Docker list invokes bounded read-only argv and maps inspect metadata witho
     { command: 'docker', args: ['ps', '--all', '--quiet', '--no-trunc'], shell: false },
     { command: 'docker', args: ['inspect', containerId], shell: false },
   ]);
-  assert.ok(!JSON.stringify(await dockerContainerInventory([f.project], async () => list)).includes('must-not-escape'));
+  const defaultInventory = await dockerContainerInventory([], async () => list);
+  assert.equal(defaultInventory.unmanagedContainerCount, 1);
+  assert.deepEqual(defaultInventory.unmanagedContainers, []);
+  assert.ok(!JSON.stringify(defaultInventory).includes('must-not-escape'));
+  const detailedInventory = await dockerContainerInventory([], async () => list, { includeUnmanaged: true });
+  assert.equal(detailedInventory.unmanagedContainerCount, 1);
+  assert.equal(detailedInventory.unmanagedContainers[0].name, 'db');
+  assert.equal(detailedInventory.unmanagedContainers[0].image, 'postgres:17');
 });
 
 test('missing executable, unreachable daemon, and denied access remain distinct and safe', async () => {
@@ -127,7 +150,7 @@ test('missing executable, unreachable daemon, and denied access remain distinct 
   assert.ok(inventories.every(inventory => inventory.unmanagedContainerCount === 0));
 });
 
-test('service inventory keeps PM2 and Docker runners distinct and surfaces unmanaged containers', async t => {
+test('service inventory keeps PM2 and Docker runners distinct and defaults to unmanaged counts', async t => {
   const f = await rootsFixture(t);
   const pm2: Pm2Process = { pmId: 4, name: 'api', namespace: null, status: 'online', cwd: f.project, restartCount: 0, startedAt: null };
   const listPm2 = async (): Promise<Pm2ListResult> => ({ available: true, processes: [pm2] });
@@ -141,9 +164,11 @@ test('service inventory keeps PM2 and Docker runners distinct and surfaces unman
   assert.equal(inventory.docker.available, true);
   assert.equal(inventory.docker.services[0].runner, 'docker');
   assert.equal(inventory.docker.services[0].containerId, containerId);
-  assert.deepEqual(inventory.docker.unmanagedContainers.map(container => [container.name, container.mappingStatus]), [['independent-cache', 'unmatched']]);
-  assert.equal(inventory.docker.unmanagedContainers[0].runner, 'docker');
+  assert.deepEqual(inventory.docker.unmanagedContainers, []);
   assert.equal(inventory.docker.unmanagedContainerCount, 1);
+  const details = await serviceInventory([f.project], listPm2, listDocker, { includeUnmanaged: true });
+  assert.deepEqual(details.docker.unmanagedContainers.map(container => [container.name, container.mappingStatus]), [['independent-cache', 'unmatched']]);
+  assert.equal(details.docker.unmanagedContainers[0].runner, 'docker');
 });
 
 test('Docker log tail is no-follow, timestamped, combined, and capped to newest 64 KiB', async () => {
@@ -248,6 +273,39 @@ test('Docker service logs recheck exact root mapping and never tail unmanaged co
   const wrongStream = await readDockerServiceLogs([f.project], target, { stream: 'err', list });
   assert.match(wrongStream.message, /combined container logs/);
   assert.equal(wrongStream.output, '');
+});
+
+test('explicit container links authorize exact-ID bounded log tails and stale links stay inert', async t => {
+  const f = await rootsFixture(t);
+  const target = { runner: 'docker' as const, containerId, name: 'task-db' };
+  let calls = 0;
+  const result = await readDockerServiceLogs([f.project, f.other], target, {
+    linkedContainerIds: [containerId],
+    lines: 9,
+    list: async () => ({ available: true, containers: [
+      dockerContainer(containerId, 'task-db', {
+        'com.docker.compose.project.working_dir': f.project,
+        'com.docker.compose.project.config_files': join(f.other, 'compose.yaml'),
+      }),
+    ] }),
+    runner: async (id, lines) => {
+      calls += 1;
+      assert.equal(id, containerId);
+      assert.equal(lines, 9);
+      return { ok: true, output: 'bounded-container-tail', truncated: false };
+    },
+  });
+  assert.equal(result.output, 'bounded-container-tail');
+  assert.equal(calls, 1);
+
+  const missing = await readDockerServiceLogs([f.project], target, {
+    linkedContainerIds: [containerId],
+    list: async () => ({ available: true, containers: [] }),
+    runner: async () => { calls += 1; return { ok: true, output: 'wrong', truncated: false }; },
+  });
+  assert.equal(missing.message, 'The linked Docker container is no longer available.');
+  assert.equal(missing.output, '');
+  assert.equal(calls, 1, 'a disappeared link never invokes docker logs');
 });
 
 test('Docker log results preserve safe failure distinctions through service messages', async t => {

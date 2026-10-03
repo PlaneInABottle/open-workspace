@@ -18,7 +18,16 @@ test('real stdio MCP registers and operates without dashboard approval and survi
   const store = new Store(join(root, 'state')); await store.initialize();
   const project = join(root, 'project'); await mkdir(project);
   await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
-  let app = createApp(new WorkspaceService(store, async () => ({ available: true, processes: [{ pmId: 7, name: 'fixture-api', namespace: 'default', status: 'online', cwd: project, restartCount: 1, startedAt: null }] })), { mcpToken: 'b'.repeat(64), assets: fixtureStaticAssets() });
+  const linkedDockerId = 'c'.repeat(64);
+  const dockerList = async () => ({ available: true as const, containers: [
+    { id: linkedDockerId, name: 'task-postgres', image: 'postgres:17', state: 'running', labels: {} },
+    { id: 'd'.repeat(64), name: 'unmanaged-cache', image: 'redis:7', state: 'running', labels: {} },
+  ] });
+  const workspaceService = () => new WorkspaceService(store,
+    async () => ({ available: true, processes: [{ pmId: 7, name: 'fixture-api', namespace: 'default', status: 'online', cwd: project, restartCount: 1, startedAt: null }] }),
+    undefined, undefined, undefined, undefined, undefined, Date.now, dockerList,
+    async () => ({ ok: true, output: 'container-log', truncated: false }));
+  let app = createApp(workspaceService(), { mcpToken: 'b'.repeat(64), assets: fixtureStaticAssets() });
   let origin = await app.listen(0);
   await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
   const transport = new StdioClientTransport({
@@ -33,7 +42,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['activity_list','browser_check','datastore_query','lease_acquire','lease_release','lease_touch','local_tool_status','onboarding_plan','recent_runs','run_import','service_control','service_logs','verification_run','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_update_roots','workspace_workstreams','workstream_context','workstream_create','workstream_status']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['activity_list','browser_check','datastore_query','lease_acquire','lease_release','lease_touch','local_tool_status','onboarding_plan','recent_runs','run_import','service_control','service_logs','verification_run','workspace_container_link','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_update_roots','workspace_workstreams','workstream_context','workstream_create','workstream_status']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     const registerTool = tools.tools.find(tool => tool.name === 'workspace_register');
     assert.deepEqual(Object.keys((registerTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
@@ -51,6 +60,34 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     assert.ok(!services.isError);
     assert.match(servicesText, /fixture-api/);
     assert.match(servicesText, /"matchedProcessCount": 1/);
+    const defaultInventory = JSON.parse(servicesText) as { docker: { unmanagedContainerCount: number; unmanagedContainers: unknown[] } };
+    assert.equal(defaultInventory.docker.unmanagedContainerCount, 2);
+    assert.deepEqual(defaultInventory.docker.unmanagedContainers, []);
+    const detailedInventory = await client.callTool({ name: 'workspace_services', arguments: { workspaceId: workspace.id, includeUnmanaged: true } });
+    const detailedDocker = JSON.parse((detailedInventory.content as Array<{ text: string }>)[0].text) as { docker: { unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string }> } };
+    assert.equal(detailedDocker.docker.unmanagedContainerCount, 2);
+    assert.deepEqual(detailedDocker.docker.unmanagedContainers.map(container => container.name), ['task-postgres', 'unmanaged-cache']);
+    const workstreamStatusTool = tools.tools.find(tool => tool.name === 'workstream_status');
+    assert.ok(Buffer.byteLength(workstreamStatusTool?.description ?? '', 'utf8') <= 200);
+    assert.match(workstreamStatusTool?.description ?? '', /status\[\+note\].*OR completion, never both/i);
+    const statusProperties = (workstreamStatusTool?.inputSchema.properties ?? {}) as Record<string, { description?: string; properties?: Record<string, { description?: string }> }>;
+    assert.deepEqual(Object.keys(statusProperties).sort(), ['completion', 'note', 'status', 'workstreamId']);
+    assert.match(statusProperties.status?.description ?? '', /status\[\+note\].*never combine with completion/i);
+    assert.match(statusProperties.note?.description ?? '', /only with status.*never combine with completion/i);
+    assert.match(statusProperties.completion?.description ?? '', /completionId.*outcome.*checks.*revision\/dirty.*no status\/note/i);
+    assert.match(statusProperties.completion?.properties?.assignmentId?.description ?? '', /optional.*solo/i);
+    assert.match(statusProperties.completion?.properties?.completionId?.description ?? '', /required.*outcome.*checks/i);
+    assert.match(statusProperties.completion?.properties?.outcome?.description ?? '', /required.*completionId.*checks/i);
+    assert.match(statusProperties.completion?.properties?.checks?.description ?? '', /required.*completionId.*outcome/i);
+    for (const name of ['workspace_services', 'workspace_container_link', 'service_logs']) {
+      const description = tools.tools.find(tool => tool.name === name)?.description ?? '';
+      assert.ok(Buffer.byteLength(description, 'utf8') <= 200, `${name} description is within 200 bytes`);
+    }
+    const propertyBudgets = [
+      ...Object.values(statusProperties),
+      ...Object.values(statusProperties.completion?.properties ?? {}),
+    ];
+    assert.ok(propertyBudgets.every(property => !property.description || Buffer.byteLength(property.description, 'utf8') <= 80));
     const mcpSessionDenied = await fetch(`${origin}/api/dashboard-session`, {
       method: 'POST',
       headers: {
@@ -89,6 +126,24 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     assert.equal(gone.isError, true);
     const reregistered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project] } });
     const workspaceId = (JSON.parse((reregistered.content as Array<{ text: string }>)[0].text) as { id: string }).id;
+    const linked = await client.callTool({ name: 'workspace_container_link', arguments: {
+      workspaceId, action: 'link', containerId: linkedDockerId.slice(0, 12),
+    } });
+    assert.ok(!linked.isError);
+    assert.match((linked.content as Array<{ text: string }>)[0].text, new RegExp(`"containerId": "${linkedDockerId}"`));
+    const linkedLogs = await client.callTool({ name: 'service_logs', arguments: {
+      workspaceId, target: { runner: 'docker', containerId: linkedDockerId, name: 'task-postgres' }, lines: 5,
+    } });
+    assert.ok(!linkedLogs.isError);
+    assert.match((linkedLogs.content as Array<{ text: string }>)[0].text, /container-log/);
+    const linkedDetails = await client.callTool({ name: 'workspace_services', arguments: { workspaceId, includeUnmanaged: true } });
+    const linkedInventory = JSON.parse((linkedDetails.content as Array<{ text: string }>)[0].text) as { docker: { matchedContainerCount: number; unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string }> } };
+    assert.equal(linkedInventory.docker.matchedContainerCount, 1);
+    assert.equal(linkedInventory.docker.unmanagedContainerCount, 1);
+    assert.deepEqual(linkedInventory.docker.unmanagedContainers.map(container => container.name), ['unmanaged-cache']);
+    const linkActivity = await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${app.mcpToken}` } });
+    const linkActivityEntries = await linkActivity.json() as Array<{ actor: string; operation: string; detail: string }>;
+    assert.ok(linkActivityEntries.some(entry => entry.actor === 'mcp' && entry.operation === 'container-link' && entry.detail.includes('link')));
     const reinspected = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId } });
     assert.ok(!reinspected.isError);
     assert.match((reinspected.content as Array<{ text: string }>)[0].text, /not_checked/);
@@ -138,6 +193,10 @@ test('real stdio MCP registers and operates without dashboard approval and survi
       name: 'workstream_status', arguments: { workstreamId: holderId, status: 'done', completion: completionBody },
     });
     assert.equal(combinedTransition.isError, true, 'an agent completion cannot be combined with a status transition');
+    const unknownStatusField = await client.callTool({
+      name: 'workstream_status', arguments: { workstreamId: holderId, status: 'paused', unrecognized: true },
+    });
+    assert.equal(unknownStatusField.isError, true, 'the advertised MCP schema remains strict');
     const completed = await client.callTool({ name: 'workstream_status', arguments: { workstreamId: holderId, completion: completionBody } });
     assert.ok(!completed.isError);
     const replay = await client.callTool({ name: 'workstream_status', arguments: { workstreamId: holderId, completion: completionBody } });
@@ -216,12 +275,23 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     }
     await assert.rejects(client.getPrompt({ name: 'skill/missing' }), /unknown prompt|not found|skill\/missing/i);
     await app.close();
-    app = createApp(new WorkspaceService(new Store(store.directory), async () => ({ available: true, processes: [{ pmId: 7, name: 'fixture-api', namespace: 'default', status: 'online', cwd: project, restartCount: 1, startedAt: null }] })), { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
+    app = createApp(workspaceService(), { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
     origin = await app.listen(0);
     await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
     assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${dashboardSession.dashboardToken}` } })).status, 401);
     const resumed = await client.callTool({ name: 'workspace_inspect', arguments: { workspaceId } });
     assert.ok(!resumed.isError);
+    const resumedServices = await client.callTool({ name: 'workspace_services', arguments: { workspaceId } });
+    const resumedDockerServices = JSON.parse((resumedServices.content as Array<{ text: string }>)[0].text) as { docker: { services: Array<{ containerId: string; mappingSource: string }> } };
+    assert.deepEqual(resumedDockerServices.docker.services.map(entry => [entry.containerId, entry.mappingSource]), [[linkedDockerId, 'explicit-link']]);
+    const unlinked = await client.callTool({ name: 'workspace_container_link', arguments: {
+      workspaceId, action: 'unlink', containerId: linkedDockerId,
+    } });
+    assert.ok(!unlinked.isError);
+    const afterUnlink = await client.callTool({ name: 'workspace_services', arguments: { workspaceId } });
+    const afterUnlinkDocker = JSON.parse((afterUnlink.content as Array<{ text: string }>)[0].text) as { docker: { services: unknown[]; unmanagedContainerCount: number } };
+    assert.deepEqual(afterUnlinkDocker.docker.services, []);
+    assert.equal(afterUnlinkDocker.docker.unmanagedContainerCount, 2);
     assert.ok(!stderr.includes('b'.repeat(64)));
     assert.ok(!stderr.includes('c'.repeat(64)));
   } finally {

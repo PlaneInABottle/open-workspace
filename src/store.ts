@@ -17,6 +17,13 @@ const registration = z.object({
     const error = projectRootsError(roots);
     if (error) context.addIssue({ code: 'custom', message: error });
   }),
+  // Additive exact Docker ID links live with the project registration so they
+  // share its private, atomic persistence and disappear with the registration.
+  linkedContainers: z.array(z.string().regex(/^[a-f\d]{64}$/i)).max(20).optional().default([]).superRefine((ids, context) => {
+    if (new Set(ids.map(id => id.toLowerCase())).size !== ids.length) {
+      context.addIssue({ code: 'custom', message: 'Linked Docker container IDs must be unique.' });
+    }
+  }),
   createdAt: z.string().datetime(),
 }).strict();
 const workstreamCheckout = z.object({
@@ -96,7 +103,18 @@ const stateSchema = z.object({
   workstreams: z.array(workstream).max(50),
   leases: z.array(lease).max(50).optional().default([]),
   activity: z.array(activityEntry).max(50).optional().default([]),
-}).strict();
+}).strict().superRefine((state, context) => {
+  const linkedIds = new Set<string>();
+  state.workspaces.forEach((workspace, workspaceIndex) => {
+    workspace.linkedContainers.forEach(id => {
+      const normalizedId = id.toLowerCase();
+      if (linkedIds.has(normalizedId)) {
+        context.addIssue({ code: 'custom', path: ['workspaces', workspaceIndex, 'linkedContainers'], message: 'A Docker container can be linked to only one workspace.' });
+      }
+      linkedIds.add(normalizedId);
+    });
+  });
+});
 export type Registration = z.infer<typeof registration>;
 export type WorkstreamRecord = z.infer<typeof workstream>;
 export type LeaseRecord = z.infer<typeof lease>;

@@ -191,6 +191,24 @@ test('unknown state shapes fail closed and stay byte-identical', async t => {
   }
 });
 
+test('legacy registrations default to no linked containers without rewriting state', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const statePath = join(f.store.directory, 'state.json');
+  const legacy = Buffer.from(JSON.stringify({
+    workspaces: [{
+      id: '12345678-1234-4234-8234-123456789abc',
+      name: 'Legacy project',
+      roots: [f.project],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }],
+    workstreams: [],
+  }));
+  await writeFile(statePath, legacy);
+  await f.store.initialize();
+  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, []);
+  assert.deepEqual(await readFile(statePath), legacy, 'optional default parsing does not migrate the private file');
+});
+
 test('oversized serialized state is rejected before replacing the prior bytes', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-state-cap-')));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -215,7 +233,7 @@ test('oversized serialized state is rejected before replacing the prior bytes', 
   await writeFile(stateFile, currentBytes, { mode: 0o600 });
   await store.initialize();
   const before = await readFile(stateFile);
-  const overflow = { id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, createdAt: '2026-01-01T00:00:00.000Z' };
+  const overflow = { id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, linkedContainers: [], createdAt: '2026-01-01T00:00:00.000Z' };
   await assert.rejects(store.update(state => { state.workspaces.push(overflow); }), /size limit/);
   assert.deepEqual(await readFile(stateFile), before);
   assert.equal((await readdir(store.directory)).some(name => name.endsWith('.tmp')), false);
@@ -281,6 +299,7 @@ test('projects keep bounded counts and at most twenty roots', async t => {
       id: `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
       name: `Registered ${index}`,
       roots: [join(f.root, `registered-${index}`)],
+      linkedContainers: [],
       createdAt: '2026-01-01T00:00:00.000Z',
     }));
   });

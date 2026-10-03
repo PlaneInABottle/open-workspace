@@ -44,6 +44,53 @@ test('PM2 service metadata is scoped to registered project roots only', async t 
   assert.ok(!JSON.stringify(inventory).includes(f.outside));
 });
 
+test('container links resolve bounded exact IDs, persist, refuse unknown or ambiguous prefixes, unlink stale IDs and clear on removal', async t => {
+  const f = await approvedProject(t);
+  const containerId = 'e'.repeat(64);
+  let containers = [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }];
+  const dockerList = async () => ({ available: true as const, containers });
+  const pm2List = async (): Promise<Pm2ListResult> => ({ available: true, processes: [] });
+  const service = new WorkspaceService(f.store, pm2List, undefined, undefined, undefined, undefined, undefined, Date.now, dockerList);
+  const workspace = await service.register('Project', [f.project]);
+  const otherWorkspace = await service.register('Other project', [f.project]);
+
+  const linked = await service.containerLink(workspace.id, 'link', containerId.slice(0, 12));
+  assert.deepEqual(linked, { workspaceId: workspace.id, action: 'link', containerId, changed: true });
+  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, [containerId]);
+  await assert.rejects(service.containerLink(otherWorkspace.id, 'link', containerId), /already linked to another workspace/);
+  await service.updateRoots(workspace.id, [f.project]);
+  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, [containerId], 'root replacement preserves workspace-level links');
+  await assert.rejects(service.containerLink(workspace.id, 'link', 'f'.repeat(12)), /Docker container was not found/);
+
+  containers = [
+    { id: 'a'.repeat(64), name: 'one', image: 'one:1', state: 'running', labels: {} },
+    { id: `${'a'.repeat(12)}${'b'.repeat(52)}`, name: 'two', image: 'two:1', state: 'running', labels: {} },
+  ];
+  await assert.rejects(service.containerLink(workspace.id, 'link', 'a'.repeat(12)), /ID prefix is ambiguous/);
+
+  containers = [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }];
+  const restarted = new WorkspaceService(new Store(f.store.directory), pm2List, undefined, undefined, undefined, undefined, undefined, Date.now, dockerList);
+  const inventory = await restarted.services(workspace.id);
+  assert.deepEqual(inventory.docker.services.map(container => [container.containerId, container.mappingSource]), [[containerId, 'explicit-link']]);
+
+  const fullLinkSet = Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(64, '0'));
+  await f.store.update(state => { state.workspaces[0].linkedContainers = fullLinkSet; });
+  containers = [{ id: 'f'.repeat(64), name: 'overflow', image: 'busybox:1', state: 'running', labels: {} }];
+  await assert.rejects(service.containerLink(workspace.id, 'link', 'f'.repeat(64)), /Project container link limit reached/);
+  assert.equal((await f.store.read()).workspaces[0].linkedContainers.length, 20);
+
+  await f.store.update(state => { state.workspaces[0].linkedContainers = [containerId]; });
+  containers = [];
+  const unlinked = await service.containerLink(workspace.id, 'unlink', containerId.slice(0, 12));
+  assert.equal(unlinked.containerId, containerId, 'unlink can clean a stale persisted identity');
+  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, []);
+  containers = [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }];
+  await service.containerLink(workspace.id, 'link', containerId);
+  await service.remove(workspace.id);
+  await service.remove(otherWorkspace.id);
+  assert.equal((await f.store.read()).workspaces.length, 0, 'project removal clears its persisted link');
+});
+
 test('nested registered roots produce an explicit ambiguous service rather than a fake match', async () => {
   const processPath = await mkdtemp(join(tmpdir(), 'openworkspace-services-ambiguous-'));
   try {

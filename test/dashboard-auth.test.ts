@@ -316,6 +316,52 @@ test('dashboard and MCP share workspace operations; only browser session managem
   assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${secondMcpToken}` } })).status, 200);
 });
 
+test('dashboard container link changes require canonical context and intent; MCP remains intent-free', async t => {
+  const f = await fixture(t);
+  const containerId = 'a'.repeat(64);
+  const service = new WorkspaceService(f.store, undefined, undefined, undefined, undefined, undefined, undefined, Date.now,
+    async () => ({ available: true, containers: [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }] }));
+  const mcpToken = 'd'.repeat(64);
+  const app = createApp(service, { mcpToken, assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const registered = await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'Link gate project', roots: [f.project] }),
+  });
+  assert.equal(registered.status, 201);
+  const workspace = await registered.json() as { id: string };
+  const connected = await fetch(`${origin}/api/dashboard-session`, {
+    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
+  });
+  assert.equal(connected.status, 201);
+  const { dashboardToken } = await connected.json() as { dashboardToken: string };
+  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
+  const canonicalDashboardHeaders = { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const path = `${origin}/api/workspaces/${workspace.id}/containers/link`;
+  const linkBody = JSON.stringify({ action: 'link', containerId });
+
+  const missingIntent = await fetch(path, { method: 'POST', headers: canonicalDashboardHeaders, body: linkBody });
+  assert.equal(missingIntent.status, 403);
+  const wrongContext = await fetch(path, {
+    method: 'POST',
+    headers: { ...canonicalDashboardHeaders, Origin: origin.replace('127.0.0.1', 'localhost'), 'X-OpenWorkspace-Intent': 'manage-container-link' },
+    body: linkBody,
+  });
+  assert.equal(wrongContext.status, 403);
+  const allowed = await fetch(path, {
+    method: 'POST',
+    headers: { ...canonicalDashboardHeaders, 'X-OpenWorkspace-Intent': 'manage-container-link' },
+    body: linkBody,
+  });
+  assert.equal(allowed.status, 200);
+
+  const mcpUnlink = await fetch(path, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ action: 'unlink', containerId }),
+  });
+  assert.equal(mcpUnlink.status, 200, 'MCP operations remain intent-free');
+});
+
 test('registration bodies are byte-bounded and decoded once with fatal UTF-8', async t => {
   const f = await fixture(t);
   const app = createApp(f.service, { mcpToken: '9'.repeat(64), assets: fixtureStaticAssets() });
@@ -801,9 +847,16 @@ test('service logs return bounded output while activity records counts only', as
     method: 'POST', headers: mcpHeaders, body: '{}',
   });
   assert.equal(services.status, 200);
-  const serviceInventory = await services.json() as { docker: { services: Array<{ runner: string; name: string }>; unmanagedContainers: Array<{ name: string }> } };
+  const serviceInventory = await services.json() as { docker: { services: Array<{ runner: string; name: string }>; unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string }> } };
   assert.deepEqual(serviceInventory.docker.services.map(entry => [entry.runner, entry.name]), [['docker', 'postgres']]);
-  assert.deepEqual(serviceInventory.docker.unmanagedContainers.map(entry => entry.name), ['unmanaged-cache']);
+  assert.equal(serviceInventory.docker.unmanagedContainerCount, 1);
+  assert.deepEqual(serviceInventory.docker.unmanagedContainers, []);
+  const detailedServices = await fetch(`${origin}/api/workspaces/${proposal.id}/services`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ includeUnmanaged: true }),
+  });
+  const detailedInventory = await detailedServices.json() as { docker: { unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string; image: string }> } };
+  assert.equal(detailedInventory.docker.unmanagedContainerCount, 1);
+  assert.deepEqual(detailedInventory.docker.unmanagedContainers.map(entry => [entry.name, entry.image]), [['unmanaged-cache', 'redis:7']]);
 
   const dockerTarget = { runner: 'docker', containerId: dockerId, name: 'postgres' };
   const dockerTail = await fetch(logsPath, {

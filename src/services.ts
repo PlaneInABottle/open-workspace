@@ -297,8 +297,11 @@ export async function inspectPm2Services(workspaceRoots: string[], processes: Pm
   return { services, ambiguousServices, unmatchedProcessCount };
 }
 
-export async function serviceInventory(workspaceRoots: string[], list = listPm2Processes, listDocker = listDockerContainers): Promise<ServiceInventory> {
-  const [listResult, docker] = await Promise.all([list(), dockerContainerInventory(workspaceRoots, listDocker)]);
+export async function serviceInventory(workspaceRoots: string[], list = listPm2Processes, listDocker = listDockerContainers, options: {
+  linkedContainerIds?: string[];
+  includeUnmanaged?: boolean;
+} = {}): Promise<ServiceInventory> {
+  const [listResult, docker] = await Promise.all([list(), dockerContainerInventory(workspaceRoots, listDocker, options)]);
   const timestamp = new Date().toISOString();
   if (!listResult.available) {
     return {
@@ -538,6 +541,7 @@ export async function readDockerServiceLogs(workspaceRoots: string[], target: Do
   stream?: ServiceLogStream;
   list?: typeof listDockerContainers;
   runner?: (containerId: string, lines: number) => Promise<DockerLogResult>;
+  linkedContainerIds?: string[];
 } = {}): Promise<ServiceLogResult> {
   const lines = options.lines ?? defaultServiceLogLines;
   const stream = options.stream ?? 'both';
@@ -556,11 +560,15 @@ export async function readDockerServiceLogs(workspaceRoots: string[], target: Do
   const list = options.list ?? listDockerContainers;
   const before = await list();
   if (!before.available) return fail(dockerFailureMessage(before.error, 'metadata'));
-  const mapped = await dockerContainerInventory(workspaceRoots, async () => before);
-  const container = mapped.services.find(service => service.containerId === target.containerId && service.name === target.name);
-  if (!container || !container.exactRootPath) return fail('That Docker container is not uniquely mapped to a registered root.');
+  const linked = (options.linkedContainerIds ?? []).some(id => id.toLowerCase() === target.containerId.toLowerCase());
+  if (linked && !before.containers.some(container => container.id.toLowerCase() === target.containerId.toLowerCase())) {
+    return fail('The linked Docker container is no longer available.');
+  }
+  const mapped = await dockerContainerInventory(workspaceRoots, async () => before, { linkedContainerIds: options.linkedContainerIds });
+  const container = mapped.services.find(service => service.containerId.toLowerCase() === target.containerId.toLowerCase() && service.name === target.name);
+  if (!container || (!container.exactRootPath && container.mappingSource !== 'explicit-link')) return fail('That Docker container is not uniquely mapped to a registered root or explicitly linked to this workspace.');
   const runner = options.runner ?? runDockerLogs;
-  const result = await runner(target.containerId, lines);
+  const result = await runner(container.containerId, lines);
   if (!result.ok) return {
     target,
     stream,

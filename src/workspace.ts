@@ -5,7 +5,7 @@ import { Store } from './store.js';
 import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readDockerServiceLogs, readPm2ServiceLogs, runPm2Action, runPm2Logs, serviceInventory, type AnyServiceLogTarget, type ServiceInventory, type ServiceLogStream } from './services.js';
-import { listDockerContainers, runDockerLogs } from './services-docker.js';
+import { dockerFailureMessage, listDockerContainers, runDockerLogs } from './services-docker.js';
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
 import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, validAssignmentId, maxCheckpointHistory, type CheckpointNote, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
@@ -72,7 +72,7 @@ export class WorkspaceService {
     if (canonicalError) throw new Error(canonicalError);
     return this.store.update(state => {
       if (state.workspaces.length >= 50) throw new Error('Project limit reached.');
-      const workspace = { id: randomUUID(), name: projectName, roots: canonicalRoots, createdAt: new Date().toISOString() };
+      const workspace = { id: randomUUID(), name: projectName, roots: canonicalRoots, linkedContainers: [], createdAt: new Date().toISOString() };
       state.workspaces.push(workspace);
       return workspace;
     });
@@ -118,10 +118,54 @@ export class WorkspaceService {
     return { workspace, target: { id: 'local', kind: 'local' }, roots };
   }
 
-  async services(id: string): Promise<ServiceInventory> {
+  async services(id: string, options: { includeUnmanaged?: boolean } = {}): Promise<ServiceInventory> {
     const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
     if (!workspace) throw new Error('Workspace not found. Register it first.');
-    return serviceInventory(workspace.roots, this.listPm2, this.listDocker);
+    return serviceInventory(workspace.roots, this.listPm2, this.listDocker, {
+      linkedContainerIds: workspace.linkedContainers,
+      includeUnmanaged: options.includeUnmanaged,
+    });
+  }
+
+  async containerLink(workspaceId: string, action: 'link' | 'unlink', requestedId: string) {
+    if (!/^[a-f\d]{12,64}$/i.test(requestedId)) {
+      throw new Error('Provide a full Docker container ID or a hexadecimal ID prefix of at least 12 characters.');
+    }
+    const prefix = requestedId.toLowerCase();
+    const initial = (await this.store.read()).workspaces.find(workspace => workspace.id === workspaceId);
+    if (!initial) throw new Error('Workspace not found. Register it first.');
+
+    if (action === 'link') {
+      const listed = await this.listDocker();
+      if (!listed.available) throw new Error(dockerFailureMessage(listed.error, 'metadata'));
+      const matches = listed.containers.filter(container => /^[a-f\d]{64}$/i.test(container.id)
+        && container.id.toLowerCase().startsWith(prefix));
+      if (matches.length === 0) throw new Error('Docker container was not found.');
+      if (matches.length > 1) throw new Error('Docker container ID prefix is ambiguous.');
+      const containerId = matches[0].id.toLowerCase();
+      return this.store.update(state => {
+        const workspace = state.workspaces.find(item => item.id === workspaceId);
+        if (!workspace) throw new Error('Workspace not found. Register it first.');
+        if (workspace.linkedContainers.includes(containerId)) return { workspaceId, action, containerId, changed: false };
+        if (state.workspaces.some(item => item.id !== workspaceId && item.linkedContainers.includes(containerId))) {
+          throw new Error('Docker container is already linked to another workspace.');
+        }
+        if (workspace.linkedContainers.length >= 20) throw new Error('Project container link limit reached.');
+        workspace.linkedContainers.push(containerId);
+        return { workspaceId, action, containerId, changed: true };
+      });
+    }
+
+    return this.store.update(state => {
+      const workspace = state.workspaces.find(item => item.id === workspaceId);
+      if (!workspace) throw new Error('Workspace not found. Register it first.');
+      const matches = workspace.linkedContainers.filter(id => id.toLowerCase().startsWith(prefix));
+      if (matches.length === 0) throw new Error('That Docker container is not linked to this workspace.');
+      if (matches.length > 1) throw new Error('Docker container ID prefix is ambiguous.');
+      const containerId = matches[0];
+      workspace.linkedContainers = workspace.linkedContainers.filter(id => id !== containerId);
+      return { workspaceId, action, containerId, changed: true };
+    });
   }
 
   async serviceAction(id: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
@@ -133,7 +177,12 @@ export class WorkspaceService {
   async serviceLogs(id: string, target: AnyServiceLogTarget, options: { lines?: number; stream?: ServiceLogStream } = {}) {
     const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
     if (!workspace) throw new Error('Workspace not found. Register it first.');
-    if (!('pmId' in target)) return readDockerServiceLogs(workspace.roots, target, { ...options, list: this.listDocker, runner: this.dockerLogRunner });
+    if (!('pmId' in target)) return readDockerServiceLogs(workspace.roots, target, {
+      ...options,
+      list: this.listDocker,
+      runner: this.dockerLogRunner,
+      linkedContainerIds: workspace.linkedContainers,
+    });
     return readPm2ServiceLogs(workspace.roots, target, { ...options, list: this.listPm2, runner: this.logRunner });
   }
 

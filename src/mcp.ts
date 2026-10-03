@@ -62,10 +62,24 @@ server.registerTool('datastore_query', {
   ...(options?.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
 }, 45_000));
 server.registerTool('workspace_services', {
-  description: 'Read bounded PM2 and Docker service metadata for a registered project. PM2 maps by working directory; Docker maps only when Compose working_dir/config_files labels exactly identify one approved root. Ambiguous/unmatched containers are visible separately as non-actionable; Docker being unavailable is reported honestly. Environments and raw arguments are not exposed; readiness remains unknown.',
-  inputSchema: { workspaceId: z.string().uuid() },
+  description: 'Bounded PM2/Docker metadata: Compose labels map exact roots; explicit links map Docker IDs. Unmanaged counts only unless includeUnmanaged=true (names/images). No env/args; readiness unknown.',
+  inputSchema: z.object({
+    workspaceId: z.string().uuid(),
+    includeUnmanaged: z.boolean().describe('Include names and images for unmanaged containers; default false.').optional(),
+  }).strict(),
   annotations: readHints,
-}, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/services`, {}));
+}, ({ workspaceId, includeUnmanaged }) => request(`/api/workspaces/${workspaceId}/services`, {
+  ...(includeUnmanaged !== undefined ? { includeUnmanaged } : {}),
+}));
+server.registerTool('workspace_container_link', {
+  description: 'Link/unlink a Docker container by full ID or unique 12+ hex-character prefix. No name guessing. Link requires a present container; unlink can remove stale links. Your request is approval.',
+  inputSchema: z.object({
+    workspaceId: z.string().uuid(),
+    action: z.enum(['link', 'unlink']).describe('Explicitly link to or unlink from this workspace.'),
+    containerId: z.string().regex(/^[a-f\d]{12,64}$/i).describe('Full 64-hex ID or unique prefix of at least 12 hex characters; no names.'),
+  }).strict(),
+  annotations: operateHints,
+}, ({ workspaceId, action, containerId }) => request(`/api/workspaces/${workspaceId}/containers/link`, { action, containerId }));
 server.registerTool('workspace_remove', {
   description: 'Remove a registered project and its private state (never repository files). Refused while workstreams reference it.',
   inputSchema: { workspaceId: z.string().uuid() },
@@ -127,7 +141,7 @@ server.registerTool('service_control', {
   annotations: operateHints,
 }, ({ workspaceId, action, target }) => request(`/api/workspaces/${workspaceId}/services/${action}`, target));
 server.registerTool('service_logs', {
-  description: 'Read a bounded log tail for an exactly mapped PM2 service or Docker container of a registered workspace. Docker accepts {runner:"docker",containerId,name} and returns combined streams only. Log text may hold app-printed secrets and is never persisted.',
+  description: 'Read bounded PM2 tails for mapped services and Docker tails for mapped or explicitly linked containers. Docker streams are combined. Logs may contain app-printed secrets and are never persisted.',
   inputSchema: z.object({
     workspaceId: z.string().uuid(),
     target: z.union([serviceTarget, z.object({
@@ -197,44 +211,51 @@ server.registerTool('workstream_create', {
   }).strict(),
   annotations: operateHints,
 }, ({ name, workspaceId, checkouts }) => request('/api/workstreams', { name, workspaceId, checkouts }));
-server.registerTool('workstream_status', {
-  description: 'Coordinator controls active/paused/done; status updates retain bounded checkpoint notes and up to five workspace run refs. Or append an assignment completion claim with revision/dirty fingerprint and checks; assignmentId is optional for solo work. Results are agent_report, not independently verified. Same completionId retries do not duplicate.',
-  inputSchema: z.object({
+const workstreamStatusObjectSchema = z.object({
     workstreamId: z.string().uuid(),
-    status: z.enum(['active', 'paused', 'done']).optional(),
+    status: z.enum(['active', 'paused', 'done']).describe('Status[+note] only; never combine with completion.').optional(),
     note: z.object({
       goal: z.string().min(1).max(1000),
       blocker: z.string().max(1000),
       next: z.string().min(1).max(1000),
       owner: z.enum(['agent', 'user']),
       evidence: z.array(z.string().max(256)).max(50).optional(),
-    }).strict().optional(),
+    }).strict().describe('Optional only with status; never combine with completion.').optional(),
     completion: z.object({
-      assignmentId: z.string().min(1).max(128).optional(),
-      completionId: z.string().uuid(),
-      outcome: z.enum(['passed', 'blocked', 'failed']),
+      assignmentId: z.string().min(1).max(128).describe('Optional; omission means a solo completion.').optional(),
+      completionId: z.string().uuid().describe('Required with outcome and checks in the completion call shape.'),
+      outcome: z.enum(['passed', 'blocked', 'failed']).describe('Required with completionId and checks.'),
       revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
       dirty: z.boolean().nullable(),
       dirtyFingerprint: z.object({
         diffHash: z.string().regex(/^[0-9a-f]{64}$/),
         files: z.array(z.string().min(1).max(256)).max(50),
         truncated: z.boolean(),
-      }).strict().nullable(),
+      }).strict().nullable().describe('Required revision/dirty metadata for a completion.'),
       checks: z.array(z.object({
         name: z.string().min(1).max(80),
         result: z.enum(['passed', 'failed', 'error']),
         environment: z.string().min(1).max(200),
         evidenceIds: z.array(z.string().max(128)).max(5).optional(),
-      }).strict()).min(1).max(20),
-    }).strict().optional(),
-  }).strict().refine(input =>
-    (input.status !== undefined && input.completion === undefined)
-    || (input.status === undefined && input.completion !== undefined && input.note === undefined),
-  ),
+      }).strict()).min(1).max(20).describe('Required with completionId and outcome; include at least one check.'),
+    }).strict().describe('Requires completionId, outcome, checks and revision/dirty data; no status/note.').optional(),
+}).strict();
+const workstreamStatusSchema = workstreamStatusObjectSchema.refine(input =>
+  (input.status !== undefined && input.completion === undefined)
+  || (input.status === undefined && input.completion !== undefined && input.note === undefined),
+);
+server.registerTool('workstream_status', {
+  description: 'Use status[+note] OR completion, never both. Completion requires completionId, outcome, checks and revision/dirty data; assignmentId is optional for solo work. Agent-reported, not verified.',
+  // Keep the advertised strict object schema separate from the cross-field XOR
+  // refinement; the SDK's ZodEffects JSON Schema conversion drops properties.
+  inputSchema: workstreamStatusObjectSchema,
   annotations: operateHints,
-}, ({ workstreamId, status, note, completion }) => request(`/api/workstreams/${workstreamId}/status`, completion
-  ? { completion }
-  : note === undefined ? { status } : { status, note }));
+}, args => {
+  const { workstreamId, status, note, completion } = workstreamStatusSchema.parse(args);
+  return request(`/api/workstreams/${workstreamId}/status`, completion
+    ? { completion }
+    : note === undefined ? { status } : { status, note });
+});
 server.registerTool('workstream_context', {
   description: 'One-call handoff: checkpoint, assignment completions by ID/latest, optional assignment present/missing, checkouts, runs and draft titles. Read-only.',
   inputSchema: z.object({

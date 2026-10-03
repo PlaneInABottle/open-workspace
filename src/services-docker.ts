@@ -44,6 +44,7 @@ export interface DockerMappedContainer {
   name: string;
   image: string;
   state: string;
+  mappingSource: 'compose-label' | 'explicit-link';
   matchedRoots: string[];
   exactRootPath: string | null;
 }
@@ -312,30 +313,34 @@ function exactLabelPaths(labels: Record<string, string>): string[] {
   return candidates;
 }
 
-export async function mapDockerContainers(roots: string[], containers: DockerContainer[]): Promise<{
+export async function mapDockerContainers(roots: string[], containers: DockerContainer[], linkedContainerIds: string[] = []): Promise<{
   services: DockerMappedContainer[];
   ambiguousContainerCount: number;
   unmanagedContainers: DockerContainerInventory['unmanagedContainers'];
 }> {
   const rootPaths = await canonicalRoots(roots);
+  const linkedIds = new Set(linkedContainerIds.map(id => id.toLowerCase()));
   const services: DockerMappedContainer[] = [];
   let ambiguousContainerCount = 0;
   const unmanagedContainers: DockerContainerInventory['unmanagedContainers'] = [];
   for (const container of containers) {
+    const explicitlyLinked = linkedIds.has(container.id.toLowerCase());
     const matchedRoots = [...new Set(exactLabelPaths(container.labels).flatMap(candidate => {
       const root = rootPaths.get(candidate);
       return root ? [root] : [];
     }))];
+    if (explicitlyLinked) matchedRoots.length = 0;
     const safe = {
       runner: 'docker' as const,
       containerId: container.id,
       name: container.name,
       image: container.image,
       state: container.state,
+      mappingSource: explicitlyLinked ? 'explicit-link' as const : 'compose-label' as const,
       matchedRoots,
-      exactRootPath: matchedRoots.length === 1 ? matchedRoots[0] : null,
+      exactRootPath: explicitlyLinked ? null : matchedRoots.length === 1 ? matchedRoots[0] : null,
     };
-    if (matchedRoots.length === 1) services.push(safe);
+    if (explicitlyLinked || matchedRoots.length === 1) services.push(safe);
     else {
       if (matchedRoots.length > 1) ambiguousContainerCount += 1;
       unmanagedContainers.push({
@@ -350,7 +355,10 @@ export async function mapDockerContainers(roots: string[], containers: DockerCon
   return { services, ambiguousContainerCount, unmanagedContainers };
 }
 
-export async function dockerContainerInventory(roots: string[], list = listDockerContainers): Promise<DockerContainerInventory> {
+export async function dockerContainerInventory(roots: string[], list = listDockerContainers, options: {
+  linkedContainerIds?: string[];
+  includeUnmanaged?: boolean;
+} = {}): Promise<DockerContainerInventory> {
   const result = await list();
   if (!result.available) {
     return {
@@ -365,14 +373,16 @@ export async function dockerContainerInventory(roots: string[], list = listDocke
       unmanagedContainers: [],
     };
   }
-  const mapped = await mapDockerContainers(roots, result.containers);
+  const mapped = await mapDockerContainers(roots, result.containers, options.linkedContainerIds);
   return {
     available: true,
-    message: 'Docker returned bounded container metadata. Unmatched and ambiguous containers are visible as unmanaged and are not actionable.',
+    message: 'Docker returned bounded metadata. Unmatched and ambiguous containers are counted as unmanaged; details are opt-in and they are not actionable unless explicitly linked.',
     containerCount: result.containers.length,
     matchedContainerCount: mapped.services.length,
     unmanagedContainerCount: mapped.unmanagedContainers.length,
-    ...mapped,
+    ambiguousContainerCount: mapped.ambiguousContainerCount,
+    services: mapped.services,
+    unmanagedContainers: options.includeUnmanaged ? mapped.unmanagedContainers : [],
   };
 }
 
