@@ -46,7 +46,7 @@ When a major milestone lands, append one file under `OPENWORKSPACE_HOME/learning
 
 ## Workflow framing
 
-Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then mine surprises via this skill. Pause work with a bounded pattern-only checkpoint note (goal, blocker, next step, owner) so the workstream resumes later. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
+Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then mine surprises via this skill. Pause work with a bounded pattern-only checkpoint note (goal, blocker, next step, owner) so the workstream resumes later. Notes append to a bounded history (last 10, latest reads unchanged) and `workstream_context` returns the checkpoint plus scoped recent runs and draft titles in one read-only call. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
 
 ## Promotion (manual only)
 

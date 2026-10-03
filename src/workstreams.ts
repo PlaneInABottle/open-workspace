@@ -34,8 +34,15 @@ export interface Workstream {
   workspaceId: string;
   checkouts: WorkstreamCheckout[];
   status: WorkstreamStatus;
-  /** Bounded pattern-only pause note so later sessions resume; never literals. */
+  /** Latest checkpoint entry; all existing readers keep this shape. */
   checkpointNote: CheckpointNote | null;
+  /**
+   * Append-only bounded history (oldest-first, last 10). Each entry carries
+   * its own owner+at, so a subagent completion appends without clobbering
+   * the coordinator checkpoint. Legacy files omit this and seed from
+   * checkpointNote at read/write time — no migration.
+   */
+  checkpointHistory: CheckpointNote[];
   createdAt: string;
   updatedAt: string;
 }
@@ -108,7 +115,7 @@ export async function createWorkstream(
     const now = new Date().toISOString();
     const workstream: Workstream = {
       id: randomUUID(), name, workspaceId: workspace.id, checkouts,
-      status: 'active', checkpointNote: null, createdAt: now, updatedAt: now,
+      status: 'active', checkpointNote: null, checkpointHistory: [], createdAt: now, updatedAt: now,
     };
     state.workstreams.push(workstream);
     return workstream;
@@ -184,6 +191,23 @@ export function pinnedRunIds(
   return pinned;
 }
 
+/** Bounded history depth: the latest entries survive, oldest evict first. */
+export const maxCheckpointHistory = 10;
+
+/**
+ * Read view over the append-only history. Files written before history
+ * exist carry the single note as history[0]; files with no note read empty.
+ * Pure read normalization — never mutates stored state.
+ */
+export function checkpointHistoryOf(workstream: {
+  checkpointNote: CheckpointNote | null;
+  checkpointHistory?: CheckpointNote[] | null;
+}): CheckpointNote[] {
+  const stored = Array.isArray(workstream.checkpointHistory) ? workstream.checkpointHistory : [];
+  if (stored.length > 0) return stored;
+  return workstream.checkpointNote ? [{ ...workstream.checkpointNote }] : [];
+}
+
 export async function setWorkstreamStatus(
   store: Store,
   id: string,
@@ -197,10 +221,19 @@ export async function setWorkstreamStatus(
     if (!workstream) throw new Error('Unknown workstream.');
     if (workstream.status === 'done' && status !== 'done') throw new Error('A finished workstream cannot be reopened.');
     workstream.status = status;
-    // A supplied note replaces the previous one; omitting it preserves the
-    // pause context across resume so a later session still finds it.
+    // A supplied note appends to the bounded history (oldest-first, last 10)
+    // and becomes the latest entry; omitting it preserves both the latest
+    // note and the history across resume so a later session still finds them.
+    // Legacy files carry only the single note: it seeds history[0] on the
+    // first append so the coordinator checkpoint survives a subagent write.
     if (sanitized !== undefined) {
-      workstream.checkpointNote = { ...sanitized, at: new Date().toISOString() };
+      const previous = workstream.checkpointNote;
+      const entry: CheckpointNote = { ...sanitized, at: new Date().toISOString() };
+      workstream.checkpointNote = entry;
+      const base = Array.isArray(workstream.checkpointHistory) && workstream.checkpointHistory.length > 0
+        ? workstream.checkpointHistory
+        : previous ? [{ ...previous }] : [];
+      workstream.checkpointHistory = [...base, entry].slice(-maxCheckpointHistory);
     }
     workstream.updatedAt = new Date().toISOString();
     return workstream;

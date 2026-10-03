@@ -112,7 +112,8 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/runs/recent'
     || pathname === '/api/local-tools/status'
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
-    || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))) return true;
+    || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname)
+    || new RegExp(`^/api/workstreams/${uuidPath}/context$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
     || pathname === '/api/runs/import'
     || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
@@ -413,6 +414,18 @@ export function createApp(service: WorkspaceService, options: {
             // The read itself never records activity (mirroring activity/run
             // reads); registry transitions the rescan discovers still audit.
             json(response, 200, await service.localToolStatus(actor));
+            return;
+          }
+          const workstreamContextMatch = new RegExp(`^/api/workstreams/(${uuidPath})/context$`).exec(url.pathname);
+          if (workstreamContextMatch && request.method === 'GET') {
+            // Reader-only handoff bundle: like activity/run/learn reads,
+            // reading never records activity (no feedback loop).
+            const limitRaw = url.searchParams.get('limit');
+            const limit = limitRaw === null ? 5 : Number(limitRaw);
+            if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+              throw new Error('Use a result limit within the allowed range.');
+            }
+            json(response, 200, await service.workstreamContext(workstreamContextMatch[1], limit));
             return;
           }
           const workstreamMatch = new RegExp(`^/api/workstreams(?:/(${uuidPath}))?$`).exec(url.pathname);

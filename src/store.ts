@@ -43,6 +43,10 @@ const workstream = z.object({
   checkouts: z.array(workstreamCheckout).min(1).max(20),
   status: z.enum(['active', 'paused', 'done']),
   checkpointNote: checkpointNote.nullable().optional().default(null),
+  // Additive: files written before history parse with an empty history and
+  // seed from checkpointNote at read/write time; no migration, no versioned
+  // upgrade. Each entry reuses the same per-entry bounds as a single note.
+  checkpointHistory: z.array(checkpointNote).max(10).optional().default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();

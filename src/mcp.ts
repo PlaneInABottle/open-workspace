@@ -199,6 +199,14 @@ server.registerTool('workstream_status', {
   }).strict(),
   annotations: operateHints,
 }, ({ workstreamId, status, note }) => request(`/api/workstreams/${workstreamId}/status`, note === undefined ? { status } : { status, note }));
+server.registerTool('workstream_context', {
+  description: 'One-call handoff for a workstream: latest checkpoint plus history count, open blocker/next, checkouts, recent runs and draft titles. Read-only; never records activity.',
+  inputSchema: z.object({
+    workstreamId: z.string().uuid(),
+    limit: z.number().int().min(1).max(20).optional().describe('Recent runs to include, default 5.'),
+  }).strict(),
+  annotations: readHints,
+}, ({ workstreamId, limit }) => request(`/api/workstreams/${workstreamId}/context${limit !== undefined ? `?limit=${limit}` : ''}`));
 server.registerTool('run_import', {
   description: 'Record a pasted external result as external-import: accepted on trust, NEVER presented as verified here. Strict bounded fields with a masked excerpt; verification claims are refused.',
   inputSchema: z.object({

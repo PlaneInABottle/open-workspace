@@ -6,7 +6,7 @@ import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readPm2ServiceLogs, runPm2Action, runPm2Logs, serviceInventory, type ServiceInventory, type ServiceLogStream } from './services.js';
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
-import { createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointEvidenceMessage, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, checkpointEvidenceMessage, type CheckpointNote, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
@@ -21,6 +21,17 @@ export interface RootInspection {
   warnings: string[];
   unavailable: boolean;
   error?: string;
+}
+
+export interface WorkstreamContext {
+  workstreamId: string;
+  name: string;
+  status: WorkstreamStatus;
+  checkpoint: { latest: CheckpointNote | null; historyCount: number };
+  open: { blocker: string; next: string };
+  checkouts: Workstream['checkouts'];
+  recentRuns: RunListEntry[];
+  relatedDrafts: string[];
 }
 
 export class WorkspaceService {
@@ -182,6 +193,35 @@ export class WorkspaceService {
     const workstream = (await this.store.read()).workstreams.find(workstream => workstream.id === id);
     if (!workstream) throw new Error('Unknown workstream.');
     return workstream;
+  }
+
+  /**
+   * One-call handoff bundle for a narrowly-scoped subagent: the latest
+   * checkpoint plus history depth, open blocker/next from the latest note,
+   * pinned checkouts, scoped recent runs (existing caps) and draft titles.
+   * Read-only: never records activity, like recentRuns/recentActivity.
+   */
+  async workstreamContext(id: string, limit = 5): Promise<WorkstreamContext> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new Error('Use a result limit within the allowed range.');
+    }
+    const workstream = await this.workstream(id);
+    const state = await this.store.read();
+    const latest: CheckpointNote | null = workstream.checkpointNote;
+    return {
+      workstreamId: workstream.id,
+      name: workstream.name,
+      status: workstream.status,
+      checkpoint: { latest, historyCount: checkpointHistoryOf(workstream).length },
+      open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
+      checkouts: workstream.checkouts,
+      recentRuns: await listRecentRuns(
+        this.store.directory, workstream.workspaceId, limit, pinnedRunIds(state.workstreams, workstream.workspaceId),
+      ),
+      // Titles only (rule bodies stay in the files); capped so the bundle
+      // stays bounded however many drafts accumulate.
+      relatedDrafts: (await listDrafts(this.store.directory)).slice(0, 10).map(draft => draft.title),
+    };
   }
 
   async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }): Promise<Workstream> {

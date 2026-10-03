@@ -161,7 +161,7 @@ test('verify persists a bounded summary and recent_runs resolves scopes with cap
       state.workstreams.push({
         id: workstreamId, name: 'Stream', workspaceId: workspace.id,
         checkouts: [{ root: project, revision: null, revisionState: 'unknown', observedAt: new Date().toISOString() }],
-        status: 'active', checkpointNote: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        status: 'active', checkpointNote: null, checkpointHistory: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       });
     });
     assert.equal((await service.recentRuns(workstreamId, 5)).length, 1);
