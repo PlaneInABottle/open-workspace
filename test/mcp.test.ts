@@ -44,7 +44,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['activity_list','browser_check','datastore_query','environment_propose','environment_set','environment_status','learning_record','lease_acquire','lease_release','lease_touch','local_tool_status','onboarding_plan','recent_runs','run_import','service_control','service_logs','verification_run','workspace_container_link','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_update_roots','workspace_workstreams','workstream_context','workstream_create','workstream_status']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['activity_list','browser_check','datastore_query','environment_down','environment_propose','environment_set','environment_status','environment_up','environment_verify','learning_record','lease_acquire','lease_release','lease_touch','local_tool_status','onboarding_plan','recent_runs','run_import','service_control','service_logs','verification_run','workspace_container_link','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_remove','workspace_services','workspace_update_roots','workspace_workstreams','workstream_context','workstream_create','workstream_status']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     const registerTool = tools.tools.find(tool => tool.name === 'workspace_register');
     assert.deepEqual(Object.keys((registerTool?.inputSchema.properties || {}) as object).sort(), ['name', 'roots']);
@@ -81,7 +81,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     assert.match(statusProperties.completion?.properties?.completionId?.description ?? '', /required.*outcome.*checks/i);
     assert.match(statusProperties.completion?.properties?.outcome?.description ?? '', /required.*completionId.*checks/i);
     assert.match(statusProperties.completion?.properties?.checks?.description ?? '', /required.*completionId.*outcome/i);
-    for (const name of ['workspace_services', 'workspace_container_link', 'service_logs']) {
+    for (const name of ['workspace_services', 'workspace_container_link', 'service_logs', 'environment_verify']) {
       const description = tools.tools.find(tool => tool.name === name)?.description ?? '';
       assert.ok(Buffer.byteLength(description, 'utf8') <= 200, `${name} description is within 200 bytes`);
     }

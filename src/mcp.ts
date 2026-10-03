@@ -6,7 +6,7 @@ import { localToolDescription, slotValueSchemas, type LocalToolStatusEntry } fro
 import { learningInstructionSuffix } from './run-summaries.js';
 import { learningLessonLine, learningTotalCap } from './rule-index.js';
 import { stateDirectory } from './store.js';
-import { environmentSetInput } from './environment.js';
+import { environmentDownInput, environmentSetInput, environmentUpInput, environmentVerifyInput } from './environment.js';
 import { consumerSkills, initConsumerSkills } from './consumer-skills.js';
 
 export async function runMcpBridge(): Promise<void> {
@@ -234,13 +234,32 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspaceId, name, services }) => request(`/api/workspaces/${workspaceId}/environments/set`, { name, services }));
   server.registerTool('environment_status', {
-    description: 'Read per-service environment status (down/starting/stale in M1; never starts or stops anything). Process-alive services report at most starting.',
+    description: 'Read per-service environment status (down/starting/ready/failed/skipped/stale; never starts or stops anything). Process-alive services report at most starting.',
     inputSchema: z.object({
       workspaceId: z.string().uuid(),
       environmentId: z.string().uuid(),
     }).strict(),
     annotations: readHints,
   }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/status?environmentId=${environmentId}`));
+  // M2 runtime (owned-only + loopback-only; Compose is presence-only, never
+  // controlled). No intent header — the in-chat confirmation plus the client
+  // permission model is the authority, and each mutating call itself
+  // (visible in activity_list) is the audit record.
+  server.registerTool('environment_up', {
+    description: 'Start an owned multi-service environment in dependency order with port preflight (refuse, never kill) and http-200/process-alive readiness. Present propose candidates in chat and confirm before calling; this call is the record.',
+    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentUpInput.shape }).strict(),
+    annotations: operateHints,
+  }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/up`, { environmentId }, 170_000));
+  server.registerTool('environment_down', {
+    description: 'Stop exactly the owned processes of an environment in reverse dependency order (expectedRoot-checked; stale clears without a stop call; foreign processes and listeners are never touched).',
+    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentDownInput.shape }).strict(),
+    annotations: operateHints,
+  }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/down`, { environmentId }, 60_000));
+  server.registerTool('environment_verify', {
+    description: 'Run one repo-native script against the live owned environment and pin a capped identity receipt to the run. Readiness targets are loopback-only; the script itself runs the existing bounded npm path.',
+    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentVerifyInput.shape }).strict(),
+    annotations: operateHints,
+  }, ({ workspaceId, environmentId, repositoryPath, scriptName }) => request(`/api/workspaces/${workspaceId}/environment/verify`, { environmentId, repositoryPath, scriptName }, 170_000));
   server.registerTool('lease_acquire', {
     description: 'Hold a named exclusive resource for a workstream, or join its visible queue when busy.',
     inputSchema: z.object({

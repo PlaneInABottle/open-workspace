@@ -19,7 +19,7 @@ import { leaseMessages } from './leases.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
 import { learningMessages } from './rule-index.js';
 import { workspaceMessages } from './workspace.js';
-import { environmentMessages, environmentSetInput } from './environment.js';
+import { environmentDownInput, environmentMessages, environmentSetInput, environmentUpInput, environmentVerifyInput } from './environment.js';
 import {
   checkpointBoundsMessage,
   checkpointEvidenceMessage,
@@ -271,7 +271,8 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/local-tools/call$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/environments/(propose|set)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/environments/(propose|set|up|down)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/environment/verify$`).test(pathname)
     || pathname === '/api/workstreams'
     || new RegExp(`^/api/workstreams/${uuidPath}/status$`).test(pathname)
     || /^\/api\/leases\/(acquire|touch|release)$/.test(pathname))) return true;
@@ -789,6 +790,70 @@ export function createApp(service: WorkspaceService, options: {
           const envListMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments$`).exec(url.pathname);
           if (envListMatch && request.method === 'GET') {
             json(response, 200, await recordRead('environment-list', envListMatch[1], `environment_list ${shortId(envListMatch[1])}`, () => service.environmentList(envListMatch[1])));
+            return;
+          }
+          // M2 runtime: ordered up (readiness-polled), owned-only down, and
+          // receipt-bound verify. Dashboard calls keep the standard intent
+          // gates (manage-environment / verify-environment); MCP carries no
+          // intent header — the in-chat confirmation plus the client
+          // permission model is the authority.
+          const envUpMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/up$`).exec(url.pathname);
+          if (envUpMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-environment'))) {
+              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
+              return;
+            }
+            request.setTimeout(verifySocketTimeoutMs);
+            const input = environmentUpInput.parse(await body(request));
+            if (request.aborted || response.destroyed) return;
+            const result = await service.environmentUp(envUpMatch[1], input.environmentId.toLowerCase());
+            const ready = result.services.filter(entry => entry.status === 'ready' || entry.status === 'starting').length;
+            await record('environment-up', envUpMatch[1], `${result.name.slice(0, 100)} → ${result.state} (${ready}/${result.services.length} live)`);
+            if (!response.destroyed) json(response, 200, result);
+            return;
+          }
+          const envDownMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/down$`).exec(url.pathname);
+          if (envDownMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-environment'))) {
+              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
+              return;
+            }
+            request.setTimeout(verifySocketTimeoutMs);
+            const input = environmentDownInput.parse(await body(request));
+            if (request.aborted || response.destroyed) return;
+            const result = await service.environmentDown(envDownMatch[1], input.environmentId.toLowerCase());
+            const stopped = result.services.filter(entry => entry.status === 'down').length;
+            await record('environment-down', envDownMatch[1], `${result.name.slice(0, 100)} → ${result.state} (${stopped}/${result.services.length} stopped)`);
+            if (!response.destroyed) json(response, 200, result);
+            return;
+          }
+          const envVerifyMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environment/verify$`).exec(url.pathname);
+          if (envVerifyMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'verify-environment'))) {
+              json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
+              return;
+            }
+            request.setTimeout(verifySocketTimeoutMs);
+            const input = environmentVerifyInput.parse(await body(request));
+            if (request.aborted || response.destroyed) return;
+            const controller = new AbortController();
+            const abortIfDisconnected = () => {
+              if (!response.writableEnded) controller.abort();
+            };
+            request.once('aborted', abortIfDisconnected);
+            response.once('close', abortIfDisconnected);
+            try {
+              const result = await service.environmentVerify(envVerifyMatch[1], {
+                environmentId: input.environmentId.toLowerCase(),
+                repositoryPath: input.repositoryPath,
+                scriptName: input.scriptName,
+              }, controller.signal);
+              await record('environment-verify', envVerifyMatch[1], `${input.scriptName.slice(0, 80)} → ${result.outcome}`);
+              if (!controller.signal.aborted && !response.destroyed) json(response, 200, result);
+            } finally {
+              request.removeListener('aborted', abortIfDisconnected);
+              response.removeListener('close', abortIfDisconnected);
+            }
             return;
           }
           if (url.pathname === '/api/workspaces' && request.method === 'POST') {

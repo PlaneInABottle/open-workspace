@@ -6,6 +6,28 @@ import type { DirtyFingerprint } from './verify.js';
 
 export type RunSource = 'openworkspace-run' | 'external-import' | 'unknown-source';
 
+/**
+ * One environment service pinned to a verification run. Receipt services are
+ * capped (≤10 services, ≤10 dirty files each, names sliced) so the worst case
+ * stays inside the 64 KiB summary-file budget; `truncated` is forced whenever
+ * a slice discards names, and the writer shrinks further rather than failing.
+ */
+export interface EnvironmentReceiptService {
+  serviceId: string;
+  name: string;
+  pmId: number;
+  namespace: string | null;
+  status: string;
+  revision: string | null;
+  dirty: { diffHash: string; files: string[]; truncated: boolean } | null;
+}
+
+export interface EnvironmentReceipt {
+  envId: string;
+  envName: string;
+  services: EnvironmentReceiptService[];
+}
+
 export interface RunSummary {
   workspaceId: string;
   scriptName: string;
@@ -38,6 +60,13 @@ export interface RunSummary {
    * or the bounded diff probe degraded. Older files omit it.
    */
   dirty?: DirtyFingerprint | null;
+  /**
+   * Owned multi-service identity the run verified against (M2
+   * `environment_verify` only). Additive: older files omit it and read as
+   * null. Never a second verification claim — it reuses the same revision /
+   * dirty shapes as the single-service context above.
+   */
+  environment?: EnvironmentReceipt | null;
 }
 
 export interface RunListEntry extends Omit<RunSummary, 'failureExcerpt'> {
@@ -54,6 +83,41 @@ export interface RunListEntry extends Omit<RunSummary, 'failureExcerpt'> {
 }
 
 const maxSummariesPerScope = 20;
+
+const maxReceiptServices = 10;
+const maxReceiptDirtyFiles = 10;
+const maxReceiptNameLength = 256;
+const summaryFileLimit = 64 * 1024;
+
+// Defensive receipt cap: services ≤10, dirty files ≤10 each with `truncated`
+// forced on any slice, names sliced to 256 chars, non-hex revisions degraded
+// to null. A wide or hostile caller cannot inflate the summary file.
+export function capEnvironmentReceipt(receipt: EnvironmentReceipt | null): EnvironmentReceipt | null {
+  if (!receipt || typeof receipt !== 'object') return null;
+  return {
+    envId: typeof receipt.envId === 'string' ? receipt.envId.slice(0, 36) : '',
+    envName: typeof receipt.envName === 'string' ? receipt.envName.slice(0, 100) : '',
+    services: (Array.isArray(receipt.services) ? receipt.services : []).slice(0, maxReceiptServices).map(service => {
+      const dirty = service?.dirty === undefined || service?.dirty === null ? null : {
+        diffHash: typeof service.dirty.diffHash === 'string' ? service.dirty.diffHash.slice(0, 64) : '',
+        files: (Array.isArray(service.dirty.files) ? service.dirty.files : [])
+          .filter((file): file is string => typeof file === 'string' && file.length > 0)
+          .map(file => file.slice(0, maxReceiptNameLength))
+          .slice(0, maxReceiptDirtyFiles),
+        truncated: service.dirty.truncated || (Array.isArray(service.dirty.files) && service.dirty.files.length > maxReceiptDirtyFiles),
+      };
+      return {
+        serviceId: typeof service?.serviceId === 'string' ? service.serviceId.slice(0, 80) : '',
+        name: typeof service?.name === 'string' ? service.name.slice(0, 200) : '',
+        pmId: typeof service?.pmId === 'number' && Number.isInteger(service.pmId) ? service.pmId : -1,
+        namespace: typeof service?.namespace === 'string' ? service.namespace.slice(0, 80) : null,
+        status: typeof service?.status === 'string' ? service.status.slice(0, 32) : 'unknown',
+        revision: typeof service?.revision === 'string' && /^[0-9a-f]{40}$/.test(service.revision) ? service.revision : null,
+        dirty,
+      };
+    }),
+  };
+}
 /**
  * Hard ceiling on stored summary files per scope. The ring keeps the newest
  * 20; runs referenced by a checkpoint note in scope survive eviction, but
@@ -139,6 +203,7 @@ export async function persistRunSummary(homeDirectory: string, entry: {
   outputTruncated: boolean;
   revision?: string | null;
   dirty?: DirtyFingerprint | null;
+  environment?: EnvironmentReceipt | null;
   pinned?: ReadonlySet<string>;
 }, store?: Store): Promise<RunSummary> {
   const directory = scopeDirectory(homeDirectory, entry.workspaceId);
@@ -168,6 +233,7 @@ export async function persistRunSummary(homeDirectory: string, entry: {
       files: entry.dirty.files.slice(0, 50),
       truncated: entry.dirty.truncated,
     },
+    environment: capEnvironmentReceipt(entry.environment ?? null),
   };
   await storeSummaryFile(directory, id, summary, entry.pinned, store);
   return summary;
@@ -197,8 +263,26 @@ async function storeSummaryFile(
   store?: Store,
 ): Promise<void> {
   const serialized = JSON.stringify(summary);
-  if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
-    summary.failureExcerpt = summary.failureExcerpt.slice(0, excerptLimit);
+  if (Buffer.byteLength(serialized, 'utf8') > summaryFileLimit) {
+    // Truncate-never-fail: shrink receipt dirty names first (forcing
+    // `truncated`), never the verification outcome or the masked excerpt.
+    // Worst case (every name cleared) is a few KiB, so this terminates.
+    const receipt = summary.environment;
+    if (receipt) {
+      let over = true;
+      while (over && receipt.services.some(service => (service.dirty?.files.length ?? 0) > 0)) {
+        for (const service of receipt.services) {
+          if (service.dirty && service.dirty.files.length > 0) {
+            service.dirty.files = service.dirty.files.slice(0, Math.floor(service.dirty.files.length / 2));
+            service.dirty.truncated = true;
+          }
+        }
+        over = Buffer.byteLength(JSON.stringify(summary), 'utf8') > summaryFileLimit;
+      }
+      if (over) summary.environment = null;
+    } else {
+      summary.failureExcerpt = summary.failureExcerpt.slice(0, excerptLimit);
+    }
   }
   await writeFile(join(directory, `${id}.json`), JSON.stringify(summary), { mode: 0o600 });
   if (store) {

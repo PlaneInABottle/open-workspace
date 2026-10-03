@@ -205,8 +205,8 @@ test('process-alive services report at most starting, never ready', async t => {
     const item = state.environments.flatMap(entry => entry.items).find(item => item.id === record.id);
     assert.ok(item);
     item.owned = [
-      { serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root },
-      { serviceId: 'worker', pmId: 4, name: 'worker', namespace: null, expectedRoot: f.root },
+      { serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root, lastPoll: null },
+      { serviceId: 'worker', pmId: 4, name: 'worker', namespace: null, expectedRoot: f.root, lastPoll: null },
     ];
     item.state = 'partial';
   });
@@ -230,7 +230,7 @@ test('stale owned (recycled pmId, different root) reports stale with zero mutati
   await f.store.update(state => {
     const item = state.environments.flatMap(entry => entry.items).find(item => item.id === record.id);
     assert.ok(item);
-    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root }];
+    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root, lastPoll: null }];
   });
   let listCalls = 0;
   const list = async (): Promise<Pm2ListResult> => {
@@ -255,7 +255,7 @@ test('set preserves owned intent and lifecycle state; removed services stay stal
   await f.store.update(state => {
     const item = state.environments.flatMap(entry => entry.items).find(item => item.id === record.id);
     assert.ok(item);
-    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root }];
+    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root, lastPoll: null }];
     item.state = 'partial';
   });
   const reset = await f.service.environmentSet(f.workspace.id, {
@@ -438,7 +438,7 @@ test('F2: owned namespace prod against a live null namespace reports stale', asy
   await f.store.update(state => {
     const item = state.environments.flatMap(entry => entry.items).find(item => item.id === record.id);
     assert.ok(item);
-    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: 'prod', expectedRoot: f.root }];
+    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: 'prod', expectedRoot: f.root, lastPoll: null }];
   });
   const list = async (): Promise<Pm2ListResult> => ({
     available: true,
@@ -506,7 +506,7 @@ test('F6: terminal PM2 states map honestly (stopped → down, errored → failed
   await f.store.update(state => {
     const item = state.environments.flatMap(entry => entry.items).find(item => item.id === record.id);
     assert.ok(item);
-    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root }];
+    item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root, lastPoll: null }];
   });
   const stopped = await environmentStatus(f.store, f.workspace.id, record.id,
     async () => ({ available: true, processes: [liveProcess(f.backend, { status: 'stopped' })] }));

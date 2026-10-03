@@ -1,9 +1,31 @@
 import { randomUUID } from 'node:crypto';
+import { connect } from 'node:net';
 import { isAbsolute, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import { discover, readProposalHints, type ProposalHints, type Repository } from './discovery.js';
-import { inspectPm2Services, listPm2Processes, readStartScripts, stableRootGroup } from './services.js';
+import {
+  controlPm2Service,
+  inspectPm2Services,
+  listPm2Processes,
+  readStartScripts,
+  runPm2Action,
+  runPm2Start,
+  stableRootGroup,
+  startPm2Service,
+  type Pm2ActionRunner,
+  type Pm2StartRunner,
+  type ServiceRecord,
+} from './services.js';
+import {
+  boundedEnvironment,
+  observeDirtyFingerprint,
+  runBoundedCommand,
+  runVerification,
+  type CommandRunner,
+  type DirtyFingerprint,
+} from './verify.js';
+import { persistRunSummary, type EnvironmentReceipt } from './run-summaries.js';
 import { Store, privateJsonLimit, type EnvironmentOwned, type EnvironmentRecord, type EnvironmentService } from './store.js';
 import { verifyMessages } from './verify.js';
 
@@ -22,6 +44,12 @@ export const environmentMessages = {
   folderInsideRoot: 'The selected folder is not inside a registered project root.',
   kindPort: 'Services with http-200 readiness need a port; process-alive services must set port to null.',
   badTopology: 'Environment topology is invalid.',
+  pmUnavailable: 'PM2 is unavailable on this machine.',
+  startFailed: 'PM2 did not start the service.',
+  portOccupied: 'The declared port is already occupied; the occupant was not stopped.',
+  ambiguousOrphan: 'More than one live process matches this owned service; nothing was started or stopped.',
+  stopFailed: 'The PM2 stop did not complete.',
+  staleCleared: 'The owned process identity no longer maps to its recorded root; cleared without a stop call.',
 } as const;
 
 // 1 readiness kind in the live gate: 'http-200' is the only ready-capable
@@ -385,6 +413,28 @@ export async function environmentStatus(
       };
     }
     if (owned.pmId === null) {
+      // A recorded poll outranks the bare intent: port-refused and
+      // start-failed up paths persist lastPoll failed with pmId null (no
+      // process was ever recorded), and status must not mask that as
+      // starting. A bare intent with no poll is still starting.
+      if (owned.lastPoll?.status === 'failed') {
+        return {
+          serviceId: service.id,
+          name: owned.name,
+          status: 'failed',
+          detail: 'The recorded start did not succeed; no owned process is running.',
+          owned,
+        };
+      }
+      if (owned.lastPoll?.status === 'skipped') {
+        return {
+          serviceId: service.id,
+          name: owned.name,
+          status: 'skipped',
+          detail: 'The service was skipped because a dependency did not start.',
+          owned,
+        };
+      }
       return {
         serviceId: service.id,
         name: owned.name,
@@ -429,6 +479,36 @@ export async function environmentStatus(
         name: owned.name,
         status: 'failed',
         detail: 'The owned process errored.',
+        owned,
+      };
+    }
+    // M2 phase-(c) honesty: a mapped, alive process reports its last polled
+    // outcome. Without a poll (null) the ceiling stays 'starting' — M1
+    // behavior is preserved for pre-M2 owned entries.
+    if (owned.lastPoll?.status === 'ready') {
+      return {
+        serviceId: service.id,
+        name: owned.name,
+        status: 'ready',
+        detail: 'The last readiness poll succeeded.',
+        owned,
+      };
+    }
+    if (owned.lastPoll?.status === 'failed') {
+      return {
+        serviceId: service.id,
+        name: owned.name,
+        status: 'failed',
+        detail: 'The last readiness poll did not succeed.',
+        owned,
+      };
+    }
+    if (owned.lastPoll?.status === 'skipped') {
+      return {
+        serviceId: service.id,
+        name: owned.name,
+        status: 'skipped',
+        detail: 'The service was skipped because a dependency did not start.',
         owned,
       };
     }
@@ -486,4 +566,816 @@ export async function proposeForWorkspace(
     }
   }
   return proposeEnvironment(candidates);
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 2: ordered up + readiness + owned-only down + receipt-bound E2E.
+// All runtime seams are injectable (same fake-able shape as
+// services-start.test.ts); production passes the real runners through
+// WorkspaceService. Nothing here kills by port or name, and foreign
+// processes/listeners are never addressed: stops go only to owned pmIds that
+// still match pmId + name + namespace + frozen expectedRoot.
+// ---------------------------------------------------------------------------
+
+export const environmentUpInput = z.object({ environmentId: z.string().uuid() }).strict();
+export const environmentDownInput = z.object({ environmentId: z.string().uuid() }).strict();
+export const environmentVerifyInput = z.object({
+  environmentId: z.string().uuid(),
+  repositoryPath: z.string().min(1).max(4096),
+  scriptName: z.string().min(1).max(80),
+}).strict();
+
+export type EnvironmentUpServiceStatus = 'ready' | 'starting' | 'failed' | 'skipped';
+
+export interface EnvironmentUpServiceResult {
+  serviceId: string;
+  name: string;
+  status: EnvironmentUpServiceStatus;
+  detail: string;
+  attempts: number;
+  lastStatus: number | null;
+  pmId: number | null;
+  adopted: boolean;
+}
+
+export interface EnvironmentUpResult {
+  environmentId: string;
+  name: string;
+  state: EnvironmentRecord['state'];
+  order: string[];
+  services: EnvironmentUpServiceResult[];
+}
+
+export interface EnvironmentDownServiceResult {
+  serviceId: string;
+  name: string;
+  status: 'down' | 'stale' | 'failed';
+  detail: string;
+  pmId: number | null;
+  adopted: boolean;
+}
+
+export interface EnvironmentDownResult {
+  environmentId: string;
+  name: string;
+  state: EnvironmentRecord['state'];
+  order: string[];
+  services: EnvironmentDownServiceResult[];
+}
+
+export interface EnvironmentVerifyServiceSnapshot {
+  serviceId: string;
+  name: string;
+  pmId: number;
+  namespace: string | null;
+  status: string;
+  revision: string | null;
+  dirty: DirtyFingerprint | null;
+}
+
+export interface EnvironmentVerifyResult {
+  environmentId: string;
+  name: string;
+  outcome: 'passed' | 'failed' | 'error';
+  runId: string | null;
+  repositoryPath: string;
+  scriptName: string;
+  services: EnvironmentVerifyServiceSnapshot[];
+  message: string;
+}
+
+export interface EnvironmentRuntime {
+  list?: typeof listPm2Processes;
+  starter?: Pm2StartRunner;
+  runner?: Pm2ActionRunner;
+  /** Returns true when a loopback TCP connect succeeds (port occupied). No payload is ever sent. */
+  probe?: (port: number) => Promise<boolean>;
+  fetchImpl?: typeof fetch;
+  runCommand?: CommandRunner;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  /** Readiness poll cadence, default 1000 ms. */
+  pollIntervalMs?: number;
+  /** process-alive aliveness watch, default processAliveWatchSecs. */
+  processAliveWatchMs?: number;
+  /** Abort for the receipt E2E command (wired from the HTTP socket close). */
+  signal?: AbortSignal;
+}
+
+const portProbeTimeoutMs = 500;
+const readinessAttemptTimeoutMs = 3000;
+const defaultPollIntervalMs = 1000;
+const suggestionScanWidth = 10;
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+// Loopback TCP preflight: a successful connect means occupied. The socket is
+// destroyed immediately and no payload is sent — this never disturbs the
+// occupant, foreign or owned.
+export function probeTcpPort(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = (occupied: boolean) => {
+      if (done) return;
+      done = true;
+      try {
+        socket.destroy();
+      } catch {
+        // Destruction is best-effort; the probe answer stands.
+      }
+      resolve(occupied);
+    };
+    const socket = connect({ host: '127.0.0.1', port, timeout: portProbeTimeoutMs });
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+export async function suggestFreePort(
+  port: number,
+  probe: (port: number) => Promise<boolean> = probeTcpPort,
+): Promise<number | null> {
+  for (let candidate = port + 1; candidate <= port + suggestionScanWidth; candidate += 1) {
+    if (candidate > 65535) return null;
+    try {
+      if (!(await probe(candidate))) return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  if (lower === 'localhost' || lower === '::1' || lower === '127.0.0.1') return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(lower)) return true;
+  if (lower === '::ffff:127.0.0.1' || /^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(lower)) return true;
+  return false;
+}
+
+export interface ReadinessPollResult {
+  ok: boolean;
+  attempts: number;
+  lastStatus: number | null;
+  lastError: string | null;
+  latencyMs: number | null;
+}
+
+// http-200 readiness: GET http://127.0.0.1:<port><path> expects 200–299
+// within the bounded window. Redirects are never followed blindly: a
+// loopback target is followed as a new attempt, an outside-loopback target
+// is a failed attempt. One success marks ready; attempts + last status +
+// latency are reported either way. Port-open is never ready by itself.
+export async function pollHttpReadiness(input: {
+  port: number;
+  path: string;
+  timeoutMs: number;
+  intervalMs?: number;
+  fetchImpl?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  attemptTimeoutMs?: number;
+}): Promise<ReadinessPollResult> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const sleep = input.sleep ?? defaultSleep;
+  const now = input.now ?? Date.now;
+  const intervalMs = input.intervalMs ?? defaultPollIntervalMs;
+  const attemptTimeoutMs = input.attemptTimeoutMs ?? readinessAttemptTimeoutMs;
+  let target = `http://127.0.0.1:${input.port}${input.path}`;
+  const deadline = now() + input.timeoutMs;
+  let attempts = 0;
+  let lastStatus: number | null = null;
+  let lastError: string | null = null;
+  for (;;) {
+    if (now() >= deadline) break;
+    attempts += 1;
+    const started = now();
+    try {
+      const response = await fetchImpl(target, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(attemptTimeoutMs),
+      });
+      if (response.status >= 200 && response.status < 300) {
+        return { ok: true, attempts, lastStatus: response.status, lastError: null, latencyMs: now() - started };
+      }
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location');
+        if (location) {
+          try {
+            const next = new URL(location, target);
+            if ((next.protocol === 'http:' || next.protocol === 'https:') && isLoopbackHostname(next.hostname)) {
+              target = next.toString();
+              lastStatus = response.status;
+              lastError = null;
+            } else {
+              lastStatus = response.status;
+              lastError = 'redirect-outside-loopback';
+            }
+          } catch {
+            lastStatus = response.status;
+            lastError = 'redirect-unparseable';
+          }
+        } else {
+          lastStatus = response.status;
+          lastError = null;
+        }
+      } else {
+        lastStatus = response.status;
+        lastError = null;
+      }
+    } catch (error) {
+      // Error class only (e.g. TimeoutError, TypeError on refused) — no body
+      // or payload is ever captured or persisted.
+      lastStatus = null;
+      lastError = error instanceof Error ? error.name.slice(0, 64) : 'fetch-error';
+    }
+    if (now() >= deadline) break;
+    await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
+  }
+  return { ok: false, attempts, lastStatus, lastError, latencyMs: null };
+}
+
+// process-alive honesty watch: no HTTP surface exists, so the ceiling is
+// `starting` while the exactly-mapped process stays alive through the
+// bounded window. Absence or a terminal state at any poll means failed.
+export async function watchProcessAlive(input: {
+  list: typeof listPm2Processes;
+  workspaceRoots: string[];
+  pmId: number;
+  name: string;
+  expectedRoot: string;
+  watchMs: number;
+  intervalMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+}): Promise<{ alive: boolean; attempts: number }> {
+  const sleep = input.sleep ?? defaultSleep;
+  const now = input.now ?? Date.now;
+  const intervalMs = input.intervalMs ?? defaultPollIntervalMs;
+  const deadline = now() + input.watchMs;
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    let alive = false;
+    try {
+      const listed = await input.list();
+      if (listed.available) {
+        const mapped = await inspectPm2Services(input.workspaceRoots, listed.processes);
+        const match = [...mapped.services, ...mapped.ambiguousServices]
+          .find(service => service.pmId === input.pmId && service.name === input.name);
+        alive = Boolean(match)
+          && match?.exactRootPath === input.expectedRoot
+          && match?.status !== 'stopped'
+          && match?.status !== 'errored';
+      }
+    } catch {
+      alive = false;
+    }
+    if (!alive) return { alive: false, attempts };
+    if (now() >= deadline) return { alive: true, attempts };
+    await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
+  }
+}
+
+async function expectedRootOf(workspaceRoots: string[], repositoryPath: string): Promise<string> {
+  const group = await stableRootGroup(workspaceRoots, resolve(repositoryPath));
+  if (group.matchedRoots.length !== 1 || !group.exactRootPath) {
+    throw new Error(environmentMessages.folderInsideRoot);
+  }
+  return group.exactRootPath;
+}
+
+async function withEnvironmentRecord<T>(
+  store: Store,
+  workspaceId: string,
+  environmentId: string,
+  change: (record: EnvironmentRecord) => T | Promise<T>,
+  options: { write: boolean } = { write: true },
+): Promise<{ workspaceRoots: string[]; result: Awaited<T> }> {
+  if (options.write) {
+    return store.update(async state => {
+      const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
+      if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+      const record = state.environments
+        .find(entry => entry.workspaceId === workspaceId)?.items
+        .find(item => item.id === environmentId);
+      if (!record) throw new Error(environmentMessages.envNotFound);
+      return { workspaceRoots: [...workspace.roots], result: await change(record) };
+    });
+  }
+  const state = await store.read();
+  const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
+  if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  const record = state.environments
+    .find(entry => entry.workspaceId === workspaceId)?.items
+    .find(item => item.id === environmentId);
+  if (!record) throw new Error(environmentMessages.envNotFound);
+  return { workspaceRoots: [...workspace.roots], result: await change(record) };
+}
+
+function upsertOwned(
+  record: EnvironmentRecord,
+  entry: EnvironmentRecord['owned'][number],
+): void {
+  const index = record.owned.findIndex(existing => existing.serviceId === entry.serviceId);
+  if (index >= 0) record.owned[index] = entry;
+  else record.owned.push(entry);
+  record.updatedAt = new Date().toISOString();
+}
+
+function clearOwned(record: EnvironmentRecord, serviceId: string): void {
+  record.owned = record.owned.filter(existing => existing.serviceId !== serviceId);
+  record.updatedAt = new Date().toISOString();
+}
+
+function liveMatch(
+  known: ServiceRecord[],
+  pmId: number,
+  name: string,
+  expectedRoot: string,
+  namespace: string | null,
+): ServiceRecord | null {
+  const candidate = known.find(service => service.pmId === pmId && service.name === name);
+  if (!candidate || candidate.exactRootPath !== expectedRoot || candidate.namespace !== namespace) return null;
+  return candidate;
+}
+
+function isTerminalStatus(status: string): boolean {
+  return status === 'stopped' || status === 'errored';
+}
+
+export async function environmentUp(
+  store: Store,
+  workspaceId: string,
+  environmentId: string,
+  runtime: EnvironmentRuntime = {},
+): Promise<EnvironmentUpResult> {
+  const list = runtime.list ?? listPm2Processes;
+  const starter = runtime.starter ?? runPm2Start;
+  const probe = runtime.probe ?? probeTcpPort;
+  const fetchImpl = runtime.fetchImpl ?? fetch;
+  const sleep = runtime.sleep ?? defaultSleep;
+  const now = runtime.now ?? Date.now;
+  const intervalMs = runtime.pollIntervalMs ?? defaultPollIntervalMs;
+  const aliveWatchMs = runtime.processAliveWatchMs ?? processAliveWatchSecs * 1000;
+  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+    name: record.name,
+    order: topologicalOrder(record.services),
+    services: record.services.map(service => ({ ...service })),
+    owned: record.owned.map(entry => ({ ...entry })),
+  }), { write: false });
+  const byId = new Map(plan.services.map(service => [service.id, service]));
+  const ownedById = new Map(plan.owned.map(entry => [entry.serviceId, entry]));
+  const outcomes = new Map<string, EnvironmentUpServiceStatus>();
+  const results: EnvironmentUpServiceResult[] = [];
+  // Byte-identical refusal: when nothing owned changes (PM2 unreadable, every
+  // service skipped/refused before any intent), the final state write is
+  // skipped so the file is untouched.
+  let mutated = false;
+  const commit = async (change: (record: EnvironmentRecord) => void): Promise<void> => {
+    await withEnvironmentRecord(store, workspaceId, environmentId, record => { change(record); });
+    mutated = true;
+  };
+  for (const serviceId of plan.order) {
+    const service = byId.get(serviceId);
+    if (!service) continue;
+    const failed = (status: EnvironmentUpServiceStatus, detail: string, extra: Partial<EnvironmentUpServiceResult> = {}) => {
+      outcomes.set(serviceId, status);
+      results.push({
+        serviceId,
+        name: service.name ?? service.id,
+        status,
+        detail,
+        attempts: 0,
+        lastStatus: null,
+        pmId: ownedById.get(serviceId)?.pmId ?? null,
+        adopted: false,
+        ...extra,
+      });
+    };
+    if (service.dependsOn.some(dep => outcomes.get(dep) !== 'ready' && outcomes.get(dep) !== 'starting')) {
+      failed('skipped', `A dependency did not start; ${serviceId} was never started.`);
+      continue;
+    }
+    let expectedRoot: string;
+    try {
+      expectedRoot = await expectedRootOf(workspaceRoots, service.repositoryPath);
+    } catch {
+      failed('failed', environmentMessages.folderInsideRoot);
+      continue;
+    }
+    const pmName = service.name ?? service.id;
+    const listed = await list();
+    if (!listed.available) {
+      failed('failed', environmentMessages.pmUnavailable);
+      continue;
+    }
+    const mapped = await inspectPm2Services(workspaceRoots, listed.processes);
+    const known = [...mapped.services, ...mapped.ambiguousServices];
+    const owned = ownedById.get(serviceId);
+    let pmId: number | null = null;
+    let adopted = false;
+    let adoptName = owned?.name ?? pmName;
+    if (owned && owned.pmId !== null) {
+      const match = liveMatch(known, owned.pmId, owned.name, owned.expectedRoot, owned.namespace);
+      if (match && !isTerminalStatus(match.status)) {
+        pmId = owned.pmId;
+      } else {
+        // Stale-owned (pmId absent, mapping ambiguous/foreign, root drift, or
+        // terminal): cleared WITHOUT any kill, then reconciled below.
+        await commit(record => clearOwned(record, serviceId));
+        ownedById.delete(serviceId);
+      }
+    }
+    if (pmId === null) {
+      // Single-match adoption (F3): a stored intent with pmId null (crash
+      // between spawn and fill) — or a just-cleared stale entry — plus
+      // exactly one live process with our name + frozen root is ours.
+      // Terminal (stopped/errored) processes are never adopted: a dead
+      // orphan is a zero-match, so the next step starts fresh instead of
+      // recording a pmId that can never become ready.
+      const candidates = mapped.services.filter(
+        service => service.name === adoptName && service.exactRootPath === expectedRoot && !isTerminalStatus(service.status),
+      );
+      if (candidates.length === 1 && candidates[0].pmId !== null) {
+        pmId = candidates[0].pmId;
+        adopted = true;
+        adoptName = candidates[0].name;
+        const filled = {
+          serviceId,
+          pmId,
+          name: candidates[0].name,
+          namespace: candidates[0].namespace,
+          expectedRoot,
+          lastPoll: null,
+        } as EnvironmentRecord['owned'][number];
+        await commit(record => upsertOwned(record, filled));
+        ownedById.set(serviceId, { ...filled });
+      } else if (candidates.length >= 2) {
+        failed('failed', environmentMessages.ambiguousOrphan);
+        continue;
+      }
+    }
+    if (pmId === null) {
+      // Fresh start: phase (a) persists the intent BEFORE spawning so a
+      // crash here leaves an adoptable intent, never a duplicate.
+      const intent = {
+        serviceId,
+        pmId: null,
+        name: pmName,
+        namespace: null,
+        expectedRoot,
+        lastPoll: null,
+      } as EnvironmentRecord['owned'][number];
+      await commit(record => upsertOwned(record, intent));
+      ownedById.set(serviceId, { ...intent });
+      adoptName = pmName;
+      if (service.readiness.kind === 'http-200' && typeof service.port === 'number') {
+        let occupied = false;
+        try {
+          occupied = await probe(service.port);
+        } catch {
+          occupied = false;
+        }
+        if (occupied) {
+          const suggestion = await suggestFreePort(service.port, probe);
+          const detail = suggestion === null
+            ? `${environmentMessages.portOccupied} Port ${service.port} is already occupied; no free port was found nearby.`
+            : `${environmentMessages.portOccupied} Port ${service.port} is already occupied; ${suggestion} looks free (change the topology — no auto-rebind).`;
+          await commit(record => {
+            const entry = record.owned.find(existing => existing.serviceId === serviceId);
+            if (entry) entry.lastPoll = { status: 'failed', attempts: 0, httpStatus: null, checkedAt: new Date().toISOString() };
+          });
+          failed('failed', detail);
+          continue;
+        }
+      }
+      const started = await startPm2Service(
+        workspaceRoots,
+        { repositoryPath: service.repositoryPath, scriptName: service.scriptName, name: pmName },
+        list,
+        starter,
+      );
+      if (started.status !== 'completed') {
+        await commit(record => {
+          const entry = record.owned.find(existing => existing.serviceId === serviceId);
+          if (entry) entry.lastPoll = { status: 'failed', attempts: 0, httpStatus: null, checkedAt: new Date().toISOString() };
+        });
+        failed('failed', started.message === 'PM2 is unavailable.' ? environmentMessages.pmUnavailable : environmentMessages.startFailed);
+        continue;
+      }
+      // Phase (b): fill pmId/namespace IMMEDIATELY after the starter
+      // returns, before any dependent probe or readiness poll.
+      pmId = started.target.pmId;
+      const filled = {
+        serviceId,
+        pmId,
+        name: pmName,
+        namespace: started.target.namespace,
+        expectedRoot,
+        lastPoll: null,
+      } as EnvironmentRecord['owned'][number];
+      await commit(record => upsertOwned(record, filled));
+      ownedById.set(serviceId, { ...filled });
+    }
+    if (pmId === null) {
+      failed('failed', environmentMessages.startFailed);
+      continue;
+    }
+    const currentPmId: number = pmId;
+    if (service.readiness.kind === 'process-alive') {
+      // process-alive aliveness watch within the same window: staying alive
+      // reports starting (never ready); exiting reports failed.
+      const watch = await watchProcessAlive({
+        list, workspaceRoots, pmId: currentPmId, name: adoptName, expectedRoot,
+        watchMs: aliveWatchMs, intervalMs, sleep, now,
+      });
+      const status = watch.alive ? 'starting' : 'failed';
+      const detail = watch.alive
+        ? `${adopted ? 'Adopted the single matching live process; ' : ''}the worker stayed alive for the bounded watch — process-alive services report at most starting, never ready.`
+        : 'The worker process exited during the bounded aliveness watch.';
+      await commit(record => {
+        const entry = record.owned.find(existing => existing.serviceId === serviceId);
+        if (entry) {
+          entry.name = adoptName;
+          entry.lastPoll = { status, attempts: watch.attempts, httpStatus: null, checkedAt: new Date().toISOString() };
+        }
+      });
+      outcomes.set(serviceId, status);
+      results.push({
+        serviceId, name: adoptName, status, detail,
+        attempts: watch.attempts, lastStatus: null, pmId: currentPmId, adopted,
+      });
+      continue;
+    }
+    const timeoutSecs = service.readiness.kind === 'http-200' ? service.readiness.timeoutSecs : 30;
+    const path = service.readiness.kind === 'http-200' ? service.readiness.path : '/';
+    const port = service.port;
+    if (typeof port !== 'number') {
+      failed('failed', environmentMessages.kindPort);
+      continue;
+    }
+    const poll = await pollHttpReadiness({ port, path, timeoutMs: timeoutSecs * 1000, intervalMs, fetchImpl, sleep, now });
+    const status = poll.ok ? 'ready' : 'failed';
+    const detail = poll.ok
+      ? `${adopted ? 'Adopted the single matching live process; ' : ''}readiness probe returned ${poll.lastStatus} after ${poll.attempts} attempt(s).`
+      : `Readiness probe did not return 2xx within ${timeoutSecs}s (attempts: ${poll.attempts}, last status: ${poll.lastStatus ?? poll.lastError ?? 'none'}).`;
+    await commit(record => {
+      const entry = record.owned.find(existing => existing.serviceId === serviceId);
+      if (entry) {
+        entry.name = adoptName;
+        entry.lastPoll = { status, attempts: poll.attempts, httpStatus: poll.lastStatus, checkedAt: new Date().toISOString() };
+      }
+    });
+    outcomes.set(serviceId, status);
+    results.push({
+      serviceId, name: adoptName, status, detail,
+      attempts: poll.attempts, lastStatus: poll.lastStatus, pmId: currentPmId, adopted,
+    });
+  }
+  const live = results.filter(entry => entry.status === 'ready' || entry.status === 'starting');
+  const stored = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+    state: record.state,
+  }), { write: false });
+  const nextState: EnvironmentRecord['state'] = live.length === results.length && results.length > 0
+    ? 'up'
+    : live.length > 0 ? 'partial' : 'down';
+  // No evidence, no state change: when nothing owned was written (PM2
+  // unreadable, every service refused before any intent), the stored state
+  // stands and the file is untouched.
+  if (mutated) {
+    await withEnvironmentRecord(store, workspaceId, environmentId, record => {
+      record.state = nextState;
+      record.updatedAt = new Date().toISOString();
+    });
+  }
+  return { environmentId, name: plan.name, state: mutated ? nextState : stored.result.state, order: plan.order, services: results };
+}
+
+export async function environmentDown(
+  store: Store,
+  workspaceId: string,
+  environmentId: string,
+  runtime: EnvironmentRuntime = {},
+): Promise<EnvironmentDownResult> {
+  const list = runtime.list ?? listPm2Processes;
+  const stopRunner = runtime.runner ?? runPm2Action;
+  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+    name: record.name,
+    order: topologicalOrder(record.services).reverse(),
+    owned: record.owned.map(entry => ({ ...entry })),
+  }), { write: false });
+  const knownIds = new Set(plan.order);
+  const ordered = [
+    ...plan.owned.filter(entry => knownIds.has(entry.serviceId))
+      .sort((a, b) => plan.order.indexOf(a.serviceId) - plan.order.indexOf(b.serviceId)),
+    ...plan.owned.filter(entry => !knownIds.has(entry.serviceId)).reverse(),
+  ];
+  const results: EnvironmentDownServiceResult[] = [];
+  let mutated = false;
+  const commit = async (change: (record: EnvironmentRecord) => void): Promise<void> => {
+    await withEnvironmentRecord(store, workspaceId, environmentId, record => { change(record); });
+    mutated = true;
+  };
+  for (const owned of ordered) {
+    const done = (status: EnvironmentDownServiceResult['status'], detail: string, adopted = false) => {
+      results.push({ serviceId: owned.serviceId, name: owned.name, status, detail, pmId: owned.pmId, adopted });
+    };
+    const listed = await list();
+    if (!listed.available) {
+      done('failed', environmentMessages.pmUnavailable);
+      continue;
+    }
+    const mapped = await inspectPm2Services(workspaceRoots, listed.processes);
+    const known = [...mapped.services, ...mapped.ambiguousServices];
+    if (owned.pmId === null) {
+      // Leftover pre-spawn intent: only a single live name + root match is
+      // adoptable; anything else clears without touching anything.
+      const candidates = mapped.services.filter(
+        service => service.name === owned.name && service.exactRootPath === owned.expectedRoot,
+      );
+      if (candidates.length === 1 && candidates[0].pmId !== null) {
+        const target = { pmId: candidates[0].pmId, name: candidates[0].name, namespace: candidates[0].namespace };
+        const stopped = await controlPm2Service(workspaceRoots, 'stop', target, list, stopRunner);
+        if (stopped.status === 'completed') {
+          await commit(record => clearOwned(record, owned.serviceId));
+          results.push({ serviceId: owned.serviceId, name: owned.name, status: 'down', detail: 'Adopted the single matching live process and stopped it.', pmId: target.pmId, adopted: true });
+        } else {
+          done('failed', environmentMessages.stopFailed, true);
+        }
+      } else {
+        await commit(record => clearOwned(record, owned.serviceId));
+        done('stale', environmentMessages.staleCleared);
+      }
+      continue;
+    }
+    const match = liveMatch(known, owned.pmId, owned.name, owned.expectedRoot, owned.namespace);
+    if (!match) {
+      // Recycled-pmId guard: pmId alone proves nothing. Mismatch, drift, or
+      // absence clears WITHOUT any kill — zero runner calls on this path.
+      await commit(record => clearOwned(record, owned.serviceId));
+      done('stale', environmentMessages.staleCleared);
+      continue;
+    }
+    if (isTerminalStatus(match.status)) {
+      await commit(record => clearOwned(record, owned.serviceId));
+      done('down', `The owned process is already ${match.status}; cleared without a stop call.`);
+      continue;
+    }
+    // Owned-only stop: the expectedRoot comparison above ran BEFORE any
+    // runner call, and only this matched owned pmId is addressed — never a
+    // port-kill, never a name-only match, never pm2 kill.
+    const stopped = await controlPm2Service(
+      workspaceRoots, 'stop',
+      { pmId: owned.pmId, name: owned.name, namespace: owned.namespace },
+      list,
+      stopRunner,
+    );
+    if (stopped.status === 'completed') {
+      await commit(record => clearOwned(record, owned.serviceId));
+      done('down', 'PM2 accepted the stop.');
+    } else {
+      done('failed', environmentMessages.stopFailed);
+    }
+  }
+  const stored = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+    state: record.state,
+    owned: record.owned.length,
+  }), { write: false });
+  const nextState: EnvironmentRecord['state'] = stored.result.owned === 0 ? 'down' : 'partial';
+  // No evidence, no state change: when PM2 is unreadable nothing is stopped
+  // or cleared, so the stored state stands and the file is untouched.
+  if (mutated) {
+    await withEnvironmentRecord(store, workspaceId, environmentId, record => {
+      record.state = nextState;
+      record.updatedAt = new Date().toISOString();
+    });
+  }
+  return { environmentId, name: plan.name, state: mutated ? nextState : stored.result.state, order: plan.order, services: results };
+}
+
+async function observeRepoGit(
+  repository: string,
+  run: CommandRunner,
+): Promise<{ revision: string | null; dirty: DirtyFingerprint | null }> {
+  try {
+    const revision = await run('git', ['rev-parse', 'HEAD'], {
+      cwd: repository, timeoutMs: 10_000, outputLimit: 4096,
+      env: boundedEnvironment({ GIT_OPTIONAL_LOCKS: '0' }),
+    });
+    if (revision.spawnFailed || revision.exitCode !== 0) return { revision: null, dirty: null };
+    const sha = revision.stdout.trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) return { revision: null, dirty: null };
+    let status;
+    try {
+      status = await run('git', ['status', '--porcelain=v1', '--untracked-files=normal'], {
+        cwd: repository, timeoutMs: 10_000, outputLimit: 64 * 1024,
+        env: boundedEnvironment({ GIT_OPTIONAL_LOCKS: '0' }),
+      });
+    } catch {
+      return { revision: sha, dirty: null };
+    }
+    if (status.spawnFailed || status.exitCode !== 0) return { revision: sha, dirty: null };
+    if (status.stdout.split('\n').filter(line => line.length > 0).length === 0) {
+      return { revision: sha, dirty: null };
+    }
+    try {
+      return { revision: sha, dirty: await observeDirtyFingerprint(repository, run, status.stdout) };
+    } catch {
+      return { revision: sha, dirty: null };
+    }
+  } catch {
+    return { revision: null, dirty: null };
+  }
+}
+
+// Receipt-bound E2E: snapshot owned identities + per-service git context,
+// run one repo-native script, persist a single RunSummary carrying the capped
+// environment receipt. Surfaces through the existing recent_runs /
+// workstream_context readers — no new view, no timeline fork.
+export async function environmentVerify(
+  store: Store,
+  workspaceId: string,
+  input: { environmentId: string; repositoryPath: string; scriptName: string },
+  runtime: EnvironmentRuntime = {},
+): Promise<EnvironmentVerifyResult> {
+  const parsed = environmentVerifyInput.parse(input);
+  const list = runtime.list ?? listPm2Processes;
+  const runCommand = runtime.runCommand ?? runBoundedCommand;
+  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceId, parsed.environmentId, record => ({
+    name: record.name,
+    services: record.services.map(service => ({ ...service })),
+    owned: record.owned.map(entry => ({ ...entry })),
+  }), { write: false });
+  const listed = await list();
+  const inspected = listed.available ? await inspectPm2Services(workspaceRoots, listed.processes) : null;
+  const known = inspected ? [...inspected.services, ...inspected.ambiguousServices] : [];
+  const gitByRepo = new Map<string, { revision: string | null; dirty: DirtyFingerprint | null }>();
+  const services: EnvironmentVerifyServiceSnapshot[] = [];
+  for (const service of plan.services.slice(0, maxServicesPerEnvironment)) {
+    const owned = plan.owned.find(entry => entry.serviceId === service.id) ?? null;
+    const match = owned && owned.pmId !== null
+      ? liveMatch(known, owned.pmId, owned.name, owned.expectedRoot, owned.namespace)
+      : null;
+    let status: string;
+    if (match) {
+      status = isTerminalStatus(match.status)
+        ? (match.status === 'stopped' ? 'down' : 'failed')
+        : (owned?.lastPoll?.status ?? 'starting');
+    } else {
+      status = owned ? 'stale' : 'down';
+    }
+    if (!gitByRepo.has(service.repositoryPath)) {
+      gitByRepo.set(service.repositoryPath, await observeRepoGit(service.repositoryPath, runCommand));
+    }
+    const git = gitByRepo.get(service.repositoryPath) ?? { revision: null, dirty: null };
+    services.push({
+      serviceId: service.id,
+      name: owned?.name ?? service.name ?? service.id,
+      pmId: owned?.pmId ?? -1,
+      namespace: owned?.namespace ?? match?.namespace ?? null,
+      status,
+      revision: git.revision,
+      dirty: git.dirty,
+    });
+  }
+  const receipt: EnvironmentReceipt = { envId: parsed.environmentId, envName: plan.name, services };
+  const verification = await runVerification(
+    workspaceRoots,
+    { repositoryPath: parsed.repositoryPath, scriptName: parsed.scriptName },
+    { list, runCommand, signal: runtime.signal },
+  );
+  let runId: string | null = null;
+  try {
+    // A persist failure is loud in server logs but never fails the
+    // verification that succeeded (same pattern as workspace.verify).
+    const summary = await persistRunSummary(store.directory, {
+      workspaceId,
+      scriptName: parsed.scriptName,
+      outcome: verification.outcome,
+      durationMs: verification.durationMs,
+      output: verification.output,
+      outputTruncated: verification.truncated,
+      revision: verification.git.revision,
+      dirty: verification.git.dirty,
+      environment: receipt,
+    }, store);
+    runId = summary.id ?? null;
+  } catch (error) {
+    console.error('Run summary persist failed:', error instanceof Error ? error.message : error);
+  }
+  return {
+    environmentId: parsed.environmentId,
+    name: plan.name,
+    outcome: verification.outcome,
+    runId,
+    repositoryPath: verification.repositoryPath,
+    scriptName: parsed.scriptName,
+    services,
+    message: verification.message,
+  };
 }

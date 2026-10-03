@@ -133,6 +133,17 @@ const environmentOwned = z.object({
   name: z.string().min(1).max(200),
   namespace: z.string().max(80).nullable(),
   expectedRoot: rootPath,
+  // M2 phase-(c) record: the last readiness outcome for this owned process
+  // (ready|starting|failed|skipped with attempt count and last HTTP status).
+  // Additive, optional-with-default — files written before it read as null and
+  // status keeps its M1 ceiling. Never a second process identity: mapping
+  // still compares pmId + name + namespace + expectedRoot first.
+  lastPoll: z.object({
+    status: z.enum(['ready', 'starting', 'failed', 'skipped']),
+    attempts: z.number().int().nonnegative(),
+    httpStatus: z.number().int().nonnegative().nullable(),
+    checkedAt: z.string().datetime(),
+  }).strict().nullable().optional().default(null),
 }).strict();
 const environmentRecord = z.object({
   id: z.string().uuid(),

@@ -16,7 +16,7 @@ import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parse
 import { listMilestones } from './milestones.js';
 import { appendLearningRule, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
-import { environmentStatus, getEnvironment, listEnvironments, proposeForWorkspace, setEnvironment } from './environment.js';
+import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, setEnvironment } from './environment.js';
 import { availableSkills } from './consumer-skills.js';
 
 export interface RootInspection {
@@ -231,6 +231,33 @@ export class WorkspaceService {
 
   async environmentStatus(id: string, environmentId: string) {
     return environmentStatus(this.store, id, environmentId, this.listPm2);
+  }
+
+  // M2 runtime: ordered up with readiness, owned-only down, receipt-bound
+  // verify. Thin delegates — the operation lives in environment.ts so HTTP
+  // and MCP share one implementation. Runtime seams pass the production
+  // runners (tests inject fakes at the environment.ts level).
+  async environmentUp(id: string, environmentId: string) {
+    return environmentUp(this.store, id, environmentId, {
+      list: this.listPm2,
+      starter: this.serviceStarter,
+      runner: this.serviceRunner,
+    });
+  }
+
+  async environmentDown(id: string, environmentId: string) {
+    return environmentDown(this.store, id, environmentId, {
+      list: this.listPm2,
+      runner: this.serviceRunner,
+    });
+  }
+
+  async environmentVerify(id: string, input: { environmentId: string; repositoryPath: string; scriptName: string }, signal?: AbortSignal) {
+    return environmentVerify(this.store, id, input, {
+      list: this.listPm2,
+      runCommand: this.verifyRunner,
+      signal,
+    });
   }
 
   async verify(id: string, request: VerificationRequest, signal?: AbortSignal): Promise<VerificationResult> {
