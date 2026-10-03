@@ -4,12 +4,12 @@ import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readPm2ServiceLogs, runPm2Action, runPm2Logs, serviceInventory, type ServiceInventory, type ServiceLogStream } from './services.js';
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
-import { createWorkstream, setWorkstreamStatus, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointEvidenceMessage, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, releaseLease, type Lease } from './leases.js';
-import { listRecentRuns, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
+import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listDrafts, listMilestones } from './milestones.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 
@@ -124,7 +124,10 @@ export class WorkspaceService {
     const result = await runVerification(workspace.roots, request, { list: this.listPm2, runCommand: this.verifyRunner, signal });
     // Bounded run summaries feed the learning loop; a persist failure is loud
     // in server logs but never fails the verification that succeeded.
+    // Pins are resolved before the write so a note-referenced run is exempt
+    // from the ring eviction this persist may trigger.
     try {
+      const pins = pinnedRunIds((await this.store.read()).workstreams, id);
       await persistRunSummary(this.store.directory, {
         workspaceId: id,
         scriptName: request.scriptName,
@@ -134,6 +137,7 @@ export class WorkspaceService {
         outputTruncated: result.truncated,
         revision: result.git.revision,
         dirty: result.git.dirty,
+        pinned: pins,
       });
     } catch (error) {
       console.error('Run summary persist failed:', error instanceof Error ? error.message : error);
@@ -178,7 +182,20 @@ export class WorkspaceService {
     return workstream;
   }
 
-  async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown }): Promise<Workstream> {
+  async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }): Promise<Workstream> {
+    if (note !== undefined) {
+      // Shape first (bounds/pattern refusal), then existence: every ref must
+      // name a stored run in this workstream's workspace. Editing the note to
+      // drop a ref unpins that run; there is no separate unpin tool.
+      const sanitized = sanitizeCheckpointNote(note);
+      if (sanitized.evidence.length > 0) {
+        const workstream = await this.workstream(id);
+        const stored = await listRunIds(this.store.directory, workstream.workspaceId);
+        for (const ref of sanitized.evidence) {
+          if (!stored.has(ref)) throw new Error(checkpointEvidenceMessage);
+        }
+      }
+    }
     return setWorkstreamStatus(this.store, id, status, note);
   }
 
@@ -208,14 +225,15 @@ export class WorkspaceService {
       ? scopeId
       : state.workstreams.find(workstream => workstream.id === scopeId)?.workspaceId;
     if (!workspaceId) throw new Error('Workspace not found. Register it first.');
-    return listRecentRuns(this.store.directory, workspaceId, limit);
+    return listRecentRuns(this.store.directory, workspaceId, limit, pinnedRunIds(state.workstreams, workspaceId));
   }
 
   async importExternalRun(raw: unknown): Promise<RunSummary> {
     const parsed = parseExternalRunImport(raw);
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === parsed.workspaceId);
+    const state = await this.store.read();
+    const workspace = state.workspaces.find(workspace => workspace.id === parsed.workspaceId);
     if (!workspace) throw new Error('Workspace not found. Register it first.');
-    return importExternalRun(this.store.directory, parsed);
+    return importExternalRun(this.store.directory, parsed, pinnedRunIds(state.workstreams, parsed.workspaceId));
   }
 
   async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>>; drafts: Awaited<ReturnType<typeof listDrafts>> }> {

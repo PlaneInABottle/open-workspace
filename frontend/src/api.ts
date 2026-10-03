@@ -161,6 +161,8 @@ export interface Learnings {
 }
 
 export interface RunListEntry {
+  /** Stable opaque summary ID within its scope. Older servers omit it. */
+  id?: string;
   workspaceId: string;
   scriptName: string;
   outcome: 'passed' | 'failed' | 'error';
@@ -171,6 +173,8 @@ export interface RunListEntry {
   excerptPreview: string;
   excerptTruncated: boolean;
   outputTruncated: boolean;
+  /** True when a checkpoint note in this scope references this run. Older servers omit it. */
+  pinnedByNote?: boolean;
   /** Evidence source: executed here vs pasted on trust. Older fixtures may omit it. */
   source?: 'openworkspace-run' | 'external-import' | 'unknown-source';
   /** Distinct human wording for the source; never a verification claim for imports. */

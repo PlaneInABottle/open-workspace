@@ -20,6 +20,12 @@ export interface CheckpointNote {
   next: string;
   owner: 'agent' | 'user';
   at: string;
+  /**
+   * Bounded references to run summaries in this workstream's workspace
+   * (opaque file-stem IDs only, never content). Empty means no links;
+   * outside evidence is described in-note, never linked.
+   */
+  evidence: string[];
 }
 
 export interface Workstream {
@@ -111,6 +117,7 @@ export async function createWorkstream(
 
 export const checkpointBoundsMessage = 'Checkpoint notes hold 2000 characters or fewer.';
 export const checkpointPatternMessage = 'Checkpoint notes accept patterns only, never secrets or literals.';
+export const checkpointEvidenceMessage = 'Checkpoint evidence must reference existing runs in this workspace.';
 
 const maxCheckpointTotal = 2000;
 const maxCheckpointField = 1000;
@@ -133,8 +140,8 @@ function checkpointField(name: string, value: unknown, allowEmpty: boolean): str
 }
 
 /** Validate a bounded pattern-only pause note; the caller stamps `at`. */
-export function sanitizeCheckpointNote(note: { goal: unknown; blocker: unknown; next: unknown; owner: unknown }): {
-  goal: string; blocker: string; next: string; owner: 'agent' | 'user';
+export function sanitizeCheckpointNote(note: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }): {
+  goal: string; blocker: string; next: string; owner: 'agent' | 'user'; evidence: string[];
 } {
   if (!note || typeof note !== 'object') throw new Error(checkpointBoundsMessage);
   const goal = checkpointField('goal', note.goal, false);
@@ -142,14 +149,46 @@ export function sanitizeCheckpointNote(note: { goal: unknown; blocker: unknown; 
   const next = checkpointField('next', note.next, false);
   if (note.owner !== 'agent' && note.owner !== 'user') throw new Error(checkpointBoundsMessage);
   if (goal.length + blocker.length + next.length > maxCheckpointTotal) throw new Error(checkpointBoundsMessage);
-  return { goal, blocker, next, owner: note.owner };
+  return { goal, blocker, next, owner: note.owner, evidence: sanitizeCheckpointEvidence(note.evidence) };
+}
+
+const maxCheckpointEvidence = 5;
+// Opaque run-summary stems only: letters, digits and ._- separators, never
+// slashes, whitespace or secret-shaped content. Malformed entries are a
+// bounds/shape refusal; well-formed but unknown IDs are refused separately
+// against the scope's stored runs.
+const evidenceIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** Shape-validate optional evidence refs; existence is checked by the service against the scope's stored runs. */
+export function sanitizeCheckpointEvidence(evidence: unknown): string[] {
+  if (evidence === undefined) return [];
+  if (!Array.isArray(evidence) || evidence.length > maxCheckpointEvidence) throw new Error(checkpointBoundsMessage);
+  const refs: string[] = [];
+  for (const entry of evidence) {
+    if (typeof entry !== 'string' || !evidenceIdPattern.test(entry)) throw new Error(checkpointBoundsMessage);
+    if (!refs.includes(entry)) refs.push(entry);
+  }
+  return refs;
+}
+
+/** IDs of runs pinned by any checkpoint note in scope; pinned runs survive ring eviction. */
+export function pinnedRunIds(
+  workstreams: Array<{ workspaceId: string; checkpointNote: { evidence?: string[] } | null }>,
+  workspaceId: string,
+): Set<string> {
+  const pinned = new Set<string>();
+  for (const workstream of workstreams) {
+    if (workstream.workspaceId !== workspaceId || !workstream.checkpointNote) continue;
+    for (const id of workstream.checkpointNote.evidence ?? []) pinned.add(id);
+  }
+  return pinned;
 }
 
 export async function setWorkstreamStatus(
   store: Store,
   id: string,
   status: WorkstreamStatus,
-  note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown },
+  note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown },
 ): Promise<Workstream> {
   if (status !== 'active' && status !== 'paused' && status !== 'done') throw new Error('Unknown workstream status.');
   const sanitized = note === undefined ? undefined : sanitizeCheckpointNote(note);

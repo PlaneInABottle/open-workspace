@@ -185,7 +185,7 @@ server.registerTool('workstream_create', {
   annotations: operateHints,
 }, ({ name, workspaceId, checkouts }) => request('/api/workstreams', { name, workspaceId, checkouts }));
 server.registerTool('workstream_status', {
-  description: 'Move a workstream between active, paused and done. A finished workstream cannot reopen. An optional note (goal, blocker, next, owner; fields <=1000 chars, 2000 total, no secrets) records pause context for later resume.',
+  description: 'Move a workstream between active, paused and done. A finished workstream cannot reopen. An optional note (goal, blocker, next, owner; fields <=1000 chars, 2000 total, no secrets) records pause context for later resume. The note may carry up to 5 evidence run IDs from this workspace; referenced runs survive ring eviction, and editing the note to drop a ref unpins it.',
   inputSchema: z.object({
     workstreamId: z.string().uuid(),
     status: z.enum(['active', 'paused', 'done']),
@@ -194,6 +194,7 @@ server.registerTool('workstream_status', {
       blocker: z.string().max(1000),
       next: z.string().min(1).max(1000),
       owner: z.enum(['agent', 'user']),
+      evidence: z.array(z.string().max(256)).max(50).optional(),
     }).strict().optional(),
   }).strict(),
   annotations: operateHints,

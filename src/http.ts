@@ -56,6 +56,9 @@ const workstreamStatusSchema = z.object({
     blocker: z.string(),
     next: z.string(),
     owner: z.enum(['agent', 'user']),
+    // Transport-level cap only; the service enforces max 5 plus ID shape and
+    // existence with safe errors.
+    evidence: z.array(z.string().max(256)).max(50).optional(),
   }).strict().optional(),
 }).strict();
 const leaseSchema = z.object({
@@ -593,6 +596,7 @@ export function createApp(service: WorkspaceService, options: {
         'A finished workstream cannot be reopened.',
         'Checkpoint notes hold 2000 characters or fewer.',
         'Checkpoint notes accept patterns only, never secrets or literals.',
+        'Checkpoint evidence must reference existing runs in this workspace.',
         'Imported results are not valid.',
         'Imported results are accepted on trust and never marked verified.',
         'Workstream limit reached.',

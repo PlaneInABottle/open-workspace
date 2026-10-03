@@ -18,6 +18,12 @@ export interface RunSummary {
   failureExcerpt: string;
   excerptTruncated: boolean;
   outputTruncated: boolean;
+  /**
+   * Stable opaque file stem identifying this summary within its scope
+   * (IDs only, never content). Newer files carry it; older files omit it
+   * and readers fall back to the file stem.
+   */
+  id?: string;
   /** Evidence source: executed here vs pasted on trust. Older files omit it. */
   source?: RunSource;
   /**
@@ -35,15 +41,26 @@ export interface RunSummary {
 }
 
 export interface RunListEntry extends Omit<RunSummary, 'failureExcerpt'> {
-  /** failureExcerpt capped at 200 chars for list views. */
+  /** Stable opaque summary ID within its scope (the file stem). */
+  id: string;
+  /** FailureExcerpt capped at 200 chars for list views. */
   excerptPreview: string;
   /** Evidence source, defaulting to openworkspace-run for older files. */
   source: RunSource;
   /** Distinct human wording for the source; never a verification claim for imports. */
   sourceLabel: string;
+  /** True when a checkpoint note in this scope references this run, exempting it from ring eviction. */
+  pinnedByNote: boolean;
 }
 
 const maxSummariesPerScope = 20;
+/**
+ * Hard ceiling on stored summary files per scope. The ring keeps the newest
+ * 20; runs referenced by a checkpoint note in scope survive eviction, but
+ * pins never push a scope past 30 files — older pins evict first once the
+ * ceiling is reached. Pins are IDs only, never content.
+ */
+export const maxPinnedSummariesPerScope = 30;
 const excerptLimit = 2048;
 const listExcerptLimit = 200;
 const maxFailingNames = 20;
@@ -90,12 +107,15 @@ export async function persistRunSummary(homeDirectory: string, entry: {
   outputTruncated: boolean;
   revision?: string | null;
   dirty?: DirtyFingerprint | null;
+  pinned?: ReadonlySet<string>;
 }): Promise<RunSummary> {
   const directory = scopeDirectory(homeDirectory, entry.workspaceId);
   await ensurePrivateDirectory(directory);
   const masked = maskSecrets(entry.output);
   const failing = parseFailingNames(masked);
+  const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const summary: RunSummary = {
+    id,
     workspaceId: entry.workspaceId,
     scriptName: entry.scriptName,
     outcome: entry.outcome,
@@ -117,18 +137,50 @@ export async function persistRunSummary(homeDirectory: string, entry: {
       truncated: entry.dirty.truncated,
     },
   };
-  await storeSummaryFile(directory, summary);
+  await storeSummaryFile(directory, id, summary, entry.pinned);
   return summary;
 }
 
-async function storeSummaryFile(directory: string, summary: RunSummary): Promise<void> {
+async function storeSummaryFile(
+  directory: string,
+  id: string,
+  summary: RunSummary,
+  pinned: ReadonlySet<string> = new Set(),
+): Promise<void> {
   const serialized = JSON.stringify(summary);
   if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
     summary.failureExcerpt = summary.failureExcerpt.slice(0, excerptLimit);
   }
-  await writeFile(join(directory, `${Date.now()}-${randomUUID().slice(0, 8)}.json`), JSON.stringify(summary), { mode: 0o600 });
+  await writeFile(join(directory, `${id}.json`), JSON.stringify(summary), { mode: 0o600 });
+  // Newest-first ring: the newest 20 always stay; pinned runs referenced by a
+  // checkpoint note survive past the ring up to the per-scope hard ceiling.
   const files = (await readdir(directory)).filter(name => name.endsWith('.json')).sort().reverse();
-  await Promise.all(files.slice(maxSummariesPerScope).map(stale => rm(join(directory, stale), { force: true })));
+  let kept = 0;
+  const stale: string[] = [];
+  for (const file of files) {
+    if (kept < maxSummariesPerScope || (kept < maxPinnedSummariesPerScope && pinned.has(runIdFromFile(file)))) {
+      kept += 1;
+    } else {
+      stale.push(file);
+    }
+  }
+  await Promise.all(stale.map(staleFile => rm(join(directory, staleFile), { force: true })));
+}
+
+/** Opaque summary ID: the file stem, without parsing any content. */
+export function runIdFromFile(fileName: string): string {
+  return fileName.endsWith('.json') ? fileName.slice(0, -'.json'.length) : fileName;
+}
+
+/** IDs of every stored summary in scope (file stems only, never content). */
+export async function listRunIds(homeDirectory: string, workspaceId: string): Promise<Set<string>> {
+  let files: string[];
+  try {
+    files = (await readdir(scopeDirectory(homeDirectory, workspaceId))).filter(name => name.endsWith('.json'));
+  } catch {
+    return new Set();
+  }
+  return new Set(files.map(runIdFromFile));
 }
 
 /** Distinct wording key for each evidence source; anything not executed here never claims verification. */
@@ -191,12 +243,14 @@ export function parseExternalRunImport(raw: unknown): ExternalRunImport {
   return { workspaceId: workspaceId.toLowerCase(), scriptName, outcome, durationMs, excerpt };
 }
 
-export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport): Promise<RunSummary> {
+export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport, pinned: ReadonlySet<string> = new Set()): Promise<RunSummary> {
   const directory = scopeDirectory(homeDirectory, parsed.workspaceId);
   await ensurePrivateDirectory(directory);
   const masked = maskSecrets(parsed.excerpt);
   const failing = parseFailingNames(masked);
+  const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const summary: RunSummary = {
+    id,
     workspaceId: parsed.workspaceId,
     scriptName: parsed.scriptName,
     outcome: parsed.outcome,
@@ -209,7 +263,7 @@ export async function importExternalRun(homeDirectory: string, parsed: ExternalR
     outputTruncated: true,
     source: 'external-import',
   };
-  await storeSummaryFile(directory, summary);
+  await storeSummaryFile(directory, id, summary, pinned);
   return summary;
 }
 
@@ -236,7 +290,7 @@ export async function readRunDurations(homeDirectory: string, workspaceId: strin
   return durations;
 }
 
-export async function listRecentRuns(homeDirectory: string, workspaceId: string, limit: number): Promise<RunListEntry[]> {
+export async function listRecentRuns(homeDirectory: string, workspaceId: string, limit: number, pinned: ReadonlySet<string> = new Set()): Promise<RunListEntry[]> {
   let files: string[];
   try {
     files = (await readdir(scopeDirectory(homeDirectory, workspaceId))).filter(name => name.endsWith('.json')).sort().reverse();
@@ -248,8 +302,9 @@ export async function listRecentRuns(homeDirectory: string, workspaceId: string,
     try {
       const summary = JSON.parse(await readFile(join(scopeDirectory(homeDirectory, workspaceId), file), 'utf8')) as RunSummary;
       const { failureExcerpt, ...rest } = summary;
+      const id = summary.id ?? runIdFromFile(file);
       const source = readSource(summary.source);
-      entries.push({ ...rest, source, sourceLabel: sourceLabel(source), excerptPreview: (failureExcerpt ?? '').slice(0, listExcerptLimit) });
+      entries.push({ ...rest, id, source, sourceLabel: sourceLabel(source), excerptPreview: (failureExcerpt ?? '').slice(0, listExcerptLimit), pinnedByNote: pinned.has(id) || pinned.has(runIdFromFile(file)) });
     } catch {
       continue;
     }

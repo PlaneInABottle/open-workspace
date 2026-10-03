@@ -31,6 +31,10 @@ const checkpointNote = z.object({
   next: z.string().min(1).max(1000),
   owner: z.enum(['agent', 'user']),
   at: z.string().datetime(),
+  // Additive: notes written before evidence links parse with no links.
+  // Read stays permissive (bounded opaque strings); write-path shape and
+  // existence are enforced by sanitizeCheckpointNote plus the service.
+  evidence: z.array(z.string().min(1).max(128)).max(5).optional().default([]),
 }).strict();
 const workstream = z.object({
   id: z.string().uuid(),
