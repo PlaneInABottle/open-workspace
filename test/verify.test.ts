@@ -76,7 +76,7 @@ test('verification runs the approved manifest script with git, service and time 
   assert.deepEqual(result.service, { pmId: 3, name: 'api', namespace: 'default', status: 'online' });
   assert.ok(Number.isFinite(Date.parse(result.verifiedAt)));
   assert.match(result.message, /not a CI verdict/);
-  assert.deepEqual(calls.map(call => `${call.command} ${call.args[0]}`), ['git rev-parse', 'git status', 'npm run']);
+  assert.deepEqual(calls.map(call => `${call.command} ${call.args[0]}`), ['git rev-parse', 'git status', 'git diff', 'npm run']);
 });
 
 test('verification refuses paths, scripts and repositories outside the approved scope', async t => {

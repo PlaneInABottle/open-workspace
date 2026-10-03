@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensurePrivateDirectory } from './store.js';
+import type { DirtyFingerprint } from './verify.js';
 
 export type RunSource = 'openworkspace-run' | 'external-import' | 'unknown-source';
 
@@ -19,6 +20,18 @@ export interface RunSummary {
   outputTruncated: boolean;
   /** Evidence source: executed here vs pasted on trust. Older files omit it. */
   source?: RunSource;
+  /**
+   * HEAD revision the run verified against, when observed. Older files omit it.
+   * Additive only: old readers ignore it, new readers treat a missing value
+   * the same as null.
+   */
+  revision?: string | null;
+  /**
+   * Dirty-state fingerprint (content hash plus path names only, never diff
+   * content). Null when the tree was clean, the checkout was not a git repo,
+   * or the bounded diff probe degraded. Older files omit it.
+   */
+  dirty?: DirtyFingerprint | null;
 }
 
 export interface RunListEntry extends Omit<RunSummary, 'failureExcerpt'> {
@@ -75,6 +88,8 @@ export async function persistRunSummary(homeDirectory: string, entry: {
   durationMs: number;
   output: string;
   outputTruncated: boolean;
+  revision?: string | null;
+  dirty?: DirtyFingerprint | null;
 }): Promise<RunSummary> {
   const directory = scopeDirectory(homeDirectory, entry.workspaceId);
   await ensurePrivateDirectory(directory);
@@ -92,6 +107,15 @@ export async function persistRunSummary(homeDirectory: string, entry: {
     excerptTruncated: masked.length > excerptLimit,
     outputTruncated: entry.outputTruncated,
     source: 'openworkspace-run',
+    revision: entry.revision ?? null,
+    // Hash plus path names only: diff content is never persisted. The
+    // producer caps files at 50; re-cap defensively so a wide caller cannot
+    // inflate the bounded summary file.
+    dirty: entry.dirty === undefined || entry.dirty === null ? null : {
+      diffHash: entry.dirty.diffHash,
+      files: entry.dirty.files.slice(0, 50),
+      truncated: entry.dirty.truncated,
+    },
   };
   await storeSummaryFile(directory, summary);
   return summary;

@@ -8,6 +8,9 @@ import { inspectPm2Services, listPm2Processes, stableRootGroup } from './service
 export const verifyCommandTimeoutMs = 120_000;
 export const verifySocketTimeoutMs = 180_000;
 const gitCommandTimeoutMs = 10_000;
+const dirtyDiffTimeoutMs = 5_000;
+const dirtyDiffOutputLimit = 1024 * 1024;
+const dirtyFileCap = 50;
 const commandOutputLimit = 64 * 1024;
 const manifestSizeLimit = 256 * 1024;
 const scriptBodyLimit = 8192;
@@ -30,6 +33,26 @@ export interface VerificationGitContext {
   revisionState: 'observed' | 'unknown';
   worktree: 'clean' | 'dirty' | 'unknown';
   changedEntries: number | null;
+  /**
+   * Dirty-state fingerprint captured alongside the revision pin. Null when the
+   * tree is clean, the checkout is not a git repo, or the bounded diff probe
+   * timed out or failed. Only a content hash plus repo-relative path names is
+   * ever persisted — diff content itself is never stored.
+   */
+  dirty: DirtyFingerprint | null;
+}
+
+/**
+ * Which uncommitted code a verification ran against. `diffHash` is the
+ * sha256 hex of the captured `git diff --no-color` output (content never
+ * stored); `files` holds up to 50 repo-relative changed paths with no
+ * contents or values; `truncated` marks a capped capture (diff output cap or
+ * the 50-file cap), in which case `diffHash` covers what was captured.
+ */
+export interface DirtyFingerprint {
+  diffHash: string;
+  files: string[];
+  truncated: boolean;
 }
 
 export interface VerificationServiceContext {
@@ -232,8 +255,56 @@ async function readTestScript(repository: string, scriptName: string): Promise<{
   return { body, hash: createHash('sha256').update(body, 'utf8').digest('hex') };
 }
 
+/** Repo-relative changed paths from `git status --porcelain` output, capped at 50 names. */
+function dirtyFilesFromStatus(statusStdout: string): { files: string[]; truncated: boolean } {
+  const files: string[] = [];
+  let total = 0;
+  for (const line of statusStdout.split('\n')) {
+    if (!line) continue;
+    total += 1;
+    if (files.length >= dirtyFileCap) continue;
+    const entry = line.slice(3);
+    const arrow = entry.indexOf(' -> ');
+    const raw = arrow >= 0 ? entry.slice(arrow + 4) : entry;
+    const name = raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+    if (name) files.push(name);
+  }
+  return { files, truncated: total > files.length };
+}
+
+/**
+ * Hash-only dirty fingerprint for a worktree already known to be dirty.
+ * Returns null (never throws, never fails verification) when the checkout is
+ * not a git repo, the bounded diff probe times out, fails, or cannot start.
+ * A capped diff capture is still hashed with `truncated` set; only timeouts
+ * and failures degrade to absent.
+ */
+export async function observeDirtyFingerprint(
+  repository: string,
+  run: CommandRunner,
+  statusStdout: string,
+): Promise<DirtyFingerprint | null> {
+  let diff: CommandOutcome;
+  try {
+    diff = await run('git', ['diff', '--no-color'], {
+      cwd: repository, timeoutMs: dirtyDiffTimeoutMs, outputLimit: dirtyDiffOutputLimit,
+      env: boundedEnvironment({ GIT_OPTIONAL_LOCKS: '0' }),
+    });
+  } catch {
+    return null;
+  }
+  if (diff.spawnFailed || diff.timedOut) return null;
+  if (diff.exitCode !== 0 && !diff.truncated) return null;
+  const { files, truncated } = dirtyFilesFromStatus(statusStdout);
+  return {
+    diffHash: createHash('sha256').update(diff.stdout, 'utf8').digest('hex'),
+    files,
+    truncated: truncated || diff.truncated,
+  };
+}
+
 async function observeGitContext(repository: string, run: CommandRunner): Promise<VerificationGitContext> {
-  const unknown: VerificationGitContext = { revision: null, revisionState: 'unknown', worktree: 'clean', changedEntries: null };
+  const unknown: VerificationGitContext = { revision: null, revisionState: 'unknown', worktree: 'clean', changedEntries: null, dirty: null };
   let revision: CommandOutcome;
   try {
     revision = await run('git', ['rev-parse', 'HEAD'], {
@@ -253,13 +324,17 @@ async function observeGitContext(repository: string, run: CommandRunner): Promis
       env: boundedEnvironment({ GIT_OPTIONAL_LOCKS: '0' }),
     });
   } catch {
-    return { revision: sha, revisionState: 'observed', worktree: 'unknown', changedEntries: null };
+    return { revision: sha, revisionState: 'observed', worktree: 'unknown', changedEntries: null, dirty: null };
   }
   if (status.spawnFailed || status.exitCode !== 0) {
-    return { revision: sha, revisionState: 'observed', worktree: 'unknown', changedEntries: null };
+    return { revision: sha, revisionState: 'observed', worktree: 'unknown', changedEntries: null, dirty: null };
   }
   const entries = status.stdout.split('\n').filter(line => line.length > 0).length;
-  return { revision: sha, revisionState: 'observed', worktree: entries === 0 ? 'clean' : 'dirty', changedEntries: entries };
+  const worktree = entries === 0 ? 'clean' : 'dirty';
+  if (worktree !== 'dirty') {
+    return { revision: sha, revisionState: 'observed', worktree, changedEntries: entries, dirty: null };
+  }
+  return { revision: sha, revisionState: 'observed', worktree, changedEntries: entries, dirty: await observeDirtyFingerprint(repository, run, status.stdout) };
 }
 
 async function observeServiceLink(

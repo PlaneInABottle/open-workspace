@@ -98,6 +98,8 @@ export interface VerificationResult {
     revisionState: 'observed' | 'unknown';
     worktree: 'clean' | 'dirty' | 'unknown';
     changedEntries: number | null;
+    /** Dirty-state fingerprint (content hash plus path names only); null/absent when clean or degraded. */
+    dirty?: { diffHash: string; files: string[]; truncated: boolean } | null;
   };
   service: { pmId: number; name: string; namespace: string | null; status: string } | null;
   message: string;
@@ -173,6 +175,10 @@ export interface RunListEntry {
   source?: 'openworkspace-run' | 'external-import' | 'unknown-source';
   /** Distinct human wording for the source; never a verification claim for imports. */
   sourceLabel?: string;
+  /** HEAD revision the run verified against, when observed. Older entries omit it. */
+  revision?: string | null;
+  /** Dirty-state fingerprint (content hash plus path names only); null/absent when clean or degraded. */
+  dirty?: { diffHash: string; files: string[]; truncated: boolean } | null;
 }
 
 export type ProjectRootPickerResult =

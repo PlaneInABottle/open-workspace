@@ -132,6 +132,8 @@ export class WorkspaceService {
         durationMs: result.durationMs,
         output: result.output,
         outputTruncated: result.truncated,
+        revision: result.git.revision,
+        dirty: result.git.dirty,
       });
     } catch (error) {
       console.error('Run summary persist failed:', error instanceof Error ? error.message : error);
