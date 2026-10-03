@@ -11,7 +11,9 @@ import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import { soloDefaultAssignmentId } from '../src/workstreams.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
-import { consumerSkills } from '../src/consumer-skills.js';
+import { consumerSkills, initConsumerSkills } from '../src/consumer-skills.js';
+
+await initConsumerSkills();
 
 test('real stdio MCP registers and operates without dashboard approval and survives service recreation', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-mcp-')));
