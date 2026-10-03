@@ -36,6 +36,14 @@ Milestones, verification, and learning run as one flow: mirror completed major m
 
 Give each child assignment a coordinator-issued `assignmentId`. Before treating that assignment as handed off, query `workstream_context` with that ID and check its present/missing completion state. A completion is an append-only, idempotent result record; it does not change the coordinator-owned workstream status. If the assignment has no completion, ask the **same child** to record its result; never rerun tests, sends, or other side effects as a substitute for a missing handoff. Completion checks are `agent_report` claims, not independent proof or verified-by-us results. Existing `openworkspace_run` evidence is context-stamped separately; pasted/external evidence retains its unverified source and tone. Keep checks and evidence references bounded. Counts are queryable, but do not claim percentage rates from this bounded history.
 
+### Coordinator loop fit (kickoff context, closeout receipt)
+
+When the coordinator runs its own delivery loop, fit OpenWorkspace into it with two touches; the loop itself is unchanged and no new tool is needed. At kickoff, call `workstream_context`; at closeout, attach an `environment_verify` receipt.
+
+**Kickoff — one `workstream_context` call.** Pass `{ workstreamId: "<workstream-id>", limit?, assignmentId? }` (`limit` 1–20, default 5; `assignmentId` is the coordinator-issued ID when one exists). Read the task reference from `name`/`checkouts`, prior state from `checkpoint.latest` plus `open`, and claimed proof from completion `checks` and `recentRuns` — completions are agent-reported (see above), so treat them as claims until backed by run evidence.
+
+**Closeout — one `environment_verify` call.** Pass `{ workspaceId: "<workspace-id>", environmentId: "<environment-id>", repositoryPath: "<repo-path>", scriptName: "<repo-script>" }`; it runs one repo-native script and returns the environment snapshot with the verification outcome and persisted run id. Tie the user-visible result to that receipt; a completion record alone is not proof.
+
 ## Checkpoint nudge
 
 When a workstream stayed open a long time with no checkpoint update, close the session with a single-line reminder suggesting the owner write one checkpoint note (goal, blocker, next step). Suggested wording: "Consider writing one checkpoint note (goal, blocker, next step) before closing." Advisory only — never blocks closing, never repeats.

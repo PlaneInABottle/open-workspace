@@ -40,6 +40,7 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
     'no more than **5 rules per invocation**',
     'active project', 'project-root `AGENTS.md`', 'shared ancestor outside the project requires explicit user authorization',
     'refuse that edit and report the boundary', 'skip the citation; never invent one',
+    'workstream_context', 'environment_verify',
     'nearest existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`', 'never runs automatically',
     'secrets', 'absolute user paths', 'customer data', 'SQL literals', 'log/transcript content',
   ]) {

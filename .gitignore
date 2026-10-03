@@ -7,3 +7,5 @@ coverage/
 .env
 .env.*
 !.env.example
+# Local-only notes (never ship): ResAI-specific hunks, shelved plans
+docs/*.local.md
