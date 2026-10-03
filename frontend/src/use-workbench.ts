@@ -11,8 +11,6 @@ import {
   type Lease,
   type Learnings,
   type RunListEntry,
-  type VerificationRequest,
-  type VerificationResult,
   type Workspace,
   type Workstream,
 } from './api';
@@ -33,9 +31,6 @@ export interface WorkbenchState {
   services: ServiceInventory | null;
   servicesError: string | null;
   servicesLoading: boolean;
-  verification: VerificationResult | null;
-  verificationError: string | null;
-  verificationLoading: boolean;
   workstreams: Workstream[];
   workstreamsError: string | null;
   workstreamsLoading: boolean;
@@ -65,9 +60,6 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     services: null,
     servicesError: null,
     servicesLoading: false,
-    verification: null,
-    verificationError: null,
-    verificationLoading: false,
     workstreams: [],
     workstreamsError: null,
     workstreamsLoading: false,
@@ -275,50 +267,6 @@ export function useWorkbench() {
     }
   }, [api, commit, handleSessionExpired]);
 
-  const runServiceAction = useCallback(async (workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    try {
-      const result = await api.serviceAction(workspaceId, action, target);
-      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
-      if (result.status !== 'completed') {
-        commit(current => ({ ...current, servicesError: result.message }));
-        setNotice({ kind: 'error', message: result.message });
-        return false;
-      }
-      setNotice({ kind: 'success', message: result.message });
-      await inspectServices(workspaceId);
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && selectedId.current === workspaceId) {
-        commit(current => ({ ...current, servicesError: errorMessage(error) }));
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, commit, handleSessionExpired, inspectServices, setNotice]);
-
-  const runVerification = useCallback(async (workspaceId: string, verification: VerificationRequest) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    commit(current => ({ ...current, verificationLoading: true, verificationError: null }));
-    try {
-      const result = await api.verify(workspaceId, verification);
-      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
-      commit(current => ({ ...current, verificationLoading: false, verification: result, verificationError: null }));
-      setNotice({ kind: result.outcome === 'passed' ? 'success' : 'error', message: result.message });
-      return result.outcome === 'passed';
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && selectedId.current === workspaceId) {
-        commit(current => ({ ...current, verificationLoading: false, verificationError: errorMessage(error) }));
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, commit, handleSessionExpired, setNotice]);
-
   const listWorkstreamsFor = useCallback(async (workspaceId: string, session: number) => {
     const request = ++workstreamsSequence.current;
     commit(current => ({ ...current, workstreamsLoading: true, workstreamsError: null }));
@@ -340,87 +288,6 @@ export function useWorkbench() {
       return false;
     }
   }, [api, commit, handleSessionExpired]);
-
-  const createWorkstream = useCallback(async (workspaceId: string, name: string, checkouts: string[]) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    try {
-      await api.createWorkstream({ name, workspaceId, checkouts });
-      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
-      setNotice({ kind: 'success', message: 'Workstream created with pinned revisions.' });
-      await listWorkstreamsFor(workspaceId, session);
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && selectedId.current === workspaceId) {
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
-
-  const setWorkstreamStatus = useCallback(async (workspaceId: string, id: string, status: Workstream['status']) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    try {
-      await api.setWorkstreamStatus(id, status);
-      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
-      await listWorkstreamsFor(workspaceId, session);
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && selectedId.current === workspaceId) {
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
-
-  const acquireLease = useCallback(async (workspaceId: string, workstreamId: string, resource: string) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    try {
-      const result = await api.acquireLease(resource, workstreamId);
-      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
-      setNotice({
-        kind: result.lease.status === 'held' ? 'success' : 'info',
-        message: result.lease.status === 'held'
-          ? `Resource ${resource} is held by this workstream.`
-          : `Resource ${resource} is busy; this workstream is queued at position ${result.position}.`,
-      });
-      await listWorkstreamsFor(workspaceId, session);
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && selectedId.current === workspaceId) {
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
-
-  const releaseLease = useCallback(async (workspaceId: string, workstreamId: string, resource: string) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    try {
-      const result = await api.releaseLease(resource, workstreamId);
-      if (!api.isCurrent(session) || selectedId.current !== workspaceId) return false;
-      setNotice({
-        kind: 'success',
-        message: result.promoted
-          ? `Resource ${resource} released; another workstream now holds it.`
-          : `Resource ${resource} released.`,
-      });
-      await listWorkstreamsFor(workspaceId, session);
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && selectedId.current === workspaceId) {
-        setNotice({ kind: 'error', message: errorMessage(error) });
-      }
-      return false;
-    }
-  }, [api, handleSessionExpired, listWorkstreamsFor, setNotice]);
 
   const loadActivity = useCallback(async () => {
     const session = api.sessionGeneration;
@@ -492,7 +359,7 @@ export function useWorkbench() {
     inspectionSequence.current++;
     servicesSequence.current++;
     selectedId.current = null;
-    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, verification: null, verificationError: null, verificationLoading: false, workstreams: [], workstreamsError: null, workstreamsLoading: false, leases: [], leasesError: null }));
+    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, workstreams: [], workstreamsError: null, workstreamsLoading: false, leases: [], leasesError: null }));
   }, [commit]);
 
   const mutate = useCallback(async <T,>(key: string, action: () => Promise<T>, successMessage: string) => {
@@ -594,12 +461,6 @@ export function useWorkbench() {
     disconnect,
     inspectProject,
     inspectServices,
-    runServiceAction,
-    runVerification,
-    createWorkstream,
-    setWorkstreamStatus,
-    acquireLease,
-    releaseLease,
     loadActivity,
     loadRecords,
     clearSelection,

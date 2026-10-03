@@ -245,7 +245,7 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
         )}
         {visible.length === 0 ? (
           <p role="status" className="py-5 text-sm text-muted-foreground">
-            {rows.length === 0 ? 'Nothing recorded for this project yet. Run a verification or ask your assistant to note a milestone.' : 'No rows match these filters.'}
+            {rows.length === 0 ? 'Nothing recorded for this project yet. Ask your assistant to record a milestone or operation.' : 'No rows match these filters.'}
           </p>
         ) : (
           <ul className="divide-y divide-border">

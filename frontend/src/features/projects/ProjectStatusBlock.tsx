@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, CircleDashed, RefreshCw } from 'lucide-react';
-import type { Inspection, ServiceInventory, VerificationResult } from '@/api';
+import type { Inspection, ServiceInventory } from '@/api';
 
 export const NOT_YET_CHECKED_LABEL = 'Henüz kontrol edilmedi · Not yet checked';
 
@@ -10,7 +10,6 @@ interface ProjectStatusBlockProps {
   inspectionLoading: boolean;
   services: ServiceInventory | null;
   servicesLoading: boolean;
-  verification: VerificationResult | null;
 }
 
 type RowState = 'evidenced' | 'checking' | 'unchecked';
@@ -30,7 +29,7 @@ function StatusIcon({ state }: { state: RowState }) {
 }
 
 function buildRows(props: ProjectStatusBlockProps): StatusRow[] {
-  const { connected, inspection, inspectionLoading, services, servicesLoading, verification } = props;
+  const { connected, inspection, inspectionLoading, services, servicesLoading } = props;
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) ?? 0;
   const unavailableRoots = (inspection?.roots ?? []).filter(root => root.unavailable);
   const warningCount = (inspection?.roots ?? []).reduce((total, root) => total + root.warnings.length, 0);
@@ -57,12 +56,6 @@ function buildRows(props: ProjectStatusBlockProps): StatusRow[] {
       `${matchedServices.length} matched PM2 ${matchedServices.length === 1 ? 'process' : 'processes'} observed (${matchedServices.map(service => `${service.name}: ${service.status}`).join(', ')}). Process state only.`,
     );
   }
-  if (verification) {
-    observations.push(`Last repository test ${verification.outcome} (${verification.scriptName}, exit ${verification.exitCode === null ? 'n/a' : verification.exitCode}). Test observation only.`);
-  } else {
-    observations.push('No repository test has run for this project.');
-  }
-
   return [
     {
       id: 'connection',
@@ -70,7 +63,7 @@ function buildRows(props: ProjectStatusBlockProps): StatusRow[] {
       state: connected ? 'evidenced' : 'unchecked',
       summary: connected ? 'Connected · this browser tab' : 'Not connected',
       detail: connected
-        ? <p>This browser tab holds a temporary dashboard session. The dashboard records activity; it never gates execution.</p>
+        ? <p>This browser tab holds a temporary dashboard session for project registration and observation. Agents operate through MCP.</p>
         : <p>This browser tab has no dashboard session. Connect this browser to continue.</p>,
     },
     {

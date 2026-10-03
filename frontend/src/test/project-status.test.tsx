@@ -56,27 +56,6 @@ function serviceInventory() {
   };
 }
 
-function passedVerification() {
-  return {
-    verifiedAt: '2026-10-02T00:01:00.000Z',
-    repositoryPath: '/tmp/status-fixture/web',
-    rootPath: '/tmp/status-fixture',
-    scriptName: 'test',
-    scriptHash: 'abc123',
-    scriptPreview: 'vitest run',
-    outcome: 'passed' as const,
-    exitCode: 0,
-    timedOut: false,
-    aborted: false,
-    truncated: false,
-    durationMs: 120,
-    output: 'ok',
-    git: { revision: null, revisionState: 'unknown' as const, worktree: 'clean' as const, changedEntries: null },
-    service: null,
-    message: 'Repository test passed.',
-  };
-}
-
 function installFetch(handler: (path: string, init: RequestInit) => Promise<Response>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), window.location.href);
@@ -105,7 +84,6 @@ describe('project status block', () => {
         inspectionLoading={false}
         services={null}
         servicesLoading={false}
-        verification={null}
       />,
     );
     expect(screen.getByRole('heading', { name: 'Project status' })).toBeInTheDocument();
@@ -116,7 +94,7 @@ describe('project status block', () => {
     expect(document.body.textContent).not.toMatch(/not ready/i);
   });
 
-  it('never claims readiness success from process state or a passed repository test', () => {
+  it('never claims readiness success from process state', () => {
     render(
       <ProjectStatusBlock
         connected
@@ -124,7 +102,6 @@ describe('project status block', () => {
         inspectionLoading={false}
         services={serviceInventory()}
         servicesLoading={false}
-        verification={passedVerification()}
       />,
     );
     expect(screen.getByRole('button', { name: /Runtime readiness.*Not yet checked/s })).toBeInTheDocument();
@@ -134,7 +111,6 @@ describe('project status block', () => {
     expect(detail).toHaveTextContent(/no readiness probe has run/i);
     expect(detail).toHaveTextContent(/web: online/i);
     expect(detail).toHaveTextContent(/process state only/i);
-    expect(detail).toHaveTextContent(/test observation only/i);
   });
 
   it('expands row detail on click and collapses on a second click', () => {
@@ -145,7 +121,6 @@ describe('project status block', () => {
         inspectionLoading={false}
         services={null}
         servicesLoading={false}
-        verification={null}
       />,
     );
     const discovery = screen.getByRole('button', { name: /Metadata discovery/s });
@@ -167,7 +142,6 @@ describe('project status block', () => {
         inspectionLoading={false}
         services={null}
         servicesLoading={false}
-        verification={null}
       />,
     );
     expect(screen.getAllByText(NOT_YET_CHECKED_LABEL)).toHaveLength(2);

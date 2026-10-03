@@ -531,7 +531,7 @@ describe('project-first workbench', () => {
     expect(document.body.textContent).not.toContain(roots[1]);
   });
 
-  it('lets the user request bounded PM2 service inventory without claiming health', async () => {
+  it('keeps PM2 service inventory readable without exposing lifecycle controls', async () => {
     const approved = workspace('11111111-1111-4111-8111-111111111111', 'Service fixture', '/tmp/service-fixture');
     const inspection = {
       workspace: approved,
@@ -549,13 +549,11 @@ describe('project-first workbench', () => {
       ambiguousServices: [],
     };
     let servicesCalls = 0;
-    let actionCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(inspection);
       if (path === `/api/workspaces/${approved.id}/services` && init.method === 'POST') { servicesCalls++; return json(serviceInventory); }
-      if (path === `/api/workspaces/${approved.id}/services/restart` && init.method === 'POST') { actionCalls++; return json({ action: 'restart', target: { pmId: 4, name: 'worker', namespace: 'default' }, status: 'completed', serviceStatus: 'stopped', message: 'PM2 accepted the restart. Process state is not readiness.' }); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -570,18 +568,14 @@ describe('project-first workbench', () => {
     expect(screen.getByText('online')).toBeInTheDocument();
     expect(screen.getByText(/Working directory: \/tmp\/service-fixture\/worker/)).toBeInTheDocument();
     expect(screen.queryByText(/no runtime was started or checked/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Restart or stop only the exactly mapped service/i)).toBeInTheDocument();
+    expect(screen.getByText(/Read-only PM2 process metadata/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restart worker' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop worker' })).not.toBeInTheDocument();
     expect(screen.getByText(/3 local processes scanned/)).toBeInTheDocument();
     expect(servicesCalls).toBe(1);
-
-    let apiCallsForTest = actionCalls;
-    fireEvent.click(screen.getByRole('button', { name: 'Restart worker' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm restart worker' }));
-    expect(await screen.findByText(/PM2 accepted the restart/)).toBeInTheDocument();
-    expect(actionCalls).toBe(apiCallsForTest + 1);
   });
 
-  it('runs one repository test with checkout, worktree and service context', async () => {
+  it('keeps repository inventory visible without a dashboard test runner', async () => {
     const approved = workspace('22222222-2222-4222-8222-222222222222', 'Verify fixture', '/tmp/verify-fixture');
     const nodeInspection = {
       workspace: approved,
@@ -604,41 +598,12 @@ describe('project-first workbench', () => {
         unavailable: false,
       }],
     };
-    const serviceInventory = {
-      inspectedAt: '2026-10-02T00:00:00.000Z',
-      runner: 'pm2' as const,
-      available: true,
-      processCount: 1,
-      matchedProcessCount: 1,
-      unmatchedProcessCount: 0,
-      services: [{ name: 'web', pmId: 9, namespace: 'default', status: 'online', cwd: '/tmp/verify-fixture/web', restartCount: 0, matchedRoots: ['/tmp/verify-fixture'], exactRootPath: '/tmp/verify-fixture' }],
-      ambiguousServices: [],
-    };
-    const verificationResult = {
-      verifiedAt: '2026-10-02T00:01:00.000Z',
-      repositoryPath: '/tmp/verify-fixture/web',
-      rootPath: '/tmp/verify-fixture',
-      scriptName: 'check',
-      scriptHash: `${'b'.repeat(64)}`,
-      scriptPreview: 'node check.mjs',
-      outcome: 'passed',
-      exitCode: 0,
-      timedOut: false,
-      aborted: false,
-      truncated: false,
-      durationMs: 120,
-      output: 'ok\n',
-      git: { revision: `${'a'.repeat(40)}`, revisionState: 'observed', worktree: 'dirty', changedEntries: 2 },
-      service: { pmId: 9, name: 'web', namespace: 'default', status: 'online' },
-      message: 'The repository test exited 0 in this checkout. This is local diagnostic context, not a CI verdict or end-to-end business verification.',
-    };
-    let verifyCalls = 0;
+    let verificationCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(nodeInspection);
-      if (path === `/api/workspaces/${approved.id}/services` && init.method === 'POST') return json(serviceInventory);
-      if (path === `/api/workspaces/${approved.id}/verify` && init.method === 'POST') { verifyCalls++; return json(verificationResult); }
+      if (path === `/api/workspaces/${approved.id}/verify` && init.method === 'POST') { verificationCalls++; return json({}); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -646,65 +611,77 @@ describe('project-first workbench', () => {
     const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
     fireEvent.click(within(rail).getByRole('button', { name: /Verify fixture/ }));
 
-    expect(await screen.findByText('Run one repository test')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Run repository test' }));
-    expect(await screen.findByText('Run this exact check?')).toBeInTheDocument();
-    expect(screen.getByText('npm run check --silent')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm run check' }));
-
-    expect(await screen.findByText('passed')).toBeInTheDocument();
-    const verification = screen.getByRole('status', { name: 'Verification passed' });
-    expect(within(verification).getByText(/not a CI verdict/)).toBeInTheDocument();
-    expect(within(verification).getByText(/worktree dirty \(2 changed\)/)).toBeInTheDocument();
-    expect(within(verification).getByText(/service web \(online\)/)).toBeInTheDocument();
-    expect(verifyCalls).toBe(1);
+    expect(await screen.findByRole('heading', { name: 'Project inventory' })).toBeInTheDocument();
+    expect(screen.getAllByText('web').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /Run repository test/ })).not.toBeInTheDocument();
+    expect(verificationCalls).toBe(0);
   });
 
-  it('creates workstreams on registered roots and moves their status forward', async () => {
+  it('shows a concise workstream empty state without operation controls', async () => {
+    const approved = workspace('33333333-3333-4333-8333-333333333333', 'Empty stream fixture', '/tmp/empty-stream-fixture');
+    const streamInspection = {
+      workspace: approved,
+      target: { id: 'local' as const, kind: 'local' as const },
+      roots: [{ path: '/tmp/empty-stream-fixture', repositories: [], warnings: [], unavailable: false }],
+    };
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
+      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(streamInspection);
+      if (path === '/api/workstreams' && init.method === 'GET') return json([]);
+      if (path === '/api/leases' && init.method === 'GET') return json([]);
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Empty stream fixture/ }));
+
+    const workstreamsRegion = await screen.findByRole('region', { name: 'Workstreams' });
+    expect(within(workstreamsRegion).getByText('No workstreams have been recorded for this project.')).toBeInTheDocument();
+    expect(within(workstreamsRegion).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(workstreamsRegion).queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('keeps workstream and lease records readable without operation controls', async () => {
     const approved = workspace('33333333-3333-4333-8333-333333333333', 'Stream fixture', ['/tmp/stream-a', '/tmp/stream-b']);
     const streamInspection = {
       workspace: approved,
       target: { id: 'local' as const, kind: 'local' as const },
       roots: ['/tmp/stream-a', '/tmp/stream-b'].map(path => ({ path, repositories: [], warnings: [], unavailable: false })),
     };
-    let stored: Array<{ id: string; name: string; workspaceId: string; status: string; checkouts: Array<{ root: string; revision: null; revisionState: string }> }> = [];
-    let leases: Array<{ resource: string; workstreamId: string; status: string }> = [];
-    let createCalls = 0;
-    let statusCalls = 0;
+    const workstreams = [
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        name: 'Group A',
+        workspaceId: approved.id,
+        status: 'active',
+        checkouts: [{ root: '/tmp/stream-a', revision: 'a'.repeat(40), revisionState: 'observed', observedAt: '2026-10-02T00:00:00.000Z' }],
+        createdAt: '2026-10-02T00:00:00.000Z',
+        updatedAt: '2026-10-02T00:00:00.000Z',
+      },
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        name: 'Group B',
+        workspaceId: approved.id,
+        status: 'paused',
+        checkouts: [{ root: '/tmp/stream-b', revision: null, revisionState: 'unknown', observedAt: '2026-10-02T00:00:00.000Z' }],
+        createdAt: '2026-10-02T00:00:00.000Z',
+        updatedAt: '2026-10-02T00:00:00.000Z',
+      },
+    ];
+    const leases = [
+      { resource: 'port:3000', workstreamId: workstreams[0].id, status: 'held', createdAt: '2026-10-02T00:00:00.000Z', updatedAt: '2026-10-02T00:00:00.000Z' },
+      { resource: 'port:3000', workstreamId: workstreams[1].id, status: 'queued', createdAt: '2026-10-02T00:01:00.000Z', updatedAt: '2026-10-02T00:01:00.000Z' },
+    ];
+    let mutationCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(streamInspection);
-      if (path === '/api/workstreams' && init.method === 'GET') return json(stored);
-      if (path === '/api/workstreams' && init.method === 'POST') {
-        createCalls++;
-        const input = JSON.parse(String(init.body)) as { name: string; workspaceId: string; checkouts: string[] };
-        stored = [{ id: '44444444-4444-4444-8444-444444444444', name: input.name, workspaceId: input.workspaceId, status: 'active', checkouts: input.checkouts.map(root => ({ root, revision: null, revisionState: 'unknown' })) }];
-        return json(stored[0], 201);
-      }
-      if (path === '/api/workstreams/44444444-4444-4444-8444-444444444444/status' && init.method === 'POST') {
-        statusCalls++;
-        stored = stored.map(entry => ({ ...entry, status: 'paused' }));
-        return json(stored[0]);
-      }
+      if (path === '/api/workstreams' && init.method === 'GET') return json(workstreams);
       if (path === '/api/leases' && init.method === 'GET') return json(leases);
-      if (path === '/api/leases/acquire' && init.method === 'POST') {
-        const input = JSON.parse(String(init.body)) as { resource: string; workstreamId: string };
-        const held = leases.some(lease => lease.resource === input.resource && lease.status === 'held');
-        const lease = { resource: input.resource, workstreamId: input.workstreamId, status: held ? 'queued' : 'held' };
-        leases = [...leases, lease];
-        return json({ lease, position: held ? 1 : 0 });
-      }
-      if (path === '/api/leases/release' && init.method === 'POST') {
-        const input = JSON.parse(String(init.body)) as { resource: string; workstreamId: string };
-        leases = leases.filter(lease => !(lease.resource === input.resource && lease.workstreamId === input.workstreamId));
-        const next = leases.find(lease => lease.resource === input.resource && lease.status === 'queued');
-        if (next) {
-          leases = leases.map(lease => lease === next ? { ...lease, status: 'held' } : lease);
-          return json({ released: true, promoted: next.workstreamId });
-        }
-        return json({ released: true, promoted: null });
-      }
+      if (path.startsWith('/api/workstreams') || path.startsWith('/api/leases')) mutationCalls++;
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -712,27 +689,15 @@ describe('project-first workbench', () => {
     const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
     fireEvent.click(within(rail).getByRole('button', { name: /Stream fixture/ }));
 
-    expect(await screen.findByText('Workstreams')).toBeInTheDocument();
-    const workstreamsRegion = screen.getByRole('region', { name: 'Workstreams' });
-    expect(within(workstreamsRegion).getByText('No workstreams yet. Create one to track parallel work on these roots.')).toBeInTheDocument();
-    fireEvent.change(within(workstreamsRegion).getByRole('textbox', { name: 'Workstream name' }), { target: { value: 'Group A' } });
-    fireEvent.click(within(workstreamsRegion).getByRole('checkbox', { name: '/tmp/stream-a' }));
-    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Create workstream' }));
-
-    expect(await within(workstreamsRegion).findByText('Group A')).toBeInTheDocument();
-    expect(screen.getByText(/rev unknown/)).toBeInTheDocument();
-    expect(createCalls).toBe(1);
-    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Pause Group A' }));
-    expect(await within(workstreamsRegion).findByText('paused')).toBeInTheDocument();
-    expect(statusCalls).toBe(1);
-
-    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Resume Group A' }));
-    expect(await within(workstreamsRegion).findByText('Group A')).toBeInTheDocument();
-    fireEvent.change(within(workstreamsRegion).getByRole('textbox', { name: 'Hold a resource' }), { target: { value: 'port:3000' } });
-    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Hold' }));
-    expect(await within(workstreamsRegion).findByText(/port:3000 · held/)).toBeInTheDocument();
-    fireEvent.click(within(workstreamsRegion).getByRole('button', { name: 'Release port:3000 from Group A' }));
-    await waitFor(() => expect(within(workstreamsRegion).queryByText(/port:3000 · held/)).not.toBeInTheDocument());
+    const workstreamsRegion = await screen.findByRole('region', { name: 'Workstreams' });
+    expect(within(workstreamsRegion).getByText('Group A')).toBeInTheDocument();
+    expect(within(workstreamsRegion).getByText('active')).toBeInTheDocument();
+    expect(within(workstreamsRegion).getByText(/rev a{12}…/)).toBeInTheDocument();
+    expect(within(workstreamsRegion).getByText(/port:3000 · held/)).toBeInTheDocument();
+    expect(within(workstreamsRegion).getByText(/port:3000 · queued \(position 1\)/)).toBeInTheDocument();
+    expect(within(workstreamsRegion).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(workstreamsRegion).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(mutationCalls).toBe(0);
   });
 
   it('records dashboard and assistant operations in the AI setup activity trail', async () => {

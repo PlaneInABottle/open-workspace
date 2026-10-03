@@ -313,12 +313,6 @@ export function App() {
               onSelectProject={selectProject}
               onRetryInspection={id => { void workbench.inspectProject(id, true); }}
               onInspectServices={id => { void workbench.inspectServices(id); }}
-              onServiceAction={(id, action, target) => { void workbench.runServiceAction(id, action, target); }}
-              onVerify={(id, verification) => { void workbench.runVerification(id, verification); }}
-              onCreateWorkstream={(id, name, checkouts) => { void workbench.createWorkstream(id, name, checkouts); }}
-              onWorkstreamStatus={(id, workstreamId, status) => { void workbench.setWorkstreamStatus(id, workstreamId, status); }}
-              onAcquireLease={(id, workstreamId, resource) => { void workbench.acquireLease(id, workstreamId, resource); }}
-              onReleaseLease={(id, workstreamId, resource) => { void workbench.releaseLease(id, workstreamId, resource); }}
               onGoToAi={() => navigate('setup')}
               onLoadRecords={workbench.loadRecords}
             />
@@ -326,7 +320,7 @@ export function App() {
           {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} />}
           {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRemove={id => void workbench.removeWorkspace(id)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
         </div>
-        <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · the dashboard records activity, it never gates execution</footer>
+        <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · register and observe here; agents operate through MCP</footer>
       </main>
     </div>
   );
