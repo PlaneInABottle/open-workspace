@@ -48,9 +48,28 @@ export interface LearningRuleEntry {
   file: string;
   evidenceRefs: string[];
   failureSignature: LearningFailureSignature;
+  /**
+   * Waste-lesson extension (additive, optional-with-default): lowercase
+   * situation tags (e.g. setup-detour context) matched against a server-built
+   * TaskContext. Legacy entries omit both and read as measured with no tags.
+   * `measured` is server-stamped (tests+errorClasses > 0) and never
+   * client-settable: sanitizeLearningRecord refuses the key outright.
+   */
+  situations?: string[];
+  measured?: boolean;
   createdAt: string;
   lastValidatedAt: string;
   status: 'active' | 'suspect';
+}
+
+/** Legacy-safe accessors: entries written before the extension read as measured with no tags. */
+export function entrySituations(entry: LearningRuleEntry): string[] {
+  return Array.isArray(entry.situations) ? entry.situations : [];
+}
+
+/** Legacy-safe: pre-extension entries were always failure-measured. */
+export function entryMeasured(entry: LearningRuleEntry): boolean {
+  return entry.measured ?? true;
 }
 
 /** Hard ceiling on stored entries. Suspects evict last (see evictLearningEntries). */
@@ -60,6 +79,10 @@ export const maxLearningFile = 256;
 export const maxEvidenceRefs = 5;
 export const maxSignatureItems = 10;
 export const maxSignatureItemLength = 120;
+/** Waste-lesson situation tags: at most 10 per entry, each 3–40 chars after trim+lowercase. */
+export const maxSituations = 10;
+export const minSituationLength = 3;
+export const maxSituationLength = 40;
 /** Total MCP instructions budget shared with the base + learning suffix. */
 export const learningTotalCap = 760;
 const maxLessonTitlesPerLine = 3;
@@ -100,18 +123,21 @@ export interface SanitizedLearningRecord {
   file: string;
   evidenceRefs: string[];
   failureSignature: LearningFailureSignature;
+  situations: string[];
 }
 
 /**
  * Strict assignment-free parse of the client-supplied record (mirrors the
- * entry minus server-stamped id/createdAt/lastValidatedAt/status). Evidence
- * existence is checked by the service against the scope's stored runs.
+ * entry minus server-stamped id/createdAt/lastValidatedAt/status/measured).
+ * `measured` is server-stamped and refused as a client key (bounds error).
  * Evidence is required: a record with no triggering evidence is refused.
+ * Acceptance rule: tests + errorClasses + situations >= 1, so a waste/setup
+ * lesson may carry an empty failure signature when it carries situation tags.
  */
 export function sanitizeLearningRecord(raw: unknown): SanitizedLearningRecord {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(learningMessages.bounds);
   const record = raw as Record<string, unknown>;
-  if (Object.keys(record).some(key => !['title', 'file', 'evidenceRefs', 'failureSignature'].includes(key))) {
+  if (Object.keys(record).some(key => !['title', 'file', 'evidenceRefs', 'failureSignature', 'situations'].includes(key))) {
     throw new Error(learningMessages.bounds);
   }
   const title = learningField(record.title, maxLearningTitle);
@@ -138,8 +164,34 @@ export function sanitizeLearningRecord(raw: unknown): SanitizedLearningRecord {
   }
   const tests = signatureList(signatureRecord.tests);
   const errorClasses = signatureList(signatureRecord.errorClasses);
-  if (tests.length === 0 && errorClasses.length === 0) throw new Error(learningMessages.bounds);
-  return { title, file, evidenceRefs, failureSignature: { tests, errorClasses } };
+  const situations = sanitizeSituations(record.situations);
+  if (tests.length === 0 && errorClasses.length === 0 && situations.length === 0) {
+    throw new Error(learningMessages.bounds);
+  }
+  return { title, file, evidenceRefs, failureSignature: { tests, errorClasses }, situations };
+}
+
+/**
+ * Additive situation tags: optional on the wire (absent reads as none), at
+ * most 10, each trimmed+lowercased to 3–40 chars, deduped. Content follows the
+ * same pattern-only rule as other learning text (control chars, secret
+ * shapes via maskSecrets, absolute-path literals) — a pattern refusal, not a
+ * bounds refusal. Shape/length violations are bounds refusals.
+ */
+export function sanitizeSituations(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maxSituations) throw new Error(learningMessages.bounds);
+  const tags: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') throw new Error(learningMessages.bounds);
+    const tag = item.trim().toLowerCase();
+    if (!tag || tag.length < minSituationLength || tag.length > maxSituationLength) {
+      throw new Error(learningMessages.bounds);
+    }
+    if (!isPatternClean(tag)) throw new Error(learningMessages.pattern);
+    if (!tags.includes(tag)) tags.push(tag);
+  }
+  return tags;
 }
 
 function isLearningEntry(raw: unknown): raw is LearningRuleEntry {
@@ -151,6 +203,10 @@ function isLearningEntry(raw: unknown): raw is LearningRuleEntry {
   if (!signature || typeof signature !== 'object' || Array.isArray(signature)) return false;
   const sig = signature as Record<string, unknown>;
   if (!Array.isArray(sig.tests) || !Array.isArray(sig.errorClasses)) return false;
+  // Additive waste-lesson fields: absent on legacy entries, validated when present.
+  if (entry.situations !== undefined
+    && (!Array.isArray(entry.situations) || entry.situations.some(tag => typeof tag !== 'string'))) return false;
+  if (entry.measured !== undefined && typeof entry.measured !== 'boolean') return false;
   if (typeof entry.createdAt !== 'string' || typeof entry.lastValidatedAt !== 'string') return false;
   return entry.status === 'active' || entry.status === 'suspect';
 }
@@ -183,6 +239,10 @@ export async function readLearningIndex(homeDirectory: string): Promise<Learning
   return parsed.map(entry => ({
     ...entry,
     failureSignature: (entry.failureSignature ?? (entry as { signature?: LearningFailureSignature }).signature)!,
+    // Legacy normalization: pre-extension entries were always failure-measured
+    // and carried no situation tags.
+    situations: Array.isArray(entry.situations) ? entry.situations : [],
+    measured: typeof entry.measured === 'boolean' ? entry.measured : true,
   }));
 }
 
@@ -194,9 +254,10 @@ async function writeLearningIndex(homeDirectory: string, entries: LearningRuleEn
 }
 
 /**
- * Evict down to the cap. Oldest non-suspect entries go first; suspects evict
- * last so a flagged rule is never dropped while a healthy one survives.
- * Tiebreak: older createdAt first, then lexical id for determinism.
+ * Evict down to the cap in three tiers: measured-active oldest-first, then
+ * unmeasured-active (waste/setup lessons survive failure lessons), then
+ * suspects last so a flagged rule is never dropped while a healthy one
+ * survives. Within a tier: older createdAt first, then lexical id.
  */
 export function evictLearningEntries(entries: LearningRuleEntry[]): LearningRuleEntry[] {
   if (entries.length <= maxLearningEntries) return entries;
@@ -204,13 +265,17 @@ export function evictLearningEntries(entries: LearningRuleEntry[]): LearningRule
     a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const drop = entries.length - maxLearningEntries;
   const victims = new Set<string>();
-  for (const entry of ordered.filter(entry => entry.status !== 'suspect')) {
+  const tiers: Array<(entry: LearningRuleEntry) => boolean> = [
+    entry => entry.status !== 'suspect' && entryMeasured(entry),
+    entry => entry.status !== 'suspect' && !entryMeasured(entry),
+    entry => entry.status === 'suspect',
+  ];
+  for (const tier of tiers) {
+    for (const entry of ordered.filter(tier)) {
+      if (victims.size >= drop) break;
+      victims.add(entry.id);
+    }
     if (victims.size >= drop) break;
-    victims.add(entry.id);
-  }
-  for (const entry of ordered) {
-    if (victims.size >= drop) break;
-    victims.add(entry.id);
   }
   return entries.filter(entry => !victims.has(entry.id));
 }
@@ -245,6 +310,10 @@ export async function appendLearningRule(
       file: sanitized.file,
       evidenceRefs: sanitized.evidenceRefs,
       failureSignature: sanitized.failureSignature,
+      situations: sanitized.situations,
+      // Server-stamped, never client-settable: a lesson counts as measured
+      // only when it carries failure evidence (tests and/or error classes).
+      measured: sanitized.failureSignature.tests.length + sanitized.failureSignature.errorClasses.length > 0,
       createdAt: now,
       lastValidatedAt: now,
       status: 'active',
@@ -325,9 +394,12 @@ export async function collectRecentLocalRuns(homeDirectory: string): Promise<Rec
 /**
  * Proxy measurement, never claimed as proof: runs after the entry's creation
  * with the same failure signature count as recurrences within the last-20
- * window. Zero recurrences = holding; ≥1 = recurred.
+ * window. Zero recurrences = holding; ≥1 = recurred. Unmeasured (waste/setup)
+ * lessons carry no failure signature to re-observe, so they always read 0
+ * and never auto-flag: review stays manual/opportunistic.
  */
 export function countRecurrences(entry: LearningRuleEntry, corpus: RecentFailureCorpus): number {
+  if (!entryMeasured(entry)) return 0;
   const created = Date.parse(entry.createdAt);
   const after = corpus.timed.filter(run => Number.isFinite(created) && run.time > created);
   if (after.length === 0) return 0;
@@ -363,7 +435,69 @@ export async function recomputeLearningSuspects(homeDirectory: string, corpus: R
 }
 
 function renderLesson(entry: LearningRuleEntry): string {
-  return `${entry.title} (${entry.file})${entry.status === 'suspect' ? ' [needs-review]' : ''}`;
+  const flag = entry.status === 'suspect' ? ' [needs-review]' : !entryMeasured(entry) ? ' [situational]' : '';
+  return `${entry.title} (${entry.file})${flag}`;
+}
+
+// TaskContext tokenizer (waste-lesson matching): lowercase, split on
+// non-alphanumerics, drop fragments under 3 chars plus a small stop-word set,
+// dedupe, cap 50 tokens. Pure and secret-free: it only ever sees tags and
+// server-built context text (names and operation/environment tokens), never
+// log content, details or file bodies.
+const contextStopWords = new Set([
+  'the', 'and', 'for', 'with', 'from', 'that', 'this', 'have', 'has', 'had',
+  'was', 'were', 'are', 'will', 'would', 'should', 'could', 'there', 'their',
+  'what', 'when', 'where', 'which', 'into', 'after',
+  // Retrieval precision (scenario matrix 2026-10-04): 'not' appears in most
+  // checkpoint blockers, so whole-tag substring matching let it fire any tag
+  // containing 'not' as a substring (e.g. 'release notes style' via 'notes').
+  // It carries no task discrimination, like the function words above.
+  'not',
+]);
+const maxContextTokens = 50;
+
+export function tokenizeContext(context: string): string[] {
+  const tokens: string[] = [];
+  for (const fragment of context.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (fragment.length < 3 || contextStopWords.has(fragment)) continue;
+    if (!tokens.includes(fragment)) tokens.push(fragment);
+    if (tokens.length >= maxContextTokens) break;
+  }
+  return tokens;
+}
+
+/** Bidirectional substring between an entry's situation tags and context tokens. */
+function situationHit(entry: LearningRuleEntry, tokens: readonly string[]): boolean {
+  if (tokens.length === 0) return false;
+  for (const tag of entrySituations(entry)) {
+    for (const token of tokens) {
+      if (tag.includes(token) || token.includes(tag)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Pure situational selection for TaskContext surfacing: entries whose
+ * situation tags match the context, newest-first with a lexical tiebreak,
+ * rendered with the same wording as the injection line (top 3).
+ */
+export function selectSituationalLessons(
+  entries: LearningRuleEntry[],
+  context: string | undefined,
+  max = maxLessonTitlesPerLine,
+): string[] {
+  if (context === undefined) return [];
+  const tokens = tokenizeContext(context);
+  if (tokens.length === 0) return [];
+  return entries
+    .filter(entry => situationHit(entry, tokens))
+    .sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    })
+    .slice(0, max)
+    .map(renderLesson);
 }
 
 /**
@@ -372,19 +506,29 @@ function renderLesson(entry: LearningRuleEntry): string {
  * substring; exact test-name hit > error-class hit > recency; top 3) and
  * truncates 3→2→1→0 titles until the line fits the remaining total budget.
  * Returns undefined when nothing matches, nothing fits, or no index exists.
+ * The optional context adds a tier-0 situation tier: entries whose situation
+ * tags match the context qualify, but always rank below failure-matched
+ * entries. Omitting context preserves the legacy failure-only behavior
+ * byte-identically (startup calls pass no context).
  */
-export async function learningLessonLine(homeDirectory: string, remainingBudgetBytes: number): Promise<string | undefined> {
+export async function learningLessonLine(
+  homeDirectory: string,
+  remainingBudgetBytes: number,
+  context?: string,
+): Promise<string | undefined> {
   if (remainingBudgetBytes <= 0) return undefined;
+  const tokens = context === undefined ? [] : tokenizeContext(context);
   const corpus = await collectRecentLocalRuns(homeDirectory);
   const entries = await recomputeLearningSuspects(homeDirectory, corpus);
   if (entries.length === 0 || corpus.timed.length === 0) return undefined;
   const ranked = entries
-    .map(entry => ({ entry, ...signatureMatches(entry, corpus.timed) }))
-    .filter(candidate => candidate.testHit || candidate.errorHit)
+    .map(entry => ({ entry, ...signatureMatches(entry, corpus.timed), situation: situationHit(entry, tokens) }))
+    .filter(candidate => candidate.testHit || candidate.errorHit || candidate.situation)
     .sort((a, b) => {
       const scoreA = (a.testHit ? 2 : 0) + (a.errorHit ? 1 : 0);
       const scoreB = (b.testHit ? 2 : 0) + (b.errorHit ? 1 : 0);
       if (scoreA !== scoreB) return scoreB - scoreA;
+      if (a.situation !== b.situation) return a.situation ? -1 : 1;
       if (a.entry.createdAt !== b.entry.createdAt) return a.entry.createdAt < b.entry.createdAt ? 1 : -1;
       return a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0;
     })

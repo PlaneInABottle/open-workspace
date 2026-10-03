@@ -288,3 +288,22 @@ test('instruction suffix reads slowdown and the last 20 local run outcomes', asy
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test('waste-lesson skill clauses: setup friction first, unmeasured never auto-flags', async () => {
+  const skill = await readFile(new URL('../skills/learn-from-mistake/SKILL.md', import.meta.url), 'utf8');
+  assert.ok(skill.split('\n').length < 300, 'skill stays under the 300-line cap');
+  for (const required of [
+    'setup friction', '10 or more minutes', 'situation tags', 'empty failure signature',
+    'never auto-flag', '[situational]', 'service starts', 'missing secret',
+    'no age-based flagging', 'no separate review queue', 'fixes count toward the 5-rule cap',
+  ]) {
+    assert.ok(skill.includes(required), `learn-from-mistake must cover ${required}`);
+  }
+  const newTask = await readFile(new URL('../skills/new-task/SKILL.md', import.meta.url), 'utf8');
+  assert.ok(newTask.split('\n').length < 300, 'new-task stays under the 300-line cap');
+  assert.ok(Buffer.byteLength(newTask, 'utf8') <= 8 * 1024, 'new-task stays within 8KiB');
+  assert.ok(newTask.includes('situationalLessons'), 'new-task names the context field');
+  assert.ok(newTask.includes('[situational]'), 'new-task names the marker');
+  assert.ok(newTask.includes('below failure-matched'), 'new-task weighs situational below failure-matched');
+  assert.ok(newTask.includes('ignore them on mismatch'), 'new-task says to ignore on mismatch');
+});

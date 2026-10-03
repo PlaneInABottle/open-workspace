@@ -24,6 +24,7 @@ import {
   type LearningRuleEntry,
 } from '../src/rule-index.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
+import { selectSituationalLessons, tokenizeContext } from '../src/rule-index.js';
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
@@ -405,4 +406,196 @@ test('real stdio MCP learning_record round-trips through the service', async t =
     await app.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('situations sanitize: normalize, bound, pattern-clean and refuse client measured', () => {
+  const tagged = sanitizeLearningRecord(recordBody({
+    evidenceRefs: ['abc-1'],
+    failureSignature: { tests: [], errorClasses: [] as string[] },
+    situations: ['  Missing Secret ', 'missing secret', 'service start'],
+  }));
+  assert.deepEqual(tagged.situations, ['missing secret', 'service start'], 'trimmed, lowercased and deduped');
+  assert.deepEqual(tagged.failureSignature, { tests: [], errorClasses: [] });
+  // Acceptance rule: situations alone satisfy the >=1 requirement.
+  assert.deepEqual(sanitizeLearningRecord(recordBody()).situations, [], 'absent situations read as none');
+  assert.throws(() => sanitizeLearningRecord(recordBody({
+    failureSignature: { tests: [], errorClasses: [] as string[] },
+  })), new RegExp(escapeRegExp(learningMessages.bounds)), 'empty signature without tags is refused');
+  assert.throws(() => sanitizeLearningRecord(recordBody({
+    situations: Array.from({ length: 11 }, (_, index) => `tag number ${index}`),
+  })), new RegExp(escapeRegExp(learningMessages.bounds)), 'at most 10 tags');
+  assert.throws(() => sanitizeLearningRecord(recordBody({ situations: ['ab'] })), new RegExp(escapeRegExp(learningMessages.bounds)), 'tags need 3+ chars');
+  assert.throws(() => sanitizeLearningRecord(recordBody({ situations: ['x'.repeat(41)] })), new RegExp(escapeRegExp(learningMessages.bounds)), 'tags cap at 40 chars');
+  assert.throws(() => sanitizeLearningRecord(recordBody({ situations: [42] as unknown as string })), new RegExp(escapeRegExp(learningMessages.bounds)), 'tags must be strings');
+  assert.throws(() => sanitizeLearningRecord(recordBody({ situations: ['token=sk-live-12345'] })), new RegExp(escapeRegExp(learningMessages.pattern)), 'secret-shaped tags refused');
+  assert.throws(() => sanitizeLearningRecord(recordBody({ situations: ['see /abs/path now'] })), new RegExp(escapeRegExp(learningMessages.pattern)), 'absolute-path tags refused');
+  assert.throws(() => sanitizeLearningRecord(recordBody({ situations: ['bad\x07tag'] })), new RegExp(escapeRegExp(learningMessages.pattern)), 'control-char tags refused');
+  assert.throws(() => sanitizeLearningRecord({ ...recordBody(), measured: true }), new RegExp(escapeRegExp(learningMessages.bounds)), 'measured is server-stamped, never client-settable');
+});
+
+test('server stamps measured and legacy entries normalize measured with no tags', async t => {
+  const f = await registeredFixture('openworkspace-learning-measured-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const run = await failedRun(f.store.directory, f.workspace.id, 'not ok 1 measured case');
+  const accessible = new Set([run.id!]);
+  const read = async () => accessible;
+  const measured = await appendLearningRule(f.store.directory, recordBody({ evidenceRefs: [run.id] }), read);
+  assert.equal(measured.measured, true, 'tests present means measured');
+  assert.deepEqual(measured.situations, [], 'absent tags stored as none');
+  const waste = await appendLearningRule(f.store.directory, recordBody({
+    title: 'Confirm settings before starting the service',
+    evidenceRefs: [run.id],
+    failureSignature: { tests: [], errorClasses: [] as string[] },
+    situations: ['missing secret'],
+  }), read);
+  assert.equal(waste.measured, false, 'tags-only means unmeasured');
+  // Legacy shape: entries written before the extension carry neither field.
+  const stored = await readLearningIndex(f.store.directory);
+  const legacyShaped = stored.map(({ measured: _measured, situations: _situations, ...rest }) => rest);
+  assert.ok(legacyShaped.every(entry => !('measured' in entry) && !('situations' in entry)));
+  await writeFile(join(f.store.directory, 'learnings', 'index.json'), JSON.stringify(legacyShaped));
+  const normalized = await readLearningIndex(f.store.directory);
+  assert.equal(normalized.length, legacyShaped.length);
+  assert.ok(normalized.every(entry => entry.measured === true && Array.isArray(entry.situations) && entry.situations.length === 0),
+    'legacy entries read as measured with no tags');
+});
+
+test('tokenizeContext is pure: lowercase, bounded and stop-word free', () => {
+  assert.deepEqual(tokenizeContext('Service START missing-secret, service!'), ['service', 'start', 'missing', 'secret']);
+  assert.deepEqual(tokenizeContext('the and for with from that this'), [], 'stop-words and short fragments drop out');
+  assert.deepEqual(tokenizeContext('it is an up'), [], 'fragments under 3 chars drop out');
+  const many = Array.from({ length: 100 }, (_, index) => `token${index}`).join(' ');
+  assert.equal(tokenizeContext(many).length, 50, 'tokens cap at 50');
+  assert.deepEqual(selectSituationalLessons([], 'anything here'), []);
+  assert.deepEqual(selectSituationalLessons([{
+    id: 'x', title: 't', file: 'AGENTS.md', evidenceRefs: ['r'],
+    failureSignature: { tests: [], errorClasses: [] },
+    situations: ['missing secret'], measured: false,
+    createdAt: new Date().toISOString(), lastValidatedAt: new Date().toISOString(), status: 'active',
+  }], undefined), [], 'no context selects nothing');
+});
+
+test('situation matches qualify only with context and rank below failure hits', async t => {
+  const f = await registeredFixture('openworkspace-learning-situation-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  await failedRun(f.store.directory, f.workspace.id, 'not ok 1 login flow');
+  const ref = (await f.service.recentRuns(f.workspace.id, 1))[0].id;
+  await f.service.recordLearning({
+    title: 'Login guard', file: 'AGENTS.md', evidenceRefs: [ref],
+    failureSignature: { tests: ['login flow'], errorClasses: [] },
+  });
+  await f.service.recordLearning({
+    title: 'Confirm settings before starting the service', file: 'AGENTS.md', evidenceRefs: [ref],
+    failureSignature: { tests: [], errorClasses: [] },
+    situations: ['service start missing setting'],
+  });
+  const context = 'starting the service needs a missing setting value';
+  const withContext = await learningLessonLine(f.store.directory, learningTotalCap, context);
+  assert.ok(withContext?.includes('Login guard'), 'failure hit still injects with context');
+  assert.ok(withContext?.includes('Confirm settings before starting the service (AGENTS.md) [situational]'),
+    'unmeasured situation hit renders with the situational suffix');
+  assert.ok((withContext?.indexOf('Login guard') ?? 0) < (withContext?.indexOf('Confirm settings') ?? 0),
+    'situation tier ranks below failure hits');
+  // No-context behavior is byte-identical legacy: the unmeasured entry can
+  // never failure-match, and an empty context tokenizes to the same nothing.
+  const without = await learningLessonLine(f.store.directory, learningTotalCap);
+  assert.ok(without?.includes('Login guard'));
+  assert.ok(!without?.includes('Confirm settings'), 'unmeasured entries never inject without context');
+  assert.equal(await learningLessonLine(f.store.directory, learningTotalCap, ''), without, 'empty context matches no-context bytes');
+});
+
+test('unmeasured entries never recur, never flag and evict after measured-active', async t => {
+  const f = await registeredFixture('openworkspace-learning-lifecycle-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  await failedRun(f.store.directory, f.workspace.id, 'not ok 1 setup detour case');
+  const ref = (await f.service.recentRuns(f.workspace.id, 1))[0].id;
+  const waste = await f.service.recordLearning({
+    title: 'Setup detour guard', file: 'AGENTS.md', evidenceRefs: [ref],
+    failureSignature: { tests: [], errorClasses: [] },
+    situations: ['setup detour'],
+  });
+  assert.equal(waste.measured, false);
+  await sleepMs(10);
+  await failedRun(f.store.directory, f.workspace.id, 'not ok 1 setup detour case again');
+  const corpus = await collectRecentLocalRuns(f.store.directory);
+  const stored = await readLearningIndex(f.store.directory);
+  assert.equal(countRecurrences(stored[0], corpus), 0, 'unmeasured recurrences always read zero');
+  assert.equal((await readLearningIndex(f.store.directory))[0].status, 'active', 'no auto-flag without a failure signature');
+  const line = await learningLessonLine(f.store.directory, learningTotalCap);
+  assert.ok(!line?.includes('[needs-review]'), 'holding unmeasured entries carry no flag');
+  // Three-tier eviction: measured-active oldest-first, then unmeasured-active, suspects last.
+  const at = new Date().toISOString();
+  const entry = (id: string, status: 'active' | 'suspect', measured: boolean | undefined): LearningRuleEntry => ({
+    id, title: id, file: 'AGENTS.md', evidenceRefs: ['r'],
+    failureSignature: { tests: measured === false ? [] : ['t'], errorClasses: [] },
+    ...(measured === undefined ? {} : { measured, situations: measured ? [] : ['setup detour'] }),
+    createdAt: at, lastValidatedAt: at, status,
+  });
+  const many = [
+    entry('id-suspect', 'suspect', true),
+    entry('id-unmeasured', 'active', false),
+    entry('id-z-legacy', 'active', undefined),
+    ...Array.from({ length: maxLearningEntries }, (_, index) => entry(`id-m-${String(index).padStart(3, '0')}`, 'active', true)),
+  ];
+  const kept = evictLearningEntries(many);
+  assert.equal(kept.length, maxLearningEntries);
+  assert.ok(kept.some(candidate => candidate.id === 'id-suspect'), 'suspect evicts last');
+  assert.ok(kept.some(candidate => candidate.id === 'id-unmeasured'), 'unmeasured-active survives measured-active eviction');
+  assert.ok(kept.some(candidate => candidate.id === 'id-z-legacy'), 'legacy entries count as measured-active');
+  assert.ok(!kept.some(candidate => candidate.id === 'id-m-000'), 'oldest measured-active evicts first');
+});
+
+test('situational injection honors the byte budget and truncates monotonically', async t => {
+  const at = new Date().toISOString();
+  const entries: LearningRuleEntry[] = Array.from({ length: 5 }, (_, index) => ({
+    id: `sit-${index}`, title: `Setup lesson number ${index} with a long reusable title`, file: 'AGENTS.md',
+    evidenceRefs: ['r'], failureSignature: { tests: [], errorClasses: [] },
+    situations: ['service start'], measured: false,
+    createdAt: at, lastValidatedAt: at, status: 'active' as const,
+  }));
+  const picked = selectSituationalLessons(entries, 'starting the service now');
+  assert.equal(picked.length, 3, 'situational selection caps at three');
+  assert.ok(picked.every(title => title.endsWith('[situational]')), 'every unmeasured title carries the suffix');
+});
+
+test('HTTP and MCP record round-trips carry situations and refuse client measured', async t => {
+  const f = await registeredFixture('openworkspace-learning-situations-http-');
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  try {
+    const mcpHeaders = { Authorization: `Bearer ${app.mcpToken}`, ...jsonHeaders };
+    const run = await failedRun(f.store.directory, f.workspace.id, 'not ok 1 situations round trip');
+    const body = {
+      title: 'Situations round trip rule',
+      file: 'AGENTS.md',
+      evidenceRefs: [run.id],
+      failureSignature: { tests: [], errorClasses: [] },
+      situations: ['Missing Setting'],
+    };
+    const created = await fetch(`${origin}/api/learnings/record`, { method: 'POST', headers: mcpHeaders, body: JSON.stringify(body) });
+    assert.equal(created.status, 201);
+    const entry = await created.json() as LearningRuleEntry;
+    assert.equal(entry.measured, false, 'tags-only records stamp unmeasured');
+    assert.deepEqual(entry.situations, ['missing setting'], 'tags normalize server-side');
+    const measured = await fetch(`${origin}/api/learnings/record`, {
+      method: 'POST', headers: mcpHeaders, body: JSON.stringify({ ...body, title: 'Measured key smuggle', measured: true }),
+    });
+    assert.equal(measured.status, 400, 'strict keys refuse client measured');
+    // Activity hygiene holds for waste lessons: counts only, never tags.
+    const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${app.mcpToken}` } })).json() as Array<{ operation: string; detail: string }>;
+    const records = activity.filter(item => item.operation === 'learning-record');
+    assert.equal(records.length, 1);
+    assert.match(records[0].detail, /^\d+ evidence refs → (active|suspect)$/);
+    assert.ok(!JSON.stringify(records).includes('missing setting'));
+  } finally {
+    await app.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('MCP learning_record advertises situations and forwards them to the same route', async () => {
+  const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
+  const block = mcpSource.slice(mcpSource.indexOf("server.registerTool('learning_record'"));
+  assert.ok(block.includes('situations'), 'learning_record schema carries situations');
+  assert.ok(block.includes('/api/learnings/record'), 'MCP forwards to the shared record route');
 });

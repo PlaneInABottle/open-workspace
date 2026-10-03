@@ -134,6 +134,7 @@ const learningRecordSchema = z.object({
     tests: z.array(z.string().max(120)).max(10),
     errorClasses: z.array(z.string().max(120)).max(10),
   }).strict(),
+  situations: z.array(z.string().min(1).max(40)).max(10).optional(),
 }).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;

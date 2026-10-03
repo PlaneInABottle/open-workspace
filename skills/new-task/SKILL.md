@@ -30,3 +30,7 @@ When a workstream stayed open a long time with no checkpoint update, close the s
 ## Shared-resource lease check
 
 Before end-to-end checks that touch shared resources (test mailbox, shared database), check held leases first. If the needed lease is unheld or held by another workstream, say so — e.g. "The test mailbox lease is unheld; results may collide with another run." Advisory only — warn and continue, never block.
+
+## Situational lessons
+
+`workstream_context` may return `situationalLessons` titles marked `[situational]`: weigh them below failure-matched lessons, follow them only when they fit this task, and ignore them on mismatch.

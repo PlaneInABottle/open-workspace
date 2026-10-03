@@ -14,7 +14,7 @@ import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } f
 import { acquireLease, expireLeasesOnRead, finishWorkstreamLeasesInState, listLeases, releaseLease, touchLease, type Lease, type LeaseActor } from './leases.js';
 import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listMilestones } from './milestones.js';
-import { appendLearningRule, type LearningRuleEntry } from './rule-index.js';
+import { appendLearningRule, readLearningIndex, selectSituationalLessons, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, setEnvironment } from './environment.js';
 import { availableSkills } from './consumer-skills.js';
@@ -56,6 +56,8 @@ export interface WorkstreamContext {
   open: { blocker: string; next: string };
   checkouts: Workstream['checkouts'];
   recentRuns: Array<RunListEntry & { evidenceSource: 'openworkspace_run' | 'external_import' | 'unknown_source' }>;
+  /** Additive waste-lesson surfacing: up to 3 situation-matched lesson titles for this task (read-only). */
+  situationalLessons: string[];
 }
 
 export class WorkspaceService {
@@ -347,6 +349,36 @@ export class WorkspaceService {
     const runs = await listRecentRuns(
       this.store.directory, workstream.workspaceId, limit, pinnedRunIds(state.workstreams, workstream.workspaceId),
     );
+    // AMENDMENT (waste-lesson milestone, beyond the planner text): the
+    // server builds a TaskContext string so setup-sequence lessons fire at
+    // task start. Sources, all bounded and secret-free (tags/tokens only):
+    // the workstream name, the latest checkpoint goal/blocker/next
+    // (pattern-only by construction), the last-20 activity OPERATION names
+    // (never detail text), plus the workspace's environment service names
+    // and ports (names only — never repository paths). Tokenizing this
+    // context against lesson situation tags is what lets a "service started
+    // → missing secret → set it" lesson surface before the next detour.
+    const environmentServices: string[] = [];
+    const environmentRecord = state.environments.find(entry => entry.workspaceId === workstream.workspaceId);
+    for (const item of (environmentRecord?.items ?? []).slice(0, 5)) {
+      for (const service of item.services.slice(0, 10)) {
+        environmentServices.push(service.name ?? service.id);
+        if (service.port !== null && service.port !== undefined) {
+          environmentServices.push(String(service.port));
+        }
+      }
+    }
+    const taskContext = [
+      workstream.name,
+      latest?.goal ?? '',
+      latest?.blocker ?? '',
+      latest?.next ?? '',
+      ...state.activity.slice(-20).map(entry => entry.operation),
+      ...environmentServices,
+    ].join('\n');
+    // Pure index read (fail-closed, no writes): situational surfacing never
+    // flips suspect state and never records activity.
+    const situationalLessons = selectSituationalLessons(await readLearningIndex(this.store.directory), taskContext);
     return {
       workstreamId: workstream.id,
       name: workstream.name,
@@ -359,6 +391,7 @@ export class WorkspaceService {
       },
       open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
       checkouts: workstream.checkouts,
+      situationalLessons,
       recentRuns: runs.map(run => ({
         ...run,
         evidenceSource: run.source === 'openworkspace-run' ? 'openworkspace_run'

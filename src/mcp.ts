@@ -339,7 +339,7 @@ export async function runMcpBridge(): Promise<void> {
       : note === undefined ? { status } : { status, note });
   });
   server.registerTool('workstream_context', {
-    description: 'One-call handoff: checkpoint, assignment completions by ID/latest, optional assignment present/missing, checkouts and scoped recent runs. Read-only.',
+    description: 'One-call handoff: checkpoint, assignment completions by ID/latest, checkouts, scoped recent runs plus situational lessons matched to this task. Read-only.',
     inputSchema: z.object({
       workstreamId: z.string().uuid(),
       limit: z.number().int().min(1).max(20).optional().describe('Recent runs to include, default 5.'),
@@ -364,7 +364,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspaceId, scriptName, outcome, durationMs, excerpt }) => request('/api/runs/import', { workspaceId, scriptName, outcome, durationMs, excerpt }));
   server.registerTool('learning_record', {
-    description: 'Index one reusable lesson by title and file ref with triggering run evidence and failure signature. Titles/refs only, never rule bodies or secrets.',
+    description: 'Index one reusable lesson by title and file ref with triggering run evidence, failure signature and optional situation tags. Titles/refs only, never rule bodies or secrets.',
     inputSchema: z.object({
       title: z.string().min(1).max(80),
       file: z.string().min(1).max(256),
@@ -373,9 +373,13 @@ export async function runMcpBridge(): Promise<void> {
         tests: z.array(z.string().max(120)).max(10),
         errorClasses: z.array(z.string().max(120)).max(10),
       }).strict(),
+      situations: z.array(z.string().min(1).max(40)).max(10).optional().describe('Lowercase setup-detour tags; empty failure signature allowed only with tags.'),
     }).strict(),
     annotations: operateHints,
-  }, ({ title, file, evidenceRefs, failureSignature }) => request('/api/learnings/record', { title, file, evidenceRefs, failureSignature }));
+  }, ({ title, file, evidenceRefs, failureSignature, situations }) => request('/api/learnings/record', {
+    title, file, evidenceRefs, failureSignature,
+    ...(situations !== undefined ? { situations } : {}),
+  }));
   // Declared local tools: the service owns the registry; this process only
   // mirrors active entries. Newly gated tools appear after a status sync (or an
   // MCP restart when the SDK cannot hot-plug post-connect — see E1).

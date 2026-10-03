@@ -22,6 +22,14 @@ Use only when the user explicitly invokes this skill. It never runs automaticall
 5. After writing the rule, call the `learning_record` tool with its short title (80 characters or fewer), the repo-relative rule file (for example `AGENTS.md`, never an absolute path), the triggering run IDs (1–5, taken from `recent_runs`), and the failure signature (failing test names and/or error classes, at least one). The returned id is internal — record it nowhere. This index append is mechanical bookkeeping, outside the 5-rule cap.
 6. If a past lesson is flagged needs-review (a later run repeated its failure), check whether its rule still applies: fix the rule text in the user file, or remove the rule if it was wrong. Flagged entries are reviewed here, never auto-deleted. Fixes count toward the 5-rule cap.
 
+## Record setup friction, not just test failures
+
+The primary learning target is setup friction in an unknown world: a service starts, a missing secret or setting surfaces, you set it, the next missing piece surfaces — each step costs time. When 10 or more minutes were wasted on such an avoidable detour, record it with the same care as a test failure:
+
+1. Write the durable rule first: the setup sequence that avoids the detour next time (for example, which values to confirm before starting the service).
+2. Call the `learning_record` tool with 1–10 lowercase situation tags describing the detour context (for example `missing secret`, `service start`), the detour's own run as evidence, and whatever failure signature exists — a waste lesson may carry an empty failure signature when it carries tags. Such entries stay unmeasured: they surface as `[situational]` guidance and never auto-flag, no matter how often the detour repeats.
+3. Review `[situational]` lessons opportunistically while writing nearby rules: fix the rule text when the setup changed, or leave it while it still applies. There is no age-based flagging and no separate review queue; fixes count toward the 5-rule cap above.
+
 Write only patterns. Never record secrets, literal credentials, absolute user paths or path values, customer data, SQL literals, URLs containing credentials, or log/transcript content. Do not create a draft, quarantine file, or separate learning store. Do not modify product code, global configuration, or unrelated instruction files as a side effect.
 
 For task planning — opening context, closing with a verification receipt, milestone notes, handoff checks, and checkpoint-nudge plus shared-resource lease advisories — use the **new-task** skill instead; turning session surprises into durable reusable rules stays here.

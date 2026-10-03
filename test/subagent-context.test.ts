@@ -442,3 +442,57 @@ test('workstream_context travels HTTP GET without recording activity and within 
   assert.doesNotMatch(description, /draft/i, 'context description covers only fields that are returned');
   assert.match(mcpSource, /workstreamId: z\.string\(\)\.uuid\(\),\n\s+limit: z\.number\(\)\.int\(\)\.min\(1\)\.max\(20\)\.optional\(\)/);
 });
+
+test('workstream_context surfaces situational lessons for the task and stays read-only', async t => {
+  const f = await approvedFixture('openworkspace-situational-context-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  await f.service.setWorkstreamStatus(f.workstream.id, 'paused', {
+    goal: 'start the api service', blocker: 'missing setting value', next: 'confirm settings then retry', owner: 'agent',
+  });
+  const run = await persistRunSummary(f.store.directory, {
+    workspaceId: f.workspace.id, scriptName: 'dev', outcome: 'failed', durationMs: 5,
+    output: 'missing setting value', outputTruncated: false,
+  });
+  await f.service.recordLearning({
+    title: 'Confirm settings before starting the service', file: 'AGENTS.md', evidenceRefs: [run.id],
+    failureSignature: { tests: [], errorClasses: [] as string[] }, situations: ['missing setting'],
+  });
+  await f.service.environmentSet(f.workspace.id, {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.project, scriptName: 'test', port: 4318, readiness: { kind: 'http-200' } }],
+  });
+  await f.service.recordLearning({
+    title: 'Api port guard', file: 'AGENTS.md', evidenceRefs: [run.id],
+    failureSignature: { tests: [], errorClasses: [] as string[] }, situations: ['api service'],
+  });
+  await f.service.recordLearning({
+    title: 'Freight schedule guard', file: 'AGENTS.md', evidenceRefs: [run.id],
+    failureSignature: { tests: [], errorClasses: [] as string[] }, situations: ['freight schedule'],
+  });
+  const before = await f.service.recentActivity();
+  const bundle = await f.service.workstreamContext(f.workstream.id);
+  assert.ok(Array.isArray(bundle.situationalLessons), 'context carries the additive field');
+  assert.ok(bundle.situationalLessons.length <= 3, 'at most three situational titles');
+  assert.ok(bundle.situationalLessons.some(title => title.includes('Confirm settings before starting the service (AGENTS.md) [situational]')),
+    'checkpoint wording matches the setup lesson');
+  assert.ok(bundle.situationalLessons.some(title => title.includes('Api port guard') && title.includes('[situational]')),
+    'environment service names feed the task context');
+  assert.ok(!bundle.situationalLessons.some(title => title.includes('Freight schedule')),
+    'mismatched tags stay silent on this task');
+  assert.ok(!JSON.stringify(bundle.situationalLessons).includes(f.project), 'no repository paths leak into lessons');
+  assert.deepEqual(await f.service.recentActivity(), before, 'context reads still record no activity');
+
+  // The field travels the HTTP route unchanged.
+  const app = createApp(f.service, { mcpToken: 'b'.repeat(64), assets: fixtureStaticAssets() });
+  t.after(() => app.close());
+  const origin = await app.listen(0);
+  const headers = { Authorization: `Bearer ${app.mcpToken}` };
+  const overHttp = await (await fetch(`${origin}/api/workstreams/${f.workstream.id}/context`, { headers })).json() as { situationalLessons: string[] };
+  assert.deepEqual(overHttp.situationalLessons, bundle.situationalLessons);
+
+  // The updated tool description names the field and stays within budget.
+  const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
+  const description = mcpSource.match(/workstream_context', \{\n\s+description: '((?:[^'\\]|\\.)*)'/)?.[1];
+  assert.ok(description?.includes('situational lessons'), 'description names situational lessons');
+  assert.ok(Buffer.byteLength(description ?? '', 'utf8') <= 200, 'description stays within 200B');
+});
