@@ -48,6 +48,10 @@ When a major milestone lands, append one file under `OPENWORKSPACE_HOME/learning
 
 Milestones, verification, and learning run as one flow: mirror completed major milestones to the workspace milestones file for cross-session continuity, verify with the usual checks, then mine surprises via this skill. Pause work with a bounded pattern-only checkpoint note (goal, blocker, next step, owner) so the workstream resumes later. Notes append to a bounded history (last 10, latest reads unchanged) and `workstream_context` returns the checkpoint plus scoped recent runs and draft titles in one read-only call. Native micro-todos may still track small steps alongside; this skill complements that tracking rather than replacing it.
 
+### Assignment completion handoff
+
+Give each child assignment a coordinator-issued `assignmentId`. Before treating that assignment as handed off, query `workstream_context` with that ID and check its present/missing completion state. A completion is an append-only, idempotent result record; it does not change the coordinator-owned workstream status. If the assignment has no completion, ask the **same child** to record its result; never rerun tests, sends, or other side effects as a substitute for a missing handoff. Completion checks are `agent_report` claims, not independent proof or verified-by-us results. Existing `openworkspace_run` evidence is context-stamped separately; pasted/external evidence retains its unverified source and tone. Keep checks and evidence references bounded. Counts are queryable, but do not claim percentage rates from this bounded history.
+
 ## Promotion (manual only)
 
 Drafts never self-promote. A draft becomes a shared skill update only when the user explicitly approves it in chat — for example after the rule proves itself on a second real task, or during a batched review the user asked for. On approval, move the rule text into the skill the user names, following that skill's own format. Until then the draft stays local, uncommitted, and invisible to other machines.

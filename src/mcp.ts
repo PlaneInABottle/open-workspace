@@ -62,7 +62,7 @@ server.registerTool('datastore_query', {
   ...(options?.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
 }, 45_000));
 server.registerTool('workspace_services', {
-  description: 'Read bounded service metadata for a registered project. Matching is based on project folders and process working directories. Process environments and raw command arguments are not exposed; unknown readiness remains unknown.',
+  description: 'Read bounded PM2 and Docker service metadata for a registered project. PM2 maps by working directory; Docker maps only when Compose working_dir/config_files labels exactly identify one approved root. Ambiguous/unmatched containers are visible separately as non-actionable; Docker being unavailable is reported honestly. Environments and raw arguments are not exposed; readiness remains unknown.',
   inputSchema: { workspaceId: z.string().uuid() },
   annotations: readHints,
 }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/services`, {}));
@@ -127,11 +127,15 @@ server.registerTool('service_control', {
   annotations: operateHints,
 }, ({ workspaceId, action, target }) => request(`/api/workspaces/${workspaceId}/services/${action}`, target));
 server.registerTool('service_logs', {
-  description: 'Read a bounded PM2 log tail for an exactly mapped service of a registered workspace. Log text may hold app-printed secrets.',
+  description: 'Read a bounded log tail for an exactly mapped PM2 service or Docker container of a registered workspace. Docker accepts {runner:"docker",containerId,name} and returns combined streams only. Log text may hold app-printed secrets and is never persisted.',
   inputSchema: z.object({
     workspaceId: z.string().uuid(),
-    target: serviceTarget,
-    lines: z.number().int().min(1).max(200).optional().describe('Lines to tail per stream, default 100.'),
+    target: z.union([serviceTarget, z.object({
+      runner: z.literal('docker'),
+      containerId: z.string().regex(/^[a-f\d]{64}$/i),
+      name: z.string().min(1).max(256),
+    }).strict()]),
+    lines: z.number().int().min(1).max(200).optional().describe('Lines to tail, default 100 (PM2 per stream; Docker combined).'),
     stream: z.enum(['out', 'err', 'both']).optional().describe('Log stream, default both.'),
   }).strict(),
   annotations: readHints,
@@ -194,10 +198,10 @@ server.registerTool('workstream_create', {
   annotations: operateHints,
 }, ({ name, workspaceId, checkouts }) => request('/api/workstreams', { name, workspaceId, checkouts }));
 server.registerTool('workstream_status', {
-  description: 'Move a workstream between active, paused and done. A finished workstream cannot reopen. An optional note (goal, blocker, next, owner; fields <=1000 chars, 2000 total, no secrets) records pause context for later resume. The note may carry up to 5 evidence run IDs from this workspace; referenced runs survive ring eviction, and editing the note to drop a ref unpins it.',
+  description: 'Coordinator controls active/paused/done; status updates retain bounded checkpoint notes and up to five workspace run refs. Or append an assignment completion claim with revision/dirty fingerprint and checks; assignmentId is optional for solo work. Results are agent_report, not independently verified. Same completionId retries do not duplicate.',
   inputSchema: z.object({
     workstreamId: z.string().uuid(),
-    status: z.enum(['active', 'paused', 'done']),
+    status: z.enum(['active', 'paused', 'done']).optional(),
     note: z.object({
       goal: z.string().min(1).max(1000),
       blocker: z.string().max(1000),
@@ -205,17 +209,46 @@ server.registerTool('workstream_status', {
       owner: z.enum(['agent', 'user']),
       evidence: z.array(z.string().max(256)).max(50).optional(),
     }).strict().optional(),
-  }).strict(),
+    completion: z.object({
+      assignmentId: z.string().min(1).max(128).optional(),
+      completionId: z.string().uuid(),
+      outcome: z.enum(['passed', 'blocked', 'failed']),
+      revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+      dirty: z.boolean().nullable(),
+      dirtyFingerprint: z.object({
+        diffHash: z.string().regex(/^[0-9a-f]{64}$/),
+        files: z.array(z.string().min(1).max(256)).max(50),
+        truncated: z.boolean(),
+      }).strict().nullable(),
+      checks: z.array(z.object({
+        name: z.string().min(1).max(80),
+        result: z.enum(['passed', 'failed', 'error']),
+        environment: z.string().min(1).max(200),
+        evidenceIds: z.array(z.string().max(128)).max(5).optional(),
+      }).strict()).min(1).max(20),
+    }).strict().optional(),
+  }).strict().refine(input =>
+    (input.status !== undefined && input.completion === undefined)
+    || (input.status === undefined && input.completion !== undefined && input.note === undefined),
+  ),
   annotations: operateHints,
-}, ({ workstreamId, status, note }) => request(`/api/workstreams/${workstreamId}/status`, note === undefined ? { status } : { status, note }));
+}, ({ workstreamId, status, note, completion }) => request(`/api/workstreams/${workstreamId}/status`, completion
+  ? { completion }
+  : note === undefined ? { status } : { status, note }));
 server.registerTool('workstream_context', {
-  description: 'One-call handoff for a workstream: latest checkpoint plus history count, open blocker/next, checkouts, recent runs and draft titles. Read-only; never records activity.',
+  description: 'One-call handoff: checkpoint, assignment completions by ID/latest, optional assignment present/missing, checkouts, runs and draft titles. Read-only.',
   inputSchema: z.object({
     workstreamId: z.string().uuid(),
     limit: z.number().int().min(1).max(20).optional().describe('Recent runs to include, default 5.'),
+    assignmentId: z.string().min(1).max(128).optional().describe('Coordinator-issued ID to query present/missing completion.'),
   }).strict(),
   annotations: readHints,
-}, ({ workstreamId, limit }) => request(`/api/workstreams/${workstreamId}/context${limit !== undefined ? `?limit=${limit}` : ''}`));
+}, ({ workstreamId, limit, assignmentId }) => {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set('limit', String(limit));
+  if (assignmentId !== undefined) params.set('assignmentId', assignmentId);
+  return request(`/api/workstreams/${workstreamId}/context${params.size ? `?${params}` : ''}`);
+});
 server.registerTool('run_import', {
   description: 'Record a pasted external result as external-import: accepted on trust, NEVER presented as verified here. Strict bounded fields with a masked excerpt; verification claims are refused.',
   inputSchema: z.object({

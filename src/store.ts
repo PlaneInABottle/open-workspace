@@ -36,6 +36,28 @@ const checkpointNote = z.object({
   // existence are enforced by sanitizeCheckpointNote plus the service.
   evidence: z.array(z.string().min(1).max(128)).max(5).optional().default([]),
 }).strict();
+const completionCheck = z.object({
+  name: z.string().min(1).max(80),
+  result: z.enum(['passed', 'failed', 'error']),
+  environment: z.string().min(1).max(200),
+  evidenceIds: z.array(z.string().min(1).max(128)).max(5).default([]),
+  evidenceSource: z.literal('agent_report'),
+  evidenceLabel: z.literal('Agent-reported — not independently verified here'),
+}).strict();
+const completion = z.object({
+  assignmentId: z.string().min(1).max(128),
+  completionId: z.string().uuid(),
+  outcome: z.enum(['passed', 'blocked', 'failed']),
+  revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+  dirty: z.boolean().nullable(),
+  dirtyFingerprint: z.object({
+    diffHash: z.string().regex(/^[0-9a-f]{64}$/),
+    files: z.array(z.string().min(1).max(256)).max(50),
+    truncated: z.boolean(),
+  }).strict().nullable(),
+  checks: z.array(completionCheck).min(1).max(20),
+  recordedAt: z.string().datetime(),
+}).strict();
 const workstream = z.object({
   id: z.string().uuid(),
   name,
@@ -47,6 +69,9 @@ const workstream = z.object({
   // seed from checkpointNote at read/write time; no migration, no versioned
   // upgrade. Each entry reuses the same per-entry bounds as a single note.
   checkpointHistory: z.array(checkpointNote).max(10).optional().default([]),
+  // Separate from the 10-note checkpoint ring: task handoffs have distinct
+  // assignment identity and keep up to 20 results without growing unbounded.
+  completions: z.array(completion).max(20).optional().default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ensurePrivateDirectory } from './store.js';
+import { ensurePrivateDirectory, type Store } from './store.js';
 import type { DirtyFingerprint } from './verify.js';
 
 export type RunSource = 'openworkspace-run' | 'external-import' | 'unknown-source';
@@ -71,6 +71,28 @@ const excerptLimit = 2048;
 const listExcerptLimit = 200;
 const maxFailingNames = 20;
 
+/** IDs referenced by checkpoint notes or completion checks in scope, exempt from ordinary run-ring eviction. */
+export function pinnedRunIds(
+  workstreams: Array<{
+    workspaceId: string;
+    checkpointNote: { evidence?: string[] } | null;
+    completions?: Array<{ checks: Array<{ evidenceIds?: string[] }> }>;
+  }>,
+  workspaceId: string,
+): Set<string> {
+  const pinned = new Set<string>();
+  for (const workstream of workstreams) {
+    if (workstream.workspaceId !== workspaceId) continue;
+    for (const id of workstream.checkpointNote?.evidence ?? []) pinned.add(id);
+    for (const completion of workstream.completions ?? []) {
+      for (const check of completion.checks) {
+        for (const id of check.evidenceIds ?? []) pinned.add(id);
+      }
+    }
+  }
+  return pinned;
+}
+
 /** Mask secret-shaped text while keeping paths and structure readable. */
 export function maskSecrets(text: string): string {
   return text
@@ -114,7 +136,7 @@ export async function persistRunSummary(homeDirectory: string, entry: {
   revision?: string | null;
   dirty?: DirtyFingerprint | null;
   pinned?: ReadonlySet<string>;
-}): Promise<RunSummary> {
+}, store?: Store): Promise<RunSummary> {
   const directory = scopeDirectory(homeDirectory, entry.workspaceId);
   await ensurePrivateDirectory(directory);
   const masked = maskSecrets(entry.output);
@@ -143,23 +165,13 @@ export async function persistRunSummary(homeDirectory: string, entry: {
       truncated: entry.dirty.truncated,
     },
   };
-  await storeSummaryFile(directory, id, summary, entry.pinned);
+  await storeSummaryFile(directory, id, summary, entry.pinned, store);
   return summary;
 }
 
-async function storeSummaryFile(
-  directory: string,
-  id: string,
-  summary: RunSummary,
-  pinned: ReadonlySet<string> = new Set(),
-): Promise<void> {
-  const serialized = JSON.stringify(summary);
-  if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
-    summary.failureExcerpt = summary.failureExcerpt.slice(0, excerptLimit);
-  }
-  await writeFile(join(directory, `${id}.json`), JSON.stringify(summary), { mode: 0o600 });
-  // Newest-first ring: the newest 20 always stay; pinned runs referenced by a
-  // checkpoint note survive past the ring up to the per-scope hard ceiling.
+async function pruneStoredSummaries(directory: string, pinned: ReadonlySet<string>): Promise<void> {
+  // Newest-first ring: the newest 20 always stay; pinned runs survive past
+  // the ring up to the per-scope hard ceiling.
   const files = (await readdir(directory)).filter(name => name.endsWith('.json')).sort().reverse();
   let kept = 0;
   const stale: string[] = [];
@@ -171,6 +183,30 @@ async function storeSummaryFile(
     }
   }
   await Promise.all(stale.map(staleFile => rm(join(directory, staleFile), { force: true })));
+}
+
+async function storeSummaryFile(
+  directory: string,
+  id: string,
+  summary: RunSummary,
+  pinned: ReadonlySet<string> = new Set(),
+  store?: Store,
+): Promise<void> {
+  const serialized = JSON.stringify(summary);
+  if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
+    summary.failureExcerpt = summary.failureExcerpt.slice(0, excerptLimit);
+  }
+  await writeFile(join(directory, `${id}.json`), JSON.stringify(summary), { mode: 0o600 });
+  if (store) {
+    // Serialize eviction with completion/checkpoint writes and derive pins from
+    // the queued state: a pre-persist snapshot can miss a ref committed while
+    // this summary was being written.
+    await store.update(async state => {
+      await pruneStoredSummaries(directory, pinnedRunIds(state.workstreams, summary.workspaceId));
+    });
+  } else {
+    await pruneStoredSummaries(directory, pinned);
+  }
 }
 
 /** Opaque summary ID: the file stem, without parsing any content. */
@@ -249,7 +285,7 @@ export function parseExternalRunImport(raw: unknown): ExternalRunImport {
   return { workspaceId: workspaceId.toLowerCase(), scriptName, outcome, durationMs, excerpt };
 }
 
-export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport, pinned: ReadonlySet<string> = new Set()): Promise<RunSummary> {
+export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport, pinned: ReadonlySet<string> = new Set(), store?: Store): Promise<RunSummary> {
   const directory = scopeDirectory(homeDirectory, parsed.workspaceId);
   await ensurePrivateDirectory(directory);
   const masked = maskSecrets(parsed.excerpt);
@@ -269,7 +305,7 @@ export async function importExternalRun(homeDirectory: string, parsed: ExternalR
     outputTruncated: true,
     source: 'external-import',
   };
-  await storeSummaryFile(directory, id, summary, pinned);
+  await storeSummaryFile(directory, id, summary, pinned, store);
   return summary;
 }
 

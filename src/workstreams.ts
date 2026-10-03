@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Store } from './store.js';
 import { maskSecrets } from './run-summaries.js';
-import { runBoundedCommand, type CommandRunner } from './verify.js';
+export { pinnedRunIds } from './run-summaries.js';
+import { runBoundedCommand, type CommandRunner, type DirtyFingerprint } from './verify.js';
 
 export type WorkstreamStatus = 'active' | 'paused' | 'done';
 
@@ -28,6 +29,37 @@ export interface CheckpointNote {
   evidence: string[];
 }
 
+export type CompletionOutcome = 'passed' | 'blocked' | 'failed';
+export type CompletionCheckResult = 'passed' | 'failed' | 'error';
+
+export interface CompletionCheckInput {
+  name: string;
+  result: CompletionCheckResult;
+  environment: string;
+  evidenceIds?: string[];
+}
+
+export interface CompletionInput {
+  assignmentId: string;
+  completionId: string;
+  outcome: CompletionOutcome;
+  revision: string | null;
+  dirty: boolean | null;
+  dirtyFingerprint: DirtyFingerprint | null;
+  checks: CompletionCheckInput[];
+}
+
+export interface CompletionCheck extends CompletionCheckInput {
+  evidenceIds: string[];
+  evidenceSource: 'agent_report';
+  evidenceLabel: 'Agent-reported — not independently verified here';
+}
+
+export interface CompletionRecord extends Omit<CompletionInput, 'checks'> {
+  checks: CompletionCheck[];
+  recordedAt: string;
+}
+
 export interface Workstream {
   id: string;
   name: string;
@@ -43,6 +75,8 @@ export interface Workstream {
    * checkpointNote at read/write time — no migration.
    */
   checkpointHistory: CheckpointNote[];
+  /** Independent bounded completion ring; does not share checkpoint-note history. */
+  completions: CompletionRecord[];
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +84,8 @@ export interface Workstream {
 const revisionTimeoutMs = 10_000;
 const maxCheckouts = 20;
 const maxWorkstreams = 50;
+// Assignment records outlive more checkpoint notes but remain strictly bounded.
+export const maxWorkstreamCompletions = 20;
 
 async function canonicalCheckoutRoot(candidate: string): Promise<string> {
   if (typeof candidate !== 'string' || !candidate || candidate.includes('\0') || candidate.length > 4096) {
@@ -115,7 +151,7 @@ export async function createWorkstream(
     const now = new Date().toISOString();
     const workstream: Workstream = {
       id: randomUUID(), name, workspaceId: workspace.id, checkouts,
-      status: 'active', checkpointNote: null, checkpointHistory: [], createdAt: now, updatedAt: now,
+      status: 'active', checkpointNote: null, checkpointHistory: [], completions: [], createdAt: now, updatedAt: now,
     };
     state.workstreams.push(workstream);
     return workstream;
@@ -125,6 +161,12 @@ export async function createWorkstream(
 export const checkpointBoundsMessage = 'Checkpoint notes hold 2000 characters or fewer.';
 export const checkpointPatternMessage = 'Checkpoint notes accept patterns only, never secrets or literals.';
 export const checkpointEvidenceMessage = 'Checkpoint evidence must reference existing runs in this workspace.';
+
+export function assertCheckpointEvidence(evidence: readonly string[], accessibleRunIds: ReadonlySet<string>): void {
+  for (const ref of evidence) {
+    if (!accessibleRunIds.has(ref)) throw new Error(checkpointEvidenceMessage);
+  }
+}
 
 const maxCheckpointTotal = 2000;
 const maxCheckpointField = 1000;
@@ -178,17 +220,147 @@ export function sanitizeCheckpointEvidence(evidence: unknown): string[] {
   return refs;
 }
 
-/** IDs of runs pinned by any checkpoint note in scope; pinned runs survive ring eviction. */
-export function pinnedRunIds(
-  workstreams: Array<{ workspaceId: string; checkpointNote: { evidence?: string[] } | null }>,
-  workspaceId: string,
-): Set<string> {
-  const pinned = new Set<string>();
-  for (const workstream of workstreams) {
-    if (workstream.workspaceId !== workspaceId || !workstream.checkpointNote) continue;
-    for (const id of workstream.checkpointNote.evidence ?? []) pinned.add(id);
+export const completionBoundsMessage = 'Completion records exceed the allowed bounds.';
+export const completionPatternMessage = 'Completion records accept safe metadata only, never secrets or literals.';
+export const completionEvidenceMessage = 'Completion evidence must reference existing runs in this workspace.';
+export const completionIdConflictMessage = 'Completion ID already exists with different content.';
+// Invalid as an explicit assignment ID, so callers cannot collide with the implicit solo group.
+export const soloDefaultAssignmentId = '__solo__';
+
+const assignmentIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const completionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function validAssignmentId(value: unknown): value is string {
+  return typeof value === 'string' && assignmentIdPattern.test(value) && maskSecrets(value) === value;
+}
+
+function completionText(value: unknown, max: number, allowEmpty = false): string {
+  if (typeof value !== 'string' || value.length > max || (!allowEmpty && !value.trim())) {
+    throw new Error(completionBoundsMessage);
   }
-  return pinned;
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) || maskSecrets(value) !== value || absolutePathPattern.test(value)) {
+    throw new Error(completionPatternMessage);
+  }
+  return value;
+}
+
+function sanitizeDirtyFingerprint(value: unknown): DirtyFingerprint | null {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(completionBoundsMessage);
+  const fingerprint = value as Record<string, unknown>;
+  if (Object.keys(fingerprint).some(key => !['diffHash', 'files', 'truncated'].includes(key))
+    || typeof fingerprint.diffHash !== 'string' || !/^[0-9a-f]{64}$/.test(fingerprint.diffHash)
+    || typeof fingerprint.truncated !== 'boolean'
+    || !Array.isArray(fingerprint.files) || fingerprint.files.length > 50) {
+    throw new Error(completionBoundsMessage);
+  }
+  const files = fingerprint.files.map(file => {
+    const path = completionText(file, 256);
+    if (path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || path.includes('\\')
+      || path.split('/').some(segment => segment === '..')) throw new Error(completionPatternMessage);
+    return path;
+  });
+  return { diffHash: fingerprint.diffHash, files, truncated: fingerprint.truncated };
+}
+
+/** Parse a child handoff as a claim; evidence source is stamped by this service, never supplied by the child. */
+export function sanitizeCompletion(input: unknown): CompletionInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(completionBoundsMessage);
+  const record = input as Record<string, unknown>;
+  const allowed = ['assignmentId', 'completionId', 'outcome', 'revision', 'dirty', 'dirtyFingerprint', 'checks'];
+  if (Object.keys(record).some(key => !allowed.includes(key))) throw new Error(completionBoundsMessage);
+  if ((record.assignmentId !== undefined && !validAssignmentId(record.assignmentId)) || typeof record.completionId !== 'string'
+    || !completionIdPattern.test(record.completionId)) throw new Error(completionBoundsMessage);
+  if (record.outcome !== 'passed' && record.outcome !== 'blocked' && record.outcome !== 'failed') {
+    throw new Error(completionBoundsMessage);
+  }
+  if (record.revision !== null && (typeof record.revision !== 'string' || !/^[0-9a-f]{40}$/.test(record.revision))) {
+    throw new Error(completionBoundsMessage);
+  }
+  if (record.dirty !== null && typeof record.dirty !== 'boolean') throw new Error(completionBoundsMessage);
+  const dirtyFingerprint = sanitizeDirtyFingerprint(record.dirtyFingerprint);
+  if (record.dirty === false && dirtyFingerprint !== null) throw new Error(completionBoundsMessage);
+  if (!Array.isArray(record.checks) || record.checks.length < 1 || record.checks.length > 20) {
+    throw new Error(completionBoundsMessage);
+  }
+  const checks: CompletionCheckInput[] = record.checks.map(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(completionBoundsMessage);
+    const check = raw as Record<string, unknown>;
+    if (Object.keys(check).some(key => !['name', 'result', 'environment', 'evidenceIds'].includes(key))) {
+      throw new Error(completionBoundsMessage);
+    }
+    if (check.result !== 'passed' && check.result !== 'failed' && check.result !== 'error') {
+      throw new Error(completionBoundsMessage);
+    }
+    const name = completionText(check.name, 80);
+    if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$/.test(name)) throw new Error(completionBoundsMessage);
+    const environment = completionText(check.environment, 200);
+    const evidenceIds = sanitizeCheckpointEvidence(check.evidenceIds);
+    return { name, result: check.result, environment, evidenceIds };
+  });
+  return {
+    assignmentId: record.assignmentId === undefined ? soloDefaultAssignmentId : record.assignmentId as string,
+    completionId: record.completionId.toLowerCase(),
+    outcome: record.outcome,
+    revision: record.revision,
+    dirty: record.dirty,
+    dirtyFingerprint,
+    checks,
+  };
+}
+
+function sameCompletionPayload(existing: CompletionRecord, input: CompletionInput): boolean {
+  return JSON.stringify({
+    assignmentId: existing.assignmentId,
+    completionId: existing.completionId.toLowerCase(),
+    outcome: existing.outcome,
+    revision: existing.revision,
+    dirty: existing.dirty,
+    dirtyFingerprint: existing.dirtyFingerprint,
+    checks: existing.checks.map(({ name, result, environment, evidenceIds }) => ({ name, result, environment, evidenceIds })),
+  }) === JSON.stringify(input);
+}
+
+/** Append assignment-scoped result records only; status remains explicitly coordinator-controlled. */
+export async function appendWorkstreamCompletion(
+  store: Store,
+  id: string,
+  input: unknown,
+  readAccessibleRunIds: () => Promise<ReadonlySet<string>>,
+): Promise<Workstream> {
+  const sanitized = sanitizeCompletion(input);
+  return store.update(async state => {
+    const workstream = state.workstreams.find(entry => entry.id === id);
+    if (!workstream) throw new Error('Unknown workstream.');
+    const completions = workstream.completions ?? [];
+    const duplicate = completions.find(entry => entry.completionId.toLowerCase() === sanitized.completionId);
+    if (duplicate) {
+      if (!sameCompletionPayload(duplicate, sanitized)) throw new Error(completionIdConflictMessage);
+      return workstream;
+    }
+    // Resolve evidence only once this write reaches the Store queue head. A
+    // run-summary ring eviction while the completion waits must be refused,
+    // rather than leaving a durable dangling reference.
+    const accessibleRunIds = await readAccessibleRunIds();
+    for (const check of sanitized.checks) {
+      for (const evidenceId of check.evidenceIds ?? []) {
+        if (!accessibleRunIds.has(evidenceId)) throw new Error(completionEvidenceMessage);
+      }
+    }
+    const entry: CompletionRecord = {
+      ...sanitized,
+      checks: sanitized.checks.map(check => ({
+        ...check,
+        evidenceIds: check.evidenceIds ?? [],
+        evidenceSource: 'agent_report',
+        evidenceLabel: 'Agent-reported — not independently verified here',
+      })),
+      recordedAt: new Date().toISOString(),
+    };
+    workstream.completions = [...completions, entry].slice(-maxWorkstreamCompletions);
+    workstream.updatedAt = entry.recordedAt;
+    return workstream;
+  });
 }
 
 /** Bounded history depth: the latest entries survive, oldest evict first. */
@@ -212,14 +384,18 @@ export async function setWorkstreamStatus(
   store: Store,
   id: string,
   status: WorkstreamStatus,
+  readAccessibleRunIds: (workspaceId: string) => Promise<ReadonlySet<string>>,
   note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown },
 ): Promise<Workstream> {
   if (status !== 'active' && status !== 'paused' && status !== 'done') throw new Error('Unknown workstream status.');
   const sanitized = note === undefined ? undefined : sanitizeCheckpointNote(note);
-  return store.update(state => {
+  return store.update(async state => {
     const workstream = state.workstreams.find(workstream => workstream.id === id);
     if (!workstream) throw new Error('Unknown workstream.');
     if (workstream.status === 'done' && status !== 'done') throw new Error('A finished workstream cannot be reopened.');
+    if (sanitized?.evidence.length) {
+      assertCheckpointEvidence(sanitized.evidence, await readAccessibleRunIds(workstream.workspaceId));
+    }
     workstream.status = status;
     // A supplied note appends to the bounded history (oldest-first, last 10)
     // and becomes the latest entry; omitting it preserves both the latest

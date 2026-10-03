@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, ensurePrivateDirectory, writePrivateJson } from '../src/store.js';
+import { Store, ensurePrivateDirectory, writePrivateJson, type State } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import {
@@ -107,6 +107,55 @@ test('unknown and out-of-scope run IDs are refused with a safe error', async t =
     },
   );
   assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote, null, 'refused note stores nothing');
+});
+
+test('checkpoint evidence is revalidated inside queued status writes after pruning', async t => {
+  for (const status of ['paused', 'done'] as const) {
+    const f = await approvedFixture(`openworkspace-checkpoint-prune-race-${status}-`);
+    const oldEvidenceId = `0000000000000-old-${status}`;
+    const runsDirectory = join(f.store.directory, 'runs', f.workspace.id);
+    const originalUpdate = f.store.update.bind(f.store);
+    try {
+      await mkdir(runsDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(join(runsDirectory, `${oldEvidenceId}.json`), '{}', { mode: 0o600 });
+      for (let index = 0; index < 19; index++) {
+        await persistRunSummary(f.store.directory, {
+          workspaceId: f.workspace.id, scriptName: `seed-${index}`, outcome: 'passed', durationMs: 1,
+          output: 'ok', outputTruncated: false,
+        });
+      }
+      assert.ok((await listRunIds(f.store.directory, f.workspace.id)).has(oldEvidenceId));
+
+      let injectPrune = true;
+      f.store.update = function <T>(change: (state: State) => T | Promise<T>): Promise<T> {
+        if (injectPrune) {
+          injectPrune = false;
+          // Run the ring prune before the note/status update is queued, matching
+          // the old validation-then-queue interleave.
+          return persistRunSummary(f.store.directory, {
+            workspaceId: f.workspace.id, scriptName: 'concurrent-prune', outcome: 'passed', durationMs: 1,
+            output: 'ok', outputTruncated: false,
+          }, f.store).then(() => originalUpdate(change));
+        }
+        return originalUpdate(change);
+      };
+      await assert.rejects(
+        f.service.setWorkstreamStatus(f.workstream.id, status, note({ evidence: [oldEvidenceId] })),
+        (error: unknown) => {
+          assert.equal((error as Error).message, checkpointEvidenceMessage);
+          return true;
+        },
+        `${status} update must reject evidence evicted before its queued commit`,
+      );
+      assert.equal((await listRunIds(f.store.directory, f.workspace.id)).has(oldEvidenceId), false, 'the competing prune evicted the unpinned run');
+      const unchanged = await f.service.workstream(f.workstream.id);
+      assert.equal(unchanged.status, 'active');
+      assert.equal(unchanged.checkpointNote, null, 'no dangling note is committed');
+    } finally {
+      f.store.update = originalUpdate;
+      await rm(f.root, { recursive: true, force: true });
+    }
+  }
 });
 
 test('evidence holds at most five well-formed IDs', async t => {

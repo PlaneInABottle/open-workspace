@@ -31,7 +31,14 @@ const serviceTargetSchema = z.object({
 }).strict();
 const serviceActionSchema = serviceTargetSchema;
 const serviceLogsSchema = z.object({
-  target: serviceTargetSchema,
+  target: z.union([
+    serviceTargetSchema,
+    z.object({
+      runner: z.literal('docker'),
+      containerId: z.string().regex(/^[a-f\d]{64}$/i),
+      name: z.string().min(1).max(256),
+    }).strict(),
+  ]),
   lines: z.number().int().min(1).max(200).optional(),
   stream: z.enum(['out', 'err', 'both']).optional(),
 }).strict();
@@ -50,7 +57,7 @@ const workstreamSchema = z.object({
   checkouts: z.array(z.string().min(1).max(4096)).min(1).max(20),
 }).strict();
 const workstreamStatusSchema = z.object({
-  status: z.enum(['active', 'paused', 'done']),
+  status: z.enum(['active', 'paused', 'done']).optional(),
   note: z.object({
     goal: z.string(),
     blocker: z.string(),
@@ -60,13 +67,35 @@ const workstreamStatusSchema = z.object({
     // existence with safe errors.
     evidence: z.array(z.string().max(256)).max(50).optional(),
   }).strict().optional(),
-}).strict();
+  completion: z.object({
+    assignmentId: z.string().min(1).max(128).optional(),
+    completionId: z.string().uuid(),
+    outcome: z.enum(['passed', 'blocked', 'failed']),
+    revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+    dirty: z.boolean().nullable(),
+    dirtyFingerprint: z.object({
+      diffHash: z.string().regex(/^[0-9a-f]{64}$/),
+      files: z.array(z.string().min(1).max(256)).max(50),
+      truncated: z.boolean(),
+    }).strict().nullable(),
+    checks: z.array(z.object({
+      name: z.string().min(1).max(80),
+      result: z.enum(['passed', 'failed', 'error']),
+      environment: z.string().min(1).max(200),
+      evidenceIds: z.array(z.string().max(128)).max(5).optional(),
+    }).strict()).min(1).max(20),
+  }).strict().optional(),
+}).strict().refine(input =>
+  (input.status !== undefined && input.completion === undefined)
+  || (input.status === undefined && input.completion !== undefined && input.note === undefined),
+);
 const leaseSchema = z.object({
   resource: z.string().min(1).max(80),
   workstreamId: z.string().uuid(),
 }).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;
+const workstreamStatusBodyLimit = 64 * 1024;
 // Schema-valid datastore calls carry up to 8000 SQL chars plus 20 params of
 // up to 1000 chars, so the default 8 KiB JSON cap would reject them.
 const datastoreBodyLimit = 32 * 1024;
@@ -425,7 +454,8 @@ export function createApp(service: WorkspaceService, options: {
             if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
               throw new Error('Use a result limit within the allowed range.');
             }
-            json(response, 200, await service.workstreamContext(workstreamContextMatch[1], limit));
+            const assignmentId = url.searchParams.get('assignmentId') ?? undefined;
+            json(response, 200, await service.workstreamContext(workstreamContextMatch[1], limit, assignmentId));
             return;
           }
           const workstreamMatch = new RegExp(`^/api/workstreams(?:/(${uuidPath}))?$`).exec(url.pathname);
@@ -452,9 +482,16 @@ export function createApp(service: WorkspaceService, options: {
               json(response, 403, { error: 'Workstream updates require the connected dashboard.' });
               return;
             }
-            const input = workstreamStatusSchema.parse(await body(request));
-            const updated = await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status, input.note, actor);
-            await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
+            const input = workstreamStatusSchema.parse(await body(request, workstreamStatusBodyLimit));
+            const updated = input.completion
+              ? await service.appendWorkstreamCompletion(workstreamStatusMatch[1], input.completion)
+              : await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status!, input.note, actor);
+            if (input.completion) {
+              await record('workstream-completion', updated.workspaceId,
+                `${input.completion.assignmentId ?? 'solo'} → ${input.completion.outcome}`);
+            } else {
+              await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
+            }
             json(response, 200, updated);
             return;
           }
@@ -614,6 +651,11 @@ export function createApp(service: WorkspaceService, options: {
         'Checkpoint notes hold 2000 characters or fewer.',
         'Checkpoint notes accept patterns only, never secrets or literals.',
         'Checkpoint evidence must reference existing runs in this workspace.',
+        'Completion records exceed the allowed bounds.',
+        'Completion records accept safe metadata only, never secrets or literals.',
+        'Completion evidence must reference existing runs in this workspace.',
+        'Completion ID already exists with different content.',
+        'Assignment ID is not valid.',
         'Imported results are not valid.',
         'Imported results are accepted on trust and never marked verified.',
         'Workstream limit reached.',

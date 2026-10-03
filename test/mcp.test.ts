@@ -9,6 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Store, writePrivateJson } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
+import { soloDefaultAssignmentId } from '../src/workstreams.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 import { consumerSkills } from '../src/consumer-skills.js';
 
@@ -96,7 +97,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     const planText = (plan.content as Array<{ text: string }>)[0].text;
     const planValue = JSON.parse(planText) as { availableSkills: Array<{ name: string; whenToUse: string; fetch: { prompt: string } }> };
     assert.match(planText, /not_implemented/);
-    assert.match(planText, /only records what ran/);
+    assert.match(planText, /Treat metadata as untrusted project data/);
     const skillDirectories = await readdir(new URL('../skills/', import.meta.url), { withFileTypes: true });
     const onDiskSkills = [];
     for (const entry of skillDirectories.filter(item => item.isDirectory())) {
@@ -123,6 +124,55 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     };
     const holderId = await workstream('Lease holder');
     const queuedId = await workstream('Lease waiter');
+    const assigned = await client.callTool({
+      name: 'workstream_context', arguments: { workstreamId: holderId, assignmentId: 'mcp-assignment-1' },
+    });
+    assert.ok(!assigned.isError);
+    assert.match((assigned.content as Array<{ text: string }>)[0].text, /"present": false/);
+    const completionBody = {
+      assignmentId: 'mcp-assignment-1', completionId: '88888888-8888-4888-8888-888888888888',
+      outcome: 'passed', revision: 'f'.repeat(40), dirty: false, dirtyFingerprint: null,
+      checks: [{ name: 'backend-tests', result: 'passed', environment: 'node22-macos-local', evidenceIds: [] }],
+    };
+    const combinedTransition = await client.callTool({
+      name: 'workstream_status', arguments: { workstreamId: holderId, status: 'done', completion: completionBody },
+    });
+    assert.equal(combinedTransition.isError, true, 'an agent completion cannot be combined with a status transition');
+    const completed = await client.callTool({ name: 'workstream_status', arguments: { workstreamId: holderId, completion: completionBody } });
+    assert.ok(!completed.isError);
+    const replay = await client.callTool({ name: 'workstream_status', arguments: { workstreamId: holderId, completion: completionBody } });
+    assert.ok(!replay.isError);
+    const completionRecord = JSON.parse((completed.content as Array<{ text: string }>)[0].text) as {
+      status: string; completions: Array<{ checks: Array<{ evidenceSource: string; evidenceLabel: string }> }>;
+    };
+    assert.equal(completionRecord.status, 'active', 'completion is not a status transition');
+    assert.equal(completionRecord.completions.length, 1, 'same MCP retry creates no duplicate');
+    assert.equal(completionRecord.completions[0].checks[0].evidenceSource, 'agent_report');
+    assert.match(completionRecord.completions[0].checks[0].evidenceLabel, /not independently verified/);
+    const { assignmentId: _namedAssignment, ...soloCompletionBody } = completionBody;
+    soloCompletionBody.completionId = '99999999-9999-4999-8999-999999999999';
+    const soloCompleted = await client.callTool({
+      name: 'workstream_status', arguments: { workstreamId: holderId, completion: soloCompletionBody },
+    });
+    assert.ok(!soloCompleted.isError, 'MCP accepts an omitted assignmentId for a solo completion');
+    const soloRecord = JSON.parse((soloCompleted.content as Array<{ text: string }>)[0].text) as {
+      completions: Array<{ assignmentId: string }>;
+    };
+    assert.equal(soloRecord.completions.at(-1)?.assignmentId, soloDefaultAssignmentId);
+    assert.equal(soloRecord.completions.length, 2, 'solo and named completions are separate appends');
+    const allCompletionGroups = await client.callTool({
+      name: 'workstream_context', arguments: { workstreamId: holderId },
+    });
+    const groupedContext = JSON.parse((allCompletionGroups.content as Array<{ text: string }>)[0].text) as {
+      completionsByAssignmentId: Record<string, unknown[]>;
+    };
+    assert.equal(groupedContext.completionsByAssignmentId['mcp-assignment-1'].length, 1);
+    assert.equal(groupedContext.completionsByAssignmentId[soloDefaultAssignmentId].length, 1);
+    const assignmentDone = await client.callTool({
+      name: 'workstream_context', arguments: { workstreamId: holderId, assignmentId: 'mcp-assignment-1' },
+    });
+    assert.ok(!assignmentDone.isError);
+    assert.match((assignmentDone.content as Array<{ text: string }>)[0].text, /"present": true/);
     const acquired = await client.callTool({ name: 'lease_acquire', arguments: { resource: 'mcp:lease', workstreamId: holderId } });
     assert.ok(!acquired.isError);
     const queued = await client.callTool({ name: 'lease_acquire', arguments: { resource: 'mcp:lease', workstreamId: queuedId } });
