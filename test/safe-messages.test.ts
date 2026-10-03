@@ -33,6 +33,7 @@ import { datastoreMessages } from '../src/datastore.js';
 import { browserMessages } from '../src/browser.js';
 import { dockerLogMessages, dockerMetadataMessages } from '../src/services-docker.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from '../src/run-summaries.js';
+import { learningMessages } from '../src/rule-index.js';
 import { localToolCallMessages, localToolGateMessages } from '../src/local-tools.js';
 
 const workstreamMessages: readonly string[] = [
@@ -65,6 +66,7 @@ const ownerGroups: ReadonlyArray<{ file: string; values: readonly string[] }> = 
   { file: 'browser.ts', values: Object.values(browserMessages) },
   { file: 'services-docker.ts', values: Object.values(dockerMetadataMessages) },
   { file: 'run-summaries.ts', values: [externalImportInvalidMessage, externalImportClaimMessage] },
+  { file: 'rule-index.ts', values: Object.values(learningMessages) },
   { file: 'local-tools.ts', values: [...Object.values(localToolGateMessages), ...Object.values(localToolCallMessages)] },
   { file: 'http.ts', values: Object.values(httpTransportMessages) },
 ];

@@ -71,7 +71,8 @@ const excerptLimit = 2048;
 const listExcerptLimit = 200;
 const maxFailingNames = 20;
 // Prompt after three failed/errored runs among the newest 20 local runs across scanned scopes.
-const maxRecentRunsForLearningSignal = 20;
+// Exported for the learning rule index, which reuses the same local-only window.
+export const maxRecentRunsForLearningSignal = 20;
 const failedRunThresholdForLearningSignal = 3;
 
 /** IDs referenced by checkpoint notes or completion checks in scope, exempt from ordinary run-ring eviction. */
@@ -250,7 +251,7 @@ const maxImportExcerpt = 500;
 const maxImportDurationMs = 86_400_000;
 const allowedImportKeys = ['workspaceId', 'scriptName', 'outcome', 'durationMs', 'excerpt'];
 const forbiddenImportKeys = /verif|attest|proof|signatur|revision|hash|trust|certif/i;
-const uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+export const uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 export interface ExternalRunImport {
   workspaceId: string;

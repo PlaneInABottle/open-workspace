@@ -14,6 +14,7 @@ import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } f
 import { acquireLease, expireLeasesOnRead, finishWorkstreamLeasesInState, listLeases, releaseLease, touchLease, type Lease, type LeaseActor } from './leases.js';
 import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listMilestones } from './milestones.js';
+import { appendLearningRule, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 import { availableSkills } from './consumer-skills.js';
 
@@ -388,6 +389,24 @@ export class WorkspaceService {
 
   async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>> }> {
     return { milestones: await listMilestones(this.store.directory) };
+  }
+
+  /**
+   * Index-only learning record: the lesson text stays in the user's
+   * AGENTS.md/skill file; the platform stores the title, file ref, evidence
+   * links and failure signature. Evidence IDs must exist in a registered
+   * workspace scope (workspace-scoped, else refused); the existence read runs
+   * inside the index write queue (same pattern as completion evidence).
+   */
+  async recordLearning(raw: unknown): Promise<LearningRuleEntry> {
+    return appendLearningRule(this.store.directory, raw, async () => {
+      const state = await this.store.read();
+      const accessible = new Set<string>();
+      for (const workspace of state.workspaces) {
+        for (const id of await listRunIds(this.store.directory, workspace.id)) accessible.add(id);
+      }
+      return accessible;
+    });
   }
 
   async remove(id: string) {

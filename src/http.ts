@@ -16,6 +16,7 @@ import { browserCheckSchema, browserMessages, browserSocketTimeoutMs } from './b
 import { dockerMetadataMessages } from './services-docker.js';
 import { leaseMessages } from './leases.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
+import { learningMessages } from './rule-index.js';
 import { workspaceMessages } from './workspace.js';
 import {
   checkpointBoundsMessage,
@@ -118,6 +119,15 @@ const leaseSchema = z.object({
   resource: z.string().min(1).max(80),
   workstreamId: z.string().uuid(),
 }).strict();
+const learningRecordSchema = z.object({
+  title: z.string().min(1).max(80),
+  file: z.string().min(1).max(256),
+  evidenceRefs: z.array(z.string().max(128)).min(1).max(5),
+  failureSignature: z.object({
+    tests: z.array(z.string().max(120)).max(10),
+    errorClasses: z.array(z.string().max(120)).max(10),
+  }).strict(),
+}).strict();
 const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const proposalBodyLimit = 512 * 1024;
 const workstreamStatusBodyLimit = 64 * 1024;
@@ -177,6 +187,7 @@ export const safeMessages: readonly string[] = [
   workspaceMessages.assignmentId,
   externalImportInvalidMessage,
   externalImportClaimMessage,
+  ...Object.values(learningMessages),
   workstreamLimitMessage,
   ...Object.values(leaseMessages),
   datastoreMessages.identifier,
@@ -242,6 +253,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workstreams/${uuidPath}/context$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
     || pathname === '/api/runs/import'
+    || pathname === '/api/learnings/record'
     || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|logs)$`).test(pathname)
@@ -615,6 +627,18 @@ export function createApp(service: WorkspaceService, options: {
             // pasted excerpt itself is never persisted outside the masked file.
             await record('run-import', imported.workspaceId, `${imported.scriptName} → external-import`);
             json(response, 201, imported);
+            return;
+          }
+          if (url.pathname === '/api/learnings/record' && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'record-learning'))) {
+              json(response, 403, { error: 'Recording a learning rule requires the connected dashboard.' });
+              return;
+            }
+            const recorded = await service.recordLearning(learningRecordSchema.parse(await body(request)));
+            // Activity records counts only: evidence-ref count plus outcome
+            // class, never the title, file ref or failure text.
+            await record('learning-record', null, `${recorded.evidenceRefs.length} evidence refs → ${recorded.status}`);
+            json(response, 201, recorded);
             return;
           }
           if (url.pathname === '/api/leases' && request.method === 'GET') {

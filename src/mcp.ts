@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { serviceRequest } from './connection.js';
 import { localToolDescription, slotValueSchemas, type LocalToolStatusEntry } from './local-tools.js';
 import { learningInstructionSuffix } from './run-summaries.js';
+import { learningLessonLine, learningTotalCap } from './rule-index.js';
 import { stateDirectory } from './store.js';
 import { consumerSkills } from './consumer-skills.js';
 
@@ -15,6 +16,16 @@ let instructions = baseInstructions;
 try {
   const suffix = await learningInstructionSuffix(stateDirectory());
   if (suffix) instructions = `${baseInstructions} ${suffix}`;
+} catch {
+  // Learning state is best-effort and never blocks server startup.
+}
+try {
+  // Relevant-lesson titles append to the same line budget: total instructions
+  // (base + all suffixes) stay within the 760B cap by truncating 3→2→1→0
+  // titles. Learning state is best-effort and never blocks server startup.
+  const remaining = learningTotalCap - Buffer.byteLength(instructions, 'utf8') - 1;
+  const lessons = await learningLessonLine(stateDirectory(), remaining);
+  if (lessons) instructions = `${instructions} ${lessons}`;
 } catch {
   // Learning state is best-effort and never blocks server startup.
 }
@@ -281,6 +292,19 @@ server.registerTool('run_import', {
   }).strict(),
   annotations: operateHints,
 }, ({ workspaceId, scriptName, outcome, durationMs, excerpt }) => request('/api/runs/import', { workspaceId, scriptName, outcome, durationMs, excerpt }));
+server.registerTool('learning_record', {
+  description: 'Index one reusable lesson by title and file ref with triggering run evidence and failure signature. Titles/refs only, never rule bodies or secrets.',
+  inputSchema: z.object({
+    title: z.string().min(1).max(80),
+    file: z.string().min(1).max(256),
+    evidenceRefs: z.array(z.string().max(128)).min(1).max(5),
+    failureSignature: z.object({
+      tests: z.array(z.string().max(120)).max(10),
+      errorClasses: z.array(z.string().max(120)).max(10),
+    }).strict(),
+  }).strict(),
+  annotations: operateHints,
+}, ({ title, file, evidenceRefs, failureSignature }) => request('/api/learnings/record', { title, file, evidenceRefs, failureSignature }));
 // Declared local tools: the service owns the registry; this process only
 // mirrors active entries. Newly gated tools appear after a status sync (or an
 // MCP restart when the SDK cannot hot-plug post-connect — see E1).
