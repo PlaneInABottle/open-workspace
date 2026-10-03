@@ -31,6 +31,7 @@ test('registration reads bounded metadata immediately without an approval queue'
   const workspace = await f.service.register('Project', [f.project]);
   const found = await f.service.inspect(workspace.id);
   assert.deepEqual(found.roots[0].repositories.map(repo => repo.name).sort(), ['api','project','web']);
+  assert.deepEqual(found.roots[0].repositories.find(repo => repo.name === 'project')?.composeFiles, ['compose.yaml']);
   assert.deepEqual(found.roots[0].repositories.find(repo => repo.name === 'web')?.scriptNames, ['dev','test']);
   assert.ok(found.roots[0].repositories.every(repo => repo.processState === 'not_connected' && repo.readiness === 'not_checked'));
   const result = JSON.stringify(found);

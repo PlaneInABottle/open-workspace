@@ -30,7 +30,7 @@ function process(cwd: string, name = 'api'): Pm2Process {
 
 test('PM2 service metadata is scoped to registered project roots only', async t => {
   const f = await approvedProject(t);
-  const service = new WorkspaceService(f.store, async () => ({ available: true, processes: [process(f.inner), process(f.outside, 'outside')] }));
+  const service = new WorkspaceService(f.store, async () => ({ available: true, processes: [process(f.inner), process(f.outside, 'outside')] }), undefined, undefined, undefined, undefined, undefined, Date.now, async () => ({ available: true, containers: [] }));
   const approved = await service.register('Project', [f.project]);
   const inventory = await service.services(approved.id);
   assert.equal(inventory.available, true);

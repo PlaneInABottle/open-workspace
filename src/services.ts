@@ -3,6 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, resolve, sep } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
+import { dockerContainerInventory, dockerFailureMessage, listDockerContainers, runDockerLogs, type DockerContainerInventory, type DockerLogResult, type DockerServiceLogTarget } from './services-docker.js';
 
 const pm2MetadataTimeoutMs = 5_000;
 const maximumPm2MetadataBytes = 2 * 1024 * 1024;
@@ -53,6 +54,7 @@ export type Pm2ListResult =
   | { available: false; error: 'missing' | 'failed' | 'timeout' | 'invalid' };
 
 export interface ServiceRecord {
+  runner: 'pm2';
   name: string;
   pmId: number | null;
   namespace: string | null;
@@ -73,6 +75,7 @@ export interface ServiceInventory {
   unmatchedProcessCount: number;
   services: ServiceRecord[];
   ambiguousServices: ServiceRecord[];
+  docker: DockerContainerInventory;
 }
 
 function safePm2Environment() {
@@ -276,6 +279,7 @@ export async function inspectPm2Services(workspaceRoots: string[], processes: Pm
       continue;
     }
     const service: ServiceRecord = {
+      runner: 'pm2',
       name: process.name,
       pmId: process.pmId,
       namespace: process.namespace,
@@ -293,8 +297,8 @@ export async function inspectPm2Services(workspaceRoots: string[], processes: Pm
   return { services, ambiguousServices, unmatchedProcessCount };
 }
 
-export async function serviceInventory(workspaceRoots: string[], list = listPm2Processes): Promise<ServiceInventory> {
-  const listResult = await list();
+export async function serviceInventory(workspaceRoots: string[], list = listPm2Processes, listDocker = listDockerContainers): Promise<ServiceInventory> {
+  const [listResult, docker] = await Promise.all([list(), dockerContainerInventory(workspaceRoots, listDocker)]);
   const timestamp = new Date().toISOString();
   if (!listResult.available) {
     return {
@@ -307,6 +311,7 @@ export async function serviceInventory(workspaceRoots: string[], list = listPm2P
       unmatchedProcessCount: 0,
       services: [],
       ambiguousServices: [],
+      docker,
     };
   }
   const mapped = await inspectPm2Services(workspaceRoots, listResult.processes);
@@ -319,6 +324,7 @@ export async function serviceInventory(workspaceRoots: string[], list = listPm2P
     unmatchedProcessCount: mapped.unmatchedProcessCount,
     services: mapped.services,
     ambiguousServices: mapped.ambiguousServices,
+    docker,
   };
 }
 
@@ -438,6 +444,8 @@ export interface ServiceLogTarget {
   namespace?: string | null;
 }
 
+export type AnyServiceLogTarget = ServiceLogTarget | DockerServiceLogTarget;
+
 const pm2AnsiPattern = /\x1b\[[0-9;]*[A-Za-z]/g;
 const pm2BannerPattern = /^\[TAILING\] Tailing last \d+ lines? for \[.*\] process.*$/;
 const pm2SectionHeaderPattern = /^.+\.log last \d+ lines?:$/;
@@ -474,7 +482,7 @@ export function stripPm2LogChrome(raw: string, pmId: number, name: string): stri
 }
 
 export interface ServiceLogResult {
-  target: { pmId: number; name: string; namespace: string | null };
+  target: { pmId: number; name: string; namespace: string | null } | DockerServiceLogTarget;
   stream: ServiceLogStream;
   linesRequested: number;
   linesReturned: number;
@@ -522,5 +530,54 @@ export async function readPm2ServiceLogs(workspaceRoots: string[], target: Servi
   return {
     target: resolvedTarget, stream, linesRequested: lines as number, linesReturned, truncated: result.truncated, output,
     message: linesReturned === 0 ? 'PM2 returned no log output for this service.' : 'PM2 returned a bounded log tail.',
+  };
+}
+
+export async function readDockerServiceLogs(workspaceRoots: string[], target: DockerServiceLogTarget, options: {
+  lines?: number;
+  stream?: ServiceLogStream;
+  list?: typeof listDockerContainers;
+  runner?: (containerId: string, lines: number) => Promise<DockerLogResult>;
+} = {}): Promise<ServiceLogResult> {
+  const lines = options.lines ?? defaultServiceLogLines;
+  const stream = options.stream ?? 'both';
+  const fail = (message: string): ServiceLogResult => ({
+    target,
+    stream: stream === 'out' || stream === 'err' || stream === 'both' ? stream : 'both',
+    linesRequested: Number.isInteger(lines) && lines >= 1 && lines <= maximumServiceLogLines ? lines : defaultServiceLogLines,
+    linesReturned: 0,
+    truncated: false,
+    output: '',
+    message,
+  });
+  if (!/^[a-f\d]{64}$/i.test(target.containerId) || !target.name.trim() || target.name.length > 256) return fail('Docker container identity is invalid.');
+  if (!Number.isInteger(lines) || lines < 1 || lines > maximumServiceLogLines) return fail(`Request between 1 and ${maximumServiceLogLines} log lines.`);
+  if (stream !== 'both') return fail('Docker returns combined container logs; select the both stream.');
+  const list = options.list ?? listDockerContainers;
+  const before = await list();
+  if (!before.available) return fail(dockerFailureMessage(before.error, 'metadata'));
+  const mapped = await dockerContainerInventory(workspaceRoots, async () => before);
+  const container = mapped.services.find(service => service.containerId === target.containerId && service.name === target.name);
+  if (!container || !container.exactRootPath) return fail('That Docker container is not uniquely mapped to a registered root.');
+  const runner = options.runner ?? runDockerLogs;
+  const result = await runner(target.containerId, lines);
+  if (!result.ok) return {
+    target,
+    stream,
+    linesRequested: lines,
+    linesReturned: 0,
+    truncated: false,
+    output: '',
+    message: dockerFailureMessage(result.error, 'logs'),
+  };
+  const linesReturned = result.output === '' ? 0 : result.output.split('\n').length;
+  return {
+    target,
+    stream,
+    linesRequested: lines,
+    linesReturned,
+    truncated: result.truncated,
+    output: result.output,
+    message: linesReturned === 0 ? 'Docker returned no log output for this container.' : 'Docker returned a bounded log tail.',
   };
 }

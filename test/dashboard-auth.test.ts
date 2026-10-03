@@ -751,12 +751,21 @@ test('service logs return bounded output while activity records counts only', as
   await store.initialize();
 
   const logCalls: Array<{ pmId: number; stream: string; lines: number }> = [];
+  const dockerId = 'c'.repeat(64);
+  const dockerLogCalls: Array<{ containerId: string; lines: number }> = [];
+  const dockerLogSecret = 'DOCKER_APP_PRINTED_SECRET_SENTINEL';
   const service = new WorkspaceService(store, async () => ({
     available: true,
     processes: [{ pmId: 7, name: 'api', namespace: 'default', status: 'online', cwd: join(project, 'api'), restartCount: 0, startedAt: null }],
   }), undefined, undefined, undefined, undefined, async (pmId, stream, lines) => {
     logCalls.push({ pmId, stream, lines });
     return { ok: true, output: 'hello\nsk-test-secret-marker', truncated: false };
+  }, Date.now, async () => ({ available: true, containers: [
+    { id: dockerId, name: 'postgres', image: 'postgres:17', state: 'running', labels: { 'com.docker.compose.project.working_dir': project } },
+    { id: 'd'.repeat(64), name: 'unmanaged-cache', image: 'redis:7', state: 'running', labels: {} as Record<string, string> },
+  ] }), async (containerId, lines) => {
+    dockerLogCalls.push({ containerId, lines });
+    return { ok: true, output: dockerLogSecret, truncated: false };
   });
 
   const mcpToken = 'b'.repeat(64);
@@ -788,7 +797,34 @@ test('service logs return bounded output while activity records counts only', as
   assert.equal(tail.stream, 'out');
   assert.deepEqual(logCalls, [{ pmId: 7, stream: 'out', lines: 10 }]);
 
+  const services = await fetch(`${origin}/api/workspaces/${proposal.id}/services`, {
+    method: 'POST', headers: mcpHeaders, body: '{}',
+  });
+  assert.equal(services.status, 200);
+  const serviceInventory = await services.json() as { docker: { services: Array<{ runner: string; name: string }>; unmanagedContainers: Array<{ name: string }> } };
+  assert.deepEqual(serviceInventory.docker.services.map(entry => [entry.runner, entry.name]), [['docker', 'postgres']]);
+  assert.deepEqual(serviceInventory.docker.unmanagedContainers.map(entry => entry.name), ['unmanaged-cache']);
+
+  const dockerTarget = { runner: 'docker', containerId: dockerId, name: 'postgres' };
+  const dockerTail = await fetch(logsPath, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: dockerTarget, lines: 12 }),
+  });
+  assert.equal(dockerTail.status, 200);
+  const dockerResult = await dockerTail.json() as { output: string; linesReturned: number; target: { runner: string } };
+  assert.equal(dockerResult.output, dockerLogSecret);
+  assert.equal(dockerResult.linesReturned, 1);
+  assert.equal(dockerResult.target.runner, 'docker');
+  assert.deepEqual(dockerLogCalls, [{ containerId: dockerId, lines: 12 }]);
+
+  const deniedControl = await fetch(`${origin}/api/workspaces/${proposal.id}/services/stop`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify(dockerTarget),
+  });
+  assert.equal(deniedControl.status, 400);
+  assert.deepEqual(dockerLogCalls, [{ containerId: dockerId, lines: 12 }], 'Docker has no service control path');
+
   const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${mcpToken}` } })).json() as Array<{ detail: string }>;
   assert.ok(activity.some(entry => entry.detail === 'api → 2 lines'));
+  assert.ok(activity.some(entry => entry.detail === 'postgres → 1 lines'));
   assert.ok(!JSON.stringify(activity).includes('sk-test-secret-marker'), 'activity must never carry log text');
+  assert.ok(!JSON.stringify(activity).includes(dockerLogSecret), 'Docker activity must never carry log text');
 });
