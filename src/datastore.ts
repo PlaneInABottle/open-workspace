@@ -270,6 +270,13 @@ const deniedPatterns = [
   /\bLO_IMPORT\b/, /\bLO_EXPORT\b/,
   /\bUESCAPE\b/,
   /\bPG_READ_FILE\b/, /\bPG_READ_BINARY_FILE\b/, /\bPG_WRITE\b/,
+  // Server-side directory/file listing stays refused as defense-in-depth
+  // (the boundary itself is least-privilege + READ ONLY + superuser
+  // refusal): pg_ls_dir/pg_stat_file plus the pg_monitor-gated log/wal/
+  // archive/tmp/summaries listers.
+  /\bPG_LS_DIR\b/, /\bPG_STAT_FILE\b/,
+  /\bPG_LS_LOGDIR\b/, /\bPG_LS_WALDIR\b/, /\bPG_LS_ARCHIVE_STATUSDIR\b/,
+  /\bPG_LS_TMPDIR\b/, /\bPG_LS_SUMMARIESDIR\b/,
   /\bDBLINK\w*\b/,
   /\\/, // No psql meta-commands: literals are masked, so any backslash is one.
 ];

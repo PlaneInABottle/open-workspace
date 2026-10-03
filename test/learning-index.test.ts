@@ -160,6 +160,35 @@ test('index stores server-stamped entries with 0600 perms and evicts oldest non-
   assert.ok(stored.some(entry => entry.title === 'Overflow rule'));
 });
 
+test('append into a full suspect index retains the new entry', async t => {
+  const f = await registeredFixture('openworkspace-learning-full-suspect-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const run = await failedRun(f.store.directory, f.workspace.id, 'not ok 1 full suspect case');
+  await f.service.recordLearning({
+    title: 'Seed rule', file: 'AGENTS.md', evidenceRefs: [run.id],
+    failureSignature: { tests: ['full suspect case'], errorClasses: [] },
+  });
+  // Fill the index to the cap with suspects, oldest first.
+  const base = (await readLearningIndex(f.store.directory))[0];
+  const at = Date.parse(base.createdAt);
+  const full = Array.from({ length: maxLearningEntries }, (_, index) => ({
+    ...base,
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    title: `Suspect rule ${index}`,
+    status: 'suspect' as const,
+    createdAt: new Date(at + index * 1000).toISOString(),
+  }));
+  await writeFile(join(f.store.directory, 'learnings', 'index.json'), JSON.stringify(full));
+  const incoming = await f.service.recordLearning({
+    title: 'Incoming rule', file: 'AGENTS.md', evidenceRefs: [run.id],
+    failureSignature: { tests: ['full suspect case'], errorClasses: [] },
+  });
+  const stored = await readLearningIndex(f.store.directory);
+  assert.equal(stored.length, maxLearningEntries);
+  assert.ok(stored.some(entry => entry.id === incoming.id), 'the just-recorded entry is retained');
+  assert.ok(!stored.some(entry => entry.id === full[0].id), 'the oldest suspect yields the slot');
+});
+
 test('evictLearningEntries drops oldest first with a deterministic tiebreak', () => {
   const at = new Date().toISOString();
   const entry = (id: string, status: 'active' | 'suspect'): LearningRuleEntry => ({
@@ -475,7 +504,7 @@ test('tokenizeContext is pure: lowercase, bounded and stop-word free', () => {
   }], undefined), [], 'no context selects nothing');
 });
 
-test('situation matches qualify only with context and rank below failure hits', async t => {
+test('startup line stays failure-only; situational surfacing lives in workstream context', async t => {
   const f = await registeredFixture('openworkspace-learning-situation-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 login flow');
@@ -489,19 +518,17 @@ test('situation matches qualify only with context and rank below failure hits', 
     failureSignature: { tests: [], errorClasses: [] },
     situations: ['service start missing setting'],
   });
-  const context = 'starting the service needs a missing setting value';
-  const withContext = await learningLessonLine(f.store.directory, learningTotalCap, context);
-  assert.ok(withContext?.includes('Login guard'), 'failure hit still injects with context');
-  assert.ok(withContext?.includes('Confirm settings before starting the service (AGENTS.md) [situational]'),
-    'unmeasured situation hit renders with the situational suffix');
-  assert.ok((withContext?.indexOf('Login guard') ?? 0) < (withContext?.indexOf('Confirm settings') ?? 0),
-    'situation tier ranks below failure hits');
-  // No-context behavior is byte-identical legacy: the unmeasured entry can
-  // never failure-match, and an empty context tokenizes to the same nothing.
-  const without = await learningLessonLine(f.store.directory, learningTotalCap);
-  assert.ok(without?.includes('Login guard'));
-  assert.ok(!without?.includes('Confirm settings'), 'unmeasured entries never inject without context');
-  assert.equal(await learningLessonLine(f.store.directory, learningTotalCap, ''), without, 'empty context matches no-context bytes');
+  const line = await learningLessonLine(f.store.directory, learningTotalCap);
+  assert.ok(line?.includes('Login guard'), 'failure hit still injects at startup');
+  assert.ok(!line?.includes('Confirm settings'), 'unmeasured entries never inject at startup');
+  // The same lesson surfaces situationally through the pure selector, with
+  // the situational suffix and without failure-only entries.
+  const picked = selectSituationalLessons(
+    await readLearningIndex(f.store.directory),
+    'starting the service needs a missing setting value',
+  );
+  assert.ok(picked.some(title => title.includes('Confirm settings before starting the service (AGENTS.md) [situational]')));
+  assert.ok(!picked.some(title => title.includes('Login guard')), 'tagless failure entries stay out of the situational pick');
 });
 
 test('unmeasured entries never recur, never flag and evict after measured-active', async t => {

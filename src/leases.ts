@@ -71,6 +71,13 @@ export async function expireLeasesOnRead(
   clock: Clock = Date.now,
 ): Promise<State> {
   const now = clock();
+  // Reads are the hot path: skip the queued state.json rewrite when no held
+  // lease is past its deadline. Expiry activity is still recorded inside the
+  // write whenever expireLeases actually expires and promotes.
+  const snapshot = await store.read();
+  const stale = snapshot.leases.some(lease => lease.status === 'held'
+    && lease.expiresAt !== null && Date.parse(lease.expiresAt) <= now);
+  if (!stale) return snapshot;
   return store.update(state => {
     expireLeases(state, actor, now);
     return state;

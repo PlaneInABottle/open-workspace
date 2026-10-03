@@ -258,8 +258,14 @@ async function writeLearningIndex(homeDirectory: string, entries: LearningRuleEn
  * unmeasured-active (waste/setup lessons survive failure lessons), then
  * suspects last so a flagged rule is never dropped while a healthy one
  * survives. Within a tier: older createdAt first, then lexical id.
+ * `protectedIds` are never chosen as victims: appendLearningRule protects
+ * the incoming entry so a full suspect index evicts its oldest suspect
+ * instead of silently dropping the just-recorded lesson.
  */
-export function evictLearningEntries(entries: LearningRuleEntry[]): LearningRuleEntry[] {
+export function evictLearningEntries(
+  entries: LearningRuleEntry[],
+  protectedIds: ReadonlySet<string> = new Set(),
+): LearningRuleEntry[] {
   if (entries.length <= maxLearningEntries) return entries;
   const ordered = [...entries].sort((a, b) =>
     a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -271,7 +277,7 @@ export function evictLearningEntries(entries: LearningRuleEntry[]): LearningRule
     entry => entry.status === 'suspect',
   ];
   for (const tier of tiers) {
-    for (const entry of ordered.filter(tier)) {
+    for (const entry of ordered.filter(candidate => tier(candidate) && !protectedIds.has(candidate.id))) {
       if (victims.size >= drop) break;
       victims.add(entry.id);
     }
@@ -318,7 +324,14 @@ export async function appendLearningRule(
       lastValidatedAt: now,
       status: 'active',
     };
-    const stored = evictLearningEntries([...await readLearningIndex(homeDirectory), entry]);
+    // Reserve the incoming slot: victims come from existing entries only,
+    // so a full suspect index evicts its oldest suspect instead of
+    // silently dropping the just-recorded entry while the API reports
+    // success.
+    const stored = evictLearningEntries(
+      [...await readLearningIndex(homeDirectory), entry],
+      new Set([entry.id]),
+    );
     await writeLearningIndex(homeDirectory, stored);
     return entry;
   });
@@ -441,18 +454,13 @@ function renderLesson(entry: LearningRuleEntry): string {
 
 // TaskContext tokenizer (waste-lesson matching): lowercase, split on
 // non-alphanumerics, drop fragments under 3 chars plus a small stop-word set,
-// dedupe, cap 50 tokens. Pure and secret-free: it only ever sees tags and
+// plural-normalize (see singularize), dedupe, cap 50 tokens. Pure and secret-free: it only ever sees tags and
 // server-built context text (names and operation/environment tokens), never
 // log content, details or file bodies.
 const contextStopWords = new Set([
   'the', 'and', 'for', 'with', 'from', 'that', 'this', 'have', 'has', 'had',
   'was', 'were', 'are', 'will', 'would', 'should', 'could', 'there', 'their',
   'what', 'when', 'where', 'which', 'into', 'after',
-  // Retrieval precision (scenario matrix 2026-10-04): 'not' appears in most
-  // checkpoint blockers, so whole-tag substring matching let it fire any tag
-  // containing 'not' as a substring (e.g. 'release notes style' via 'notes').
-  // It carries no task discrimination, like the function words above.
-  'not',
 ]);
 const maxContextTokens = 50;
 
@@ -460,18 +468,49 @@ export function tokenizeContext(context: string): string[] {
   const tokens: string[] = [];
   for (const fragment of context.toLowerCase().split(/[^a-z0-9]+/)) {
     if (fragment.length < 3 || contextStopWords.has(fragment)) continue;
-    if (!tokens.includes(fragment)) tokens.push(fragment);
+    const token = singularize(fragment);
+    if (!tokens.includes(token)) tokens.push(token);
     if (tokens.length >= maxContextTokens) break;
   }
   return tokens;
 }
 
-/** Bidirectional substring between an entry's situation tags and context tokens. */
+/**
+ * Light plural normalization for token-equality matching: strip one
+ * trailing 's' (never from 'ss' endings, never below 4 chars) so
+ * port↔ports and setting↔settings match. Applied symmetrically to context
+ * tokens and tag words, equality stays exact and substring looseness
+ * ('port' in 'support') is not reopened. Residual limitation: irregular
+ * plurals (e.g. indices) and 'ss'-guarded stems never conflate — they stay
+ * silent rather than risk a false hit.
+ */
+function singularize(word: string): string {
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
+  return word;
+}
+
+/**
+ * Compound-tag word split for token-equality matching (see situationHit):
+ * tags stay whole on the wire but match word-by-word, so a hyphenated tag
+ * like 'secret-missing' still fires on either word. The 3-char floor mirrors
+ * the context tokenizer; words are plural-normalized like tokens.
+ */
+function tagWords(tag: string): string[] {
+  return tag.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3).map(singularize);
+}
+
+/**
+ * Token-equality between an entry's situation-tag words and context tokens.
+ * Whole-tag bidirectional substring caused systematic false positives
+ * ('port' in 'support', 'test' in 'latest', 'log' in 'catalog', 'git' in
+ * 'digit'); word equality keeps compound-tag recall while those decoys stay
+ * silent.
+ */
 function situationHit(entry: LearningRuleEntry, tokens: readonly string[]): boolean {
   if (tokens.length === 0) return false;
   for (const tag of entrySituations(entry)) {
-    for (const token of tokens) {
-      if (tag.includes(token) || token.includes(tag)) return true;
+    for (const word of tagWords(tag)) {
+      if (tokens.includes(word)) return true;
     }
   }
   return false;
@@ -506,29 +545,24 @@ export function selectSituationalLessons(
  * substring; exact test-name hit > error-class hit > recency; top 3) and
  * truncates 3→2→1→0 titles until the line fits the remaining total budget.
  * Returns undefined when nothing matches, nothing fits, or no index exists.
- * The optional context adds a tier-0 situation tier: entries whose situation
- * tags match the context qualify, but always rank below failure-matched
- * entries. Omitting context preserves the legacy failure-only behavior
- * byte-identically (startup calls pass no context).
+ * Failure-only by design: situational lessons never inject at startup; they
+ * surface through workstream_context's situationalLessons field instead.
  */
 export async function learningLessonLine(
   homeDirectory: string,
   remainingBudgetBytes: number,
-  context?: string,
 ): Promise<string | undefined> {
   if (remainingBudgetBytes <= 0) return undefined;
-  const tokens = context === undefined ? [] : tokenizeContext(context);
   const corpus = await collectRecentLocalRuns(homeDirectory);
   const entries = await recomputeLearningSuspects(homeDirectory, corpus);
   if (entries.length === 0 || corpus.timed.length === 0) return undefined;
   const ranked = entries
-    .map(entry => ({ entry, ...signatureMatches(entry, corpus.timed), situation: situationHit(entry, tokens) }))
-    .filter(candidate => candidate.testHit || candidate.errorHit || candidate.situation)
+    .map(entry => ({ entry, ...signatureMatches(entry, corpus.timed) }))
+    .filter(candidate => candidate.testHit || candidate.errorHit)
     .sort((a, b) => {
       const scoreA = (a.testHit ? 2 : 0) + (a.errorHit ? 1 : 0);
       const scoreB = (b.testHit ? 2 : 0) + (b.errorHit ? 1 : 0);
       if (scoreA !== scoreB) return scoreB - scoreA;
-      if (a.situation !== b.situation) return a.situation ? -1 : 1;
       if (a.entry.createdAt !== b.entry.createdAt) return a.entry.createdAt < b.entry.createdAt ? 1 : -1;
       return a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0;
     })

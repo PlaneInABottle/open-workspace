@@ -12,6 +12,7 @@ import {
   learningTotalCap,
   readLearningIndex,
   selectSituationalLessons,
+  type LearningRuleEntry,
 } from '../src/rule-index.js';
 
 // Retrieval proof in a realistic microservices world: a seeded index of ~11
@@ -123,21 +124,30 @@ test('frontend e2e run surfaces only the e2e lesson', async t => {
   assert.deepEqual(titles, ['Retry the frontend e2e suite once before digging'], `got: ${JSON.stringify(titles)}`);
 });
 
-test('backend migration: failure-matched outranks situational on ties', async t => {
+test('backend migration: startup line carries the failure match; task context carries the situational pair', async t => {
   const world = await seedWorld('openworkspace-retrieval-migration-');
   t.after(() => rm(world.root, { recursive: true, force: true }));
   await persistRunSummary(world.store.directory, {
     workspaceId: world.workspaceId, scriptName: 'test', outcome: 'failed', durationMs: 90,
     output: 'not ok 1 migration order apply fails', outputTruncated: false,
   });
-  const line = await learningLessonLine(world.store.directory, learningTotalCap, 'backend migration order implementation');
-  assert.ok(line, 'a clear match fires');
-  const migrationAt = line.indexOf('Apply backend migrations in dependency order');
-  const startOrderAt = line.indexOf('Start dependencies before the api service');
-  assert.ok(migrationAt >= 0, `migration lesson present: ${line}`);
-  assert.ok(startOrderAt >= 0, `situational start-order lesson present: ${line}`);
-  assert.ok(migrationAt < startOrderAt, `failure hit first: ${line}`);
-  assert.ok(!line.includes('freight') && !line.includes('release notes'), 'decoys absent');
+  const line = await learningLessonLine(world.store.directory, learningTotalCap);
+  assert.ok(line?.includes('Apply backend migrations in dependency order'), `failure match injects at startup: ${line}`);
+  assert.ok(!line?.includes('Start dependencies before the api service'), 'situational-only lessons never inject at startup');
+  assert.ok(!line?.includes('freight') && !line?.includes('release notes'), 'decoys absent');
+  const lessons = await taskLessons(world, {
+    name: 'backend implementation',
+    goal: 'apply the backend migration order',
+    blocker: 'migration order fails on start',
+    next: 'start the service after migrate',
+  });
+  const titles = titlesOf(lessons);
+  assert.ok(titles.includes('Apply backend migrations in dependency order'), `got: ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes('Start dependencies before the api service'), `got: ${JSON.stringify(titles)}`);
+  assert.ok(lessons.length <= 3, 'top-3 cap holds');
+  for (const decoy of ['Schedule freight reviews on fridays', 'Match release notes to the house style', 'Retry the frontend e2e suite once before digging', 'Keep the database seed script idempotent']) {
+    assert.ok(!titles.includes(decoy), `decoy suppressed: ${decoy}`);
+  }
 });
 
 test('db seed repair surfaces the seed lesson; unrelated docs task returns empty', async t => {
@@ -187,7 +197,7 @@ test('760B budget holds with 3 long titles and legacy entries still match', asyn
         situations: ['shared budget context'],
       });
     }
-    const line = await learningLessonLine(store.directory, learningTotalCap, 'shared budget context');
+    const line = await learningLessonLine(store.directory, learningTotalCap);
     assert.ok(line, 'three long titles still produce a line');
     assert.equal(line.split('; ').length, 3, `all three fit: ${line}`);
     assert.ok(Buffer.byteLength(line, 'utf8') <= learningTotalCap, '760B budget holds');
@@ -204,6 +214,46 @@ test('760B budget holds with 3 long titles and legacy entries still match', asyn
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('substring-collision decoys stay absent while compound tags still fire', () => {
+  const at = new Date().toISOString();
+  const decoy = (id: string, title: string, tag: string): LearningRuleEntry => ({
+    id, title, file: 'AGENTS.md', evidenceRefs: ['r'],
+    failureSignature: { tests: [], errorClasses: [] },
+    situations: [tag], measured: false,
+    createdAt: at, lastValidatedAt: at, status: 'active' as const,
+  });
+  // Each trap token substring-matched its decoy tag under the old matcher
+  // ('port' in 'support', 'test' in 'latest', 'log' in 'catalog', 'git' in
+  // 'digit'); token-equality must keep all four silent.
+  const decoys = [
+    decoy('d-port', 'Support ticket triage guide', 'support ticket triage'),
+    decoy('d-test', 'Documentation polish checklist', 'latest documentation polish'),
+    decoy('d-log', 'Catalog page styling notes', 'catalog page styling'),
+    decoy('d-git', 'Digit extraction script rules', 'digit extraction script'),
+  ];
+  for (const context of [
+    'probe the port binding order',
+    'run the test suite again',
+    'tail the service log output',
+    'push the git branch now',
+  ]) {
+    assert.deepEqual(selectSituationalLessons(decoys, context), [], `no collision decoy fires for: ${context}`);
+  }
+  // Compound tags still fire on either word: word-split equality, not
+  // whole-tag equality, so hyphenation costs no recall.
+  const compound: LearningRuleEntry[] = [decoy('c-secret', 'Rotate the missing setting first', 'secret-missing')];
+  const fired = selectSituationalLessons(compound, 'service failed from a secret missing value');
+  assert.equal(fired.length, 1, `hyphenated tag fires: ${JSON.stringify(fired)}`);
+  assert.ok(selectSituationalLessons(compound, 'polish the release notes').length === 0, 'unrelated tokens still miss');
+  // Light plural recall: normalized equality matches ports↔port without
+  // reopening substring looseness (support still misses port).
+  const plural: LearningRuleEntry[] = [decoy('c-port', 'Probe the port before binding', 'port collision')];
+  assert.deepEqual(
+    titlesOf(selectSituationalLessons([...decoys, ...plural], 'probe the service ports binding')),
+    ['Probe the port before binding'],
+  );
 });
 
 test('skill-shortness contract: titles only, one line each, never bodies', async t => {

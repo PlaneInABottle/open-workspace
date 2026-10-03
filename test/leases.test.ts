@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -87,6 +87,26 @@ test('leases refuse unknown workstreams, finished workstreams and bad names', as
     /Only the holding workstream/,
   );
   assert.deepEqual(await f.service.listLeases(), []);
+});
+
+test('reads without an expiry leave state.json untouched; expiry still rewrites and records', async t => {
+  const f = await twoStreams(t);
+  await f.service.acquireLease({ resource: 'port:3000', workstreamId: f.one.id });
+  const path = join(f.service.store.directory, 'state.json');
+  const before = (await stat(path)).mtimeMs;
+  await f.service.listLeases();
+  await f.service.listLeases();
+  assert.equal((await stat(path)).mtimeMs, before, 'no rewrite without an expiry');
+  assert.equal((await f.service.store.read()).activity.some(entry => entry.operation === 'lease-expiry'), false);
+  f.setNow(Date.now() + leaseTtlMs + 1);
+  const leases = await f.service.listLeases();
+  assert.deepEqual(leases, [], 'the held lease expired');
+  assert.ok((await stat(path)).mtimeMs >= before, 'expiry rewrites state');
+  assert.equal(
+    (await f.service.store.read()).activity.filter(entry => entry.operation === 'lease-expiry').length,
+    1,
+    'expiry still records its counts-only activity',
+  );
 });
 
 test('a crashed holder expires lazily, promotes FIFO and records counts-only activity', async t => {

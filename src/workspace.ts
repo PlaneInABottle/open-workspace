@@ -354,7 +354,8 @@ export class WorkspaceService {
     // task start. Sources, all bounded and secret-free (tags/tokens only):
     // the workstream name, the latest checkpoint goal/blocker/next
     // (pattern-only by construction), the last-20 activity OPERATION names
-    // (never detail text), plus the workspace's environment service names
+    // scoped to this workspace (global entries included, other workspaces
+    // excluded; never detail text), plus the workspace's environment service names
     // and ports (names only — never repository paths). Tokenizing this
     // context against lesson situation tags is what lets a "service started
     // → missing secret → set it" lesson surface before the next detour.
@@ -373,7 +374,10 @@ export class WorkspaceService {
       latest?.goal ?? '',
       latest?.blocker ?? '',
       latest?.next ?? '',
-      ...state.activity.slice(-20).map(entry => entry.operation),
+      ...state.activity
+        .filter(entry => entry.workspaceId === null || entry.workspaceId === workstream.workspaceId)
+        .slice(-20)
+        .map(entry => entry.operation),
       ...environmentServices,
     ].join('\n');
     // Pure index read (fail-closed, no writes): situational surfacing never

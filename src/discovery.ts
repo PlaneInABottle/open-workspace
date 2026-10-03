@@ -189,6 +189,10 @@ export async function readProposalHints(directory: string): Promise<ProposalHint
 }
 
 export async function toolAvailability(searchPath = process.env.PATH || '') {
+  // Availability is PATH executability only: git/pm2/psql run via bare PATH
+  // names at spawn, agent-browser via resolveAgentBrowser and declarative
+  // tools via resolveCanonicalBinary. A 'found' tool may still be missing or
+  // refused at execution time. Availability is not runtime readiness.
   const definitions = [
     { id: 'git', name: 'Git', purpose: 'Repository operations', required: true },
     { id: 'pm2', name: 'PM2', purpose: 'Optional application runner', required: false },

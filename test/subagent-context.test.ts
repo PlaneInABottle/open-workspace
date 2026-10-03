@@ -496,3 +496,33 @@ test('workstream_context surfaces situational lessons for the task and stays rea
   assert.ok(description?.includes('situational lessons'), 'description names situational lessons');
   assert.ok(Buffer.byteLength(description ?? '', 'utf8') <= 200, 'description stays within 200B');
 });
+
+test('workstream_context task tokens ignore other workspaces activity', async t => {
+  const f = await approvedFixture('openworkspace-subagent-activity-scope-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const otherProject = join(f.root, 'other');
+  await mkdir(otherProject, { recursive: true });
+  const otherWorkspace = await f.service.register('Other project', [otherProject]);
+  await f.service.setWorkstreamStatus(f.workstream.id, 'paused', {
+    goal: 'polish the docs', blocker: 'none', next: 'merge', owner: 'agent',
+  });
+  const run = await persistRunSummary(f.store.directory, {
+    workspaceId: f.workspace.id, scriptName: 'test', outcome: 'failed', durationMs: 5,
+    output: 'not ok 1 freight audit trail', outputTruncated: false,
+  });
+  await f.service.recordLearning({
+    title: 'Freight audit guard', file: 'AGENTS.md', evidenceRefs: [run.id],
+    failureSignature: { tests: [], errorClasses: [] as string[] }, situations: ['freight schedule'],
+  });
+  await f.service.recordActivity({ actor: 'mcp', operation: 'freight-audit', workspaceId: otherWorkspace.id, detail: 'ok' });
+  assert.deepEqual(
+    (await f.service.workstreamContext(f.workstream.id)).situationalLessons,
+    [],
+    'other-workspace activity never surfaces lessons here',
+  );
+  await f.service.recordActivity({ actor: 'mcp', operation: 'freight-audit', workspaceId: f.workspace.id, detail: 'ok' });
+  assert.ok(
+    (await f.service.workstreamContext(f.workstream.id)).situationalLessons.some(title => title.includes('Freight audit guard')),
+    'same-workspace activity still feeds the task context',
+  );
+});
