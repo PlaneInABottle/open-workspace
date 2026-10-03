@@ -217,9 +217,9 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 | Order | Requested outcome | Status / next boundary |
 | --- | --- | --- |
 | Done | Pivot, M1–M3 workspace tools, learning-loop v1, declarative local tools, readiness UI, update-roots, checkpoint notes, budgets, fingerprints, stale-scope cleanup, subagent bundle, evidence pinning, POSIX scope. Evidence: git log. |
-| 11 | Subagent package: note history + workstream_context bundle | Implementing. (a) Checkpoint notes append with actor+timestamp (bounded 10, latest = current behavior) so subagent completions never clobber the coordinator checkpoint. (b) workstream_context read tool: checkpoint + revision + recent runs + related drafts in one call for narrowly-scoped subagents. Additive only; single-agent flow unchanged. |
+| 11 | Subagent package: note history + workstream_context bundle + typed completions | Shipped (history append, context bundle, typed completions with solo default). Dashboard history view remains a possible follow-up. |
 | 12 | Token-cost worry | Deferred by user: no action until wire measurement shows manifest cost actually binding. Format budgets + byte-delta notes stay, no count cap, no dynamic discovery. |
-| 13 | Evidence pinning + correlation IDs (checkpoint kanıt zinciri) | Implementing. Checkpoint notes carry bounded `evidence: [runIds]`; pinned runs exempt from ring eviction (capped); note→run→draft→timeline linked by IDs, content never duplicated. Our-system evidence is pinnable, outside evidence described in-note only. Secret-free (IDs only). |
+| 13 | Evidence pinning + correlation IDs (checkpoint kanıt zinciri) | Shipped (bounded evidence refs, pin-exempt eviction, ID correlation). Dashboard pin display remains a possible follow-up. |
 
 New user requests amend this queue; they do not discard unfinished earlier requests. Mark outcomes verified from actual code/runtime evidence, not from a plan or a suggested UX.
 
@@ -229,11 +229,11 @@ New user requests amend this queue; they do not discard unfinished earlier reque
 - DB onboarding (existing role/location + authenticated/TCP credential-identity): shelved until a ResAI trial proves a socket-only gap.
 - MCP proof package (one-click owned-fixture demo bundle): demo/YC value only, no daily value; revisit for demos.
 - Prove-it gate as enforcement: cut to skill-level convention; a hard gate would add friction to every "done".
-- Mistake inbox as separate screen: dropped — timeline + draft strip already cover it.
+- Mistake inbox as separate screen: dropped — timeline + milestone notes already cover it.
 - Masking extra shapes (Basic-auth, DSN userinfo, cookie, bare tokens): background hardening, opportunistic; labels remain the authoritative defense.
 - Token-cost worry: no action until wire measurement shows manifest cost binding; format budgets stay.
-- Browser automation wrapper (session + actions + evidence suite): plan reviewed, shelved. Builds only on demand — first real QA claim that shim observation + repo e2e cannot prove. Shim observer is the active track.
+- Browser automation wrapper (session + actions + evidence suite): plan reviewed + fixed, shelved. Effectiveness evaluation (real QA flow: 11/11 invocations logged, failure localized without re-run, marker redaction proven, bypass documented) ruled shim-sufficient → wrapper stays shelved. Revisit only if standalone log-only diagnosis is needed (terminal transcript unavailable) — that gap, not shim defect, is wrapper M1's trigger. Shim observer is the active track.
 - pnpm audit braces high (GHSA-vfj7-8cjw-p6xm, Patched: None): build-time chain only, not server runtime; revisit when a patch lands.
 
-- Not yet verified: real external-client setup (Claude Code/Codex), fresh-machine prerequisite installation, Node 22 portability, independent security/browser gates. Platform scope is macOS + Linux (POSIX) only; Windows is deferred (sockets, permissions, picker, and path semantics differ — supporting it now would double the verification matrix with no Windows machine to prove it on). No Compose application operations or PostgreSQL/Elastic connection is implemented yet.
+- Not yet verified: real external-client setup (Claude Code/Codex), fresh-machine prerequisite installation, Node 22 portability, independent security/browser gates. Platform scope is macOS + Linux (POSIX) only; Windows is deferred (sockets, permissions, picker, and path semantics differ — supporting it now would double the verification matrix with no Windows machine to prove it on). Docker is read-only (list + logs); no Compose control operations or PostgreSQL/Elastic connection is implemented yet.
 - Future milestone updates replace these compact lines rather than append an incident diary. Detailed transient observations stay in test output/session state.

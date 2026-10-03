@@ -104,7 +104,7 @@
   caps: { maxRows?: 1..100 default 50 } // (F7) timeout/outputLimit are class-owned constants,
     // NOT declarable; maxRows maps 1:1 onto runDatastoreQuery maxRows
   provenance: { origin: 'handwritten'|'scaffolded', sourceDraft?: basename /^[a-z0-9-]{1,80}\.md$/,
-    createdAt: datetime } // sourceDraft required iff scaffolded; must exist under learnings/_drafts at gate.
+    createdAt: datetime } // sourceDraft required iff scaffolded; must exist under local-tools/proposals at gate.
     // origin is an informational label with ZERO trust weight — gate treats both identically (F10)
 }
 type SlotDecl =
@@ -129,7 +129,7 @@ Translated to a strict zod object at registration; `workspaceId` comes from the 
 7. Slots match the class `slotSpec` exactly (names, kinds, count) → `Local tool inputs do not match the executable class.`
 8. `statement`: `bindParams(statement, [])` (G4: rejects any `$n`), then `singleStatement`+`checkShape`+`checkDenied` on the FINAL text via the shared datastore functions (no copies) → `Local tool command shape is not allowed.`
 9. `caps.maxRows` range → `Local tool limits are out of range.`
-10. `provenance` cross-check (`sourceDraft` present iff scaffolded AND exists under `learnings/_drafts`) → `Local tool declaration failed validation.`
+10. `provenance` cross-check (`sourceDraft` present iff scaffolded AND exists under `local-tools/proposals`) → `Local tool declaration failed validation.`
 11. Canonical-path resolve→`realpath`→verify→probe (class `probeArgs`, ≤5s, exit 0) against the class's owned binary → sets the `available` flag; unverifiable or probe-failing = `available:false`, never fatal.
 12. Tool-count cap (≤20 active+pending) → `Local tool limit reached.`
 All thirteen new messages (10 gate above + 3 call-time below) join the `http.ts` safe allowlist; pre-existing delegate/workspace messages are already listed; zod internals and absolute paths never reach clients.
