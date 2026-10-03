@@ -43,6 +43,28 @@ export interface DatastoreRunnerOptions {
   run?: CommandRunner;
   socketDir?: string;
   port?: number;
+  /** Absolute canonical executable path. Absent preserves the historic bare-'psql' behavior. */
+  executablePath?: string;
+}
+
+// Failure stage travels on a non-message property (never inside the text),
+// so every message string below stays byte-identical to its pre-stage form.
+// R3: callers read the stage via datastoreErrorStage(); matching on message
+// text is forbidden. instanceof Error, .name ('Error') and .message are
+// preserved exactly — only the stage marker is added.
+export type DatastoreFailureStage = 'connect' | 'query';
+
+export class DatastoreStagedError extends Error {
+  readonly stage: DatastoreFailureStage;
+  constructor(stage: DatastoreFailureStage, message: string) {
+    super(message);
+    this.name = 'Error';
+    this.stage = stage;
+  }
+}
+
+export function datastoreErrorStage(error: unknown): DatastoreFailureStage | undefined {
+  return error instanceof DatastoreStagedError ? error.stage : undefined;
 }
 
 type SegmentKind = 'code' | 'literal' | 'comment';
@@ -178,7 +200,7 @@ function literalFor(param: DatastoreParam): string {
 // Positional $n placeholders are replaced with safely quoted literals.
 // Validation always runs on this FINAL text, so a hostile parameter value can
 // only ever land inside a string literal and can never form a 2nd statement.
-function bindParams(sql: string, params: DatastoreParam[]): string {
+export function bindParams(sql: string, params: DatastoreParam[]): string {
   let bound = '';
   let cursor = 0;
   scanOutsideLiterals(sql, (chunk, start, end) => {
@@ -201,7 +223,7 @@ function bindParams(sql: string, params: DatastoreParam[]): string {
 
 const shapeTitle = 'Only a single read-only SELECT-style statement is allowed.';
 
-function singleStatement(sql: string): string {
+export function singleStatement(sql: string): string {
   const stripped = stripComments(sql).trim();
   const withoutTrailing = stripped.endsWith(';') ? stripped.slice(0, -1) : stripped;
   let extra = false;
@@ -212,7 +234,7 @@ function singleStatement(sql: string): string {
   return withoutTrailing.trim();
 }
 
-function checkShape(finalSql: string) {
+export function checkShape(finalSql: string) {
   const upper = finalSql.toUpperCase();
   if (/^SELECT\b/.test(upper)) return;
   if (/^VALUES\b/.test(upper)) return;
@@ -239,7 +261,7 @@ const deniedPatterns = [
   /\\/, // No psql meta-commands: literals are masked, so any backslash is one.
 ];
 
-function checkDenied(finalSql: string) {
+export function checkDenied(finalSql: string) {
   const masked = maskLiterals(finalSql).toUpperCase();
   for (const pattern of deniedPatterns) {
     if (pattern.test(masked)) throw new Error(shapeTitle);
@@ -248,7 +270,7 @@ function checkDenied(finalSql: string) {
 
 const superuserProbeSql = 'SELECT usesuper FROM pg_user WHERE usename = CURRENT_USER;';
 
-function psqlArgs(input: DatastoreQueryInput, options: DatastoreRunnerOptions): string[] {
+export function psqlArgs(input: DatastoreQueryInput, options: DatastoreRunnerOptions): string[] {
   const args = [
     '-X', '-w', '-v', 'ON_ERROR_STOP=1', '-A',
     '-F', datastoreFieldSeparator,
@@ -318,35 +340,42 @@ export async function runDatastoreQuery(
     env: psqlEnv(),
   };
   const args = psqlArgs(input, options);
+  const executable = options.executablePath ?? 'psql';
   // Shape and deny-list validation runs on the FINAL (parameter-bound) SQL
   // before any process starts, so refused statements are never executed.
   const finalSql = singleStatement(bindParams(input.sql, input.params ?? []));
   checkShape(finalSql);
   checkDenied(finalSql);
+  // Stage classification (G5): everything thrown from the superuser probe path
+  // below carries stage 'connect' (caller/environment errors — bad database or
+  // role, server down, superuser refusal, connect timeouts); everything from
+  // the main-query path carries stage 'query' (tool-defect candidates). The
+  // probe reuses the exact class argv vector, so compiled-flag breakage
+  // surfaces here at probe stage and never auto-quarantines (accepted, G7).
   let probe: CommandOutcome;
   try {
-    probe = await run('psql', args, { ...base, input: superuserProbeSql });
+    probe = await run(executable, args, { ...base, input: superuserProbeSql });
   } catch {
-    throw new Error('PostgreSQL client is unavailable.');
+    throw new DatastoreStagedError('connect', 'PostgreSQL client is unavailable.');
   }
-  if (probe.spawnFailed) throw new Error('PostgreSQL client is unavailable.');
-  if (probe.exitCode !== 0) throw new Error('The database query failed without returning rows.');
+  if (probe.spawnFailed) throw new DatastoreStagedError('connect', 'PostgreSQL client is unavailable.');
+  if (probe.exitCode !== 0) throw new DatastoreStagedError('connect', 'The database query failed without returning rows.');
   if (/^\s*t\s*$/im.test(probe.stdout)) {
-    throw new Error('Superuser database roles cannot be used for read-only queries.');
+    throw new DatastoreStagedError('connect', 'Superuser database roles cannot be used for read-only queries.');
   }
   const wrapped = `BEGIN READ ONLY;\nSET LOCAL statement_timeout = '${datastoreStatementTimeout}';\n${finalSql};\nCOMMIT;\n`;
   const startedAt = Date.now();
   let outcome: CommandOutcome;
   try {
-    outcome = await run('psql', args, { ...base, input: wrapped });
+    outcome = await run(executable, args, { ...base, input: wrapped });
   } catch {
-    throw new Error('PostgreSQL client is unavailable.');
+    throw new DatastoreStagedError('query', 'PostgreSQL client is unavailable.');
   }
   const durationMs = Date.now() - startedAt;
-  if (outcome.spawnFailed) throw new Error('PostgreSQL client is unavailable.');
+  if (outcome.spawnFailed) throw new DatastoreStagedError('query', 'PostgreSQL client is unavailable.');
   if (outcome.exitCode !== 0 || outcome.truncated) {
-    if (timeoutFailure(outcome)) throw new Error('The database query did not finish within the bounded runtime.');
-    throw new Error('The database query failed without returning rows.');
+    if (timeoutFailure(outcome)) throw new DatastoreStagedError('query', 'The database query did not finish within the bounded runtime.');
+    throw new DatastoreStagedError('query', 'The database query failed without returning rows.');
   }
   const parsed = parseRows(new TextDecoder('utf-8', { fatal: false }).decode(Buffer.from(outcome.stdout, 'utf8')), input.maxRows ?? 50);
   return {

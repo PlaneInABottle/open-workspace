@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { serviceRequest } from './connection.js';
+import { localToolDescription, slotValueSchemas, type LocalToolStatusEntry } from './local-tools.js';
 import { learningInstructionSuffix } from './run-summaries.js';
 import { stateDirectory } from './store.js';
 
@@ -183,6 +184,46 @@ server.registerTool('workstream_status', {
   }).strict(),
   annotations: operateHints,
 }, ({ workstreamId, status }) => request(`/api/workstreams/${workstreamId}/status`, { status }));
+// Declared local tools: the service owns the registry; this process only
+// mirrors active entries. Newly gated tools appear after a status sync (or an
+// MCP restart when the SDK cannot hot-plug post-connect — see E1).
+const mirroredLocalTools = new Set<string>();
+async function syncLocalTools() {
+  let snapshot: unknown;
+  try {
+    snapshot = await serviceRequest('/api/local-tools/status', undefined, 10_000);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(snapshot)) return;
+  for (const entry of snapshot as LocalToolStatusEntry[]) {
+    if (!entry || entry.status !== 'active' || typeof entry.name !== 'string'
+      || mirroredLocalTools.has(entry.name)
+      || !entry.slots || typeof entry.slots !== 'object' || typeof entry.description !== 'string') continue;
+    const toolName = entry.name;
+    const slots = entry.slots;
+    const description = entry.description;
+    try {
+      server.registerTool(toolName, {
+        description: localToolDescription(toolName, description),
+        inputSchema: z.object({ workspaceId: z.string().uuid(), ...slotValueSchemas(slots) }).strict(),
+        annotations: readHints,
+      }, ({ workspaceId, ...inputs }) => request(`/api/workspaces/${workspaceId}/local-tools/call`, { tool: toolName, inputs }, 45_000));
+      mirroredLocalTools.add(toolName);
+    } catch {
+      // A duplicate or untranslatable declaration never blocks the session.
+    }
+  }
+}
+server.registerTool('local_tool_status', {
+  description: 'Show declared local tool status: name, active or pending or quarantined state, availability and use counts. Reading status never records activity.',
+  inputSchema: z.object({}).strict(),
+  annotations: readHints,
+}, async () => {
+  await syncLocalTools();
+  return request('/api/local-tools/status');
+});
+await syncLocalTools();
 server.registerPrompt('workspace_onboarding', {
   description: 'Guide an external assistant through safe local workspace onboarding.',
 }, () => ({ messages: [{ role: 'user', content: { type: 'text', text:

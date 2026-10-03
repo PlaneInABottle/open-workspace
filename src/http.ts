@@ -10,6 +10,8 @@ import { maxProjectRootLength, maxProjectRoots } from './project-roots.js';
 import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-picker.js';
 import { verifySocketTimeoutMs } from './verify.js';
 import { datastoreQuerySchema, datastoreSocketTimeoutMs } from './datastore.js';
+import { localToolSocketTimeoutMs } from './local-tools-allowlist.js';
+import { localToolCallBodySchema } from './local-tools.js';
 import { browserCheckSchema, browserSocketTimeoutMs } from './browser.js';
 
 const proposalSchema = z.object({
@@ -95,6 +97,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/leases'
     || pathname === '/api/activity'
     || pathname === '/api/runs/recent'
+    || pathname === '/api/local-tools/status'
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
     || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
@@ -103,6 +106,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
     || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${uuidPath}/local-tools/call$`).test(pathname)
     || pathname === '/api/workstreams'
     || new RegExp(`^/api/workstreams/${uuidPath}/status$`).test(pathname)
     || /^\/api\/leases\/(acquire|release)$/.test(pathname))) return true;
@@ -371,6 +375,31 @@ export function createApp(service: WorkspaceService, options: {
             if (!response.destroyed) json(response, 200, result);
             return;
           }
+          const localToolCallMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/local-tools\/call$/.exec(url.pathname);
+          if (localToolCallMatch && request.method === 'POST') {
+            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'call-local-tool'))) {
+              json(response, 403, { error: 'Local tool calls require the connected dashboard.' });
+              return;
+            }
+            request.setTimeout(localToolSocketTimeoutMs);
+            let input: unknown;
+            try {
+              input = localToolCallBodySchema.parse(await body(request));
+            } catch (error) {
+              if (error instanceof z.ZodError) throw new Error('Local tool call is not valid.');
+              throw error;
+            }
+            if (request.aborted || response.destroyed) return;
+            const result = await service.localToolCall(localToolCallMatch[1], input, { actor });
+            if (!response.destroyed) json(response, 200, result);
+            return;
+          }
+          if (url.pathname === '/api/local-tools/status' && request.method === 'GET') {
+            // The read itself never records activity (mirroring activity/run
+            // reads); registry transitions the rescan discovers still audit.
+            json(response, 200, await service.localToolStatus(actor));
+            return;
+          }
           const workstreamMatch = new RegExp(`^/api/workstreams(?:/(${uuidPath}))?$`).exec(url.pathname);
           if (workstreamMatch && request.method === 'GET') {
             json(response, 200, workstreamMatch[1]
@@ -531,6 +560,19 @@ export function createApp(service: WorkspaceService, options: {
         'The browser check did not finish within the bounded runtime.',
         'The browser navigation failed safely without a snapshot.',
         'Approved directory identity changed. Request access again.',
+        'Local tool file could not be read safely.',
+        'Local tool declaration is not valid JSON.',
+        'Local tool declaration failed validation.',
+        'Local tool name is not allowed.',
+        'Local tool description is not allowed.',
+        'Local tool executable is not allowlisted.',
+        'Local tool inputs do not match the executable class.',
+        'Local tool command shape is not allowed.',
+        'Local tool limits are out of range.',
+        'Local tool limit reached.',
+        'Local tool is not available.',
+        'Local tool call is not valid.',
+        'Local tool inputs are not valid.',
         'Use a result limit within the allowed range.',
         'Use application/json.', 'Request body is too large.',
       ];

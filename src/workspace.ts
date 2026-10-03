@@ -6,6 +6,7 @@ import { controlPm2Service, listPm2Processes, readPm2ServiceLogs, runPm2Action, 
 import { runVerification, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
 import { createWorkstream, setWorkstreamStatus, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
+import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, releaseLease, type Lease } from './leases.js';
 import { listRecentRuns, persistRunSummary, type RunListEntry } from './run-summaries.js';
@@ -20,7 +21,16 @@ export interface RootInspection {
 }
 
 export class WorkspaceService {
-  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly revisionRunner?: CommandRunner, readonly datastoreRunner?: CommandRunner, readonly logRunner: typeof runPm2Logs = runPm2Logs) {}
+  readonly localTools: LocalToolRegistry;
+  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly revisionRunner?: CommandRunner, readonly datastoreRunner?: CommandRunner, readonly logRunner: typeof runPm2Logs = runPm2Logs) {
+    // The registry scans lazily on status/call (service-side only): the first
+    // status fetch after service start performs the startup scan, and every
+    // status call re-gates. The MCP process never touches local-tools/ files.
+    this.localTools = new LocalToolRegistry(store.directory, {
+      run: this.datastoreRunner,
+      recordActivity: entry => this.recordActivity(entry),
+    });
+  }
 
   async overview() {
     const state = await this.store.read();
@@ -111,7 +121,18 @@ export class WorkspaceService {
   async datastoreQuery(id: string, request: unknown, options: DatastoreRunnerOptions = {}): Promise<DatastoreQueryResult> {
     const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
     if (!workspace) throw new Error('Workspace not found. Register it first.');
-    return runDatastoreQuery(workspace.roots, request, { run: options.run ?? this.datastoreRunner, socketDir: options.socketDir, port: options.port });
+    return runDatastoreQuery(workspace.roots, request, { run: options.run ?? this.datastoreRunner, socketDir: options.socketDir, port: options.port, executablePath: options.executablePath });
+  }
+
+  async localToolStatus(actor: 'dashboard' | 'mcp' = 'mcp'): Promise<LocalToolStatusEntry[]> {
+    await this.localTools.rescan(actor);
+    return this.localTools.snapshot();
+  }
+
+  async localToolCall(id: string, body: unknown, options: { actor?: 'dashboard' | 'mcp' } = {}): Promise<DatastoreQueryResult> {
+    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
+    if (!workspace) throw new Error('Workspace not found. Register it first.');
+    return this.localTools.call(id, workspace.roots, body, options);
   }
 
   async browserCheck(id: string, request: unknown, options: BrowserRunnerOptions = {}): Promise<BrowserCheckResult> {
