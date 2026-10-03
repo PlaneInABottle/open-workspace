@@ -9,6 +9,8 @@ import {
   type ServiceInventory,
   type ActivityEntry,
   type Lease,
+  type Learnings,
+  type RunListEntry,
   type VerificationRequest,
   type VerificationResult,
   type Workspace,
@@ -40,6 +42,11 @@ export interface WorkbenchState {
   leases: Lease[];
   leasesError: string | null;
   activity: ActivityEntry[];
+  learnings: Learnings;
+  runs: RunListEntry[];
+  recordsLoading: boolean;
+  recordsError: string | null;
+  recordsUpdatedAt: string | null;
   refreshing: boolean;
   busyIds: ReadonlySet<string>;
   notice: Notice | null;
@@ -67,6 +74,11 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     leases: [],
     leasesError: null,
     activity: [],
+    learnings: { milestones: [], drafts: [] },
+    runs: [],
+    recordsLoading: false,
+    recordsError: null,
+    recordsUpdatedAt: null,
     refreshing: false,
     busyIds: new Set(),
     notice: null,
@@ -424,6 +436,31 @@ export function useWorkbench() {
     }
   }, [api, commit, handleSessionExpired]);
 
+  const loadRecords = useCallback(async (workspaceId: string) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    commit(current => ({ ...current, recordsLoading: true, recordsError: null }));
+    try {
+      const [learnings, runs] = await Promise.all([api.learnings(), api.recentRuns(workspaceId)]);
+      if (!api.isCurrent(session)) return false;
+      commit(current => ({
+        ...current,
+        learnings,
+        runs,
+        recordsLoading: false,
+        recordsError: null,
+        recordsUpdatedAt: new Date().toISOString(),
+      }));
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session)) {
+        commit(current => ({ ...current, recordsLoading: false, recordsError: errorMessage(error) }));
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired]);
+
   const refreshSelected = useCallback(async () => {
     const selection = selectedId.current;
     if (!selection) return refresh();
@@ -564,6 +601,7 @@ export function useWorkbench() {
     acquireLease,
     releaseLease,
     loadActivity,
+    loadRecords,
     clearSelection,
     requestProject,
     pickProjectRoots,

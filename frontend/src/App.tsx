@@ -320,6 +320,7 @@ export function App() {
               onAcquireLease={(id, workstreamId, resource) => { void workbench.acquireLease(id, workstreamId, resource); }}
               onReleaseLease={(id, workstreamId, resource) => { void workbench.releaseLease(id, workstreamId, resource); }}
               onGoToAi={() => navigate('setup')}
+              onLoadRecords={workbench.loadRecords}
             />
           )}
           {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} />}

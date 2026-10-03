@@ -10,6 +10,7 @@ import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, releaseLease, type Lease } from './leases.js';
 import { listRecentRuns, persistRunSummary, type RunListEntry } from './run-summaries.js';
+import { listDrafts, listMilestones } from './milestones.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 
 export interface RootInspection {
@@ -186,6 +187,11 @@ export class WorkspaceService {
       : state.workstreams.find(workstream => workstream.id === scopeId)?.workspaceId;
     if (!workspaceId) throw new Error('Workspace not found. Register it first.');
     return listRecentRuns(this.store.directory, workspaceId, limit);
+  }
+
+  async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>>; drafts: Awaited<ReturnType<typeof listDrafts>> }> {
+    const [milestones, drafts] = await Promise.all([listMilestones(this.store.directory), listDrafts(this.store.directory)]);
+    return { milestones, drafts };
   }
 
   async remove(id: string) {

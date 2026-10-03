@@ -96,6 +96,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   if (method === 'GET' && (pathname === '/api/overview'
     || pathname === '/api/leases'
     || pathname === '/api/activity'
+    || pathname === '/api/learnings'
     || pathname === '/api/runs/recent'
     || pathname === '/api/local-tools/status'
     || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
@@ -460,6 +461,13 @@ export function createApp(service: WorkspaceService, options: {
               throw new Error('Use a result limit within the allowed range.');
             }
             json(response, 200, entries.slice(-limit));
+            return;
+          }
+          if (url.pathname === '/api/learnings' && request.method === 'GET') {
+            // Reader-only narrative spine: agent-written milestone notes plus
+            // unprocessed draft titles. Like activity/run reads, reading never
+            // records activity (viewing the record must not append to it).
+            json(response, 200, await service.learnings());
             return;
           }
           if (url.pathname === '/api/runs/recent' && request.method === 'GET') {

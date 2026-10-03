@@ -142,6 +142,35 @@ export interface ActivityEntry {
   detail: string;
 }
 
+export interface MilestoneNote {
+  at: string;
+  text: string;
+  source: string;
+}
+
+export interface LearningDraft {
+  name: string;
+  title: string;
+}
+
+export interface Learnings {
+  milestones: MilestoneNote[];
+  drafts: LearningDraft[];
+}
+
+export interface RunListEntry {
+  workspaceId: string;
+  scriptName: string;
+  outcome: 'passed' | 'failed' | 'error';
+  durationMs: number;
+  at: string;
+  failingNames: string[];
+  failingTruncated: boolean;
+  excerptPreview: string;
+  excerptTruncated: boolean;
+  outputTruncated: boolean;
+}
+
 export type ProjectRootPickerResult =
   | { status: 'selected'; roots: string[] }
   | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' };
@@ -312,6 +341,11 @@ export class ApiClient {
     return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId }, { intent: 'release-lease' });
   }
   activity() { return this.request<ActivityEntry[]>('/api/activity'); }
+  learnings() { return this.request<Learnings>('/api/learnings'); }
+  recentRuns(scope: string, limit = 20) {
+    const bounded = Number.isInteger(limit) ? Math.min(20, Math.max(1, limit)) : 20;
+    return this.request<RunListEntry[]>(`/api/runs/recent?scope=${safeId(scope)}&limit=${bounded}`);
+  }
 
   private async revokeDashboardSession(token: string): Promise<void> {
     try {

@@ -33,13 +33,16 @@ Each draft has this shape:
 The rule states the pattern, never literals: no secrets, tokens, absolute user paths, SQL text, URLs with credentials, or pasted log output. Write "the restart target needs the exact mapped pmId" rather than copying the command you ran.
 
 ## Reading history
-
 Two read-only MCP tools feed mining without widening your permissions:
 
 - `activity_list` (limit 1–50, default 20): recent sanitized tool/target/outcome descriptors. No payloads are stored, so absence of detail is expected.
 - `recent_runs` (scope workspace or workstream ID, limit 1–20, default 5): recent bounded verification summaries with at most 200 characters of excerpt each.
 
 Reading either tool never records new activity, so mining leaves no feedback loop.
+
+## Milestone notes
+
+When a major milestone lands, append one file under `OPENWORKSPACE_HOME/learnings/milestones/` named `<epoch-seconds>-<short-slug>.md` (at most 50 files, 2KiB each). Content is one pattern-only line of 500 characters or fewer after an optional `#` title — what changed for the user, never literals: no secrets, tokens, paths, SQL, URLs, or log output. The dashboard reads these files only; it never writes them.
 
 ## Workflow framing
 

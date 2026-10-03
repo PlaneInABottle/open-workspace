@@ -1,0 +1,175 @@
+import { fireEvent, render, screen, within } from '@testing-library/react';import { describe, expect, it, vi } from 'vitest';
+import { RecordsView } from '../features/records/RecordsView';
+import { buildTimeline, filterTimeline, summarizeTimeline } from '../features/records/timeline';
+import type { ActivityEntry, Learnings, RunListEntry } from '../api';
+
+const workspaceId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+const learnings: Learnings = {
+  milestones: [{ at: '2026-10-02T00:05:00.000Z', text: 'Checkout flow live for reviewers.', source: '1700000000-checkout.md' }],
+  drafts: [
+    { name: 'restart.md', title: 'Restart needs mapping' },
+    { name: 'roots.md', title: 'Never infer a common parent' },
+  ],
+};
+
+const activity: ActivityEntry[] = [
+  { at: '2026-10-02T00:01:00.000Z', actor: 'mcp', operation: 'verify', workspaceId, detail: 'check → passed' },
+  { at: '2026-10-02T00:02:00.000Z', actor: 'dashboard', operation: 'service-restart', workspaceId, detail: 'worker → completed' },
+  { at: '2026-10-02T00:03:00.000Z', actor: 'mcp', operation: 'verify', workspaceId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', detail: 'other → passed' },
+];
+
+const runs: RunListEntry[] = [
+  {
+    workspaceId,
+    scriptName: 'check',
+    outcome: 'failed',
+    durationMs: 410,
+    at: '2026-10-02T00:04:00.000Z',
+    failingNames: ['checkout totals'],
+    failingTruncated: false,
+    excerptPreview: 'not ok 1 checkout totals (Bearer ***)',
+    excerptTruncated: false,
+    outputTruncated: false,
+  },
+  {
+    workspaceId,
+    scriptName: 'lint',
+    outcome: 'passed',
+    durationMs: 90,
+    at: '2026-10-02T00:00:00.000Z',
+    failingNames: [],
+    failingTruncated: false,
+    excerptPreview: '',
+    excerptTruncated: false,
+    outputTruncated: false,
+  },
+];
+
+function renderRecords(overrides: Partial<Parameters<typeof RecordsView>[0]> = {}) {
+  const onReload = vi.fn();
+  render(
+    <RecordsView
+      workspaceId={workspaceId}
+      activity={activity}
+      learnings={learnings}
+      runs={runs}
+      loading={false}
+      error={null}
+      updatedAt="2026-10-02T00:06:00.000Z"
+      onReload={onReload}
+      {...overrides}
+    />,
+  );
+  return { onReload };
+}
+
+describe('records timeline', () => {
+  it('merges notes, receipts and runs newest-first with a summary card and draft strip', () => {
+    const { onReload } = renderRecords();
+    expect(onReload).toHaveBeenCalledWith(workspaceId);
+
+    const summary = screen.getByRole('heading', { name: 'Record summary', hidden: true }).closest('section')!;
+    expect(within(summary).getByText('Runs')).toBeInTheDocument();
+    expect(within(summary).getByText('50%')).toBeInTheDocument();
+    expect(screen.getByText('2 pending')).toBeInTheDocument();
+
+    expect(screen.getByRole('heading', { name: 'Unprocessed learnings' })).toBeInTheDocument();
+    expect(screen.getByText('Restart needs mapping')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /promote|approve/i })).not.toBeInTheDocument();
+
+    const timeline = screen.getByRole('heading', { name: 'What happened here' }).closest('section')!;
+    const items = within(timeline).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent('Checkout flow live for reviewers.');
+    expect(items[1]).toHaveTextContent('check → failed');
+    expect(within(timeline).queryByText(/other → passed/)).not.toBeInTheDocument();
+  });
+
+  it('filters by kind and outcome and expands red rows to the masked fail summary', () => {
+    renderRecords();
+    const timeline = screen.getByRole('heading', { name: 'What happened here' }).closest('section')!;
+
+    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'verify' } });
+    expect(within(timeline).queryByText(/Checkout flow live/)).not.toBeInTheDocument();
+    expect(within(timeline).getByText(/check → failed/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'all' } });
+    fireEvent.change(screen.getByLabelText('Outcome'), { target: { value: 'fail' } });
+    expect(within(timeline).queryByText(/check → passed/)).not.toBeInTheDocument();
+    expect(within(timeline).getByText(/check → failed/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show failure summary for check' }));
+    expect(screen.getByText('checkout totals')).toBeInTheDocument();
+    expect(screen.getByText(/Bearer \*\*\*/)).toBeInTheDocument();
+  });
+
+  it('shows empty states and the no-notes honesty hint', () => {
+    renderRecords({ activity: [], learnings: { milestones: [], drafts: [] }, runs: [] });
+    expect(screen.getByText(/No unprocessed drafts/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing recorded for this project yet/)).toBeInTheDocument();
+
+    renderRecords({ learnings: { milestones: [], drafts: [] } });
+    expect(screen.getByText(/No agent notes in this interval/)).toBeInTheDocument();
+  });
+
+  it('never renders fields outside the sanitized allowlist', () => {
+    const tainted = {
+      ...runs[0],
+      output: 'RAW_SECRET_SENTINEL output with password=hunter2',
+      failureExcerpt: 'FULL_EXCERPT_SENTINEL should stay server-side',
+    } as unknown as RunListEntry;
+    renderRecords({ runs: [tainted] });
+    fireEvent.click(screen.getByRole('button', { name: 'Show failure summary for check' }));
+    expect(document.body.textContent).not.toContain('RAW_SECRET_SENTINEL');
+    expect(document.body.textContent).not.toContain('FULL_EXCERPT_SENTINEL');
+    expect(document.body.textContent).not.toContain('hunter2');
+  });
+
+  it('keeps the poll subscription stable across callback identity changes', () => {
+    vi.useFakeTimers();
+    try {
+      const first = vi.fn();
+      const base = {
+        workspaceId,
+        activity: [] as ActivityEntry[],
+        learnings: { milestones: [], drafts: [] } as Learnings,
+        runs: [] as RunListEntry[],
+        loading: false,
+        error: null,
+        updatedAt: null,
+      };
+      const { rerender } = render(<RecordsView {...base} onReload={first} />);
+      expect(first).toHaveBeenCalledTimes(1);
+
+      // A fresh callback identity (e.g. after a workbench state commit) must
+      // not resubscribe or refire the loader.
+      const second = vi.fn();
+      rerender(<RecordsView {...base} onReload={second} />);
+      expect(second).not.toHaveBeenCalled();
+      expect(first).toHaveBeenCalledTimes(1);
+
+      // Polling continues on the original interval with the latest callback.
+      vi.advanceTimersByTime(8000);
+      expect(second).toHaveBeenCalledTimes(1);
+
+      // Switching workspaces reloads immediately.
+      rerender(<RecordsView {...base} workspaceId="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" onReload={second} />);
+      expect(second).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('builds timeline purely from sanitized fields with unknown operations degrading safely', () => {
+    const rows = buildTimeline(
+      [],
+      [{ at: '2026-10-02T00:01:00.000Z', actor: 'mcp', operation: 'future-op', workspaceId, detail: 'x → ok' }],
+      [],
+      workspaceId,
+    );
+    expect(rows[0].kind).toBe('other');
+    expect(rows[0].outcome).toBe('ok');
+    expect(filterTimeline(rows, { kind: 'verify', outcome: 'all' })).toHaveLength(0);
+    expect(summarizeTimeline([], 3, 0)).toEqual({ runCount: 0, passRate: null, draftCount: 3, noteCount: 0 });
+  });
+});

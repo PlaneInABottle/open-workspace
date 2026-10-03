@@ -12,7 +12,8 @@ import {
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
 import { projectRootLabel } from '@/features/projects/root-label';
-import type { Capability, Inspection, Lease, ProjectRootPickerResult, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
+import { RecordsView } from '@/features/records/RecordsView';
+import type { ActivityEntry, Capability, Inspection, Learnings, Lease, ProjectRootPickerResult, RunListEntry, ServiceInventory, ServiceRecord, VerificationRequest, VerificationResult, Workspace, Workstream } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -30,9 +31,10 @@ interface OverviewViewProps {
   onAcquireLease: (id: string, workstreamId: string, resource: string) => void;
   onReleaseLease: (id: string, workstreamId: string, resource: string) => void;
   onGoToAi: () => void;
+  onLoadRecords: (id: string) => void;
 }
 
-export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi }: OverviewViewProps) {
+export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi, onLoadRecords }: OverviewViewProps) {
   const [creating, setCreating] = useState(false);
   const selectProject = (id: string) => {
     setCreating(false);
@@ -80,6 +82,13 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           onAcquireLease={(workstreamId, resource) => onAcquireLease(selected.id, workstreamId, resource)}
           onReleaseLease={(workstreamId, resource) => onReleaseLease(selected.id, workstreamId, resource)}
           onGoToAi={onGoToAi}
+          activity={state.activity}
+          learnings={state.learnings}
+          runs={state.runs}
+          recordsLoading={state.recordsLoading}
+          recordsError={state.recordsError}
+          recordsUpdatedAt={state.recordsUpdatedAt}
+          onLoadRecords={onLoadRecords}
         />
       ) : state.workspaces.length > 0 ? (
         <section aria-labelledby="project-selection-heading" className="max-w-4xl">
@@ -185,7 +194,7 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, workstreams, workstreamsLoading, workstreamsError, leases, onRetry, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi }: {
+function ProjectInventory({ inspection, loading, error, services, servicesLoading, servicesError, verification, verificationLoading, verificationError, workstreams, workstreamsLoading, workstreamsError, leases, activity, learnings, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onServiceAction, onVerify, onCreateWorkstream, onWorkstreamStatus, onAcquireLease, onReleaseLease, onGoToAi, onLoadRecords }: {
   inspection: Inspection | null;
   loading: boolean;
   error: string | null;
@@ -199,6 +208,12 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
   workstreamsLoading: boolean;
   workstreamsError: string | null;
   leases: Lease[];
+  activity: ActivityEntry[];
+  learnings: Learnings;
+  runs: RunListEntry[];
+  recordsLoading: boolean;
+  recordsError: string | null;
+  recordsUpdatedAt: string | null;
   onRetry: () => void;
   onInspectServices: () => void;
   onServiceAction: (action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) => void;
@@ -208,7 +223,9 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
   onAcquireLease: (workstreamId: string, resource: string) => void;
   onReleaseLease: (workstreamId: string, resource: string) => void;
   onGoToAi: () => void;
+  onLoadRecords: (id: string) => void;
 }) {
+  const [tab, setTab] = useState<'project' | 'records'>('project');
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) || 0;
   const unavailableCount = inspection?.roots.filter(root => root.unavailable).length || 0;
   if (!inspection && loading) return <p role="status" className="border-y border-border py-5 text-sm text-muted-foreground">Reading registered project metadata…</p>;
@@ -232,6 +249,45 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
           <Button type="button" variant="outline" size="sm" onClick={onRetry}>Retry inspection</Button>
         </div>
       )}
+      <div role="tablist" aria-label="Project sections" className="flex gap-1 border-b border-border">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'project'}
+          aria-controls="project-panel"
+          id="project-tab"
+          className={`min-h-9 px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${tab === 'project' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setTab('project')}
+        >
+          Project
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'records'}
+          aria-controls="records-panel"
+          id="records-tab"
+          className={`min-h-9 px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${tab === 'records' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setTab('records')}
+        >
+          Kayıtlar
+        </button>
+      </div>
+      {tab === 'records' ? (
+        <div role="tabpanel" id="records-panel" aria-labelledby="records-tab">
+          <RecordsView
+            workspaceId={inspection.workspace.id}
+            activity={activity}
+            learnings={learnings}
+            runs={runs}
+            loading={recordsLoading}
+            error={recordsError}
+            updatedAt={recordsUpdatedAt}
+            onReload={onLoadRecords}
+          />
+        </div>
+      ) : (
+      <div role="tabpanel" id="project-panel" aria-labelledby="project-tab" className="space-y-7">
       <section aria-labelledby="project-inventory-heading" className="min-w-0">
         <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
           <div>
@@ -283,6 +339,8 @@ function ProjectInventory({ inspection, loading, error, services, servicesLoadin
         </div>
         <Button type="button" onClick={onGoToAi} className="shrink-0">Connect your AI <ArrowRight aria-hidden="true" data-icon="inline-end" /></Button>
       </section>
+      </div>
+      )}
     </div>
   );
 }
