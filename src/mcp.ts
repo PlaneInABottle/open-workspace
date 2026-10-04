@@ -56,11 +56,11 @@ export async function runMcpBridge(): Promise<void> {
   const workstreamPath = (workspace: string, workstream: string, rest = '') =>
     `/api/workstreams/${encodeURIComponent(workspace)}/${encodeURIComponent(workstream)}${rest}`;
   server.registerTool('workspace_list', {
-    description: 'List registered local workspaces and tool availability. Found tools are not verified running services.',
+    description: 'Lists registered workspaces and tool availability.',
     annotations: readHints,
   }, () => request('/api/overview'));
   server.registerTool('workspace_register', {
-    description: 'Register a named project containing 1–20 explicitly selected absolute repository roots. Reads bounded metadata immediately. Never infer or register a common parent.',
+    description: 'Registers a named project with 1–20 explicit repository roots; reads bounded metadata.',
     inputSchema: z.object({
       name: z.string().min(1).max(100),
       roots: z.array(z.string().min(1).max(4096)).min(1).max(20),
@@ -68,7 +68,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, ({ name, roots }) => request('/api/workspaces', { name, roots }));
   server.registerTool('datastore_query', {
-    description: 'Run one bounded read-only query on a workspace database over a local socket. Single SELECT-style statement; superuser roles refused.',
+    description: 'Runs one bounded read-only query over a local socket; superuser roles refused.',
     inputSchema: z.object({
       workspace: workspaceName,
       database: z.string().min(1).max(63),
@@ -86,7 +86,7 @@ export async function runMcpBridge(): Promise<void> {
     ...(options?.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
   }, 45_000));
   server.registerTool('workspace_services', {
-    description: 'Bounded PM2/Docker metadata: Compose labels map exact roots; explicit links map Docker IDs. Unmanaged counts only unless includeUnmanaged=true (names/images). No env/args; readiness unknown.',
+    description: 'Lists PM2/Docker metadata for exact roots.',
     inputSchema: z.object({
       workspace: workspaceName,
       includeUnmanaged: z.boolean().describe('Include names and images for unmanaged containers; default false.').optional(),
@@ -96,7 +96,7 @@ export async function runMcpBridge(): Promise<void> {
     ...(includeUnmanaged !== undefined ? { includeUnmanaged } : {}),
   }));
   server.registerTool('workspace_container_link', {
-    description: 'Link/unlink a Docker container by full ID or unique 12+ hex-character prefix. No name guessing. Link requires a present container; unlink can remove stale links.',
+    description: 'Links or unlinks one Docker container by exact ID.',
     inputSchema: z.object({
       workspace: workspaceName,
       action: z.enum(['link', 'unlink']).describe('Explicitly link to or unlink from this workspace.'),
@@ -105,7 +105,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspace, action, containerId }) => request(workspacePath(workspace, '/containers/link'), { action, containerId }));
   server.registerTool('workspace_remove', {
-    description: 'Remove a registered project and its private state (never repository files). Refused while workstreams reference it.',
+    description: 'Removes a project registration and its private state; refused while workstreams reference it.',
     inputSchema: z.object({ workspace: workspaceName }).strict(),
     annotations: operateHints,
   }, ({ workspace }) => request(workspacePath(workspace), undefined, undefined, 'DELETE'));
@@ -118,7 +118,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspace, name }) => request(workspacePath(workspace, '/rename'), { name }));
   server.registerTool('workspace_update_roots', {
-    description: 'Replace the full root list of a registered project with 1–20 explicitly selected absolute repository roots. Supply the complete new list: worktrees come and go, but this is a full replacement, not a delta. Validated exactly like registration; all roots must be valid or nothing changes. The project identity, leases, workstreams and activity are preserved. Never infer or register a common parent.',
+    description: 'Replaces the full root list; validated like registration.',
     inputSchema: z.object({
       workspace: workspaceName,
       roots: z.array(z.string().min(1).max(4096)).min(1).max(20),
@@ -126,24 +126,24 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspace, roots }) => request(workspacePath(workspace, '/roots'), { roots }));
   server.registerTool('workspace_workstreams', {
-    description: 'List parallel workstreams bound to registered project roots with pinned revisions.',
+    description: 'Lists workstreams with pinned revisions.',
     inputSchema: z.object({}).strict(),
     annotations: readHints,
   }, () => request('/api/workstreams'));
   server.registerTool('workspace_leases', {
-    description: 'List exclusive resource leases held or queued by workstreams.',
+    description: 'Lists exclusive resource leases.',
     inputSchema: z.object({}).strict(),
     annotations: readHints,
   }, () => request('/api/leases'));
   server.registerTool('activity_list', {
-    description: 'List recent sanitized activity descriptors: tool, target ids and outcome only, no payloads. Reading activity never records new activity.',
+    description: 'Lists sanitized activity descriptors.',
     inputSchema: z.object({
       limit: z.number().int().min(1).max(50).optional().describe('Entries to return, default 20.'),
     }).strict(),
     annotations: readHints,
   }, ({ limit }) => request(`/api/activity${limit !== undefined ? `?limit=${limit}` : ''}`));
   server.registerTool('recent_runs', {
-    description: 'List recent bounded run summaries for a workspace or workstream scope, each labeled source openworkspace-run (executed here) or external-import (pasted on trust, not verified here). Excerpts are capped at 200 chars per entry. Reading runs never records activity.',
+    description: 'Lists recent run summaries with source labels.',
     inputSchema: z.object({
       workspace: workspaceName,
       workstream: workstreamName.describe('Optional workstream within the project.').optional(),
@@ -157,11 +157,11 @@ export async function runMcpBridge(): Promise<void> {
     return request(`/api/runs/recent?${params}`);
   });
   server.registerTool('workspace_inspect', {
-    description: 'Inspect bounded manifest metadata separately for every registered root and its immediate repositories. A replaced or redirected root is reported unavailable without hiding other roots. Never reads env files or executes code. Unknown runtime readiness stays unknown.',
+    description: 'Reads bounded manifest metadata per root group.',
     inputSchema: z.object({ workspace: workspaceName }).strict(), annotations: readHints,
   }, ({ workspace }) => request(workspacePath(workspace)));
   server.registerTool('onboarding_plan', {
-    description: 'Get observed prerequisites and next setup steps for a registered workspace. Jira is optional; installs and credential handling are future work.',
+    description: 'Reads observed setup prerequisites and next steps.',
     inputSchema: z.object({ workspace: workspaceName }).strict(), annotations: readHints,
   }, ({ workspace }) => request(workspacePath(workspace, '/onboarding')));
   const serviceTarget = z.object({
@@ -189,7 +189,7 @@ export async function runMcpBridge(): Promise<void> {
     (input.action === 'start' && input.start !== undefined && input.target === undefined)
     || (input.action !== 'start' && input.target !== undefined && input.start === undefined));
   server.registerTool('service_control', {
-    description: 'Control an exactly mapped PM2 service: restart/stop it, or start one existing package.json script as a PM2 process. Dashboard records it.',
+    description: 'Restarts/stops one exactly mapped PM2 service; starts one package.json script as a PM2 process.',
     inputSchema: serviceControlObjectSchema,
     annotations: operateHints,
   }, args => {
@@ -199,7 +199,7 @@ export async function runMcpBridge(): Promise<void> {
       : request(workspacePath(workspace, `/services/${action}`), target);
   });
   server.registerTool('service_logs', {
-    description: 'Read bounded PM2 tails for mapped services and Docker tails for mapped or explicitly linked containers. Docker streams are combined. Logs may contain app-printed secrets and are never persisted.',
+    description: 'Reads bounded service log tails; output may contain app-printed secrets.',
     inputSchema: z.object({
       workspace: workspaceName,
       target: z.union([serviceTarget, z.object({
@@ -215,7 +215,7 @@ export async function runMcpBridge(): Promise<void> {
     target, ...(lines !== undefined ? { lines } : {}), ...(stream !== undefined ? { stream } : {}),
   }));
   server.registerTool('browser_check', {
-    description: 'Load one loopback URL in an owned browser session and return its bounded text snapshot with an optional substring check.',
+    description: 'Reads one loopback URL text snapshot.',
     inputSchema: z.object({
       workspace: workspaceName,
       url: z.string().min(1).max(2000).describe('Loopback http(s) URL to snapshot.'),
@@ -227,7 +227,7 @@ export async function runMcpBridge(): Promise<void> {
     url, ...(assertText !== undefined ? { assertText } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }, 95_000));
   server.registerTool('verification_run', {
-    description: 'Run one existing package.json test script of a registered repository with bounded runtime and record revision/worktree/service/time context.',
+    description: 'Runs one existing package.json script; pins a revision receipt.',
     inputSchema: z.object({
       workspace: workspaceName,
       repositoryPath: z.string().min(1).max(4096),
@@ -256,7 +256,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspace, name, services }) => request(workspacePath(workspace, '/environments/set'), { name, services }));
   server.registerTool('environment_status', {
-    description: 'Read per-service environment status (down/starting/ready/failed/skipped/stale; never starts or stops anything). Process-alive services report at most starting.',
+    description: 'Reads per-service status.',
     inputSchema: z.object({
       workspace: workspaceName,
       environment: environmentName,
@@ -370,7 +370,7 @@ export async function runMcpBridge(): Promise<void> {
     || (input.status === undefined && input.completion !== undefined && input.note === undefined),
   );
   server.registerTool('workstream_status', {
-    description: 'Use status[+note] OR completion, never both. Completion requires completionId, outcome, checks and revision/dirty data; assignmentId is optional for solo work. Agent-reported, not verified.',
+    description: 'Records status[+note] OR completion, never both.',
     // Keep the advertised strict object schema separate from the cross-field XOR
     // refinement; the SDK's ZodEffects JSON Schema conversion drops properties.
     inputSchema: workstreamStatusObjectSchema,
@@ -382,7 +382,7 @@ export async function runMcpBridge(): Promise<void> {
       : note === undefined ? { status } : { status, note });
   });
   server.registerTool('workstream_context', {
-    description: 'One-call handoff: checkpoint, assignment completions by ID/latest, checkouts, scoped recent runs plus situational lessons matched to this task. Read-only.',
+    description: 'Lists handoff context: checkpoint, completions, runs, situational lessons.',
     inputSchema: z.object({
       workspace: workspaceName,
       workstream: workstreamName,
@@ -398,7 +398,7 @@ export async function runMcpBridge(): Promise<void> {
     return request(`${workstreamPath(workspace, workstream, '/context')}${query}`);
   });
   server.registerTool('run_import', {
-    description: 'Record a pasted external result as external-import: accepted on trust, NEVER presented as verified here. Strict bounded fields with a masked excerpt; verification claims are refused.',
+    description: 'Records a pasted result as external-import.',
     inputSchema: z.object({
       workspace: workspaceName,
       scriptName: z.string().min(1).max(80),
@@ -409,7 +409,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspace, scriptName, outcome, durationMs, excerpt }) => request('/api/runs/import', { workspace, scriptName, outcome, durationMs, excerpt }));
   server.registerTool('learning_record', {
-    description: 'Index one reusable lesson by title and file ref with triggering run evidence, failure signature and optional situation tags. Titles/refs only, never rule bodies or secrets.',
+    description: 'Indexes one reusable lesson by title and file ref.',
     inputSchema: z.object({
       title: z.string().min(1).max(80),
       file: z.string().min(1).max(256),
@@ -457,7 +457,7 @@ export async function runMcpBridge(): Promise<void> {
     }
   }
   server.registerTool('local_tool_status', {
-    description: 'Show declared local tool status: name, active or pending or quarantined state, availability and use counts. Reading status never records activity.',
+    description: 'Lists declared local tool status.',
     inputSchema: z.object({}).strict(),
     annotations: readHints,
   }, async () => {
@@ -468,7 +468,7 @@ export async function runMcpBridge(): Promise<void> {
   server.registerPrompt('workspace_onboarding', {
     description: 'Guide an external assistant through safe local workspace onboarding.',
   }, () => ({ messages: [{ role: 'user', content: { type: 'text', text:
-    'Help me prepare my project. Use workspace_list first. If my project is missing, ask me to choose exact folders and a project name, then call workspace_register with {name, roots}. Do not infer a common parent or register roots I did not choose. Then use workspace_inspect and onboarding_plan, reviewing every root group and identifying unavailable roots separately. Jira is optional: only discuss Atlassian MCP if I use Jira. Use datastore_query for one read-only query, service_logs for a bounded log tail, and browser_check for one loopback text snapshot. Do not request secrets in chat, change global configuration or install tools. The dashboard records what ran. Do not claim setup is done before a tool call succeeds.'
+    'Help me prepare my project. Use workspace_list first. If my project is missing, ask me to choose exact folders and a project name, then call workspace_register with {name, roots}. Do not infer a common parent or register roots I did not choose. Then use workspace_inspect and onboarding_plan, reviewing every root group and identifying unavailable roots separately. Jira is optional: only discuss Atlassian MCP if I use Jira. Use datastore_query for one read-only query, service_logs for a bounded log tail, and browser_check for one loopback text snapshot. Do not request secrets in chat, change global configuration or install tools. The dashboard records what ran. Setup is done when a tool call succeeds.'
   } }] }));
   for (const skill of consumerSkills) {
     server.registerPrompt(`skill/${skill.name}`, {

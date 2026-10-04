@@ -98,9 +98,10 @@ describe('formatSetupRequest', () => {
     const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('then call `workspace_list` after reload');
+    expect(material!.copyText).toContain('Success = those calls return without error');
     expect(material!.copyText).toContain('A config listing alone');
     expect(material!.copyText).toContain('is not verification');
-    expect(material!.copyText).toContain('Never run project commands, install tools, read secrets, or claim done before these calls succeed');
+    expect(material!.copyText).toContain('Never run project commands, install tools, or read secrets.');
     expect(material!.copyText).not.toContain('wait until I confirm reload');
   });
 
