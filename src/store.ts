@@ -152,6 +152,9 @@ const environmentRecord = z.object({
   owned: z.array(environmentOwned).max(10).optional().default([]),
   state: z.enum(['down', 'partial', 'up']).optional().default('down'),
   updatedAt: z.string().datetime(),
+  // Additive: records written before creation timestamps parse without one;
+  // rename/ambiguity evidence falls back to updatedAt when absent.
+  createdAt: z.string().datetime().optional(),
 }).strict();
 const workspaceEnvironments = z.object({
   workspaceId: z.string().uuid(),
@@ -183,6 +186,139 @@ export type EnvironmentOwned = z.infer<typeof environmentOwned>;
 export type EnvironmentRecord = z.infer<typeof environmentRecord>;
 export type WorkspaceEnvironments = z.infer<typeof workspaceEnvironments>;
 export type State = z.infer<typeof stateSchema>;
+
+// ---------------------------------------------------------------------------
+// Name-addressed contract (M2): stable UUIDs underneath, unique names on top.
+// Single definition site for name validation and resolution; HTTP, MCP and
+// every service reuse these helpers. Names match trimmed and case-insensitively;
+// UUID-shaped inputs are always rejected with the use-the-name guidance.
+// ---------------------------------------------------------------------------
+
+/** Shared name-contract messages. Composed into http.ts safeMessages. */
+export const nameMessages = {
+  useTheName: 'Provide the registered name, not the ID.',
+  ambiguous: 'This name matches more than one entry. Rename duplicates so every name is unique.',
+} as const;
+
+const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Trimmed 1–100; reject empty/whitespace-only, `/`, NUL, C0/C1 controls, `.`/`..`.
+const badNamePattern = /[/\0-\x1f\x7f-\x9f]/;
+
+export function isUuidLike(value: string): boolean {
+  return uuidLikePattern.test(value);
+}
+
+/** Validate a user-supplied name once; returns the trimmed form. */
+export function parseNameInput(input: unknown, invalidMessage: string): string {
+  if (typeof input !== 'string') throw new Error(invalidMessage);
+  const trimmed = input.trim();
+  if (!trimmed || trimmed.length > 100) throw new Error(invalidMessage);
+  if (uuidLikePattern.test(trimmed)) throw new Error(nameMessages.useTheName);
+  if (badNamePattern.test(trimmed) || trimmed === '.' || trimmed === '..') throw new Error(invalidMessage);
+  return trimmed;
+}
+
+/** Case-insensitive comparison form; display preserves user casing. */
+export function foldName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+export interface AmbiguousNameCandidate {
+  name: string;
+  rootLabel: string;
+  createdAt: string;
+}
+
+export class AmbiguousNameError extends Error {
+  readonly candidates: AmbiguousNameCandidate[];
+  constructor(candidates: AmbiguousNameCandidate[]) {
+    // Bounded: at most five candidates, labels truncated. The list rides in
+    // the message itself so MCP callers (error-string only) see it too;
+    // HTTP additionally returns the structured candidates array.
+    const listed = candidates.slice(0, 5).map(candidate => ({
+      name: candidate.name,
+      rootLabel: candidate.rootLabel.length > 60 ? `${candidate.rootLabel.slice(0, 57)}...` : candidate.rootLabel,
+      createdAt: candidate.createdAt,
+    }));
+    super(`${nameMessages.ambiguous} Candidates: ${listed.map(candidate => `"${candidate.name}" — ${candidate.rootLabel || '(no root)'} — ${candidate.createdAt}`).join(' | ')}`);
+    this.name = 'AmbiguousNameError';
+    this.candidates = listed;
+  }
+}
+
+export function ambiguousName(candidates: AmbiguousNameCandidate[]): AmbiguousNameError {
+  return new AmbiguousNameError(candidates);
+}
+
+/** Exact (trimmed, case-insensitive) workspace resolution. */
+export function resolveWorkspaceRecord(
+  state: State,
+  input: unknown,
+  invalidMessage: string,
+  notFoundMessage: string,
+): Registration {
+  const name = parseNameInput(input, invalidMessage);
+  const folded = foldName(name);
+  const matches = state.workspaces.filter(workspace => foldName(workspace.name) === folded);
+  if (matches.length > 1) {
+    throw ambiguousName(matches.map(workspace => ({
+      name: workspace.name,
+      rootLabel: workspace.roots[0] ?? '',
+      createdAt: workspace.createdAt,
+    })));
+  }
+  const record = matches[0];
+  if (!record) throw new Error(notFoundMessage);
+  return record;
+}
+
+/** Exact (trimmed, case-insensitive) workstream resolution within one workspace. */
+export function resolveWorkstreamRecord(
+  state: State,
+  workspaceInput: unknown,
+  workstreamInput: unknown,
+  messages: { workspaceInvalid: string; workspaceNotFound: string; workstreamInvalid: string; workstreamNotFound: string },
+): { workspace: Registration; workstream: WorkstreamRecord } {
+  const workspace = resolveWorkspaceRecord(state, workspaceInput, messages.workspaceInvalid, messages.workspaceNotFound);
+  const name = parseNameInput(workstreamInput, messages.workstreamInvalid);
+  const folded = foldName(name);
+  const matches = state.workstreams.filter(workstream =>
+    workstream.workspaceId === workspace.id && foldName(workstream.name) === folded);
+  if (matches.length > 1) {
+    throw ambiguousName(matches.map(workstream => ({
+      name: workstream.name,
+      rootLabel: workstream.checkouts[0]?.root ?? '',
+      createdAt: workstream.createdAt,
+    })));
+  }
+  const workstream = matches[0];
+  if (!workstream) throw new Error(messages.workstreamNotFound);
+  return { workspace, workstream };
+}
+
+/** Exact (trimmed, case-insensitive) environment resolution within one workspace. */
+export function resolveEnvironmentRecord(
+  state: State,
+  workspaceInput: unknown,
+  environmentInput: unknown,
+  messages: { workspaceInvalid: string; workspaceNotFound: string; environmentInvalid: string; environmentNotFound: string },
+): { workspace: Registration; record: EnvironmentRecord } {
+  const workspace = resolveWorkspaceRecord(state, workspaceInput, messages.workspaceInvalid, messages.workspaceNotFound);
+  const name = parseNameInput(environmentInput, messages.environmentInvalid);
+  const folded = foldName(name);
+  const items = state.environments.find(entry => entry.workspaceId === workspace.id)?.items ?? [];
+  const matches = items.filter(item => foldName(item.name) === folded);
+  if (matches.length > 1) {
+    throw ambiguousName(matches.map(item => ({
+      name: item.name,
+      rootLabel: item.services[0]?.repositoryPath ?? '',
+      createdAt: item.createdAt ?? item.updatedAt,
+    })));
+  }
+  const record = matches[0];
+  if (!record) throw new Error(messages.environmentNotFound);
+  return { workspace, record };
+}
 
 export function stateDirectory(): string {
   return resolve(process.env.OPENWORKSPACE_HOME || join(homedir(), '.local/share/openworkspace'));

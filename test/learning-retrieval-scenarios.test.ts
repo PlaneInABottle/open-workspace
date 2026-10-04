@@ -29,6 +29,7 @@ interface World {
   store: Store;
   service: WorkspaceService;
   workspaceId: string;
+  workspaceName: string;
   evidenceRef: string;
 }
 
@@ -62,7 +63,7 @@ async function seedWorld(prefix: string): Promise<World> {
   for (const lesson of lessons) {
     await service.recordLearning({ ...lesson, evidenceRefs: [ref] });
   }
-  return { root, project, store, service, workspaceId: workspace.id, evidenceRef: ref };
+  return { root, project, store, service, workspaceId: workspace.id, workspaceName: workspace.name, evidenceRef: ref };
 }
 
 async function taskLessons(
@@ -71,18 +72,18 @@ async function taskLessons(
   environment?: Array<{ id: string; port: number }>,
 ): Promise<string[]> {
   const workstream = await world.service.createWorkstream({
-    name: task.name, workspaceId: world.workspaceId, checkouts: [world.project],
+    name: task.name, workspace: world.workspaceName, checkouts: [world.project],
   });
-  await world.service.setWorkstreamStatus(workstream.id, 'paused', { ...task, owner: 'agent' });
+  await world.service.setWorkstreamStatus(world.workspaceName, workstream.name, 'paused', { ...task, owner: 'agent' });
   if (environment) {
-    await world.service.environmentSet(world.workspaceId, {
+    await world.service.environmentSet(world.workspaceName, {
       name: 'dev',
       services: environment.map(item => ({
         id: item.id, repositoryPath: world.project, scriptName: 'test', port: item.port, readiness: { kind: 'http-200' },
       })),
     });
   }
-  return (await world.service.workstreamContext(workstream.id)).situationalLessons;
+  return (await world.service.workstreamContext(world.workspaceName, workstream.name)).situationalLessons;
 }
 
 function titlesOf(lines: string[]): string[] {
@@ -187,7 +188,7 @@ test('760B budget holds with 3 long titles and legacy entries still match', asyn
       workspaceId: workspace.id, scriptName: 'test', outcome: 'failed', durationMs: 40,
       output: 'not ok 1 shared budget failure mode', outputTruncated: false,
     });
-    const ref = (await service.recentRuns(workspace.id, 1))[0].id;
+    const ref = (await service.recentRuns(workspace.name, undefined, 1))[0].id;
     for (const suffix of ['alpha', 'bravo', 'gamma']) {
       await service.recordLearning({
         title: `${'Long budget title words '.repeat(3)}${suffix}`.slice(0, 78),

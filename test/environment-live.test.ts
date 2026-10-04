@@ -73,7 +73,7 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
     await store.initialize();
     const service = new WorkspaceService(store);
     const workspace = await service.register('NoPm2', [root]);
-    const record = await service.environmentSet(workspace.id, {
+    const record = await service.environmentSet(workspace.name, {
       name: 'local',
       services: [{ id: 'svc', repositoryPath: root, scriptName: 'x', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
     }).catch(() => null);
@@ -133,7 +133,7 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
   // Real runners: no injection — the production path is exercised.
   const service = new WorkspaceService(store);
   const workspace = await service.register('LiveStack', [root]);
-  const record = await service.environmentSet(workspace.id, {
+  const record = await service.environmentSet(workspace.name, {
     name: 'live',
     services: [
       { id: backendId, repositoryPath: backend, scriptName: 'dev', port: backendPort, dependsOn: [], readiness: { kind: 'http-200' } },
@@ -141,16 +141,16 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
     ],
   });
   const ownedNames = async (): Promise<string[]> => {
-    const inventory = await service.services(workspace.id);
+    const inventory = await service.services(workspace.name);
     return [...inventory.services, ...inventory.ambiguousServices].map(entry => entry.name);
   };
   let foreignListener: Server | null = null;
   t.after(async () => {
     try {
-      await service.environmentDown(workspace.id, record.id);
+      await service.environmentDown(workspace.name, record.name);
     } catch { /* best-effort teardown */ }
     try {
-      await service.serviceAction(workspace.id, 'stop', { pmId: null, name: foreignId });
+      await service.serviceAction(workspace.name, 'stop', { pmId: null, name: foreignId });
     } catch { /* foreign fixture may already be gone */ }
     for (const name of [backendId, frontendId, foreignId]) {
       try {
@@ -164,7 +164,7 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
   // Phase 1: a foreign listener holds the backend port. Up must refuse (and
   // suggest) without killing the occupant; the dependent never starts.
   foreignListener = await listen(backendPort, 'foreign');
-  const refused = await service.environmentUp(workspace.id, record.id);
+  const refused = await service.environmentUp(workspace.name, record.name);
   const refusedBackend = refused.services.find(entry => entry.serviceId === backendId);
   assert.equal(refusedBackend?.status, 'failed');
   assert.match(refusedBackend?.detail ?? '', /already occupied/);
@@ -176,7 +176,7 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
   foreignListener = null;
 
   // Phase 2: clean up → both ready through the real poller.
-  const up = await service.environmentUp(workspace.id, record.id);
+  const up = await service.environmentUp(workspace.name, record.name);
   assert.equal(up.state, 'up');
   assert.deepEqual(up.order, [backendId, frontendId]);
   assert.ok(up.services.every(entry => entry.status === 'ready'), JSON.stringify(up.services.map(e => [e.serviceId, e.status, e.detail])));
@@ -185,16 +185,16 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
     (await ownedNames()).filter(name => [backendId, frontendId].includes(name)).sort(),
     [backendId, frontendId].sort(),
   );
-  const status = await service.environmentStatus(workspace.id, record.id);
+  const status = await service.environmentStatus(workspace.name, record.name);
   assert.ok(status.services.every(entry => entry.status === 'ready'));
 
   // Phase 3: a foreign PM2 process (root-matched but unowned) and a foreign
   // listener are present while verify + down run.
-  const foreignStart = await service.serviceStart(workspace.id, { repositoryPath: other, scriptName: 'dev', name: foreignId });
+  const foreignStart = await service.serviceStart(workspace.name, { repositoryPath: other, scriptName: 'dev', name: foreignId });
   assert.equal(foreignStart.status, 'completed');
   foreignListener = await listen(foreignPort, 'foreign');
-  const verified = await service.environmentVerify(workspace.id, {
-    environmentId: record.id,
+  const verified = await service.environmentVerify(workspace.name, {
+    environment: record.name,
     repositoryPath: frontend,
     scriptName: 'e2e',
   });
@@ -212,13 +212,13 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
 
   // Phase 4: owned-only down. Foreign listener stays connectable, the foreign
   // process stays online, owned processes are gone.
-  const down = await service.environmentDown(workspace.id, record.id);
+  const down = await service.environmentDown(workspace.name, record.name);
   assert.equal(down.state, 'down');
   assert.ok(down.services.every(entry => entry.status === 'down'));
   assert.deepEqual(down.services.map(entry => entry.serviceId), [frontendId, backendId], 'reverse dependency order');
   const foreignAlive = await get(foreignPort);
   assert.equal(foreignAlive.text, 'foreign', 'the foreign listener survives down');
-  const inventory = await service.services(workspace.id);
+  const inventory = await service.services(workspace.name);
   const ownedEntries = [...inventory.services, ...inventory.ambiguousServices]
     .filter(entry => [backendId, frontendId].includes(entry.name));
   assert.ok(ownedEntries.every(entry => entry.status === 'stopped'),

@@ -209,7 +209,7 @@ test('injection ranks exact test-name hits above error-class hits and caps at th
   const f = await registeredFixture('openworkspace-learning-match-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 login flow\nError TimeoutExpired boom');
-  const runs = await f.service.recentRuns(f.workspace.id, 5);
+  const runs = await f.service.recentRuns(f.workspace.name, undefined, 5);
   const ref = runs[0].id;
   const bodies = [
     { title: 'Login rule one', file: 'AGENTS.md', evidenceRefs: [ref], failureSignature: { tests: ['login flow'], errorClasses: [] } },
@@ -241,7 +241,7 @@ test('injection truncates titles to fit the remaining budget and yields on zero 
   const f = await registeredFixture('openworkspace-learning-budget-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 shared failure mode');
-  const ref = (await f.service.recentRuns(f.workspace.id, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
   for (const suffix of ['a', 'b', 'c']) {
     await f.service.recordLearning({
       title: `${'Long title words '.repeat(4)}${suffix}`,
@@ -272,7 +272,7 @@ test('recurrence signal: holding at zero, suspect on first repeat, flagged in th
   const f = await registeredFixture('openworkspace-learning-signal-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 checkout flow');
-  const ref = (await f.service.recentRuns(f.workspace.id, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
   await f.service.recordLearning({
     title: 'Checkout flow guard',
     file: 'AGENTS.md',
@@ -509,7 +509,7 @@ test('startup line stays failure-only; situational surfacing lives in workstream
   const f = await registeredFixture('openworkspace-learning-situation-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 login flow');
-  const ref = (await f.service.recentRuns(f.workspace.id, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
   await f.service.recordLearning({
     title: 'Login guard', file: 'AGENTS.md', evidenceRefs: [ref],
     failureSignature: { tests: ['login flow'], errorClasses: [] },
@@ -536,7 +536,7 @@ test('unmeasured entries never recur, never flag and evict after measured-active
   const f = await registeredFixture('openworkspace-learning-lifecycle-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 setup detour case');
-  const ref = (await f.service.recentRuns(f.workspace.id, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
   const waste = await f.service.recordLearning({
     title: 'Setup detour guard', file: 'AGENTS.md', evidenceRefs: [ref],
     failureSignature: { tests: [], errorClasses: [] },

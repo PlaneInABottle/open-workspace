@@ -25,6 +25,7 @@ import {
   workstreamCheckoutCountMessage,
   workstreamCheckoutRootMessage,
   workstreamLimitMessage,
+  workstreamMessages,
   workstreamNameMessage,
   workstreamReopenMessage,
 } from '../src/workstreams.js';
@@ -36,8 +37,9 @@ import { externalImportClaimMessage, externalImportInvalidMessage } from '../src
 import { learningMessages } from '../src/rule-index.js';
 import { localToolCallMessages, localToolGateMessages } from '../src/local-tools.js';
 import { environmentMessages } from '../src/environment.js';
+import { nameMessages } from '../src/store.js';
 
-const workstreamMessages: readonly string[] = [
+const workstreamMessageList: readonly string[] = [
   unknownWorkstreamMessage,
   unknownWorkstreamStatusMessage,
   workstreamReopenMessage,
@@ -53,6 +55,7 @@ const workstreamMessages: readonly string[] = [
   completionPatternMessage,
   completionEvidenceMessage,
   completionIdConflictMessage,
+  ...Object.values(workstreamMessages),
 ];
 
 // Owner export groups mirroring the http.ts composition (order-independent:
@@ -61,7 +64,7 @@ const ownerGroups: ReadonlyArray<{ file: string; values: readonly string[] }> = 
   { file: 'project-roots.ts', values: Object.values(projectRootMessages) },
   { file: 'workspace.ts', values: Object.values(workspaceMessages) },
   { file: 'verify.ts', values: Object.values(verifyMessages) },
-  { file: 'workstreams.ts', values: workstreamMessages },
+  { file: 'workstreams.ts', values: workstreamMessageList },
   { file: 'leases.ts', values: Object.values(leaseMessages) },
   { file: 'datastore.ts', values: Object.values(datastoreMessages) },
   { file: 'browser.ts', values: Object.values(browserMessages) },
@@ -70,6 +73,7 @@ const ownerGroups: ReadonlyArray<{ file: string; values: readonly string[] }> = 
   { file: 'rule-index.ts', values: Object.values(learningMessages) },
   { file: 'local-tools.ts', values: [...Object.values(localToolGateMessages), ...Object.values(localToolCallMessages)] },
   { file: 'environment.ts', values: Object.values(environmentMessages) },
+  { file: 'store.ts', values: Object.values(nameMessages) },
   { file: 'http.ts', values: Object.values(httpTransportMessages) },
 ];
 

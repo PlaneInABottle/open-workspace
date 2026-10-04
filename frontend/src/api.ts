@@ -247,11 +247,14 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 export const dashboardSessionStorageKey = 'openworkspace.dashboard-session';
 const legacyPairingStorageKey = 'openworkspace.pairing';
 const dashboardTokenPattern = /^[a-f0-9]{64}$/;
-const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function safeId(id: string) {
-  if (!workspaceIdPattern.test(id)) throw new ApiError('The workspace identifier is invalid.');
-  return encodeURIComponent(id);
+function safeName(name: string) {
+  if (typeof name !== 'string') throw new ApiError('The workspace name is invalid.');
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 100 || /[/\0-\x1f\x7f-\x9f]/.test(trimmed) || trimmed === '.' || trimmed === '..') {
+    throw new ApiError('The workspace name is invalid.');
+  }
+  return encodeURIComponent(name);
 }
 
 export class ApiError extends Error {
@@ -356,13 +359,13 @@ export class ApiClient {
 
   overview() { return this.request<Overview>('/api/overview'); }
   clientConfig() { return this.request<ClientConfig>('/api/client-config'); }
-  inspect(workspaceId: string) { return this.request<Inspection>(`/api/workspaces/${safeId(workspaceId)}`); }
+  inspect(workspace: string) { return this.request<Inspection>(`/api/workspaces/${safeName(workspace)}`); }
   register(name: string, roots: string[]) { return this.request<Workspace>('/api/workspaces', { name, roots }); }
-  updateRoots(workspaceId: string, roots: string[]) {
-    return this.request<Workspace>(`/api/workspaces/${safeId(workspaceId)}/roots`, { roots });
+  updateRoots(workspace: string, roots: string[]) {
+    return this.request<Workspace>(`/api/workspaces/${safeName(workspace)}/roots`, { roots });
   }
-  remove(workspaceId: string) {
-    return this.request<{ removed: true }>(`/api/workspaces/${safeId(workspaceId)}`, undefined, { method: 'DELETE' });
+  remove(workspace: string) {
+    return this.request<{ removed: true }>(`/api/workspaces/${safeName(workspace)}`, undefined, { method: 'DELETE' });
   }
   async projectRootPicker(signal: AbortSignal): Promise<ProjectRootPickerResult> {
     const result = await this.request<ProjectRootPickerResult>('/api/project-root-picker', {}, {
@@ -377,36 +380,40 @@ export class ApiClient {
     }
     return result;
   }
-  services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}); }
-  serviceAction(workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
-    return this.request<ServiceActionResult>(`/api/workspaces/${safeId(workspaceId)}/services/${action}`, target);
+  services(workspace: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeName(workspace)}/services`, {}); }
+  serviceAction(workspace: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
+    return this.request<ServiceActionResult>(`/api/workspaces/${safeName(workspace)}/services/${action}`, target);
   }
-  serviceStart(workspaceId: string, start: { repositoryPath: string; scriptName: string; name?: string }) {
-    return this.request<ServiceStartResult>(`/api/workspaces/${safeId(workspaceId)}/services/start`, start);
+  serviceStart(workspace: string, start: { repositoryPath: string; scriptName: string; name?: string }) {
+    return this.request<ServiceStartResult>(`/api/workspaces/${safeName(workspace)}/services/start`, start);
   }
-  verify(workspaceId: string, verification: VerificationRequest) {
-    return this.request<VerificationResult>(`/api/workspaces/${safeId(workspaceId)}/verify`, verification, { timeoutMs: 170_000 });
+  verify(workspace: string, verification: VerificationRequest) {
+    return this.request<VerificationResult>(`/api/workspaces/${safeName(workspace)}/verify`, verification, { timeoutMs: 170_000 });
   }
   workstreams() { return this.request<Workstream[]>('/api/workstreams'); }
-  workstream(id: string) { return this.request<Workstream>(`/api/workstreams/${safeId(id)}`); }
-  createWorkstream(input: { name: string; workspaceId: string; checkouts: string[] }) {
+  workstream(workspace: string, workstream: string) {
+    return this.request<Workstream>(`/api/workstreams/${safeName(workspace)}/${safeName(workstream)}`);
+  }
+  createWorkstream(input: { name: string; workspace: string; checkouts: string[] }) {
     return this.request<Workstream>('/api/workstreams', input);
   }
-  setWorkstreamStatus(id: string, status: Workstream['status']) {
-    return this.request<Workstream>(`/api/workstreams/${safeId(id)}/status`, { status });
+  setWorkstreamStatus(workspace: string, workstream: string, status: Workstream['status']) {
+    return this.request<Workstream>(`/api/workstreams/${safeName(workspace)}/${safeName(workstream)}/status`, { status });
   }
   leases() { return this.request<Lease[]>('/api/leases'); }
-  acquireLease(resource: string, workstreamId: string) {
-    return this.request<{ lease: Lease; position: number }>('/api/leases/acquire', { resource, workstreamId });
+  acquireLease(resource: string, workspace: string, workstream: string) {
+    return this.request<{ lease: Lease; position: number }>('/api/leases/acquire', { resource, workspace, workstream });
   }
-  releaseLease(resource: string, workstreamId: string) {
-    return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId });
+  releaseLease(resource: string, workspace: string, workstream: string) {
+    return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workspace, workstream });
   }
   activity() { return this.request<ActivityEntry[]>('/api/activity'); }
   learnings() { return this.request<Learnings>('/api/learnings'); }
-  recentRuns(scope: string, limit = 20) {
+  recentRuns(workspace: string, workstream: string | undefined, limit = 20) {
     const bounded = Number.isInteger(limit) ? Math.min(20, Math.max(1, limit)) : 20;
-    return this.request<RunListEntry[]>(`/api/runs/recent?scope=${safeId(scope)}&limit=${bounded}`);
+    const params = new URLSearchParams({ workspace, limit: String(bounded) });
+    if (workstream !== undefined) params.set('workstream', workstream);
+    return this.request<RunListEntry[]>(`/api/runs/recent?${params}`);
   }
 
   private async revokeDashboardSession(token: string): Promise<void> {

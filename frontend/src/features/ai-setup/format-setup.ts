@@ -10,7 +10,7 @@ interface LocalStdioServer {
   env: { OPENWORKSPACE_HOME: string };
 }
 
-const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const workspaceNamePattern = /^(?!\s*$)(?!.*[/\0-\x1f\x7f-\x9f])(?!\.$)(?!\.\.$).{1,100}$/s;
 
 function localStdioServer(configuration: ClientConfig | null): LocalStdioServer | null {
   const candidate = configuration?.mcpServers?.openworkspace;
@@ -45,12 +45,12 @@ const agentsNote = [
   'Project secrets stay out of chat, config, and repo files.',
 ].join('\n');
 
-export function formatSetupRequest(configuration: ClientConfig | null, selectedId: string | null): SetupRequestMaterial | null {
+export function formatSetupRequest(configuration: ClientConfig | null, selectedName: string | null): SetupRequestMaterial | null {
   const server = localStdioServer(configuration);
   if (!server) return null;
 
-  const boundContext = selectedId && workspaceIdPattern.test(selectedId)
-    ? `Context: this named project is registered (UUID ${selectedId}) with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this UUID only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
+  const boundContext = selectedName && workspaceNamePattern.test(selectedName)
+    ? `Context: the project named ${JSON.stringify(selectedName)} is registered with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this name only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
     : 'Context: verify the MCP connection with workspace_list first. If my project is absent, ask me to choose its name and exact repository folders, then call workspace_register with {name, roots}. Registration reads bounded metadata immediately. Never infer a shared parent. The dashboard records what ran.';
   const copyText = [
     'Paste this whole message to your own coding assistant. It installs the OpenWorkspace MCP connection for this project; your agent installs it and the dashboard records what ran.',
@@ -62,7 +62,7 @@ export function formatSetupRequest(configuration: ClientConfig | null, selectedI
     'Step 2 — Skills (no copy by default): use MCP prompts `skill/openworkspace-onboarding` after connect (and `skill/learn-from-mistake` only on demand). Do NOT copy SKILL.md files anywhere unless I explicitly ask for pinned files; then copy current text verbatim to the client\u2019s documented project-local skills path and warn it will rot.',
     `Step 3 — AGENTS.md note (diff first): propose this note in the user-named repo root (default: first registered root when I defer). Target the first existing file in order \`AGENTS.md\` → \`CLAUDE.md\` → \`MUSE.md\` → \`GEMINI.md\`, else create \`AGENTS.md\` at that root. Ask which file when ambiguous; never write a shared ancestor/parent outside the active project without separate explicit authorization.\n${agentsNote}\nMerge with marker block \`<!-- openworkspace:begin -->\` … note … \`<!-- openworkspace:end -->\`; absent → append with one blank-line separator; present → replace inside markers only (idempotent re-paste). Everything outside markers stays byte-identical. Show the exact diff first, then apply it to <file>. Personal content outside the marked block is preserved. If I decline, the root/file is ambiguous, the target is not a regular writable text file, or an ancestor write lacks explicit authorization, report which and stop that step; other verified steps stand.`,
     `${'Step 4 — Reload + Step 5 — Verify (free reads only): tell me the client\u2019s MCP reload step, then call `workspace_list` after reload.'
-    + ` ${boundContext} Success means those calls return without error (UUID visible when supplied). A config listing alone (\`claude mcp list\`, \`MCP: List Servers\`, \`/mcps\`, \`/mcp\`) is not verification. Never run project commands, install tools, read secrets, or claim done before these calls succeed.`
+    + ` ${boundContext} Success means those calls return without error. A config listing alone (\`claude mcp list\`, \`MCP: List Servers\`, \`/mcps\`, \`/mcp\`) is not verification. Never run project commands, install tools, read secrets, or claim done before these calls succeed.`
     + ' Already connected? Re-paste the current prompt and re-merge the entry, re-apply the AGENTS.md block idempotently, and re-verify with workspace_list.'}`,
     'Step 6 — Handoff (≤120 words): report client + scope file; AGENTS.md file; verification calls + one-line results; skills mode (`MCP-served`); next human action; limitation/unverified note. Guardrails: POSIX-only; no global writes unless I explicitly ask; personal edits outside the marked block stay byte-identical; tokens never in chat/repo/config; Jira is optional (discuss Atlassian MCP only if I use Jira). This preview needs the existing OpenWorkspace Node runtime; it is not a Node-free installer.',
   ].join('\n\n');

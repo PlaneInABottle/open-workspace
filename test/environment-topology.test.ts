@@ -74,7 +74,7 @@ test('old state files without environments still parse as empty', async t => {
   await writeFile(join(root, 'state', 'state.json'), JSON.stringify(raw));
   const reread = await new Store(join(root, 'state')).read();
   assert.deepEqual(reread.environments, []);
-  assert.deepEqual(await service.environmentList(workspace.id), []);
+  assert.deepEqual(await service.environmentList(workspace.name), []);
 });
 
 test('propose derives two candidates with ports and a frontend→backend suggestion', async t => {
@@ -139,7 +139,7 @@ test('port hints accept :port, PORT= and --port spellings and reject out-of-rang
 
 test('set persists canonical paths and status before any up reports all down', async t => {
   const f = await twoRepoFixture(t);
-  const record = await f.service.environmentSet(f.workspace.id, {
+  const record = await f.service.environmentSet(f.workspace.name, {
     name: 'local',
     services: [
       httpService(join(f.root, 'sub', '..', 'backend'), 'backend'),
@@ -149,10 +149,10 @@ test('set persists canonical paths and status before any up reports all down', a
   assert.equal(record.services[0].repositoryPath, f.backend, 'non-canonical input is stored canonical');
   assert.equal(record.state, 'down');
   assert.deepEqual(record.owned, []);
-  const stored = await f.service.environmentGet(f.workspace.id, record.id);
+  const stored = await f.service.environmentGet(f.workspace.name, record.name);
   assert.equal(stored.name, 'local');
   const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [] });
-  const status = await environmentStatus(f.store, f.workspace.id, record.id, list);
+  const status = await environmentStatus(f.store, f.workspace.name, record.name, list);
   assert.deepEqual(status.order, ['backend', 'frontend']);
   assert.ok(status.services.every(entry => entry.status === 'down'));
 });
@@ -163,14 +163,14 @@ test('set refuses cyclic, self, unknown deps, unknown scripts, out-of-root repos
     { ...httpService(f.backend, 'a'), dependsOn: ['b'] },
     { ...httpService(f.frontend, 'b', { port: 5173 }), dependsOn: ['a'] },
   ];
-  await assert.rejects(f.service.environmentSet(f.workspace.id, { name: 'e', services: cyclic }), /must not form a cycle/);
-  await assert.rejects(f.service.environmentSet(f.workspace.id, {
+  await assert.rejects(f.service.environmentSet(f.workspace.name, { name: 'e', services: cyclic }), /must not form a cycle/);
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
     name: 'e', services: [{ ...httpService(f.backend, 'a'), dependsOn: ['a'] }],
   }), /cannot depend on itself/);
-  await assert.rejects(f.service.environmentSet(f.workspace.id, {
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
     name: 'e', services: [{ ...httpService(f.backend, 'a'), dependsOn: ['ghost'] }],
   }), /unknown service id/);
-  await assert.rejects(f.service.environmentSet(f.workspace.id, {
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
     name: 'e', services: [{ ...httpService(f.backend, 'a'), scriptName: 'nope' }],
   }), /no runnable script with that name/);
   const outsideRoot = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-env-outside-')));
@@ -178,13 +178,13 @@ test('set refuses cyclic, self, unknown deps, unknown scripts, out-of-root repos
   const outside = join(outsideRoot, 'outside');
   await mkdir(outside);
   await writeFile(join(outside, 'package.json'), JSON.stringify({ scripts: { dev: 'node x.js' } }));
-  await assert.rejects(f.service.environmentSet(f.workspace.id, {
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
     name: 'e', services: [httpService(outside, 'a')],
   }), /not inside a registered project root/);
-  await assert.rejects(f.service.environmentSet(f.workspace.id, {
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
     name: 'e', services: [{ ...httpService(f.backend, 'a'), port: null }],
   }), /need a port/);
-  await assert.rejects(f.service.environmentSet(f.workspace.id, {
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
     name: 'e',
     services: [{ id: 'w', repositoryPath: f.backend, scriptName: 'worker', port: 3000, dependsOn: [], readiness: { kind: 'process-alive' } }],
   }), /must set port to null/);
@@ -193,7 +193,7 @@ test('set refuses cyclic, self, unknown deps, unknown scripts, out-of-root repos
 
 test('process-alive services report at most starting, never ready', async t => {
   const f = await twoRepoFixture(t);
-  const record = await f.service.environmentSet(f.workspace.id, {
+  const record = await f.service.environmentSet(f.workspace.name, {
     name: 'mixed',
     services: [
       httpService(f.backend, 'backend'),
@@ -214,7 +214,7 @@ test('process-alive services report at most starting, never ready', async t => {
     available: true,
     processes: [liveProcess(f.backend), liveProcess(f.backend, { pmId: 4, name: 'worker' })],
   });
-  const status = await environmentStatus(f.store, f.workspace.id, record.id, list);
+  const status = await environmentStatus(f.store, f.workspace.name, record.name, list);
   const worker = status.services.find(entry => entry.serviceId === 'worker');
   assert.equal(worker?.status, 'starting');
   assert.ok(!status.services.some(entry => entry.status === 'ready'), 'M1 status never reports ready without a readiness poll');
@@ -222,7 +222,7 @@ test('process-alive services report at most starting, never ready', async t => {
 
 test('stale owned (recycled pmId, different root) reports stale with zero mutations', async t => {
   const f = await twoRepoFixture(t);
-  const record = await f.service.environmentSet(f.workspace.id, {
+  const record = await f.service.environmentSet(f.workspace.name, {
     name: 'local', services: [httpService(f.backend, 'backend')],
   });
   const foreignRoot = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-env-foreign-')));
@@ -240,7 +240,7 @@ test('stale owned (recycled pmId, different root) reports stale with zero mutati
     return { available: true, processes: [liveProcess(foreignRoot)] };
   };
   const before = await readFile(join(f.root, 'state', 'state.json'), 'utf8');
-  const status = await environmentStatus(f.store, f.workspace.id, record.id, list);
+  const status = await environmentStatus(f.store, f.workspace.name, record.name, list);
   assert.equal(status.services[0].status, 'stale');
   assert.equal(listCalls, 1, 'status uses the read-only list seam exactly once');
   assert.equal(await readFile(join(f.root, 'state', 'state.json'), 'utf8'), before, 'status mutates nothing');
@@ -248,7 +248,7 @@ test('stale owned (recycled pmId, different root) reports stale with zero mutati
 
 test('set preserves owned intent and lifecycle state; removed services stay stale-tracked, never killed', async t => {
   const f = await twoRepoFixture(t);
-  const record = await f.service.environmentSet(f.workspace.id, {
+  const record = await f.service.environmentSet(f.workspace.name, {
     name: 'local',
     services: [httpService(f.backend, 'backend'), { ...httpService(f.frontend, 'frontend', { port: 5173 }) }],
   });
@@ -258,14 +258,14 @@ test('set preserves owned intent and lifecycle state; removed services stay stal
     item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root, lastPoll: null }];
     item.state = 'partial';
   });
-  const reset = await f.service.environmentSet(f.workspace.id, {
+  const reset = await f.service.environmentSet(f.workspace.name, {
     name: 'local', services: [{ ...httpService(f.frontend, 'frontend', { port: 5173 }) }],
   });
   assert.equal(reset.id, record.id, 'same env name replaces services in place');
   assert.equal(reset.state, 'partial', 'lifecycle state is preserved across re-set');
   assert.equal(reset.owned.length, 1, 'owned intent survives the topology change');
   const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [] });
-  const status = await environmentStatus(f.store, f.workspace.id, record.id, list);
+  const status = await environmentStatus(f.store, f.workspace.name, record.name, list);
   const stale = status.services.find(entry => entry.serviceId === 'backend');
   assert.equal(stale?.status, 'stale');
   assert.match(stale?.detail ?? '', /never stopped here/);
@@ -274,10 +274,10 @@ test('set preserves owned intent and lifecycle state; removed services stay stal
 test('workspace env caps: 5 per workspace enforced', async t => {
   const f = await twoRepoFixture(t);
   for (let index = 0; index < 5; index += 1) {
-    await f.service.environmentSet(f.workspace.id, { name: `env-${index}`, services: [httpService(f.backend, 'backend')] });
+    await f.service.environmentSet(f.workspace.name, { name: `env-${index}`, services: [httpService(f.backend, 'backend')] });
   }
   await assert.rejects(
-    f.service.environmentSet(f.workspace.id, { name: 'env-6', services: [httpService(f.backend, 'backend')] }),
+    f.service.environmentSet(f.workspace.name, { name: 'env-6', services: [httpService(f.backend, 'backend')] }),
     /Environment limit reached/,
   );
 });
@@ -330,7 +330,7 @@ test('oversized topology is refused leaving state.json byte-identical', async t 
   const before = await readFile(join(f.root, 'state', 'state.json'), 'utf8');
   const services = Array.from({ length: 10 }, (_, index) => httpService(f.backend, `svc-${index}`, { port: 3000 + index }));
   await assert.rejects(
-    setEnvironment(f.store, f.workspace.id, { name: 'too-big', services }),
+    setEnvironment(f.store, f.workspace.name, { name: 'too-big', services }),
     /exceed the private state size limit/,
   );
   assert.equal(await readFile(join(f.root, 'state', 'state.json'), 'utf8'), before);
@@ -347,7 +347,7 @@ test('outer environment-entry cap refuses the 51st entry', async t => {
     }
   });
   await assert.rejects(
-    f.service.environmentSet(f.workspace.id, { name: 'outer', services: [httpService(f.backend, 'backend')] }),
+    f.service.environmentSet(f.workspace.name, { name: 'outer', services: [httpService(f.backend, 'backend')] }),
     /Environment registry is full/,
   );
 });
@@ -368,7 +368,7 @@ test('dashboard set requires canonical context; reads need none', async t => {
   const { dashboardToken } = await connected.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const setPath = `${origin}/api/workspaces/${f.workspace.id}/environments/set`;
+  const setPath = `${origin}/api/workspaces/${f.workspace.name}/environments/set`;
   const setBody = JSON.stringify({ name: 'local', services: [httpService(f.backend, 'backend')] });
 
   const missingContext = await fetch(setPath, { method: 'POST', headers: bareDashboardHeaders, body: setBody });
@@ -377,7 +377,7 @@ test('dashboard set requires canonical context; reads need none', async t => {
     method: 'POST', headers: dashboardHeaders, body: setBody,
   });
   assert.equal(dashboardSet.status, 200);
-  const created = await dashboardSet.json() as { id: string };
+  const created = await dashboardSet.json() as { id: string; name: string };
   assert.ok(created.id);
 
   // MCP carries no extra header: the client permission model is the authority,
@@ -387,23 +387,23 @@ test('dashboard set requires canonical context; reads need none', async t => {
   });
   assert.equal(mcpSet.status, 200);
 
-  const statusPath = `${origin}/api/workspaces/${f.workspace.id}/environments/status?environmentId=${created.id}`;
+  const statusPath = `${origin}/api/workspaces/${f.workspace.name}/environments/status?environment=${created.name}`;
   const dashboardStatus = await fetch(statusPath, { headers: dashboardHeaders });
   assert.equal(dashboardStatus.status, 200);
   const mcpStatus = await fetch(statusPath, { headers: mcpHeaders });
   assert.equal(mcpStatus.status, 200);
-  const listed = await fetch(`${origin}/api/workspaces/${f.workspace.id}/environments`, { headers: mcpHeaders });
+  const listed = await fetch(`${origin}/api/workspaces/${f.workspace.name}/environments`, { headers: mcpHeaders });
   assert.equal(listed.status, 200);
   assert.equal(((await listed.json()) as unknown[]).length, 2);
 });
 
 test('F1: removing a workspace cascades its environments entry and reclaims the outer cap', async t => {
   const f = await twoRepoFixture(t);
-  await f.service.environmentSet(f.workspace.id, {
+  await f.service.environmentSet(f.workspace.name, {
     name: 'local', services: [httpService(f.backend, 'backend')],
   });
-  assert.equal((await f.service.environmentList(f.workspace.id)).length, 1);
-  await f.service.remove(f.workspace.id);
+  assert.equal((await f.service.environmentList(f.workspace.name)).length, 1);
+  await f.service.remove(f.workspace.name);
   const reread = await f.store.read();
   assert.ok(!reread.environments.some(entry => entry.workspaceId === f.workspace.id), 'no orphan entry');
   // Cap reclaimed: a fresh workspace can take the freed outer slot.
@@ -417,19 +417,19 @@ test('F1: removing a workspace cascades its environments entry and reclaims the 
   });
   const other = await f.service.register('Other', [f.root]);
   await assert.rejects(
-    f.service.environmentSet(other.id, { name: 'full', services: [httpService(f.backend, 'backend')] }),
+    f.service.environmentSet(other.name, { name: 'full', services: [httpService(f.backend, 'backend')] }),
     /Environment registry is full/,
   );
   await f.store.update(state => {
     state.environments = state.environments.slice(0, 49);
   });
-  const created = await f.service.environmentSet(other.id, { name: 'fits', services: [httpService(f.backend, 'backend')] });
+  const created = await f.service.environmentSet(other.name, { name: 'fits', services: [httpService(f.backend, 'backend')] });
   assert.equal(created.name, 'fits');
 });
 
 test('F2: owned namespace prod against a live null namespace reports stale', async t => {
   const f = await twoRepoFixture(t);
-  const record = await f.service.environmentSet(f.workspace.id, {
+  const record = await f.service.environmentSet(f.workspace.name, {
     name: 'local', services: [httpService(f.backend, 'backend')],
   });
   await f.store.update(state => {
@@ -441,7 +441,7 @@ test('F2: owned namespace prod against a live null namespace reports stale', asy
     available: true,
     processes: [liveProcess(f.backend, { namespace: null })],
   });
-  const status = await environmentStatus(f.store, f.workspace.id, record.id, list);
+  const status = await environmentStatus(f.store, f.workspace.name, record.name, list);
   assert.equal(status.services[0].status, 'stale');
 });
 
@@ -484,7 +484,7 @@ test('F4: MCP set input reuses the canonical schema (no divergent copy)', async 
   const parsed = environmentSetInput.parse({
     name: 'e', services: [{ id: 'a', repositoryPath: f.backend, scriptName: longScript, port: 3001, readiness: { kind: 'http-200' } }],
   });
-  const record = await f.service.environmentSet(f.workspace.id, parsed);
+  const record = await f.service.environmentSet(f.workspace.name, parsed);
   assert.equal(record.services[0].scriptName, longScript);
 });
 
@@ -497,7 +497,7 @@ test('F5: single private-state limit owned by store.ts', async t => {
 
 test('F6: terminal PM2 states map honestly (stopped → down, errored → failed)', async t => {
   const f = await twoRepoFixture(t);
-  const record = await f.service.environmentSet(f.workspace.id, {
+  const record = await f.service.environmentSet(f.workspace.name, {
     name: 'local', services: [httpService(f.backend, 'backend')],
   });
   await f.store.update(state => {
@@ -505,15 +505,15 @@ test('F6: terminal PM2 states map honestly (stopped → down, errored → failed
     assert.ok(item);
     item.owned = [{ serviceId: 'backend', pmId: 3, name: 'dev', namespace: null, expectedRoot: f.root, lastPoll: null }];
   });
-  const stopped = await environmentStatus(f.store, f.workspace.id, record.id,
+  const stopped = await environmentStatus(f.store, f.workspace.name, record.name,
     async () => ({ available: true, processes: [liveProcess(f.backend, { status: 'stopped' })] }));
   assert.equal(stopped.services[0].status, 'down');
   assert.match(stopped.services[0].detail, /stopped/);
-  const errored = await environmentStatus(f.store, f.workspace.id, record.id,
+  const errored = await environmentStatus(f.store, f.workspace.name, record.name,
     async () => ({ available: true, processes: [liveProcess(f.backend, { status: 'errored' })] }));
   assert.equal(errored.services[0].status, 'failed');
   assert.match(errored.services[0].detail, /errored/);
-  const launching = await environmentStatus(f.store, f.workspace.id, record.id,
+  const launching = await environmentStatus(f.store, f.workspace.name, record.name,
     async () => ({ available: true, processes: [liveProcess(f.backend, { status: 'launching' })] }));
   assert.equal(launching.services[0].status, 'starting');
 });

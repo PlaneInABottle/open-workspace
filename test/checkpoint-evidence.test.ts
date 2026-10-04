@@ -27,7 +27,7 @@ async function approvedFixture(prefix: string) {
   const service = new WorkspaceService(store);
   const workspace = await service.register('Checkpoint project', [project]);
   const workstream = await service.createWorkstream({
-    name: 'Stream', workspaceId: workspace.id, checkouts: [project],
+    name: 'Stream', workspace: workspace.name, checkouts: [project],
   });
   return { root, project, store, service, workspace, workstream };
 }
@@ -41,15 +41,15 @@ test('checkpoint notes refuse oversized, empty and control-char input', async t 
   const f = await approvedFixture('openworkspace-checkpoint-bounds-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ goal: 'g'.repeat(1001) })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ goal: 'g'.repeat(1001) })),
     new RegExp(checkpointBoundsMessage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').slice(0, 20)),
   );
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ next: 'n'.repeat(1001) })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ next: 'n'.repeat(1001) })),
     /2000 characters or fewer/,
   );
   // Combined budget boundary: exactly 2000 accepted, 2001 refused.
-  const atLimit = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+  const atLimit = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({
     goal: 'g'.repeat(700), blocker: 'b'.repeat(600), next: 'n'.repeat(700),
   }));
   assert.equal(
@@ -57,13 +57,13 @@ test('checkpoint notes refuse oversized, empty and control-char input', async t 
     2000,
   );
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({
       goal: 'g'.repeat(700), blocker: 'b'.repeat(601), next: 'n'.repeat(700),
     })),
     /2000 characters or fewer/,
   );
   // A legitimate ~1500-char note fits the raised budget.
-  const roomy = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+  const roomy = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({
     goal: 'g'.repeat(500), blocker: 'b'.repeat(500), next: 'n'.repeat(500),
   }));
   assert.equal(roomy.checkpointNote?.goal.length, 500);
@@ -71,24 +71,24 @@ test('checkpoint notes refuse oversized, empty and control-char input', async t 
   assert.equal(roomy.checkpointNote?.next.length, 500);
   // Combined over budget with every field individually in range.
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({
       goal: 'g'.repeat(800), blocker: 'b'.repeat(700), next: 'n'.repeat(600),
     })),
     /2000 characters or fewer/,
   );
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ goal: '   ' })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ goal: '   ' })),
     /2000 characters or fewer/,
   );
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ next: 'line\u0007bell' })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ next: 'line\u0007bell' })),
     new RegExp('patterns only'),
   );
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ owner: 'bot' })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ owner: 'bot' })),
     /2000 characters or fewer/,
   );
-  assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote?.goal.length, 500);
+  assert.equal((await f.service.workstream(f.workspace.name, f.workstream.name)).checkpointNote?.goal.length, 500);
   assert.equal(checkpointBoundsMessage, 'Checkpoint notes hold 2000 characters or fewer.');
 });
 
@@ -102,30 +102,30 @@ test('checkpoint notes refuse secret-shaped and literal paths', async t => {
     note({ goal: 'read /Users/someone/.env first' }),
     note({ blocker: 'wrap -----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY----- wrap' }),
   ]) {
-    await assert.rejects(f.service.setWorkstreamStatus(f.workstream.id, 'paused', secret), new RegExp('patterns only'));
+    await assert.rejects(f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', secret), new RegExp('patterns only'));
   }
-  assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote, null);
+  assert.equal((await f.service.workstream(f.workspace.name, f.workstream.name)).checkpointNote, null);
   assert.equal(checkpointPatternMessage, 'Checkpoint notes accept patterns only, never secrets or literals.');
 });
 
 test('checkpoint notes round-trip across pause, resume and finish', async t => {
   const f = await approvedFixture('openworkspace-checkpoint-roundtrip-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
-  assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote, null);
-  const paused = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note());
+  assert.equal((await f.service.workstream(f.workspace.name, f.workstream.name)).checkpointNote, null);
+  const paused = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note());
   assert.equal(paused.status, 'paused');
   assert.deepEqual(
     { goal: paused.checkpointNote?.goal, blocker: paused.checkpointNote?.blocker, next: paused.checkpointNote?.next, owner: paused.checkpointNote?.owner },
     { goal: 'finish checkout review', blocker: 'waiting on mapping probe', next: 'rerun the bounded check', owner: 'agent' },
   );
   assert.ok(paused.checkpointNote?.at && Number.isFinite(Date.parse(paused.checkpointNote.at)));
-  const resumed = await f.service.setWorkstreamStatus(f.workstream.id, 'active');
+  const resumed = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'active');
   assert.equal(resumed.status, 'active');
   assert.deepEqual(resumed.checkpointNote, paused.checkpointNote);
-  const done = await f.service.setWorkstreamStatus(f.workstream.id, 'done');
+  const done = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'done');
   assert.equal(done.status, 'done');
   assert.deepEqual(done.checkpointNote, paused.checkpointNote);
-  await assert.rejects(f.service.setWorkstreamStatus(f.workstream.id, 'active'), /cannot be reopened/);
+  await assert.rejects(f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'active'), /cannot be reopened/);
 });
 
 test('workstreams stored before checkpoint notes still parse with a null note', async t => {
@@ -147,10 +147,10 @@ test('workstreams stored before checkpoint notes still parse with a null note', 
       }],
     });
     const service = new WorkspaceService(store);
-    const loaded = await service.workstream(workstreamId);
+    const loaded = await service.workstream('Old', 'Old stream');
     assert.equal(loaded.status, 'paused');
     assert.equal(loaded.checkpointNote, null);
-    const resumed = await service.setWorkstreamStatus(workstreamId, 'active');
+    const resumed = await service.setWorkstreamStatus('Old', 'Old stream', 'active');
     assert.equal(resumed.checkpointNote, null);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -201,12 +201,12 @@ test('checkpoint notes refuse non-listed roots, case variants and UNC shares', a
     'run C:/tools/check next',
   ]) {
     await assert.rejects(
-      f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ next: literal })),
+      f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ next: literal })),
       /patterns only/,
       `must refuse ${literal}`,
     );
   }
-  const allowed = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note());
+  const allowed = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note());
   assert.equal(allowed.checkpointNote?.goal, 'finish checkout review');
 });
 
@@ -218,7 +218,7 @@ test('imported and unknown-source durations never feed the learning signal', asy
     output: 'ok', outputTruncated: false,
   });
   await f.service.importExternalRun({
-    workspaceId: f.workspace.id, scriptName: 'check', outcome: 'passed', durationMs: 9_999_999, excerpt: 'upstream green',
+    workspace: f.workspace.name, scriptName: 'check', outcome: 'passed', durationMs: 9_999_999, excerpt: 'upstream green',
   });
   const { readRunDurations } = await import('../src/run-summaries.js');
   assert.deepEqual(await readRunDurations(f.store.directory, f.workspace.id), [100]);
@@ -246,12 +246,12 @@ test('imported runs are labeled external-import, masked and never verified-as-ou
   const f = await approvedFixture('openworkspace-source-import-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   const imported = await f.service.importExternalRun({
-    workspaceId: f.workspace.id, scriptName: 'check', outcome: 'failed', durationMs: 12,
+    workspace: f.workspace.name, scriptName: 'check', outcome: 'failed', durationMs: 12,
     excerpt: 'not ok 1 login, contact helper@example.com, token abcdefgh12345678',
   });
   assert.equal(imported.source, 'external-import');
   assert.ok(!imported.failureExcerpt.includes('helper@example.com'), 'excerpt is masked');
-  const [listed] = await f.service.recentRuns(f.workspace.id, 5);
+  const [listed] = await f.service.recentRuns(f.workspace.name, undefined, 5);
   assert.equal(listed.source, 'external-import');
   assert.equal(listed.sourceLabel, 'Pasted result — not verified here');
   assert.match(listed.sourceLabel, /not verified/i);
@@ -259,31 +259,31 @@ test('imported runs are labeled external-import, masked and never verified-as-ou
   const serialized = JSON.stringify(imported);
   assert.ok(!serialized.includes('verified'), 'imports never carry a verification claim');
   await assert.rejects(
-    f.service.importExternalRun({ workspaceId: '33333333-3333-4333-8333-333333333333', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok' }),
+    f.service.importExternalRun({ workspace: 'Missing project', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok' }),
     /Workspace not found/,
   );
 });
 
 test('imported input refuses verification claims, unknown keys and out-of-range fields', async t => {
   assert.throws(
-    () => parseExternalRunImport({ workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok', verifiedAt: 'now' }),
+    () => parseExternalRunImport({ workspace: 'Project', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok', verifiedAt: 'now' }),
     new RegExp(externalImportClaimMessage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
   assert.throws(
-    () => parseExternalRunImport({ workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok', extra: 'nope' }),
+    () => parseExternalRunImport({ workspace: 'Project', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok', extra: 'nope' }),
     new RegExp(externalImportInvalidMessage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
   assert.throws(
-    () => parseExternalRunImport({ workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'Verified by OpenWorkspace, all green' }),
+    () => parseExternalRunImport({ workspace: 'Project', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'Verified by OpenWorkspace, all green' }),
     new RegExp(externalImportClaimMessage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
   assert.equal(externalImportClaimMessage, 'Imported results are accepted on trust and never marked verified.');
   for (const raw of [
-    { workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'x'.repeat(501) },
-    { workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: 'check', outcome: 'maybe', durationMs: 1, excerpt: 'ok' },
-    { workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: 'check', outcome: 'passed', durationMs: -1, excerpt: 'ok' },
-    { workspaceId: 'not-a-uuid', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok' },
-    { workspaceId: '44444444-4444-4444-8444-444444444444', scriptName: '../escape', outcome: 'passed', durationMs: 1, excerpt: 'ok' },
+    { workspace: 'Project', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'x'.repeat(501) },
+    { workspace: 'Project', scriptName: 'check', outcome: 'maybe', durationMs: 1, excerpt: 'ok' },
+    { workspace: 'Project', scriptName: 'check', outcome: 'passed', durationMs: -1, excerpt: 'ok' },
+    { workspace: '', scriptName: 'check', outcome: 'passed', durationMs: 1, excerpt: 'ok' },
+    { workspace: 'Project', scriptName: '../escape', outcome: 'passed', durationMs: 1, excerpt: 'ok' },
   ]) {
     assert.throws(() => parseExternalRunImport(raw), /Imported results are not valid/);
   }
@@ -296,30 +296,30 @@ test('status notes and run imports travel the HTTP boundary with safe errors', a
   t.after(() => app.close());
   const origin = await app.listen(0);
   const headers = { Authorization: `Bearer ${app.mcpToken}`, 'Content-Type': 'application/json' };
-  const paused = await fetch(`${origin}/api/workstreams/${f.workstream.id}/status`, {
+  const paused = await fetch(`${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/status`, {
     method: 'POST', headers, body: JSON.stringify({ status: 'paused', note: note() }),
   });
   assert.equal(paused.status, 200);
   const pausedBody = await paused.json() as { checkpointNote: { goal: string } };
   assert.equal(pausedBody.checkpointNote.goal, 'finish checkout review');
-  const secretNote = await fetch(`${origin}/api/workstreams/${f.workstream.id}/status`, {
+  const secretNote = await fetch(`${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/status`, {
     method: 'POST', headers, body: JSON.stringify({ status: 'paused', note: note({ blocker: 'password=hunter2-secret' }) }),
   });
   assert.equal(secretNote.status, 400);
   assert.deepEqual(await secretNote.json(), { error: checkpointPatternMessage });
   const imported = await fetch(`${origin}/api/runs/import`, {
     method: 'POST', headers,
-    body: JSON.stringify({ workspaceId: f.workspace.id, scriptName: 'check', outcome: 'passed', durationMs: 9, excerpt: 'all green upstream' }),
+    body: JSON.stringify({ workspace: f.workspace.name, scriptName: 'check', outcome: 'passed', durationMs: 9, excerpt: 'all green upstream' }),
   });
   assert.equal(imported.status, 201);
   assert.equal((await imported.json() as { source: string }).source, 'external-import');
   const claimed = await fetch(`${origin}/api/runs/import`, {
     method: 'POST', headers,
-    body: JSON.stringify({ workspaceId: f.workspace.id, scriptName: 'check', outcome: 'passed', durationMs: 9, excerpt: 'Verified upstream run' }),
+    body: JSON.stringify({ workspace: f.workspace.name, scriptName: 'check', outcome: 'passed', durationMs: 9, excerpt: 'Verified upstream run' }),
   });
   assert.equal(claimed.status, 400);
   assert.deepEqual(await claimed.json(), { error: externalImportClaimMessage });
-  const recent = await (await fetch(`${origin}/api/runs/recent?scope=${f.workspace.id}`, { headers })).json() as Array<{ source: string; sourceLabel: string }>;
+  const recent = await (await fetch(`${origin}/api/runs/recent?workspace=${encodeURIComponent(f.workspace.name)}`, { headers })).json() as Array<{ source: string; sourceLabel: string }>;
   assert.equal(recent[0].source, 'external-import');
   assert.equal(recent[0].sourceLabel, 'Pasted result — not verified here');
   const activity = await (await fetch(`${origin}/api/activity`, { headers })).json() as Array<{ operation: string; detail: string }>;
@@ -343,7 +343,7 @@ test('run imports require the connected dashboard while MCP needs no header', as
   const { dashboardToken } = await issued.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const payload = { workspaceId: f.workspace.id, scriptName: 'check', outcome: 'passed', durationMs: 3, excerpt: 'upstream ok' };
+  const payload = { workspace: f.workspace.name, scriptName: 'check', outcome: 'passed', durationMs: 3, excerpt: 'upstream ok' };
   const denied = await fetch(`${origin}/api/runs/import`, { method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify(payload) });
   assert.equal(denied.status, 403);
   assert.deepEqual(await denied.json(), { error: 'Recording a pasted result requires the connected dashboard.' });

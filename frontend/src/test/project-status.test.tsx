@@ -59,7 +59,7 @@ function serviceInventory() {
 function installFetch(handler: (path: string, init: RequestInit) => Promise<Response>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input), window.location.href);
-    const response = await handler(url.pathname, init);
+    const response = await handler(decodeURI(url.pathname), init);
     if ((url.pathname === '/api/workstreams' || url.pathname === '/api/leases')
       && (init.method ?? 'GET') === 'GET' && response.status === 404) {
       return json([]);
@@ -156,7 +156,7 @@ describe('project status block', () => {
     installFetch(async path => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview([approved]));
-      if (path === `/api/workspaces/${approved.id}`) return json(statusInspection());
+      if (path === `/api/workspaces/${approved.name}`) return json(statusInspection());
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);

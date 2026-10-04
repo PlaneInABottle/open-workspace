@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';import { describe, expect, it, vi } from 'vitest';
 import { RecordsView } from '../features/records/RecordsView';
 import { buildTimeline, filterTimeline, summarizeTimeline } from '../features/records/timeline';
-import type { ActivityEntry, Learnings, RunListEntry } from '../api';
+import type { ActivityEntry, Learnings, RunListEntry, Workspace } from '../api';
 
-const workspaceId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const workspace: Workspace = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Records fixture', roots: ['/tmp/records-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
+const workspaceId = workspace.id;
 
 const learnings: Learnings = {
   milestones: [{ at: '2026-10-02T00:05:00.000Z', text: 'Checkout flow live for reviewers.', source: '1700000000-checkout.md' }],
@@ -46,7 +47,7 @@ function renderRecords(overrides: Partial<Parameters<typeof RecordsView>[0]> = {
   const onReload = vi.fn();
   render(
     <RecordsView
-      workspaceId={workspaceId}
+      workspace={workspace}
       activity={activity}
       learnings={learnings}
       runs={runs}
@@ -63,7 +64,7 @@ function renderRecords(overrides: Partial<Parameters<typeof RecordsView>[0]> = {
 describe('records timeline', () => {
   it('merges notes, receipts and runs newest-first without a draft strip', () => {
     const { onReload } = renderRecords();
-    expect(onReload).toHaveBeenCalledWith(workspaceId);
+    expect(onReload).toHaveBeenCalledWith(workspace.name);
 
     const summary = screen.getByRole('heading', { name: 'Record summary', hidden: true }).closest('section')!;
     expect(within(summary).getByText('Runs')).toBeInTheDocument();
@@ -122,7 +123,7 @@ describe('records timeline', () => {
     try {
       const first = vi.fn();
       const base = {
-        workspaceId,
+        workspace,
         activity: [] as ActivityEntry[],
         learnings: { milestones: [] } as Learnings,
         runs: [] as RunListEntry[],
@@ -145,7 +146,7 @@ describe('records timeline', () => {
       expect(second).toHaveBeenCalledTimes(1);
 
       // Switching workspaces reloads immediately.
-      rerender(<RecordsView {...base} workspaceId="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" onReload={second} />);
+      rerender(<RecordsView {...base} workspace={{ ...workspace, id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'Other fixture' }} onReload={second} />);
       expect(second).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

@@ -157,9 +157,9 @@ test('verify persists revision plus fingerprint and recent_runs carries them; le
     statusStdout: ' M src/a.ts\n', diffStdout: 'diff --git a/src/a.ts b/src/a.ts\n+one',
   }));
   const workspace = await service.register('Dirty project', [project]);
-  const result = await service.verify(workspace.id, { repositoryPath: project, scriptName: 'check' });
+  const result = await service.verify(workspace.name, { repositoryPath: project, scriptName: 'check' });
   assert.ok(result.git.dirty);
-  const listed = await service.recentRuns(workspace.id, 5);
+  const listed = await service.recentRuns(workspace.name, undefined, 5);
   assert.equal(listed.length, 1);
   assert.equal(listed[0].revision, SHA);
   assert.deepEqual(listed[0].dirty, result.git.dirty, 'recent_runs entries carry the fingerprint for timeline data');

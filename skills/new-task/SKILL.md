@@ -9,11 +9,11 @@ Use only when explicitly invoked during task work. It never runs automatically. 
 
 ## Starting work — one workstream context call
 
-Call `workstream_context` once. Pass `{ workstreamId: "<workstream-id>", limit?, assignmentId? }` (`limit` 1–20, default 5; `assignmentId` is the grouping ID when work is grouped by assignment, omit it for solo work). Read the task reference from `name`/`checkouts`, prior state from `checkpoint.latest` plus `open`, and claimed proof from completion `checks` and `recentRuns` — completions are agent-reported (see below), so treat them as claims until backed by run evidence.
+Call `workstream_context` once. Pass `{ workspace: "<project-name>", workstream: "<stream-name>", limit?, assignmentId? }` (`limit` 1–20, default 5; `assignmentId` is the grouping ID when work is grouped by assignment, omit it for solo work). Read the task reference from `name`/`checkouts`, prior state from `checkpoint.latest` plus `open`, and claimed proof from completion `checks` and `recentRuns` — completions are agent-reported (see below), so treat them as claims until backed by run evidence.
 
 ## Finishing work — one verification receipt call
 
-Call `environment_verify` once. Pass `{ workspaceId: "<workspace-id>", environmentId: "<environment-id>", repositoryPath: "<repo-path>", scriptName: "<repo-script>" }`; it runs one repo-native script and returns the environment snapshot with the verification outcome and persisted run id. Tie the user-visible result to that receipt; a completion record alone is not proof.
+Call `environment_verify` once. Pass `{ workspace: "<project-name>", environment: "<env-name>", repositoryPath: "<repo-path>", scriptName: "<repo-script>" }`; it runs one repo-native script and returns the environment snapshot with the verification outcome and persisted run id. Tie the user-visible result to that receipt; a completion record alone is not proof.
 
 ## Assignment completion handoff
 

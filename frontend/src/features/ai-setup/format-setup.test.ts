@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ClientConfig } from '@/api';
 import { formatSetupRequest } from './format-setup';
 
-const selectedId = '12345678-abcd-4abc-8def-1234567890ab';
+const selectedName = 'Selected Project';
 const projectName = 'SYNTHETIC_PROJECT_NAME_SENTINEL';
 const projectPath = '/tmp/SYNTHETIC_PROJECT_PATH_SENTINEL';
 const mcpToken = 'SYNTHETIC_MCP_TOKEN_SENTINEL';
@@ -37,7 +37,7 @@ const sectionHeadings = [
 
 describe('formatSetupRequest', () => {
   it('emits all seven self-install sections within the size cap', () => {
-    const material = formatSetupRequest(config, selectedId);
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     for (const heading of sectionHeadings) {
       expect(material!.copyText).toContain(heading);
@@ -45,8 +45,8 @@ describe('formatSetupRequest', () => {
     expect(new TextEncoder().encode(material!.copyText).length).toBeLessThanOrEqual(6 * 1024);
   });
 
-  it('copies one secret-free generated entry and targets only the selected UUID', () => {
-    const material = formatSetupRequest(config, selectedId);
+  it('copies one secret-free generated entry and targets only the selected name', () => {
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     const generated = material!.copyText.match(/```json\n([\s\S]*?)\n```/)?.[1];
     expect(generated).toBeDefined();
@@ -55,7 +55,7 @@ describe('formatSetupRequest', () => {
         openworkspace: { command, args, env: { OPENWORKSPACE_HOME: statePath } },
       },
     });
-    expect(material!.copyText).toContain(selectedId);
+    expect(material!.copyText).toContain(selectedName);
     expect(material!.copyText).toContain('workspace_list');
     expect(material!.copyText).toContain('workspace_inspect');
     expect(material!.copyText).toContain('onboarding_plan');
@@ -75,13 +75,13 @@ describe('formatSetupRequest', () => {
     expect(generic?.copyText).toContain('Registration reads bounded metadata immediately');
     expect(generic?.copyText).toContain('The dashboard records what ran');
     expect(generic?.copyText).toContain('Never infer a shared parent');
-    expect(generic?.copyText).not.toContain(selectedId);
-    expect(formatSetupRequest(config, 'stale-id')?.copyText).not.toContain('stale-id');
-    expect(formatSetupRequest(null, selectedId)).toBeNull();
+    expect(generic?.copyText).not.toContain(selectedName);
+    expect(formatSetupRequest(config, '')?.copyText).not.toContain('Selected Project');
+    expect(formatSetupRequest(null, selectedName)).toBeNull();
   });
 
   it('stays project-local with record-only guardrails', () => {
-    const material = formatSetupRequest(config, selectedId);
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('Never write user-wide/global scope unless I explicitly ask');
     expect(material!.copyText).toContain('Show the exact diff for any file write');
@@ -95,7 +95,7 @@ describe('formatSetupRequest', () => {
   });
 
   it('requires free-read verification and rejects config listings as proof', () => {
-    const material = formatSetupRequest(config, selectedId);
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('then call `workspace_list` after reload');
     expect(material!.copyText).toContain('A config listing alone');
@@ -105,7 +105,7 @@ describe('formatSetupRequest', () => {
   });
 
   it('carries the idempotent marker-block AGENTS.md merge policy preserving personal edits', () => {
-    const material = formatSetupRequest(config, selectedId);
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('<!-- openworkspace:begin -->');
     expect(material!.copyText).toContain('<!-- openworkspace:end -->');
@@ -118,14 +118,14 @@ describe('formatSetupRequest', () => {
   });
 
   it('defaults skills to MCP-served with no file copy', () => {
-    const material = formatSetupRequest(config, selectedId);
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('`skill/openworkspace-onboarding`');
     expect(material!.copyText).toContain('Do NOT copy SKILL.md files anywhere unless I explicitly ask');
   });
 
   it('exposes no legacy manual-adapt flow or collapsed-guide surface', () => {
-    const material = formatSetupRequest(config, selectedId);
+    const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material).toEqual({ copyText: expect.any(String) });
     expect('clientGuides' in material!).toBe(false);

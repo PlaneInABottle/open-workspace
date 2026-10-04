@@ -31,7 +31,7 @@ test('workspace removal deletes its runs scope dir', async t => {
     workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 5, output: 'ok', outputTruncated: false,
   });
   assert.equal((await readdir(join(f.store.directory, 'runs', f.workspace.id))).length, 1);
-  await f.service.remove(f.workspace.id);
+  await f.service.remove(f.workspace.name);
   await assert.rejects(readdir(join(f.store.directory, 'runs', f.workspace.id)), /ENOENT/);
   assert.deepEqual(await listRunIds(f.store.directory, f.workspace.id), new Set());
   assert.equal((await f.store.read()).workspaces.length, 0);
@@ -51,7 +51,7 @@ test('workspace removal succeeds when scope cleanup fails, logging paths only', 
   const originalError = console.error;
   console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
   try {
-    const result = await f.service.remove(f.workspace.id);
+    const result = await f.service.remove(f.workspace.name);
     assert.deepEqual(result, { removed: true });
   } finally {
     console.error = originalError;

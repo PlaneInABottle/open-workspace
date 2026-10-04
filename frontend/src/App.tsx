@@ -100,14 +100,14 @@ function Navigation({ view, onShowAllProjects }: { view: View; onShowAllProjects
 function ProjectRail({
   view,
   workspaces,
-  selectedId,
+  selectedName,
   onSelect,
   onShowAllProjects,
 }: {
   view: View;
   workspaces: ReturnType<typeof useWorkbench>['state']['workspaces'];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  selectedName: string | null;
+  onSelect: (name: string) => void;
   onShowAllProjects: () => void;
 }) {
   return (
@@ -129,12 +129,12 @@ function ProjectRail({
         ) : (
           <ul className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
             {workspaces.map(workspace => (
-              <li key={workspace.id} className="min-w-0">
+              <li key={workspace.name} className="min-w-0">
                 <button
                   type="button"
-                  className={`rail-project ${selectedId === workspace.id ? 'rail-project-selected' : ''}`}
-                  aria-pressed={selectedId === workspace.id}
-                  onClick={() => onSelect(workspace.id)}
+                  className={`rail-project ${selectedName === workspace.name ? 'rail-project-selected' : ''}`}
+                  aria-pressed={selectedName === workspace.name}
+                  onClick={() => onSelect(workspace.name)}
                 >
                   <FolderKanban aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
                   <span className="min-w-0">
@@ -160,15 +160,15 @@ function ProjectRail({
 function MobileNavigation({
   view,
   workspaces,
-  selectedId,
+  selectedName,
   onSelect,
   onShowAllProjects,
   onClearSelection,
 }: {
   view: View;
   workspaces: ReturnType<typeof useWorkbench>['state']['workspaces'];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  selectedName: string | null;
+  onSelect: (name: string) => void;
   onShowAllProjects: () => void;
   onClearSelection: () => void;
 }) {
@@ -187,14 +187,14 @@ function MobileNavigation({
           <select
             id="mobile-project-selector"
             className="project-select"
-            value={selectedId || ''}
+            value={selectedName || ''}
             onChange={event => {
               if (event.currentTarget.value) onSelect(event.currentTarget.value);
               else onClearSelection();
             }}
           >
             <option value="">Select a project…</option>
-            {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>
+            {workspaces.map(workspace => <option key={workspace.name} value={workspace.name}>
               {workspace.name} · {workspace.roots.length} {workspace.roots.length === 1 ? 'folder' : 'folders'} · {projectRootLabel(workspace.roots[0])}
             </option>)}
           </select>
@@ -221,9 +221,9 @@ export function App() {
     if (view === 'setup' && state.phase === 'connected') void loadActivity();
   }, [view, state.phase, loadActivity]);
 
-  function selectProject(id: string) {
+  function selectProject(name: string) {
     navigate('overview');
-    void workbench.inspectProject(id);
+    void workbench.inspectProject(name);
   }
 
   function showAllProjects() {
@@ -268,12 +268,12 @@ export function App() {
   return (
     <div className="workbench-shell">
       <a className="skip-link" href="#main-content">Skip to workspace</a>
-      <ProjectRail view={view} workspaces={state.workspaces} selectedId={state.selectedId} onSelect={selectProject} onShowAllProjects={showAllProjects} />
+      <ProjectRail view={view} workspaces={state.workspaces} selectedName={state.selectedName} onSelect={selectProject} onShowAllProjects={showAllProjects} />
       <header className="mobile-workspace">
         <MobileNavigation
           view={view}
           workspaces={state.workspaces}
-          selectedId={state.selectedId}
+          selectedName={state.selectedName}
           onSelect={selectProject}
           onShowAllProjects={showAllProjects}
           onClearSelection={showAllProjects}
@@ -311,14 +311,14 @@ export function App() {
               onProjectRequest={workbench.requestProject}
               onPickRoots={workbench.pickProjectRoots}
               onSelectProject={selectProject}
-              onRetryInspection={id => { void workbench.inspectProject(id, true); }}
-              onInspectServices={id => { void workbench.inspectServices(id); }}
+              onRetryInspection={name => { void workbench.inspectProject(name, true); }}
+              onInspectServices={name => { void workbench.inspectServices(name); }}
               onGoToAi={() => navigate('setup')}
               onLoadRecords={workbench.loadRecords}
             />
           )}
-          {view === 'setup' && <AiSetupView state={state} selectedId={state.selectedId} onCopyText={workbench.copyText} />}
-          {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRemove={id => void workbench.removeWorkspace(id)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
+          {view === 'setup' && <AiSetupView state={state} selectedName={state.selectedName} onCopyText={workbench.copyText} />}
+          {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRemove={name => void workbench.removeWorkspace(name)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
         </div>
         <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · register and observe here; agents operate through MCP</footer>
       </main>

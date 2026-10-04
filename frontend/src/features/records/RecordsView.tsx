@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { ActivityEntry, Learnings, RunListEntry } from '@/api';
+import type { ActivityEntry, Learnings, RunListEntry, Workspace } from '@/api';
 import {
   buildTimeline,
   filterTimeline,
@@ -104,15 +104,15 @@ function TimelineItem({ row, expanded, onToggle }: { row: TimelineRow; expanded:
   );
 }
 
-export function RecordsView({ workspaceId, activity, learnings, runs, loading, error, updatedAt, onReload }: {
-  workspaceId: string;
+export function RecordsView({ workspace, activity, learnings, runs, loading, error, updatedAt, onReload }: {
+  workspace: Workspace;
   activity: ActivityEntry[];
   learnings: Learnings;
   runs: RunListEntry[];
   loading: boolean;
   error: string | null;
   updatedAt: string | null;
-  onReload: (workspaceId: string) => void;
+  onReload: (workspace: string) => void;
 }) {
   const [filter, setFilter] = useState<TimelineFilter>({ kind: 'all', outcome: 'all' });
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -124,12 +124,12 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
   reloadRef.current = onReload;
 
   useEffect(() => {
-    reloadRef.current(workspaceId);
-    const timer = window.setInterval(() => reloadRef.current(workspaceId), pollIntervalMs);
+    reloadRef.current(workspace.name);
+    const timer = window.setInterval(() => reloadRef.current(workspace.name), pollIntervalMs);
     return () => window.clearInterval(timer);
-  }, [workspaceId]);
+  }, [workspace.name]);
 
-  const rows = useMemo(() => buildTimeline(learnings.milestones, activity, runs, workspaceId), [learnings, activity, runs, workspaceId]);
+  const rows = useMemo(() => buildTimeline(learnings.milestones, activity, runs, workspace.id), [learnings, activity, runs, workspace.id]);
   const visible = useMemo(() => filterTimeline(rows, filter), [rows, filter]);
   const summary = useMemo(() => summarizeTimeline(runs, learnings.milestones.length), [runs, learnings]);
 
@@ -205,7 +205,7 @@ export function RecordsView({ workspaceId, activity, learnings, runs, loading, e
                 <option value="neutral">Neutral</option>
               </select>
             </div>
-            <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => onReload(workspaceId)}>
+            <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => onReload(workspace.name)}>
               {loading ? 'Refreshing…' : 'Refresh'}
             </Button>
           </div>

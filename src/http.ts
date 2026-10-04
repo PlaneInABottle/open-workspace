@@ -6,6 +6,7 @@ import { isSea } from 'node:sea';
 import { z } from 'zod';
 import { DashboardSessions } from './dashboard-sessions.js';
 import { WorkspaceService } from './workspace.js';
+import { AmbiguousNameError, nameMessages, parseNameInput, resolveWorkspaceRecord } from './store.js';
 import type { StaticAssets } from './static-assets.js';
 import { maxProjectRootLength, maxProjectRoots, projectRootMessages } from './project-roots.js';
 import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-picker.js';
@@ -34,6 +35,7 @@ import {
   workstreamCheckoutCountMessage,
   workstreamCheckoutRootMessage,
   workstreamLimitMessage,
+  workstreamMessages,
   workstreamNameMessage,
   workstreamReopenMessage,
 } from './workstreams.js';
@@ -86,7 +88,7 @@ const verificationSchema = z.object({
 }).strict();
 const workstreamSchema = z.object({
   name: z.string().min(1).max(100),
-  workspaceId: z.string().uuid(),
+  workspace: z.string().min(1).max(100),
   checkouts: z.array(z.string().min(1).max(4096)).min(1).max(20),
 }).strict();
 const workstreamStatusSchema = z.object({
@@ -124,7 +126,8 @@ const workstreamStatusSchema = z.object({
 );
 const leaseSchema = z.object({
   resource: z.string().min(1).max(80),
-  workstreamId: z.string().uuid(),
+  workspace: z.string().min(1).max(100),
+  workstream: z.string().min(1).max(100),
 }).strict();
 const learningRecordSchema = z.object({
   title: z.string().min(1).max(80),
@@ -136,7 +139,10 @@ const learningRecordSchema = z.object({
   }).strict(),
   situations: z.array(z.string().min(1).max(40)).max(10).optional(),
 }).strict();
-const uuidPath = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
+const renameSchema = z.object({
+  name: z.string().min(1).max(100),
+}).strict();
+const nameSegment = '[^/]+';
 const proposalBodyLimit = 512 * 1024;
 const workstreamStatusBodyLimit = 64 * 1024;
 // Schema-valid datastore calls carry up to 8000 SQL chars plus 20 params of
@@ -156,6 +162,7 @@ export const httpTransportMessages = {
 // literals here — Object.values plus explicit owner-const references.
 export const safeMessages: readonly string[] = [
   workspaceMessages.projectName,
+  workspaceMessages.projectNameTaken,
   projectRootMessages.absoluteDir,
   projectRootMessages.homeRoot,
   projectRootMessages.symlink,
@@ -185,6 +192,7 @@ export const safeMessages: readonly string[] = [
   workspaceAccessMessage,
   unknownWorkstreamStatusMessage,
   workstreamReopenMessage,
+  ...Object.values(workstreamMessages),
   checkpointBoundsMessage,
   checkpointPatternMessage,
   checkpointEvidenceMessage,
@@ -214,6 +222,7 @@ export const safeMessages: readonly string[] = [
   ...Object.values(localToolCallMessages),
   workspaceMessages.resultLimit,
   ...Object.values(environmentMessages),
+  ...Object.values(nameMessages),
   ...Object.values(httpTransportMessages),
 ];
 type ApiRole = 'dashboard' | 'mcp';
@@ -257,27 +266,30 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/learnings'
     || pathname === '/api/runs/recent'
     || pathname === '/api/local-tools/status'
-    || new RegExp(`^/api/workspaces/${uuidPath}(?:/onboarding)?$`).test(pathname)
-    || new RegExp(`^/api/workstreams(?:/${uuidPath})?$`).test(pathname)
-    || new RegExp(`^/api/workstreams/${uuidPath}/context$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/environments(?:/status)?$`).test(pathname))) return true;
+    || new RegExp(`^/api/workspaces/${nameSegment}(?:/onboarding)?$`).test(pathname)
+    || pathname === '/api/workstreams'
+    || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}(?:/context)?$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/environments(?:/status)?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
     || pathname === '/api/runs/import'
     || pathname === '/api/learnings/record'
-    || new RegExp(`^/api/workspaces/${uuidPath}/roots$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/services$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/services/(restart|stop|start|logs)$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/containers/link$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/verify$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/browser/check$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/datastore/query$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/local-tools/call$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/environments/(propose|set|up|down)$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${uuidPath}/environment/verify$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/rename$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/roots$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/services$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/services/(restart|stop|start|logs)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/containers/link$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/verify$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/browser/check$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/datastore/query$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/local-tools/call$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/environments/(propose|set|up|down)$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/environments/[^/]+/rename$`).test(pathname)
+    || new RegExp(`^/api/workspaces/${nameSegment}/environment/verify$`).test(pathname)
     || pathname === '/api/workstreams'
-    || new RegExp(`^/api/workstreams/${uuidPath}/status$`).test(pathname)
+    || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}/status$`).test(pathname)
+    || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}/rename$`).test(pathname)
     || /^\/api\/leases\/(acquire|touch|release)$/.test(pathname))) return true;
-  if (method === 'DELETE' && new RegExp(`^/api/workspaces/${uuidPath}$`).test(pathname)) return true;
+  if (method === 'DELETE' && new RegExp(`^/api/workspaces/${nameSegment}$`).test(pathname)) return true;
   return false;
 }
 
@@ -306,6 +318,22 @@ function json(response: ServerResponse, status: number, value: unknown) {
   response.end(JSON.stringify(value));
 }
 
+/**
+ * Name-segment decoding (single definition site for the HTTP layer): the
+ * client sends encodeURIComponent(name); the server decodes once and applies
+ * the shared name contract (trimmed 1–100, no `/`/NUL/controls/`..`,
+ * UUID-shaped inputs rejected with the use-the-name guidance).
+ */
+function decodeNameSegment(raw: string, invalidMessage: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new Error(invalidMessage);
+  }
+  return parseNameInput(decoded, invalidMessage);
+}
+
 function clientConfig(stateDirectory: string) {
   // The SEA branch comes first: under a CJS bundle import.meta.url is empty,
   // so the companion-script evaluation below must never run inside SEA.
@@ -331,7 +359,10 @@ function clientConfig(stateDirectory: string) {
 
 function parseRequestUrl(target: string, origin: string): URL | undefined {
   const rawPath = target.split(/[?#]/, 1)[0];
-  if (!rawPath.startsWith('/') || rawPath.startsWith('//') || /[%\\\0]/.test(rawPath)) return undefined;
+  // Percent-encoded name segments are allowed (the client encodes every
+  // name); decoding happens once per segment at the route, which rejects a
+  // decoded `/`, NUL or charset violation. Raw backslashes and NUL stay out.
+  if (!rawPath.startsWith('/') || rawPath.startsWith('//') || /[\\\0]/.test(rawPath)) return undefined;
   if (rawPath !== '/' && rawPath.split('/').slice(1).some(segment => !segment || segment === '.' || segment === '..')) return undefined;
   try {
     const url = new URL(target, origin);
@@ -429,6 +460,10 @@ export function createApp(service: WorkspaceService, options: {
           service.recordActivity({ actor, operation, workspaceId, detail }).catch((error: unknown) => {
             console.error('Activity record failed:', error instanceof Error ? error.message : error);
           });
+        // Stable-ID scope for activity rows: names resolve to IDs here so the
+        // audit trail survives renames. A bad name throws before any mutation.
+        const workspaceScopeId = async (name: string): Promise<string> =>
+          resolveWorkspaceRecord(await service.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister).id;
         // Read descriptors carry only the tool name, target ids and an outcome
         // class (ok/denied/failed); literals, SQL, URLs and log text never
         // enter activity. Activity and run reads never record (viewing the
@@ -444,7 +479,6 @@ export function createApp(service: WorkspaceService, options: {
             throw error;
           }
         };
-        const shortId = (id: string) => id.slice(0, 8);
         if (url.pathname === '/api/overview' && request.method === 'GET') {
           json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview(actor)));
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
@@ -475,58 +509,63 @@ export function createApp(service: WorkspaceService, options: {
             response.removeListener('close', abortIfDisconnected);
           }
         } else {
-          const containerLinkMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/containers\/link$/.exec(url.pathname);
+          const containerLinkMatch = /^\/api\/workspaces\/([^/]+)\/containers\/link$/.exec(url.pathname);
           if (containerLinkMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Container link changes require the connected dashboard.' });
               return;
             }
+            const name = decodeNameSegment(containerLinkMatch[1], workspaceMessages.projectName);
             const input = containerLinkSchema.parse(await body(request));
-            const result = await service.containerLink(containerLinkMatch[1], input.action, input.containerId);
-            await record('container-link', containerLinkMatch[1], `${result.containerId.slice(0, 12)} → ${result.action}${result.changed ? '' : ' (unchanged)'}`);
+            const result = await service.containerLink(name, input.action, input.containerId);
+            await record('container-link', result.workspaceId, `${result.containerId.slice(0, 12)} → ${result.action}${result.changed ? '' : ' (unchanged)'}`);
             json(response, 200, result);
             return;
           }
-          const serviceLogsMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/logs$/.exec(url.pathname);
+          const serviceLogsMatch = /^\/api\/workspaces\/([^/]+)\/services\/logs$/.exec(url.pathname);
           if (serviceLogsMatch && request.method === 'POST') {
+            const name = decodeNameSegment(serviceLogsMatch[1], workspaceMessages.projectName);
             const input = serviceLogsSchema.parse(await body(request));
-            const result = await service.serviceLogs(serviceLogsMatch[1], input.target, { lines: input.lines, stream: input.stream });
+            const result = await service.serviceLogs(name, input.target, { lines: input.lines, stream: input.stream });
             // Activity records counts only; raw log text is never persisted.
-            await record('service-logs', serviceLogsMatch[1], `${input.target.name} → ${result.linesReturned} lines${result.truncated ? ' (truncated)' : ''}`);
+            await record('service-logs', await workspaceScopeId(name), `${input.target.name} → ${result.linesReturned} lines${result.truncated ? ' (truncated)' : ''}`);
             json(response, 200, result);
             return;
           }
-          const serviceStartMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/start$/.exec(url.pathname);
+          const serviceStartMatch = /^\/api\/workspaces\/([^/]+)\/services\/start$/.exec(url.pathname);
           if (serviceStartMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Service actions require the connected dashboard.' });
               return;
             }
+            const name = decodeNameSegment(serviceStartMatch[1], workspaceMessages.projectName);
             const input = serviceStartSchema.parse(await body(request));
-            const result = await service.serviceStart(serviceStartMatch[1], input);
-            await record('service-start', serviceStartMatch[1], `${input.scriptName} → ${result.status}`);
+            const result = await service.serviceStart(name, input);
+            await record('service-start', await workspaceScopeId(name), `${input.scriptName} → ${result.status}`);
             json(response, 200, result);
             return;
           }
-          const serviceActionMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/(restart|stop)$/.exec(url.pathname);
+          const serviceActionMatch = /^\/api\/workspaces\/([^/]+)\/services\/(restart|stop)$/.exec(url.pathname);
           if (serviceActionMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Service actions require the connected dashboard.' });
               return;
             }
+            const name = decodeNameSegment(serviceActionMatch[1], workspaceMessages.projectName);
             const input = serviceActionSchema.parse(await body(request));
-            const result = await service.serviceAction(serviceActionMatch[1], serviceActionMatch[2] as 'restart' | 'stop', input);
-            await record(`service-${serviceActionMatch[2]}`, serviceActionMatch[1], `${input.name} → ${result.status}`);
+            const result = await service.serviceAction(name, serviceActionMatch[2] as 'restart' | 'stop', input);
+            await record(`service-${serviceActionMatch[2]}`, await workspaceScopeId(name), `${input.name} → ${result.status}`);
             json(response, 200, result);
             return;
           }
-          const verificationMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/verify$/.exec(url.pathname);
+          const verificationMatch = /^\/api\/workspaces\/([^/]+)\/verify$/.exec(url.pathname);
           if (verificationMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
               return;
             }
             request.setTimeout(verifySocketTimeoutMs);
+            const name = decodeNameSegment(verificationMatch[1], workspaceMessages.projectName);
             const input = verificationSchema.parse(await body(request));
             if (request.aborted || response.destroyed) return;
             const controller = new AbortController();
@@ -536,8 +575,8 @@ export function createApp(service: WorkspaceService, options: {
             request.once('aborted', abortIfDisconnected);
             response.once('close', abortIfDisconnected);
             try {
-              const result = await service.verify(verificationMatch[1], input, controller.signal);
-              await record('verify', verificationMatch[1], `${input.scriptName} → ${result.outcome}`);
+              const result = await service.verify(name, input, controller.signal);
+              await record('verify', await workspaceScopeId(name), `${input.scriptName} → ${result.outcome}`);
               if (!controller.signal.aborted && !response.destroyed) json(response, 200, result);
             } finally {
               request.removeListener('aborted', abortIfDisconnected);
@@ -545,37 +584,39 @@ export function createApp(service: WorkspaceService, options: {
             }
             return;
           }
-          const browserMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/browser\/check$/.exec(url.pathname);
+          const browserMatch = /^\/api\/workspaces\/([^/]+)\/browser\/check$/.exec(url.pathname);
           if (browserMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Browser checks require the connected dashboard.' });
               return;
             }
             request.setTimeout(browserSocketTimeoutMs);
+            const name = decodeNameSegment(browserMatch[1], workspaceMessages.projectName);
             const input = browserCheckSchema.parse(await body(request));
             if (request.aborted || response.destroyed) return;
-            const result = await service.browserCheck(browserMatch[1], input);
+            const result = await service.browserCheck(name, input);
             // Activity records sizes only; the URL may carry secrets and the
             // snapshot text is never persisted.
-            await record('browser-check', browserMatch[1], `snapshot ${result.snapshotText.length} chars${result.truncated ? ' (truncated)' : ''}, assert ${result.assertFound === null ? 'unchecked' : result.assertFound ? 'found' : 'not found'}`);
+            await record('browser-check', await workspaceScopeId(name), `snapshot ${result.snapshotText.length} chars${result.truncated ? ' (truncated)' : ''}, assert ${result.assertFound === null ? 'unchecked' : result.assertFound ? 'found' : 'not found'}`);
             if (!response.destroyed) json(response, 200, result);
             return;
           }
-          const datastoreMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/datastore\/query$/.exec(url.pathname);
+          const datastoreMatch = /^\/api\/workspaces\/([^/]+)\/datastore\/query$/.exec(url.pathname);
           if (datastoreMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Datastore queries require the connected dashboard.' });
               return;
             }
             request.setTimeout(datastoreSocketTimeoutMs);
+            const name = decodeNameSegment(datastoreMatch[1], workspaceMessages.projectName);
             const input = datastoreQuerySchema.parse(await body(request, datastoreBodyLimit));
             if (request.aborted || response.destroyed) return;
-            const result = await service.datastoreQuery(datastoreMatch[1], input);
-            await record('datastore-query', datastoreMatch[1], `${result.database} → ${result.rowCount} rows`);
+            const result = await service.datastoreQuery(name, input);
+            await record('datastore-query', await workspaceScopeId(name), `${result.database} → ${result.rowCount} rows`);
             if (!response.destroyed) json(response, 200, result);
             return;
           }
-          const localToolCallMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/local-tools\/call$/.exec(url.pathname);
+          const localToolCallMatch = /^\/api\/workspaces\/([^/]+)\/local-tools\/call$/.exec(url.pathname);
           if (localToolCallMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Local tool calls require the connected dashboard.' });
@@ -590,7 +631,8 @@ export function createApp(service: WorkspaceService, options: {
               throw error;
             }
             if (request.aborted || response.destroyed) return;
-            const result = await service.localToolCall(localToolCallMatch[1], input, { actor });
+            const name = decodeNameSegment(localToolCallMatch[1], workspaceMessages.projectName);
+            const result = await service.localToolCall(name, input, { actor });
             if (!response.destroyed) json(response, 200, result);
             return;
           }
@@ -600,7 +642,7 @@ export function createApp(service: WorkspaceService, options: {
             json(response, 200, await service.localToolStatus(actor));
             return;
           }
-          const workstreamContextMatch = new RegExp(`^/api/workstreams/(${uuidPath})/context$`).exec(url.pathname);
+          const workstreamContextMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/context$`).exec(url.pathname);
           if (workstreamContextMatch && request.method === 'GET') {
             // Reader-only handoff bundle: like activity/run/learn reads,
             // reading never records activity (no feedback loop).
@@ -610,17 +652,23 @@ export function createApp(service: WorkspaceService, options: {
               throw new Error(workspaceMessages.resultLimit);
             }
             const assignmentId = url.searchParams.get('assignmentId') ?? undefined;
-            json(response, 200, await service.workstreamContext(workstreamContextMatch[1], limit, assignmentId));
+            const workspace = decodeNameSegment(workstreamContextMatch[1], workspaceAccessMessage);
+            const workstream = decodeNameSegment(workstreamContextMatch[2], workstreamNameMessage);
+            json(response, 200, await service.workstreamContext(workspace, workstream, limit, assignmentId));
             return;
           }
-          const workstreamMatch = new RegExp(`^/api/workstreams(?:/(${uuidPath}))?$`).exec(url.pathname);
-          if (workstreamMatch && request.method === 'GET') {
-            json(response, 200, workstreamMatch[1]
-              ? await recordRead('workspace-workstreams', null, `workspace_workstreams ${shortId(workstreamMatch[1])}`, () => service.workstream(workstreamMatch[1] as string))
-              : await recordRead('workspace-workstreams', null, 'workspace_workstreams', () => service.listWorkstreams()));
+          const workstreamDetailMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})$`).exec(url.pathname);
+          if (workstreamDetailMatch && request.method === 'GET') {
+            const workspace = decodeNameSegment(workstreamDetailMatch[1], workspaceAccessMessage);
+            const workstream = decodeNameSegment(workstreamDetailMatch[2], workstreamNameMessage);
+            json(response, 200, await recordRead('workspace-workstreams', null, `workspace_workstreams ${workspace}/${workstream}`.slice(0, 100), () => service.workstream(workspace, workstream)));
             return;
           }
-          if (workstreamMatch && !workstreamMatch[1] && request.method === 'POST' && url.pathname === '/api/workstreams') {
+          if (url.pathname === '/api/workstreams' && request.method === 'GET') {
+            json(response, 200, await recordRead('workspace-workstreams', null, 'workspace_workstreams', () => service.listWorkstreams()));
+            return;
+          }
+          if (url.pathname === '/api/workstreams' && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Workstream creation requires the connected dashboard.' });
               return;
@@ -631,16 +679,32 @@ export function createApp(service: WorkspaceService, options: {
             json(response, 201, created);
             return;
           }
-          const workstreamStatusMatch = new RegExp(`^/api/workstreams/(${uuidPath})/status$`).exec(url.pathname);
+          const workstreamRenameMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/rename$`).exec(url.pathname);
+          if (workstreamRenameMatch && request.method === 'POST') {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
+              json(response, 403, { error: 'Workstream changes require the connected dashboard.' });
+              return;
+            }
+            const workspace = decodeNameSegment(workstreamRenameMatch[1], workspaceAccessMessage);
+            const workstream = decodeNameSegment(workstreamRenameMatch[2], workstreamNameMessage);
+            const input = renameSchema.parse(await body(request));
+            const renamed = await service.renameWorkstream(workspace, workstream, input.name);
+            await record('workstream-rename', renamed.workspaceId, renamed.name.slice(0, 100));
+            json(response, 200, renamed);
+            return;
+          }
+          const workstreamStatusMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/status$`).exec(url.pathname);
           if (workstreamStatusMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Workstream updates require the connected dashboard.' });
               return;
             }
+            const workspace = decodeNameSegment(workstreamStatusMatch[1], workspaceAccessMessage);
+            const workstream = decodeNameSegment(workstreamStatusMatch[2], workstreamNameMessage);
             const input = workstreamStatusSchema.parse(await body(request, workstreamStatusBodyLimit));
             const updated = input.completion
-              ? await service.appendWorkstreamCompletion(workstreamStatusMatch[1], input.completion)
-              : await service.setWorkstreamStatus(workstreamStatusMatch[1], input.status!, input.note, actor);
+              ? await service.appendWorkstreamCompletion(workspace, workstream, input.completion)
+              : await service.setWorkstreamStatus(workspace, workstream, input.status!, input.note, actor);
             if (input.completion) {
               await record('workstream-completion', updated.workspaceId,
                 `${input.completion.assignmentId ?? 'solo'} → ${input.completion.outcome}`);
@@ -689,8 +753,8 @@ export function createApp(service: WorkspaceService, options: {
             const result = leaseMatch[1] === 'acquire' ? await service.acquireLease(input, actor)
               : leaseMatch[1] === 'touch' ? await service.touchLease(input, actor)
                 : await service.releaseLease(input, actor);
-            const owner = await service.workstream(input.workstreamId).then(workstream => workstream.workspaceId).catch(() => null);
-            await record(`lease-${leaseMatch[1]}`, owner, `${input.resource} → ${input.workstreamId.slice(0, 8)}`);
+            const owner = await service.workstream(input.workspace, input.workstream).then(record => record.workspaceId).catch(() => null);
+            await record(`lease-${leaseMatch[1]}`, owner, `${input.resource} → ${input.workspace}/${input.workstream}`.slice(0, 100));
             json(response, 200, result);
             return;
           }
@@ -715,114 +779,148 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/runs/recent' && request.method === 'GET') {
-            const scope = url.searchParams.get('scope') ?? '';
-            if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(scope)) {
-              throw new Error(verifyMessages.notFoundRegister);
-            }
+            // Name-addressed scope: a workspace name plus an optional
+            // workstream name within it. IDs are internal and never accepted.
+            const rawWorkspace = url.searchParams.get('workspace');
+            if (rawWorkspace === null || !rawWorkspace.trim()) throw new Error(verifyMessages.notFoundRegister);
+            const rawWorkstream = url.searchParams.get('workstream');
             const limitRaw = url.searchParams.get('limit');
             const limit = limitRaw === null ? 5 : Number(limitRaw);
             if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
               throw new Error(workspaceMessages.resultLimit);
             }
-            json(response, 200, await service.recentRuns(scope.toLowerCase(), limit));
+            json(response, 200, await service.recentRuns(rawWorkspace, rawWorkstream ?? undefined, limit));
             return;
           }
-          const workspaceMatch = new RegExp(`^/api/workspaces/(${uuidPath})$`).exec(url.pathname);
+          const workspaceMatch = new RegExp(`^/api/workspaces/(${nameSegment})$`).exec(url.pathname);
           // Full-list root replacement uses POST like the other workspace
           // mutations (services, verify, ...), not PUT: the client helper
           // defaults to POST for bodies and no PUT handling exists.
-          const rootsMatch = new RegExp(`^/api/workspaces/(${uuidPath})/roots$`).exec(url.pathname);
+          const rootsMatch = new RegExp(`^/api/workspaces/(${nameSegment})/roots$`).exec(url.pathname);
           if (rootsMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Updating project roots requires the connected dashboard.' });
               return;
             }
+            const name = decodeNameSegment(rootsMatch[1], workspaceMessages.projectName);
             const input = rootsUpdateSchema.parse(await body(request, proposalBodyLimit));
-            const { workspace, previousRoots } = await service.updateRoots(rootsMatch[1], input.roots);
+            const { workspace, previousRoots } = await service.updateRoots(name, input.roots);
             // Activity records counts only (N→M roots), never raw paths —
             // matching registration, which records the name alone.
             await record('roots-update', workspace.id, `${previousRoots} → ${workspace.roots.length} roots`);
             json(response, 200, workspace);
             return;
           }
+          const workspaceRenameMatch = new RegExp(`^/api/workspaces/(${nameSegment})/rename$`).exec(url.pathname);
+          if (workspaceRenameMatch && request.method === 'POST') {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
+              json(response, 403, { error: 'Renaming a project requires the connected dashboard.' });
+              return;
+            }
+            const name = decodeNameSegment(workspaceRenameMatch[1], workspaceMessages.projectName);
+            const input = renameSchema.parse(await body(request));
+            const renamed = await service.renameWorkspace(name, input.name);
+            await record('workspace-rename', renamed.id, renamed.name.slice(0, 100));
+            json(response, 200, renamed);
+            return;
+          }
           // M1 environment topology: propose/status/list are reads (no gate
           // beyond auth, like other reads); set keeps the standard dashboard
           // canonical-context check. Dashboard and MCP share the same
           // operation; auth plus canonical origin are the only gates.
-          const envProposeMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/propose$`).exec(url.pathname);
+          const envProposeMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/propose$`).exec(url.pathname);
           if (envProposeMatch && request.method === 'POST') {
             z.object({}).strict().parse(await body(request));
-            json(response, 200, await recordRead('environment-propose', envProposeMatch[1], `environment_propose ${shortId(envProposeMatch[1])}`, () => service.environmentPropose(envProposeMatch[1])));
+            const name = decodeNameSegment(envProposeMatch[1], workspaceMessages.projectName);
+            json(response, 200, await recordRead('environment-propose', await workspaceScopeId(name).catch(() => null), `environment_propose ${name}`.slice(0, 100), () => service.environmentPropose(name)));
             return;
           }
-          const envSetMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/set$`).exec(url.pathname);
+          const envSetMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/set$`).exec(url.pathname);
           if (envSetMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Environment changes require the connected dashboard.' });
               return;
             }
+            const name = decodeNameSegment(envSetMatch[1], workspaceMessages.projectName);
             const input = environmentSetInput.parse(await body(request, proposalBodyLimit));
-            const created = await service.environmentSet(envSetMatch[1], input);
+            const created = await service.environmentSet(name, input);
             // Activity records the env name and service count only — never
             // paths, ports, or script bodies.
-            await record('environment-set', envSetMatch[1], `${created.name.slice(0, 100)} → ${created.services.length} services`);
+            await record('environment-set', await workspaceScopeId(name), `${created.name.slice(0, 100)} → ${created.services.length} services`);
             json(response, 200, created);
             return;
           }
-          const envStatusMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/status$`).exec(url.pathname);
-          if (envStatusMatch && request.method === 'GET') {
-            const environmentId = url.searchParams.get('environmentId') ?? '';
-            if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(environmentId)) {
-              throw new Error(environmentMessages.envNotFound);
+          const envRenameMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/(${nameSegment})/rename$`).exec(url.pathname);
+          if (envRenameMatch && request.method === 'POST') {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
+              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
+              return;
             }
-            json(response, 200, await recordRead('environment-status', envStatusMatch[1], `environment_status ${shortId(envStatusMatch[1])}`, () => service.environmentStatus(envStatusMatch[1], environmentId.toLowerCase())));
+            const name = decodeNameSegment(envRenameMatch[1], workspaceMessages.projectName);
+            const environment = decodeNameSegment(envRenameMatch[2], environmentMessages.badTopology);
+            const input = renameSchema.parse(await body(request));
+            const renamed = await service.renameEnvironment(name, environment, input.name);
+            await record('environment-rename', await workspaceScopeId(name), renamed.name.slice(0, 100));
+            json(response, 200, renamed);
             return;
           }
-          const envListMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments$`).exec(url.pathname);
+          const envStatusMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/status$`).exec(url.pathname);
+          if (envStatusMatch && request.method === 'GET') {
+            const rawEnvironment = url.searchParams.get('environment') ?? '';
+            if (!rawEnvironment.trim()) throw new Error(environmentMessages.envNotFound);
+            const name = decodeNameSegment(envStatusMatch[1], workspaceMessages.projectName);
+            json(response, 200, await recordRead('environment-status', await workspaceScopeId(name).catch(() => null), `environment_status ${name}`.slice(0, 100), () => service.environmentStatus(name, rawEnvironment)));
+            return;
+          }
+          const envListMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments$`).exec(url.pathname);
           if (envListMatch && request.method === 'GET') {
-            json(response, 200, await recordRead('environment-list', envListMatch[1], `environment_list ${shortId(envListMatch[1])}`, () => service.environmentList(envListMatch[1])));
+            const name = decodeNameSegment(envListMatch[1], workspaceMessages.projectName);
+            json(response, 200, await recordRead('environment-list', await workspaceScopeId(name).catch(() => null), `environment_list ${name}`.slice(0, 100), () => service.environmentList(name)));
             return;
           }
           // M2 runtime: ordered up (readiness-polled), owned-only down, and
           // receipt-bound verify. Dashboard and MCP share the same operation;
           // auth plus canonical origin are the only gates.
-          const envUpMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/up$`).exec(url.pathname);
+          const envUpMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/up$`).exec(url.pathname);
           if (envUpMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Environment changes require the connected dashboard.' });
               return;
             }
             request.setTimeout(verifySocketTimeoutMs);
+            const name = decodeNameSegment(envUpMatch[1], workspaceMessages.projectName);
             const input = environmentUpInput.parse(await body(request));
             if (request.aborted || response.destroyed) return;
-            const result = await service.environmentUp(envUpMatch[1], input.environmentId.toLowerCase());
+            const result = await service.environmentUp(name, input.environment);
             const ready = result.services.filter(entry => entry.status === 'ready' || entry.status === 'starting').length;
-            await record('environment-up', envUpMatch[1], `${result.name.slice(0, 100)} → ${result.state} (${ready}/${result.services.length} live)`);
+            await record('environment-up', await workspaceScopeId(name), `${result.name.slice(0, 100)} → ${result.state} (${ready}/${result.services.length} live)`);
             if (!response.destroyed) json(response, 200, result);
             return;
           }
-          const envDownMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/down$`).exec(url.pathname);
+          const envDownMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/down$`).exec(url.pathname);
           if (envDownMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Environment changes require the connected dashboard.' });
               return;
             }
             request.setTimeout(verifySocketTimeoutMs);
+            const name = decodeNameSegment(envDownMatch[1], workspaceMessages.projectName);
             const input = environmentDownInput.parse(await body(request));
             if (request.aborted || response.destroyed) return;
-            const result = await service.environmentDown(envDownMatch[1], input.environmentId.toLowerCase());
+            const result = await service.environmentDown(name, input.environment);
             const stopped = result.services.filter(entry => entry.status === 'down').length;
-            await record('environment-down', envDownMatch[1], `${result.name.slice(0, 100)} → ${result.state} (${stopped}/${result.services.length} stopped)`);
+            await record('environment-down', await workspaceScopeId(name), `${result.name.slice(0, 100)} → ${result.state} (${stopped}/${result.services.length} stopped)`);
             if (!response.destroyed) json(response, 200, result);
             return;
           }
-          const envVerifyMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environment/verify$`).exec(url.pathname);
+          const envVerifyMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environment/verify$`).exec(url.pathname);
           if (envVerifyMatch && request.method === 'POST') {
             if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
               return;
             }
             request.setTimeout(verifySocketTimeoutMs);
+            const name = decodeNameSegment(envVerifyMatch[1], workspaceMessages.projectName);
             const input = environmentVerifyInput.parse(await body(request));
             if (request.aborted || response.destroyed) return;
             const controller = new AbortController();
@@ -832,12 +930,12 @@ export function createApp(service: WorkspaceService, options: {
             request.once('aborted', abortIfDisconnected);
             response.once('close', abortIfDisconnected);
             try {
-              const result = await service.environmentVerify(envVerifyMatch[1], {
-                environmentId: input.environmentId.toLowerCase(),
+              const result = await service.environmentVerify(name, {
+                environment: input.environment,
                 repositoryPath: input.repositoryPath,
                 scriptName: input.scriptName,
               }, controller.signal);
-              await record('environment-verify', envVerifyMatch[1], `${input.scriptName.slice(0, 80)} → ${result.outcome}`);
+              await record('environment-verify', await workspaceScopeId(name), `${input.scriptName.slice(0, 80)} → ${result.outcome}`);
               if (!controller.signal.aborted && !response.destroyed) json(response, 200, result);
             } finally {
               request.removeListener('aborted', abortIfDisconnected);
@@ -857,19 +955,25 @@ export function createApp(service: WorkspaceService, options: {
               json(response, 403, { error: 'Removing a project requires the connected dashboard.' });
               return;
             }
-            const removed = await service.remove(workspaceMatch[1]);
-            await record('remove', workspaceMatch[1], workspaceMatch[1].slice(0, 8));
+            const name = decodeNameSegment(workspaceMatch[1], workspaceMessages.projectName);
+            const scopeId = await workspaceScopeId(name);
+            const removed = await service.remove(name);
+            await record('remove', scopeId, name.slice(0, 100));
             json(response, 200, removed);
             return;
           }
-          const match = new RegExp(`^/api/workspaces/(${uuidPath})(?:/(onboarding|services))?$`).exec(url.pathname);
+          const match = new RegExp(`^/api/workspaces/(${nameSegment})(?:/(onboarding|services))?$`).exec(url.pathname);
           if (match && request.method === 'GET' && (!match[2] || match[2] === 'onboarding')) {
+            const name = decodeNameSegment(match[1], workspaceMessages.projectName);
+            const scopeId = await workspaceScopeId(name).catch(() => null);
             json(response, 200, match[2]
-              ? await recordRead('onboarding-plan', match[1], `onboarding_plan ${shortId(match[1])}`, () => service.onboarding(match[1]))
-              : await recordRead('workspace-inspect', match[1], `workspace_inspect ${shortId(match[1])}`, () => service.inspect(match[1])));
+              ? await recordRead('onboarding-plan', scopeId, `onboarding_plan ${name}`.slice(0, 100), () => service.onboarding(name))
+              : await recordRead('workspace-inspect', scopeId, `workspace_inspect ${name}`.slice(0, 100), () => service.inspect(name)));
           } else if (match && request.method === 'POST' && match[2] === 'services') {
+            const name = decodeNameSegment(match[1], workspaceMessages.projectName);
             const input = z.object({ includeUnmanaged: z.boolean().optional() }).strict().parse(await body(request));
-            json(response, 200, await recordRead('workspace-services', match[1], `workspace_services ${shortId(match[1])}`, () => service.services(match[1], input)));
+            const scopeId = await workspaceScopeId(name).catch(() => null);
+            json(response, 200, await recordRead('workspace-services', scopeId, `workspace_services ${name}`.slice(0, 100), () => service.services(name, input)));
           } else {
             json(response, 404, { error: 'Operation not found.' });
           }
@@ -891,6 +995,13 @@ export function createApp(service: WorkspaceService, options: {
       }
       json(response, 404, { error: 'Resource not found.' });
     } catch (error) {
+      // Ambiguity carries its candidate list to the caller; every other
+      // filesystem, schema and SDK error may contain private paths or
+      // payloads, so only allowlisted owner messages pass through.
+      if (error instanceof AmbiguousNameError) {
+        json(response, 400, { error: error.message, candidates: error.candidates });
+        return;
+      }
       // Filesystem, schema and SDK errors may contain private paths or payloads.
       // safeMessages is the module-level composed allowlist (owner constants only).
       const message = error instanceof Error && (safeMessages as readonly string[]).includes(error.message)

@@ -34,13 +34,13 @@ function ActivityTrail({ state }: {
   );
 }
 
-export function AiSetupView({ state, selectedId, onCopyText }: {
+export function AiSetupView({ state, selectedName, onCopyText }: {
   state: WorkbenchState;
-  selectedId: string | null;
+  selectedName: string | null;
   onCopyText: (text: string, successMessage: string) => Promise<boolean>;
 }) {
   const [copying, setCopying] = useState(false);
-  const material = formatSetupRequest(state.clientConfig, selectedId);
+  const material = formatSetupRequest(state.clientConfig, selectedName);
 
   async function copySetupPrompt() {
     if (!material || copying) return;

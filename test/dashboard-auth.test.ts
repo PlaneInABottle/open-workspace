@@ -211,11 +211,11 @@ test('dashboard and MCP share workspace operations; only browser session managem
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'MCP project', roots: [f.project] }),
   });
   assert.equal(registrationResponse.status, 201);
-  const registered = await registrationResponse.json() as { id: string };
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}`, { headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}/onboarding`, { headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}`, { method: 'DELETE', headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.id}`, { headers: mcpHeaders })).status, 400);
+  const registered = await registrationResponse.json() as { id: string; name: string };
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}/onboarding`, { headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { method: 'DELETE', headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { headers: mcpHeaders })).status, 400);
   assert.equal((await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST', headers: { ...mcpHeaders }, body: JSON.stringify({ consent: true }),
   })).status, 403);
@@ -227,9 +227,9 @@ test('dashboard and MCP share workspace operations; only browser session managem
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Dashboard project', roots: [f.project] }),
   });
   assert.equal(secondRegistration.status, 201);
-  const secondRegistered = await secondRegistration.json() as { id: string };
+  const secondRegistered = await secondRegistration.json() as { id: string; name: string };
 
-  const serviceActionPath = `/api/workspaces/${secondRegistered.id}/services/restart`;
+  const serviceActionPath = `/api/workspaces/${secondRegistered.name}/services/restart`;
   const serviceBody = JSON.stringify({ pmId: 1, name: 'api', namespace: 'default' });
   const mcpAction = await fetch(`${origin}${serviceActionPath}`, {
     method: 'POST', headers: mcpHeaders, body: serviceBody,
@@ -252,10 +252,10 @@ test('dashboard and MCP share workspace operations; only browser session managem
   assert.equal((await fetch(`${origin}/api/project-root-picker`, {
     method: 'POST', headers: mcpHeaders, body: '{}',
   })).status, 403);
-  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.id}`, {
+  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.name}`, {
     method: 'DELETE', headers: dashboardHeaders, body: '{}',
   })).status, 403);
-  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.id}`, {
+  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.name}`, {
     method: 'DELETE', headers: { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
   })).status, 200);
 
@@ -324,7 +324,7 @@ test('dashboard container link changes require canonical context; MCP needs none
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'Link gate project', roots: [f.project] }),
   });
   assert.equal(registered.status, 201);
-  const workspace = await registered.json() as { id: string };
+  const workspace = await registered.json() as { id: string; name: string };
   const connected = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
   });
@@ -332,7 +332,7 @@ test('dashboard container link changes require canonical context; MCP needs none
   const { dashboardToken } = await connected.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   const canonicalDashboardHeaders = { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const path = `${origin}/api/workspaces/${workspace.id}/containers/link`;
+  const path = `${origin}/api/workspaces/${workspace.name}/containers/link`;
   const linkBody = JSON.stringify({ action: 'link', containerId });
 
   const missingContext = await fetch(path, { method: 'POST', headers: dashboardHeaders, body: linkBody });
@@ -546,9 +546,9 @@ test('repository verification runs only the registered manifest script', async t
     method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify({ name: 'Verify project', roots: [project] }),
   });
   assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string };
+  const proposal = await proposalResponse.json() as { id: string; name: string };
 
-  const verifyPath = `${origin}/api/workspaces/${proposal.id}/verify`;
+  const verifyPath = `${origin}/api/workspaces/${proposal.name}/verify`;
   const verifyBody = JSON.stringify({ repositoryPath: project, scriptName: 'check' });
   const fromMcp = await fetch(verifyPath, { method: 'POST', headers: mcpHeaders, body: verifyBody });
   assert.equal(fromMcp.status, 200);
@@ -609,9 +609,9 @@ test('workstreams bind registered roots over every surface', async t => {
     method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify({ name: 'Stream project', roots: [project] }),
   });
   assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string };
+  const proposal = await proposalResponse.json() as { id: string; name: string };
 
-  const createBody = JSON.stringify({ name: 'First stream', workspaceId: proposal.id, checkouts: [project] });
+  const createBody = JSON.stringify({ name: 'First stream', workspace: proposal.name, checkouts: [project] });
   const fromMcp = await fetch(`${origin}/api/workstreams`, {
     method: 'POST', headers: mcpHeaders, body: createBody,
   });
@@ -623,19 +623,20 @@ test('workstreams bind registered roots over every surface', async t => {
   })).status, 403);
 
   const created = await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: dashboardHeaders, body: createBody,
+    method: 'POST', headers: dashboardHeaders,
+    body: JSON.stringify({ name: 'Second stream', workspace: proposal.name, checkouts: [project] }),
   });
   assert.equal(created.status, 201);
-  const workstream = await created.json() as { id: string; status: string; checkouts: Array<{ root: string; revisionState: string }> };
+  const workstream = await created.json() as { id: string; name: string; status: string; checkouts: Array<{ root: string; revisionState: string }> };
   assert.equal(workstream.status, 'active');
   assert.deepEqual(workstream.checkouts.map(checkout => checkout.root), [project]);
 
   const listed = await fetch(`${origin}/api/workstreams`, { headers: mcpHeaders });
   assert.equal(listed.status, 200);
   assert.deepEqual((await listed.json() as Array<{ id: string }>).map(entry => entry.id), [firstStream.id, workstream.id]);
-  assert.equal((await fetch(`${origin}/api/workstreams/${workstream.id}`, { headers: mcpHeaders })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workstreams/${proposal.name}/${workstream.name}`, { headers: mcpHeaders })).status, 200);
 
-  const statusPath = `${origin}/api/workstreams/${workstream.id}/status`;
+  const statusPath = `${origin}/api/workstreams/${proposal.name}/${workstream.name}/status`;
   const pausedByMcp = await fetch(statusPath, {
     method: 'POST', headers: mcpHeaders, body: '{"status":"paused"}',
   });
@@ -649,7 +650,7 @@ test('workstreams bind registered roots over every surface', async t => {
 
   const outside = await fetch(`${origin}/api/workstreams`, {
     method: 'POST', headers: dashboardHeaders,
-    body: JSON.stringify({ name: 'Outside', workspaceId: proposal.id, checkouts: [root] }),
+    body: JSON.stringify({ name: 'Outside', workspace: proposal.name, checkouts: [root] }),
   });
   assert.equal(outside.status, 400);
 });
@@ -684,15 +685,15 @@ test('leases serialize shared resources over every surface', async t => {
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Lease project', roots: [first, second] }),
   });
   assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string };
+  const proposal = await proposalResponse.json() as { id: string; name: string };
 
   const makeStream = async (name: string, checkout: string) => {
     const response = await fetch(`${origin}/api/workstreams`, {
       method: 'POST', headers: dashboardHeaders,
-      body: JSON.stringify({ name, workspaceId: proposal.id, checkouts: [checkout] }),
+      body: JSON.stringify({ name, workspace: proposal.name, checkouts: [checkout] }),
     });
     assert.equal(response.status, 201);
-    return (await response.json()) as { id: string };
+    return (await response.json()) as { id: string; name: string };
   };
   const one = await makeStream('One', first);
   const two = await makeStream('Two', second);
@@ -704,11 +705,11 @@ test('leases serialize shared resources over every surface', async t => {
       headers: token,
       body: JSON.stringify(body),
     });
-  assert.equal((await acquire(mcpHeaders, { resource: 'port:3000', workstreamId: one.id })).status, 200);
-  assert.equal((await acquire(bareDashboardHeaders, { resource: 'port:3000', workstreamId: one.id })).status, 403);
+  assert.equal((await acquire(mcpHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' })).status, 200);
+  assert.equal((await acquire(bareDashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' })).status, 403);
 
-  assert.equal((await acquire(dashboardHeaders, { resource: 'port:3000', workstreamId: one.id })).status, 200);
-  const queued = await acquire(dashboardHeaders, { resource: 'port:3000', workstreamId: two.id });
+  assert.equal((await acquire(dashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' })).status, 200);
+  const queued = await acquire(dashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'Two' });
   assert.equal(queued.status, 200);
   const queuedBody = await queued.json() as { lease: { status: string }; position: number };
   assert.equal(queuedBody.lease.status, 'queued');
@@ -721,8 +722,8 @@ test('leases serialize shared resources over every surface', async t => {
     fetch(`${origin}/api/leases/release`, {
       method: 'POST', headers: token, body: JSON.stringify(body),
     });
-  assert.equal((await release(dashboardHeaders, { resource: 'port:3000', workstreamId: two.id })).status, 400);
-  const released = await release(mcpHeaders, { resource: 'port:3000', workstreamId: one.id });
+  assert.equal((await release(dashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'Two' })).status, 400);
+  const released = await release(mcpHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' });
   assert.equal(released.status, 200);
   assert.deepEqual(await released.json(), { released: true, promoted: two.id });
 });
@@ -764,9 +765,9 @@ test('service control reaches only the designated registered-root process', asyn
     method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Service project', roots: [project] }),
   });
   assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string };
+  const proposal = await proposalResponse.json() as { id: string; name: string };
 
-  const actionPath = `${origin}/api/workspaces/${proposal.id}/services/restart`;
+  const actionPath = `${origin}/api/workspaces/${proposal.name}/services/restart`;
   const actionBody = JSON.stringify({ pmId: 7, name: 'api', namespace: 'default' });
   const fromMcp = await fetch(actionPath, { method: 'POST', headers: mcpHeaders, body: actionBody });
   assert.equal(fromMcp.status, 200);
@@ -819,9 +820,9 @@ test('service logs return bounded output while activity records counts only', as
 
   const proposal = await (await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'Logs project', roots: [project] }),
-  })).json() as { id: string };
+  })).json() as { id: string; name: string };
 
-  const logsPath = `${origin}/api/workspaces/${proposal.id}/services/logs`;
+  const logsPath = `${origin}/api/workspaces/${proposal.name}/services/logs`;
   const denied = await fetch(logsPath, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: { pmId: 99, name: 'api' } }),
   });
@@ -840,7 +841,7 @@ test('service logs return bounded output while activity records counts only', as
   assert.equal(tail.stream, 'out');
   assert.deepEqual(logCalls, [{ pmId: 7, stream: 'out', lines: 10 }]);
 
-  const services = await fetch(`${origin}/api/workspaces/${proposal.id}/services`, {
+  const services = await fetch(`${origin}/api/workspaces/${proposal.name}/services`, {
     method: 'POST', headers: mcpHeaders, body: '{}',
   });
   assert.equal(services.status, 200);
@@ -848,7 +849,7 @@ test('service logs return bounded output while activity records counts only', as
   assert.deepEqual(serviceInventory.docker.services.map(entry => [entry.runner, entry.name]), [['docker', 'postgres']]);
   assert.equal(serviceInventory.docker.unmanagedContainerCount, 1);
   assert.deepEqual(serviceInventory.docker.unmanagedContainers, []);
-  const detailedServices = await fetch(`${origin}/api/workspaces/${proposal.id}/services`, {
+  const detailedServices = await fetch(`${origin}/api/workspaces/${proposal.name}/services`, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ includeUnmanaged: true }),
   });
   const detailedInventory = await detailedServices.json() as { docker: { unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string; image: string }> } };
@@ -866,7 +867,7 @@ test('service logs return bounded output while activity records counts only', as
   assert.equal(dockerResult.target.runner, 'docker');
   assert.deepEqual(dockerLogCalls, [{ containerId: dockerId, lines: 12 }]);
 
-  const deniedControl = await fetch(`${origin}/api/workspaces/${proposal.id}/services/stop`, {
+  const deniedControl = await fetch(`${origin}/api/workspaces/${proposal.name}/services/stop`, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify(dockerTarget),
   });
   assert.equal(deniedControl.status, 400);

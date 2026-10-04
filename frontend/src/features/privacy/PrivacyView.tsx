@@ -46,16 +46,16 @@ export function PrivacyView({ workspaces, onRemove, busyIds, onDisconnect }: {
         ) : (
           <ul className="divide-y divide-border">
             {workspaces.map(workspace => {
-              const busy = busyIds.has(`workspace:${workspace.id}`);
+              const busy = busyIds.has(`workspace:${workspace.name}`);
               return (
-               <li key={workspace.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
+               <li key={workspace.name} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <h3 className="text-sm font-medium">{workspace.name}</h3>
                     <ul aria-label={`Registered repository folders for ${workspace.name}`} className="mt-2 grid gap-1">
                       {workspace.roots.map(root => <li key={root} className="whitespace-pre-wrap break-all font-mono text-xs leading-5 text-muted-foreground">{root}</li>)}
                     </ul>
                   </div>
-                  <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onRemove(workspace.id)} aria-label={`Remove project registration for ${workspace.name}`}>
+                  <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onRemove(workspace.name)} aria-label={`Remove project registration for ${workspace.name}`}>
                     {busy ? 'Removing…' : 'Remove project'}
                   </Button>
                 </li>

@@ -65,7 +65,7 @@ function installFetch(handler: (path: string, init: RequestInit) => Promise<Resp
     origins.push(url.origin);
     const token = new Headers(init.headers).get('Authorization');
     if (token) tokens.push(token);
-    const response = await handler(url.pathname, init);
+    const response = await handler(decodeURI(url.pathname), init);
     if ((url.pathname === '/api/workstreams' || url.pathname === '/api/leases')
       && (init.method ?? 'GET') === 'GET' && response.status === 404) {
       return json([]);
@@ -211,7 +211,7 @@ describe('project-first workbench', () => {
         registrationBody = JSON.parse(String(init.body));
         return json(submitted, 201);
       }
-      if (path === `/api/workspaces/${submitted.id}` && init.method === 'GET') {
+      if (path === `/api/workspaces/${submitted.name}` && init.method === 'GET') {
         return json(inspection(submitted, 'local-service'));
       }
       return json({ error: 'Not found.' }, 404);
@@ -296,7 +296,7 @@ describe('project-first workbench', () => {
         if (overviewCalls === 2) return stale.promise.then(result => { staleStarted.resolve(); return result; });
         return json(overview());
       }
-      if (path === `/api/workspaces/${registered.id}` && init.method === 'DELETE') return json({ removed: true });
+      if (path === `/api/workspaces/${registered.name}` && init.method === 'DELETE') return json({ removed: true });
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -340,7 +340,7 @@ describe('project-first workbench', () => {
         return json(overview({ workspaces: [registered] }));
       }
       if (path === '/api/workspaces' && init.method === 'POST') { registrationCalls++; return json(registered, 201); }
-      if (path === `/api/workspaces/${registered.id}` && init.method !== 'POST') { inspectionCalls++; return json(inspection(registered, 'registered-service')); }
+      if (path === `/api/workspaces/${registered.name}` && init.method !== 'POST') { inspectionCalls++; return json(inspection(registered, 'registered-service')); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -374,14 +374,13 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
     expect(await screen.findByRole('heading', { name: 'Connect your AI' })).toBeInTheDocument();
     const setupPrompt = screen.getByRole('region', { name: 'Setup prompt preview' });
-    expect(setupPrompt).toHaveTextContent(registered.id);
+    expect(setupPrompt).toHaveTextContent(registered.name);
     expect(setupPrompt).toHaveTextContent('workspace_list');
     expect(setupPrompt).toHaveTextContent('workspace_inspect');
     expect(setupPrompt).toHaveTextContent('mcpServers');
     expect(setupPrompt).toHaveTextContent('OPENWORKSPACE_HOME');
     expect(setupPrompt).toHaveTextContent('What to do (one pass):');
     expect(setupPrompt).toHaveTextContent('Step 6 — Handoff');
-    expect(setupPrompt.textContent).not.toContain(registered.name);
     expect(setupPrompt.textContent).not.toContain(registered.roots[0]);
     expect(screen.getByRole('button', { name: 'Copy setup prompt' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy setup request' })).not.toBeInTheDocument();
@@ -411,7 +410,7 @@ describe('project-first workbench', () => {
         registrationCalls++;
         return json(registered, 201);
       }
-      if (path === `/api/workspaces/${registered.id}` && init.method !== 'POST') {
+      if (path === `/api/workspaces/${registered.name}` && init.method !== 'POST') {
         inspectionCalls++;
         return json(inspection(registered, 'confirmed-registered-service'));
       }
@@ -514,8 +513,8 @@ describe('project-first workbench', () => {
         overviewCalls++;
         return overviewCalls === 1 ? json(overview({ workspaces: [approved] })) : json(overview());
       }
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(groupedInspection);
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'DELETE') { removeCalls++; return json({ removed: true }); }
+      if (path === `/api/workspaces/${approved.name}` && init.method === 'GET') return json(groupedInspection);
+      if (path === `/api/workspaces/${approved.name}` && init.method === 'DELETE') { removeCalls++; return json({ removed: true }); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -570,8 +569,8 @@ describe('project-first workbench', () => {
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(inspection);
-      if (path === `/api/workspaces/${approved.id}/services` && init.method === 'POST') { servicesCalls++; return json(serviceInventory); }
+      if (path === `/api/workspaces/${approved.name}` && init.method === 'GET') return json(inspection);
+      if (path === `/api/workspaces/${approved.name}/services` && init.method === 'POST') { servicesCalls++; return json(serviceInventory); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -620,8 +619,8 @@ describe('project-first workbench', () => {
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(nodeInspection);
-      if (path === `/api/workspaces/${approved.id}/verify` && init.method === 'POST') { verificationCalls++; return json({}); }
+      if (path === `/api/workspaces/${approved.name}` && init.method === 'GET') return json(nodeInspection);
+      if (path === `/api/workspaces/${approved.name}/verify` && init.method === 'POST') { verificationCalls++; return json({}); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -645,7 +644,7 @@ describe('project-first workbench', () => {
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(streamInspection);
+      if (path === `/api/workspaces/${approved.name}` && init.method === 'GET') return json(streamInspection);
       if (path === '/api/workstreams' && init.method === 'GET') return json([]);
       if (path === '/api/leases' && init.method === 'GET') return json([]);
       return json({ error: 'Not found.' }, 404);
@@ -696,7 +695,7 @@ describe('project-first workbench', () => {
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
-      if (path === `/api/workspaces/${approved.id}` && init.method === 'GET') return json(streamInspection);
+      if (path === `/api/workspaces/${approved.name}` && init.method === 'GET') return json(streamInspection);
       if (path === '/api/workstreams' && init.method === 'GET') return json(workstreams);
       if (path === '/api/leases' && init.method === 'GET') return json(leases);
       if (path.startsWith('/api/workstreams') || path.startsWith('/api/leases')) mutationCalls++;
@@ -758,8 +757,8 @@ describe('project-first workbench', () => {
         if (overviewCalls === 2) return stale.promise.then(result => { staleStarted.resolve(); return result; });
         return json(overview());
       }
-      if (path === `/api/workspaces/${registered.id}` && init.method === 'GET') return json(inspection(registered, 'old-sentinel-service'));
-      if (path === `/api/workspaces/${registered.id}` && init.method === 'DELETE') return json({ removed: true });
+      if (path === `/api/workspaces/${registered.name}` && init.method === 'GET') return json(inspection(registered, 'old-sentinel-service'));
+      if (path === `/api/workspaces/${registered.name}` && init.method === 'DELETE') return json({ removed: true });
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -813,6 +812,7 @@ describe('project-first workbench', () => {
       origins.push(url.origin);
       const bearer = new Headers(init.headers).get('Authorization');
       if (bearer) tokens.push(bearer);
+      const path = decodeURI(url.pathname);
       if (url.pathname === '/api/dashboard-session' && init.method === 'POST') {
         dashboardConnectCalls++;
         connectionAuthorizations.push(bearer);
@@ -843,13 +843,13 @@ describe('project-first workbench', () => {
         }
         return json({ error: 'Connect this browser.' }, 401);
       }
-      if (url.pathname === `/api/workspaces/${previous.id}` && init.method !== 'POST') {
+      if (path === `/api/workspaces/${previous.name}` && init.method !== 'POST') {
         oldInspectionCalls++;
         if (oldInspectionCalls === 1) return json(inspection(previous, 'old-sentinel-repository'));
         oldInspectionStarted.resolve();
         return oldInspection.promise;
       }
-      if (url.pathname === `/api/workspaces/${current.id}` && init.method !== 'POST') return json(inspection(current, 'new-sentinel-repository'));
+      if (path === `/api/workspaces/${current.name}` && init.method !== 'POST') return json(inspection(current, 'new-sentinel-repository'));
       return json({ error: 'Not found.' }, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -913,8 +913,7 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
     const newSetupRequest = await screen.findByRole('region', { name: 'Setup prompt preview' });
     expect(newSetupRequest).toHaveTextContent('MCP_CONFIG_SENTINEL');
-    expect(newSetupRequest).toHaveTextContent(current.id);
-    expect(newSetupRequest.textContent).not.toContain(current.name);
+    expect(newSetupRequest).toHaveTextContent(current.name);
     expect(newSetupRequest.textContent).not.toContain(current.roots[0]);
 
     expireNewSession = true;
@@ -950,8 +949,8 @@ describe('project-first workbench', () => {
         if (bearer === `Bearer ${secondToken}`) return json(overview({ workspaces: [second] }));
         return json({ error: 'Connect this browser.' }, 401);
       }
-      if (path === `/api/workspaces/${first.id}` && init.method === 'GET') return json(inspection(first, 'first-session-service'));
-      if (path === `/api/workspaces/${second.id}` && init.method === 'GET') return json(inspection(second, 'second-session-service'));
+      if (path === `/api/workspaces/${first.name}` && init.method === 'GET') return json(inspection(first, 'first-session-service'));
+      if (path === `/api/workspaces/${second.name}` && init.method === 'GET') return json(inspection(second, 'second-session-service'));
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, firstToken);
@@ -992,7 +991,7 @@ describe('project-first workbench', () => {
     installFetch(async (path, init) => {
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === `/api/workspaces/${approved.id}` && init.method !== 'POST') {
+      if (path === `/api/workspaces/${approved.name}` && init.method !== 'POST') {
         inspectionCalls++;
         if (inspectionCalls === 1) return json(inspection(approved, 'last-confirmed-service'));
         updateStarted.resolve();
@@ -1039,7 +1038,7 @@ describe('project-first workbench', () => {
     installFetch(async (path, init) => {
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === `/api/workspaces/${approved.id}` && init.method !== 'POST') {
+      if (path === `/api/workspaces/${approved.name}` && init.method !== 'POST') {
         inspectionCalls++;
         if (inspectionCalls === 1) return json(inspection(approved, 'confirmed-service'));
         if (inspectionCalls === 2) {
@@ -1076,7 +1075,7 @@ describe('project-first workbench', () => {
     fireEvent.click(within(connectedProjects).getByRole('button', { name: new RegExp(approved.name) }));
     expect((await screen.findAllByText('selected-again-service')).length).toBeGreaterThan(0);
     const selector = screen.getByLabelText('Select a connected project') as HTMLSelectElement;
-    expect(selector).toHaveValue(approved.id);
+    expect(selector).toHaveValue(approved.name);
     fireEvent.change(selector, { target: { value: '' } });
     expect(await screen.findByRole('heading', { name: 'Choose a project' })).toBeInTheDocument();
     expect(selector).toHaveValue('');
@@ -1084,7 +1083,7 @@ describe('project-first workbench', () => {
     const genericSetupRequest = await screen.findByRole('region', { name: 'Setup prompt preview' });
     expect(genericSetupRequest).toHaveTextContent('workspace_list first');
     expect(genericSetupRequest).toHaveTextContent('workspace_register with {name, roots}');
-    expect(genericSetupRequest.textContent).not.toContain(approved.id);
+    expect(genericSetupRequest.textContent).not.toContain(approved.name);
     expect(genericSetupRequest.textContent).not.toContain(approved.name);
     expect(genericSetupRequest.textContent).not.toContain(approved.roots[0]);
   });

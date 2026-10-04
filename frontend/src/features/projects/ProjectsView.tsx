@@ -23,10 +23,10 @@ interface OverviewViewProps {
   onProjectRequest: (value: ProjectRequest) => Promise<{ ok: boolean }>;
   onPickRoots: (signal: AbortSignal) => Promise<ProjectRootPickerResult>;
   onSelectProject: (id: string) => void;
-  onRetryInspection: (id: string) => void;
-  onInspectServices: (id: string) => void;
+  onRetryInspection: (name: string) => void;
+  onInspectServices: (name: string) => void;
   onGoToAi: () => void;
-  onLoadRecords: (id: string) => void;
+  onLoadRecords: (name: string) => void;
 }
 
 export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectProject, onRetryInspection, onInspectServices, onGoToAi, onLoadRecords }: OverviewViewProps) {
@@ -35,7 +35,7 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
     setCreating(false);
     onSelectProject(id);
   };
-  const selected = state.workspaces.find(workspace => workspace.id === state.selectedId);
+  const selected = state.workspaces.find(workspace => workspace.name === state.selectedName);
   const title = selected?.name || 'Projects';
   const description = selected
     ? 'Registered metadata inventory · no application has been started or health-checked.'
@@ -66,8 +66,8 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           workstreamsLoading={state.workstreamsLoading}
           workstreamsError={state.workstreamsError}
           leases={state.leases}
-          onRetry={() => onRetryInspection(selected.id)}
-          onInspectServices={() => onInspectServices(selected.id)}
+          onRetry={() => onRetryInspection(selected.name)}
+          onInspectServices={() => onInspectServices(selected.name)}
           onGoToAi={onGoToAi}
           activity={state.activity}
           learnings={state.learnings}
@@ -89,7 +89,7 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
             </Button>
           </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
-            {state.workspaces.map(workspace => <ProjectChoice key={workspace.id} workspace={workspace} onSelect={selectProject} />)}
+            {state.workspaces.map(workspace => <ProjectChoice key={workspace.name} workspace={workspace} onSelect={selectProject} />)}
           </div>
         </section>
       ) : (
@@ -143,7 +143,7 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
 
 function ProjectChoice({ workspace, onSelect }: { workspace: Workspace; onSelect: (id: string) => void }) {
   return (
-    <button type="button" className="project-choice" onClick={() => onSelect(workspace.id)}>
+    <button type="button" className="project-choice" onClick={() => onSelect(workspace.name)}>
       <span className="min-w-0">
         <span className="block truncate text-sm font-medium">{workspace.name}</span>
         <span className="mt-1 block text-xs text-muted-foreground">{workspace.roots.length} {workspace.roots.length === 1 ? 'repository folder' : 'repository folders'}</span>
@@ -202,7 +202,7 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
   onRetry: () => void;
   onInspectServices: () => void;
   onGoToAi: () => void;
-  onLoadRecords: (id: string) => void;
+  onLoadRecords: (name: string) => void;
 }) {
   const [tab, setTab] = useState<'project' | 'records'>('project');
   const componentCount = inspection?.roots.reduce((total, root) => total + root.repositories.length, 0) || 0;
@@ -255,7 +255,7 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
       {tab === 'records' ? (
         <div role="tabpanel" id="records-panel" aria-labelledby="records-tab">
           <RecordsView
-            workspaceId={inspection.workspace.id}
+            workspace={inspection.workspace}
             activity={activity}
             learnings={learnings}
             runs={runs}

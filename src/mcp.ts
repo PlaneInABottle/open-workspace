@@ -46,6 +46,15 @@ export async function runMcpBridge(): Promise<void> {
   }
   const readHints = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
   const operateHints = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+  // Name-addressed inputs (M2): every entity is addressed by its unique
+  // name; stable UUIDs stay server-internal and UUID-shaped inputs are
+  // rejected with the use-the-name guidance. Names are URL-encoded per call.
+  const workspaceName = z.string().min(1).max(100).describe('Registered project name.');
+  const workstreamName = z.string().min(1).max(100).describe('Workstream name within the project.');
+  const environmentName = z.string().min(1).max(100).describe('Environment name within the project.');
+  const workspacePath = (name: string, rest = '') => `/api/workspaces/${encodeURIComponent(name)}${rest}`;
+  const workstreamPath = (workspace: string, workstream: string, rest = '') =>
+    `/api/workstreams/${encodeURIComponent(workspace)}/${encodeURIComponent(workstream)}${rest}`;
   server.registerTool('workspace_list', {
     description: 'List registered local workspaces and tool availability. Found tools are not verified running services.',
     annotations: readHints,
@@ -61,7 +70,7 @@ export async function runMcpBridge(): Promise<void> {
   server.registerTool('datastore_query', {
     description: 'Run one bounded read-only query on a workspace database over a local socket. Single SELECT-style statement; superuser roles refused.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       database: z.string().min(1).max(63),
       role: z.string().min(1).max(63),
       sql: z.string().min(1).max(8000),
@@ -71,7 +80,7 @@ export async function runMcpBridge(): Promise<void> {
       }).strict().partial().optional(),
     }).strict(),
     annotations: readHints,
-  }, ({ workspaceId, database, role, sql, options }) => request(`/api/workspaces/${workspaceId}/datastore/query`, {
+  }, ({ workspace, database, role, sql, options }) => request(workspacePath(workspace, '/datastore/query'), {
     database, role, sql,
     ...(options?.params !== undefined ? { params: options.params } : {}),
     ...(options?.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
@@ -79,35 +88,43 @@ export async function runMcpBridge(): Promise<void> {
   server.registerTool('workspace_services', {
     description: 'Bounded PM2/Docker metadata: Compose labels map exact roots; explicit links map Docker IDs. Unmanaged counts only unless includeUnmanaged=true (names/images). No env/args; readiness unknown.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       includeUnmanaged: z.boolean().describe('Include names and images for unmanaged containers; default false.').optional(),
     }).strict(),
     annotations: readHints,
-  }, ({ workspaceId, includeUnmanaged }) => request(`/api/workspaces/${workspaceId}/services`, {
+  }, ({ workspace, includeUnmanaged }) => request(workspacePath(workspace, '/services'), {
     ...(includeUnmanaged !== undefined ? { includeUnmanaged } : {}),
   }));
   server.registerTool('workspace_container_link', {
     description: 'Link/unlink a Docker container by full ID or unique 12+ hex-character prefix. No name guessing. Link requires a present container; unlink can remove stale links.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       action: z.enum(['link', 'unlink']).describe('Explicitly link to or unlink from this workspace.'),
       containerId: z.string().regex(/^[a-f\d]{12,64}$/i).describe('Full 64-hex ID or unique prefix of at least 12 hex characters; no names.'),
     }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, action, containerId }) => request(`/api/workspaces/${workspaceId}/containers/link`, { action, containerId }));
+  }, ({ workspace, action, containerId }) => request(workspacePath(workspace, '/containers/link'), { action, containerId }));
   server.registerTool('workspace_remove', {
     description: 'Remove a registered project and its private state (never repository files). Refused while workstreams reference it.',
-    inputSchema: { workspaceId: z.string().uuid() },
+    inputSchema: z.object({ workspace: workspaceName }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}`, undefined, undefined, 'DELETE'));
-  server.registerTool('workspace_update_roots', {
-    description: 'Replace the full root list of a registered project with 1–20 explicitly selected absolute repository roots. Supply the complete new list: worktrees come and go, but this is a full replacement, not a delta. Validated exactly like registration; all roots must be valid or nothing changes. The project id, leases, workstreams and activity are preserved. Never infer or register a common parent.',
+  }, ({ workspace }) => request(workspacePath(workspace), undefined, undefined, 'DELETE'));
+  server.registerTool('workspace_rename', {
+    description: 'Rename a registered project, preserving its ID and owned state. Refused when the name is taken.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName.describe('Current project name.'),
+      name: z.string().min(1).max(100).describe('New project name.'),
+    }).strict(),
+    annotations: operateHints,
+  }, ({ workspace, name }) => request(workspacePath(workspace, '/rename'), { name }));
+  server.registerTool('workspace_update_roots', {
+    description: 'Replace the full root list of a registered project with 1–20 explicitly selected absolute repository roots. Supply the complete new list: worktrees come and go, but this is a full replacement, not a delta. Validated exactly like registration; all roots must be valid or nothing changes. The project identity, leases, workstreams and activity are preserved. Never infer or register a common parent.',
+    inputSchema: z.object({
+      workspace: workspaceName,
       roots: z.array(z.string().min(1).max(4096)).min(1).max(20),
     }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, roots }) => request(`/api/workspaces/${workspaceId}/roots`, { roots }));
+  }, ({ workspace, roots }) => request(workspacePath(workspace, '/roots'), { roots }));
   server.registerTool('workspace_workstreams', {
     description: 'List parallel workstreams bound to registered project roots with pinned revisions.',
     inputSchema: z.object({}).strict(),
@@ -128,19 +145,25 @@ export async function runMcpBridge(): Promise<void> {
   server.registerTool('recent_runs', {
     description: 'List recent bounded run summaries for a workspace or workstream scope, each labeled source openworkspace-run (executed here) or external-import (pasted on trust, not verified here). Excerpts are capped at 200 chars per entry. Reading runs never records activity.',
     inputSchema: z.object({
-      scope: z.string().uuid(),
+      workspace: workspaceName,
+      workstream: workstreamName.describe('Optional workstream within the project.').optional(),
       limit: z.number().int().min(1).max(20).optional().describe('Summaries to return, default 5.'),
     }).strict(),
     annotations: readHints,
-  }, ({ scope, limit }) => request(`/api/runs/recent?scope=${scope}${limit !== undefined ? `&limit=${limit}` : ''}`));
+  }, ({ workspace, workstream, limit }) => {
+    const params = new URLSearchParams({ workspace });
+    if (workstream !== undefined) params.set('workstream', workstream);
+    if (limit !== undefined) params.set('limit', String(limit));
+    return request(`/api/runs/recent?${params}`);
+  });
   server.registerTool('workspace_inspect', {
     description: 'Inspect bounded manifest metadata separately for every registered root and its immediate repositories. A replaced or redirected root is reported unavailable without hiding other roots. Never reads env files or executes code. Unknown runtime readiness stays unknown.',
-    inputSchema: { workspaceId: z.string().uuid() }, annotations: readHints,
-  }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}`));
+    inputSchema: z.object({ workspace: workspaceName }).strict(), annotations: readHints,
+  }, ({ workspace }) => request(workspacePath(workspace)));
   server.registerTool('onboarding_plan', {
     description: 'Get observed prerequisites and next setup steps for a registered workspace. Jira is optional; installs and credential handling are future work.',
-    inputSchema: { workspaceId: z.string().uuid() }, annotations: readHints,
-  }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/onboarding`));
+    inputSchema: z.object({ workspace: workspaceName }).strict(), annotations: readHints,
+  }, ({ workspace }) => request(workspacePath(workspace, '/onboarding')));
   const serviceTarget = z.object({
     pmId: z.number().int().nonnegative().nullable(),
     name: z.string().min(1).max(200),
@@ -157,7 +180,7 @@ export async function runMcpBridge(): Promise<void> {
     name: z.string().min(1).max(80).optional(),
   }).strict();
   const serviceControlObjectSchema = z.object({
-    workspaceId: z.string().uuid(),
+    workspace: workspaceName,
     action: z.enum(['restart', 'stop', 'start']),
     target: serviceTarget.optional(),
     start: serviceStartInput.optional(),
@@ -170,15 +193,15 @@ export async function runMcpBridge(): Promise<void> {
     inputSchema: serviceControlObjectSchema,
     annotations: operateHints,
   }, args => {
-    const { workspaceId, action, target, start } = serviceControlSchema.parse(args);
+    const { workspace, action, target, start } = serviceControlSchema.parse(args);
     return action === 'start'
-      ? request(`/api/workspaces/${workspaceId}/services/start`, start)
-      : request(`/api/workspaces/${workspaceId}/services/${action}`, target);
+      ? request(workspacePath(workspace, '/services/start'), start)
+      : request(workspacePath(workspace, `/services/${action}`), target);
   });
   server.registerTool('service_logs', {
     description: 'Read bounded PM2 tails for mapped services and Docker tails for mapped or explicitly linked containers. Docker streams are combined. Logs may contain app-printed secrets and are never persisted.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       target: z.union([serviceTarget, z.object({
         runner: z.literal('docker'),
         containerId: z.string().regex(/^[a-f\d]{64}$/i),
@@ -188,31 +211,31 @@ export async function runMcpBridge(): Promise<void> {
       stream: z.enum(['out', 'err', 'both']).optional().describe('Log stream, default both.'),
     }).strict(),
     annotations: readHints,
-  }, ({ workspaceId, target, lines, stream }) => request(`/api/workspaces/${workspaceId}/services/logs`, {
+  }, ({ workspace, target, lines, stream }) => request(workspacePath(workspace, '/services/logs'), {
     target, ...(lines !== undefined ? { lines } : {}), ...(stream !== undefined ? { stream } : {}),
   }));
   server.registerTool('browser_check', {
     description: 'Load one loopback URL in an owned browser session and return its bounded text snapshot with an optional substring check.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       url: z.string().min(1).max(2000).describe('Loopback http(s) URL to snapshot.'),
       assertText: z.string().min(1).max(500).optional().describe('Optional substring to look for in the snapshot.'),
       timeoutMs: z.number().int().min(5000).max(60000).optional().describe('Bounded runtime in ms, default 30000.'),
     }).strict(),
     annotations: readHints,
-  }, ({ workspaceId, url, assertText, timeoutMs }) => request(`/api/workspaces/${workspaceId}/browser/check`, {
+  }, ({ workspace, url, assertText, timeoutMs }) => request(workspacePath(workspace, '/browser/check'), {
     url, ...(assertText !== undefined ? { assertText } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }, 95_000));
   server.registerTool('verification_run', {
     description: 'Run one existing package.json test script of a registered repository with bounded runtime and record revision/worktree/service/time context.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       repositoryPath: z.string().min(1).max(4096),
       scriptName: z.string().min(1).max(80),
       service: serviceTarget.optional(),
     }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, repositoryPath, scriptName, service }) => request(`/api/workspaces/${workspaceId}/verify`, { repositoryPath, scriptName, ...(service ? { service } : {}) }, 170_000));
+  }, ({ workspace, repositoryPath, scriptName, service }) => request(workspacePath(workspace, '/verify'), { repositoryPath, scriptName, ...(service ? { service } : {}) }, 170_000));
   // M1 environment topology: discovery-proposed candidates (read-only),
   // stored set (full replacement per env name), and read-only status.
   // The client permission model is the authority, and the mutating call
@@ -220,79 +243,101 @@ export async function runMcpBridge(): Promise<void> {
   // presence-only, never controlled; readiness/E2E stay loopback-only.
   // Tool schemas reuse the canonical environment inputs (single definition
   // site in environment.ts): the set tool spreads environmentSetInput's
-  // shape alongside the path-scoped workspaceId, so charset/caps/defaults
+  // shape alongside the path-scoped workspace name, so charset/caps/defaults
   // cannot diverge between MCP and HTTP.
   server.registerTool('environment_propose', {
     description: 'Derive owned multi-service topology candidates from workspace discovery (scripts, compose presence, Procfile/Makefile/port hints). Read-only: nothing is executed, stored or spawned.',
-    inputSchema: z.object({ workspaceId: z.string().uuid() }).strict(),
+    inputSchema: z.object({ workspace: workspaceName }).strict(),
     annotations: readHints,
-  }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/environments/propose`, {}));
+  }, ({ workspace }) => request(workspacePath(workspace, '/environments/propose'), {}));
   server.registerTool('environment_set', {
     description: 'Persist the environment topology (full replacement per env name). Propose output is a starting draft; this call applies it and is the record.',
-    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentSetInput.shape }).strict(),
+    inputSchema: z.object({ workspace: workspaceName, ...environmentSetInput.shape }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, name, services }) => request(`/api/workspaces/${workspaceId}/environments/set`, { name, services }));
+  }, ({ workspace, name, services }) => request(workspacePath(workspace, '/environments/set'), { name, services }));
   server.registerTool('environment_status', {
     description: 'Read per-service environment status (down/starting/ready/failed/skipped/stale; never starts or stops anything). Process-alive services report at most starting.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
-      environmentId: z.string().uuid(),
+      workspace: workspaceName,
+      environment: environmentName,
     }).strict(),
     annotations: readHints,
-  }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/status?environmentId=${environmentId}`));
+  }, ({ workspace, environment }) => request(`${workspacePath(workspace, '/environments/status')}?environment=${encodeURIComponent(environment)}`));
   // M2 runtime (owned-only + loopback-only; Compose is presence-only, never
   // controlled). The client permission model is the authority, and each
   // mutating call itself (visible in activity_list) is the audit record.
   server.registerTool('environment_up', {
     description: 'Start an owned multi-service environment in dependency order with port preflight (refuse, never kill) and http-200/process-alive readiness. This call applies the stored topology and is the record.',
-    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentUpInput.shape }).strict(),
+    inputSchema: z.object({ workspace: workspaceName, ...environmentUpInput.shape }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/up`, { environmentId }, 170_000));
+  }, ({ workspace, environment }) => request(workspacePath(workspace, '/environments/up'), { environment }, 170_000));
   server.registerTool('environment_down', {
     description: 'Stop exactly the owned processes of an environment in reverse dependency order (expectedRoot-checked; stale clears without a stop call; foreign processes and listeners are never touched).',
-    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentDownInput.shape }).strict(),
+    inputSchema: z.object({ workspace: workspaceName, ...environmentDownInput.shape }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/down`, { environmentId }, 60_000));
+  }, ({ workspace, environment }) => request(workspacePath(workspace, '/environments/down'), { environment }, 60_000));
   server.registerTool('environment_verify', {
     description: 'Run one repo-native script against the live owned environment and pin a capped identity receipt to the run. Readiness targets are loopback-only; the script itself runs the existing bounded npm path.',
-    inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentVerifyInput.shape }).strict(),
+    inputSchema: z.object({ workspace: workspaceName, ...environmentVerifyInput.shape }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, environmentId, repositoryPath, scriptName }) => request(`/api/workspaces/${workspaceId}/environment/verify`, { environmentId, repositoryPath, scriptName }, 170_000));
+  }, ({ workspace, environment, repositoryPath, scriptName }) => request(workspacePath(workspace, '/environment/verify'), { environment, repositoryPath, scriptName }, 170_000));
+  server.registerTool('environment_rename', {
+    description: 'Rename a stored environment, preserving its ID, owned processes and lifecycle state. Refused when the name is taken.',
+    inputSchema: z.object({
+      workspace: workspaceName,
+      environment: environmentName.describe('Current environment name.'),
+      name: z.string().min(1).max(100).describe('New environment name.'),
+    }).strict(),
+    annotations: operateHints,
+  }, ({ workspace, environment, name }) => request(`${workspacePath(workspace, '/environments')}/${encodeURIComponent(environment)}/rename`, { name }));
   server.registerTool('lease_acquire', {
     description: 'Hold a named exclusive resource for a workstream, or join its visible queue when busy.',
     inputSchema: z.object({
       resource: z.string().min(1).max(80),
-      workstreamId: z.string().uuid(),
+      workspace: workspaceName,
+      workstream: workstreamName,
     }).strict(),
     annotations: operateHints,
-  }, ({ resource, workstreamId }) => request('/api/leases/acquire', { resource, workstreamId }));
+  }, ({ resource, workspace, workstream }) => request('/api/leases/acquire', { resource, workspace, workstream }));
   server.registerTool('lease_release', {
     description: 'Release a resource lease held by a workstream; the oldest queued workstream is promoted.',
     inputSchema: z.object({
       resource: z.string().min(1).max(80),
-      workstreamId: z.string().uuid(),
+      workspace: workspaceName,
+      workstream: workstreamName,
     }).strict(),
     annotations: operateHints,
-  }, ({ resource, workstreamId }) => request('/api/leases/release', { resource, workstreamId }));
+  }, ({ resource, workspace, workstream }) => request('/api/leases/release', { resource, workspace, workstream }));
   server.registerTool('lease_touch', {
     description: 'Renew a held lease for ten minutes per touch; renewable indefinitely while holder lives. Queue progresses on crash/stop/finish/release. Only the holder may touch.',
     inputSchema: z.object({
       resource: z.string().min(1).max(80),
-      workstreamId: z.string().uuid(),
+      workspace: workspaceName,
+      workstream: workstreamName,
     }).strict(),
     annotations: operateHints,
-  }, ({ resource, workstreamId }) => request('/api/leases/touch', { resource, workstreamId }));
+  }, ({ resource, workspace, workstream }) => request('/api/leases/touch', { resource, workspace, workstream }));
   server.registerTool('workstream_create', {
     description: 'Create a workstream binding registered roots of one workspace with pinned revisions.',
     inputSchema: z.object({
       name: z.string().min(1).max(100),
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       checkouts: z.array(z.string().min(1).max(4096)).min(1).max(20),
     }).strict(),
     annotations: operateHints,
-  }, ({ name, workspaceId, checkouts }) => request('/api/workstreams', { name, workspaceId, checkouts }));
+  }, ({ name, workspace, checkouts }) => request('/api/workstreams', { name, workspace, checkouts }));
+  server.registerTool('workstream_rename', {
+    description: 'Rename a workstream, preserving its ID, checkouts, history and leases. Refused when the name is taken in the project.',
+    inputSchema: z.object({
+      workspace: workspaceName,
+      workstream: workstreamName.describe('Current workstream name.'),
+      name: z.string().min(1).max(100).describe('New workstream name.'),
+    }).strict(),
+    annotations: operateHints,
+  }, ({ workspace, workstream, name }) => request(workstreamPath(workspace, workstream, '/rename'), { name }));
   const workstreamStatusObjectSchema = z.object({
-      workstreamId: z.string().uuid(),
+      workspace: workspaceName,
+      workstream: workstreamName,
       status: z.enum(['active', 'paused', 'done']).describe('Status[+note] only; never combine with completion.').optional(),
       note: z.object({
         goal: z.string().min(1).max(1000),
@@ -331,36 +376,38 @@ export async function runMcpBridge(): Promise<void> {
     inputSchema: workstreamStatusObjectSchema,
     annotations: operateHints,
   }, args => {
-    const { workstreamId, status, note, completion } = workstreamStatusSchema.parse(args);
-    return request(`/api/workstreams/${workstreamId}/status`, completion
+    const { workspace, workstream, status, note, completion } = workstreamStatusSchema.parse(args);
+    return request(workstreamPath(workspace, workstream, '/status'), completion
       ? { completion }
       : note === undefined ? { status } : { status, note });
   });
   server.registerTool('workstream_context', {
     description: 'One-call handoff: checkpoint, assignment completions by ID/latest, checkouts, scoped recent runs plus situational lessons matched to this task. Read-only.',
     inputSchema: z.object({
-      workstreamId: z.string().uuid(),
+      workspace: workspaceName,
+      workstream: workstreamName,
       limit: z.number().int().min(1).max(20).optional().describe('Recent runs to include, default 5.'),
       assignmentId: z.string().min(1).max(128).optional().describe('Coordinator-issued ID to query present/missing completion.'),
     }).strict(),
     annotations: readHints,
-  }, ({ workstreamId, limit, assignmentId }) => {
+  }, ({ workspace, workstream, limit, assignmentId }) => {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set('limit', String(limit));
     if (assignmentId !== undefined) params.set('assignmentId', assignmentId);
-    return request(`/api/workstreams/${workstreamId}/context${params.size ? `?${params}` : ''}`);
+    const query = params.size ? `?${params}` : '';
+    return request(`${workstreamPath(workspace, workstream, '/context')}${query}`);
   });
   server.registerTool('run_import', {
     description: 'Record a pasted external result as external-import: accepted on trust, NEVER presented as verified here. Strict bounded fields with a masked excerpt; verification claims are refused.',
     inputSchema: z.object({
-      workspaceId: z.string().uuid(),
+      workspace: workspaceName,
       scriptName: z.string().min(1).max(80),
       outcome: z.enum(['passed', 'failed', 'error']),
       durationMs: z.number().finite().min(0).max(86_400_000),
       excerpt: z.string().max(500),
     }).strict(),
     annotations: operateHints,
-  }, ({ workspaceId, scriptName, outcome, durationMs, excerpt }) => request('/api/runs/import', { workspaceId, scriptName, outcome, durationMs, excerpt }));
+  }, ({ workspace, scriptName, outcome, durationMs, excerpt }) => request('/api/runs/import', { workspace, scriptName, outcome, durationMs, excerpt }));
   server.registerTool('learning_record', {
     description: 'Index one reusable lesson by title and file ref with triggering run evidence, failure signature and optional situation tags. Titles/refs only, never rule bodies or secrets.',
     inputSchema: z.object({
@@ -400,9 +447,9 @@ export async function runMcpBridge(): Promise<void> {
       try {
         server.registerTool(toolName, {
           description: localToolDescription(toolName, description),
-          inputSchema: z.object({ workspaceId: z.string().uuid(), ...slotValueSchemas(slots) }).strict(),
+          inputSchema: z.object({ workspace: workspaceName, ...slotValueSchemas(slots) }).strict(),
           annotations: readHints,
-        }, ({ workspaceId, ...inputs }) => request(`/api/workspaces/${workspaceId}/local-tools/call`, { tool: toolName, inputs }, 45_000));
+        }, ({ workspace, ...inputs }) => request(workspacePath(workspace, '/local-tools/call'), { tool: toolName, inputs }, 45_000));
         mirroredLocalTools.add(toolName);
       } catch {
         // A duplicate or untranslatable declaration never blocks the session.

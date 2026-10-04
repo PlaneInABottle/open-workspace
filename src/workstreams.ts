@@ -2,6 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Store } from './store.js';
+import { foldName, parseNameInput, resolveWorkspaceRecord, resolveWorkstreamRecord } from './store.js';
 import { maskSecrets } from './run-summaries.js';
 export { pinnedRunIds } from './run-summaries.js';
 import { runBoundedCommand, type CommandRunner, type DirtyFingerprint } from './verify.js';
@@ -99,6 +100,12 @@ export const workstreamNameMessage = 'Provide a workstream name with 100 charact
 export const workstreamCheckoutCountMessage = 'Select at least one checkout and no more than twenty.';
 export const workstreamCheckoutRootMessage = 'Checkouts must be registered roots of this workspace.';
 
+// Rename-proof workstream-name conflict message (http.ts composes it into
+// safeMessages; the safe-messages test pins the single definition site).
+export const workstreamMessages = {
+  workstreamNameTaken: 'A workstream with this name already exists in this workspace.',
+} as const;
+
 async function canonicalCheckoutRoot(candidate: string): Promise<string> {
   if (typeof candidate !== 'string' || !candidate || candidate.includes('\0') || candidate.length > 4096) {
     throw new Error(workstreamCheckoutRootMessage);
@@ -134,18 +141,20 @@ async function observeRevision(root: string, run: CommandRunner): Promise<{ revi
 
 export async function createWorkstream(
   store: Store,
-  input: { name: string; workspaceId: string; checkouts: string[] },
+  input: { name: string; workspace: string; checkouts: string[] },
   run: CommandRunner = runBoundedCommand,
 ): Promise<Workstream> {
-  const name = input.name.trim();
-  if (!name || name.length > 100) throw new Error(workstreamNameMessage);
+  const name = parseNameInput(input.name, workstreamNameMessage);
   if (!Array.isArray(input.checkouts) || input.checkouts.length === 0 || input.checkouts.length > maxCheckouts) {
     throw new Error(workstreamCheckoutCountMessage);
   }
   return store.update(async state => {
-    const workspace = state.workspaces.find(workspace => workspace.id === input.workspaceId);
-    if (!workspace) throw new Error(workspaceAccessMessage);
+    const workspace = resolveWorkspaceRecord(state, input.workspace, workspaceAccessMessage, workspaceAccessMessage);
     if (state.workstreams.length >= maxWorkstreams) throw new Error(workstreamLimitMessage);
+    if (state.workstreams.some(workstream =>
+      workstream.workspaceId === workspace.id && foldName(workstream.name) === foldName(name))) {
+      throw new Error(workstreamMessages.workstreamNameTaken);
+    }
     const roots: string[] = [];
     for (const candidate of input.checkouts) {
       const canonical = await canonicalCheckoutRoot(candidate);
@@ -162,10 +171,40 @@ export async function createWorkstream(
     }
     const now = new Date().toISOString();
     const workstream: Workstream = {
-      id: randomUUID(), name, workspaceId: workspace.id, checkouts,
+      name, id: randomUUID(), workspaceId: workspace.id, checkouts,
       status: 'active', checkpointNote: null, checkpointHistory: [], completions: [], createdAt: now, updatedAt: now,
     };
     state.workstreams.push(workstream);
+    return workstream;
+  });
+}
+
+/**
+ * Explicit rename: the new name validates like creation, conflicts with a
+ * taken sibling name are refused, and the ID plus checkouts, status,
+ * history, completions, leases and runs are preserved untouched.
+ */
+export async function renameWorkstream(
+  store: Store,
+  workspaceName: string,
+  workstreamName: string,
+  newName: string,
+): Promise<Workstream> {
+  const trimmed = parseNameInput(newName, workstreamNameMessage);
+  return store.update(state => {
+    const { workspace, workstream } = resolveWorkstreamRecord(state, workspaceName, workstreamName, {
+      workspaceInvalid: workspaceAccessMessage,
+      workspaceNotFound: workspaceAccessMessage,
+      workstreamInvalid: workstreamNameMessage,
+      workstreamNotFound: unknownWorkstreamMessage,
+    });
+    if (foldName(workstream.name) !== foldName(trimmed)
+      && state.workstreams.some(entry =>
+        entry.workspaceId === workspace.id && foldName(entry.name) === foldName(trimmed))) {
+      throw new Error(workstreamMessages.workstreamNameTaken);
+    }
+    workstream.name = trimmed;
+    workstream.updatedAt = new Date().toISOString();
     return workstream;
   });
 }

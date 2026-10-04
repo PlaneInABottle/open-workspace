@@ -30,14 +30,14 @@ async function rig(t: { after: (cleanup: () => void | Promise<void>) => void }) 
   await store.initialize();
   const service = new WorkspaceService(store);
   const workspace = await service.register('Stack', [root]);
-  const record = await service.environmentSet(workspace.id, {
+  const record = await service.environmentSet(workspace.name, {
     name: 'local',
     services: [
       { id: 'backend', repositoryPath: backend, scriptName: 'dev', port: 3201, dependsOn: [], readiness: { kind: 'http-200' } },
       { id: 'frontend', repositoryPath: frontend, scriptName: 'dev', port: 3202, dependsOn: ['backend'], readiness: { kind: 'http-200' } },
     ],
   });
-  return { root, backend, frontend, store, service, workspaceId: workspace.id, recordId: record.id };
+  return { root, backend, frontend, store, service, workspaceName: workspace.name, recordName: record.name, workspaceId: workspace.id, recordId: record.id };
 }
 
 function outcome(stdout: string, exitCode: number | null = 0): CommandOutcome {
@@ -63,7 +63,7 @@ test('environment_verify pins a capped identity receipt surfaced via recent_runs
     return { ok: true } as const;
   };
   let nowMs = 2_000_000;
-  await environmentUp(r.store, r.workspaceId, r.recordId, {
+  await environmentUp(r.store, r.workspaceName, r.recordName, {
     list,
     starter,
     probe: async () => false,
@@ -72,8 +72,8 @@ test('environment_verify pins a capped identity receipt surfaced via recent_runs
     sleep: async (ms: number) => { nowMs += ms; },
     pollIntervalMs: 1000,
   });
-  const verified = await environmentVerify(r.store, r.workspaceId, {
-    environmentId: r.recordId,
+  const verified = await environmentVerify(r.store, r.workspaceName, {
+    environment: r.recordName,
     repositoryPath: r.backend,
     scriptName: 'check',
   }, { list, runCommand: gitRunner() });
@@ -96,7 +96,7 @@ test('environment_verify pins a capped identity receipt surfaced via recent_runs
   assert.equal(runs[0].environment?.envName, 'local');
   assert.equal(runs[0].environment?.services.length, 2);
   assert.ok(runs[0].excerptPreview.length <= 200);
-  const viaService = await r.service.recentRuns(r.workspaceId, 5);
+  const viaService = await r.service.recentRuns(r.workspaceName, undefined, 5);
   assert.equal(viaService[0].environment?.services[0].revision, revision);
 });
 
@@ -154,11 +154,11 @@ test('verify refuses unknown environments, repos and scripts with allowlisted er
   const r = await rig(t);
   const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [] });
   await assert.rejects(
-    environmentVerify(r.store, r.workspaceId, { environmentId: '00000000-0000-4000-8000-000000000000', repositoryPath: r.backend, scriptName: 'check' }, { list }),
+    environmentVerify(r.store, r.workspaceName, { environment: 'Missing env', repositoryPath: r.backend, scriptName: 'check' }, { list }),
     /Environment not found/,
   );
   await assert.rejects(
-    environmentVerify(r.store, r.workspaceId, { environmentId: r.recordId, repositoryPath: r.backend, scriptName: 'nope' }, { list }),
+    environmentVerify(r.store, r.workspaceName, { environment: r.recordName, repositoryPath: r.backend, scriptName: 'nope' }, { list }),
     /no runnable test script/,
   );
   const outside = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-env-outside-')));
@@ -166,7 +166,7 @@ test('verify refuses unknown environments, repos and scripts with allowlisted er
   await mkdir(join(outside, 'repo'), { recursive: true });
   await writeFile(join(outside, 'repo', 'package.json'), JSON.stringify({ scripts: { check: 'node x.js' } }));
   await assert.rejects(
-    environmentVerify(r.store, r.workspaceId, { environmentId: r.recordId, repositoryPath: join(outside, 'repo'), scriptName: 'check' }, { list }),
+    environmentVerify(r.store, r.workspaceName, { environment: r.recordName, repositoryPath: join(outside, 'repo'), scriptName: 'check' }, { list }),
     /not inside/,
   );
 });

@@ -64,7 +64,7 @@ test('service start launches one existing package.json script as an owned PM2 pr
   const service = new WorkspaceService(f.store, list, undefined, undefined, undefined, undefined, undefined, Date.now, emptyDocker(), undefined, starter);
   const approved = await service.register('Project', [f.project]);
 
-  const result = await service.serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev' });
+  const result = await service.serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev' });
   assert.deepEqual(starterInputs, [{ name: 'dev', scriptName: 'dev', cwd: f.project }]);
   assert.equal(result.action, 'start');
   assert.equal(result.status, 'completed');
@@ -75,7 +75,7 @@ test('service start launches one existing package.json script as an owned PM2 pr
   assert.equal(result.target.name, 'dev');
   assert.match(result.message, /not readiness/);
 
-  const inventory = await service.services(approved.id);
+  const inventory = await service.services(approved.name);
   assert.equal(inventory.services.length, 1);
   assert.equal(inventory.services[0].pmId, 7);
   assert.equal(inventory.services[0].exactRootPath, approved.roots[0]);
@@ -112,9 +112,9 @@ test('started services keep stop/restart continuity on the same inventory path',
   }, undefined, undefined, undefined, undefined, Date.now, emptyDocker());
   const approved = await service.register('Project', [f.project]);
 
-  const stopped = await service.serviceAction(approved.id, 'stop', { pmId: 7, name: 'dev', namespace: 'default' });
+  const stopped = await service.serviceAction(approved.name, 'stop', { pmId: 7, name: 'dev', namespace: 'default' });
   assert.equal(stopped.status, 'completed');
-  const restarted = await service.serviceAction(approved.id, 'restart', { pmId: 7, name: 'dev', namespace: 'default' });
+  const restarted = await service.serviceAction(approved.name, 'restart', { pmId: 7, name: 'dev', namespace: 'default' });
   assert.equal(restarted.status, 'completed');
   // Owned-only teardown: exactly the owned pmId was addressed; the foreign
   // listener (synthetic outside process) was never passed to the runner.
@@ -132,25 +132,25 @@ test('service start refuses unknown scripts, malformed names, out-of-root and am
   const service = new WorkspaceService(f.store, list, undefined, undefined, undefined, undefined, undefined, Date.now, emptyDocker(), undefined, starter);
   const approved = await service.register('Project', [f.project]);
 
-  const unknown = await service.serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'missing' });
+  const unknown = await service.serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'missing' });
   assert.equal(unknown.status, 'failed');
   assert.match(unknown.message, /no runnable script/);
 
   for (const scriptName of ['rm -rf /', '../evil', 'a;b', '']) {
-    const malformed = await service.serviceStart(approved.id, { repositoryPath: f.project, scriptName });
+    const malformed = await service.serviceStart(approved.name, { repositoryPath: f.project, scriptName });
     assert.equal(malformed.status, 'failed', scriptName);
     assert.match(malformed.message, /no runnable script/, scriptName);
   }
 
-  const outsideRoot = await service.serviceStart(approved.id, { repositoryPath: f.outside, scriptName: 'dev' });
+  const outsideRoot = await service.serviceStart(approved.name, { repositoryPath: f.outside, scriptName: 'dev' });
   assert.equal(outsideRoot.status, 'failed');
   assert.match(outsideRoot.message, /registered project root/);
 
-  const missing = await service.serviceStart(approved.id, { repositoryPath: join(f.project, 'nope'), scriptName: 'dev' });
+  const missing = await service.serviceStart(approved.name, { repositoryPath: join(f.project, 'nope'), scriptName: 'dev' });
   assert.equal(missing.status, 'failed');
   assert.match(missing.message, /registered project root/);
 
-  const badName = await service.serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev', name: 'bad name!' });
+  const badName = await service.serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev', name: 'bad name!' });
   assert.equal(badName.status, 'failed');
   assert.match(badName.message, /service name/);
 
@@ -199,7 +199,7 @@ test('service start has no explicit-argv path: extra command fields never reach 
     interpreter: 'bash',
     shell: true,
   } as unknown as { repositoryPath: string; scriptName: string };
-  const result = await service.serviceStart(approved.id, hostile);
+  const result = await service.serviceStart(approved.name, hostile);
   assert.equal(result.status, 'completed');
   assert.equal(starterInputs.length, 1);
   assert.deepEqual(Object.keys(starterInputs[0] as object).sort(), ['cwd', 'name', 'scriptName']);
@@ -214,29 +214,29 @@ test('service start reports starter and metadata failures honestly', async t => 
   const approved = await reads(f.store, async () => ({ ok: true })).register('Project', [f.project]);
 
   const missing = await reads(f.store, async () => ({ ok: false, error: 'missing' }))
-    .serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev' });
+    .serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev' });
   assert.equal(missing.status, 'failed');
   assert.match(missing.message, /PM2 is unavailable/);
 
   const timedOut = await reads(f.store, async () => ({ ok: false, error: 'timeout' }))
-    .serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev' });
+    .serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev' });
   assert.equal(timedOut.status, 'failed');
   assert.match(timedOut.message, /bounded runtime/);
 
   const failed = await reads(f.store, async () => ({ ok: false, error: 'failed' }))
-    .serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev' });
+    .serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev' });
   assert.equal(failed.status, 'failed');
   assert.match(failed.message, /did not start/);
 
   const stale = new WorkspaceService(f.store, async (): Promise<Pm2ListResult> => ({ available: false, error: 'timeout' }),
     undefined, undefined, undefined, undefined, undefined, Date.now, emptyDocker(), undefined, async () => ({ ok: true }));
-  const unknown = await stale.serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev' });
+  const unknown = await stale.serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev' });
   assert.equal(unknown.status, 'unknown');
   assert.match(unknown.message, /fresh service metadata is unavailable/);
 
   const unmatched = new WorkspaceService(f.store, async (): Promise<Pm2ListResult> => ({ available: true, processes: [] }),
     undefined, undefined, undefined, undefined, undefined, Date.now, emptyDocker(), undefined, async () => ({ ok: true }));
-  const ghost = await unmatched.serviceStart(approved.id, { repositoryPath: f.project, scriptName: 'dev' });
+  const ghost = await unmatched.serviceStart(approved.name, { repositoryPath: f.project, scriptName: 'dev' });
   assert.equal(ghost.status, 'unknown');
   assert.match(ghost.message, /could not be matched/);
 });
@@ -276,7 +276,7 @@ test('service start route shares the canonical dashboard gate and audits names o
   const origin = await app.listen(0);
   t.after(() => app.close());
   const approved = await service.register('Project', [f.project]);
-  const path = `/api/workspaces/${approved.id}/services/start`;
+  const path = `/api/workspaces/${approved.name}/services/start`;
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const startBody = JSON.stringify({ repositoryPath: f.project, scriptName: 'dev' });
 

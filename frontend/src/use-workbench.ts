@@ -24,7 +24,7 @@ export interface WorkbenchState {
   workspaces: Workspace[];
   capabilities: Capability[];
   clientConfig: ClientConfig | null;
-  selectedId: string | null;
+  selectedName: string | null;
   inspection: Inspection | null;
   inspectionError: string | null;
   inspectionLoading: boolean;
@@ -53,7 +53,7 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     workspaces: [],
     capabilities: [],
     clientConfig: null,
-    selectedId: null,
+    selectedName: null,
     inspection: null,
     inspectionError: null,
     inspectionLoading: false,
@@ -98,7 +98,7 @@ export function useWorkbench() {
   const servicesSequence = useRef(0);
   const workstreamsSequence = useRef(0);
   const selectionRevision = useRef(0);
-  const selectedId = useRef<string | null>(null);
+  const selectedName = useRef<string | null>(null);
 
   const commit = useCallback((update: (current: WorkbenchState) => WorkbenchState) => {
     const next = update(stateRef.current);
@@ -115,7 +115,7 @@ export function useWorkbench() {
     mutationRevision.current++;
     inspectionSequence.current++;
     selectionRevision.current++;
-    selectedId.current = null;
+    selectedName.current = null;
     commit(() => ({ ...initialState(phase), notice }));
   }, [commit]);
 
@@ -139,10 +139,10 @@ export function useWorkbench() {
       const [overview, clientConfig] = await Promise.all([api.overview(), api.clientConfig()]);
       if (!api.isCurrent(session) || request !== refreshSequence.current || revision !== mutationRevision.current) return false;
 
-      const currentSelection = selectedId.current;
-      const selectionExists = currentSelection !== null && overview.workspaces.some(workspace => workspace.id === currentSelection);
+      const currentSelection = selectedName.current;
+      const selectionExists = currentSelection !== null && overview.workspaces.some(workspace => workspace.name === currentSelection);
       if (currentSelection && !selectionExists) {
-        selectedId.current = null;
+        selectedName.current = null;
         selectionRevision.current++;
         inspectionSequence.current++;
         servicesSequence.current++;
@@ -153,7 +153,7 @@ export function useWorkbench() {
         workspaces: overview.workspaces,
         capabilities: overview.capabilities,
         clientConfig,
-        selectedId: selectionExists ? currentSelection : null,
+        selectedName: selectionExists ? currentSelection : null,
         inspection: selectionExists ? current.inspection : null,
         inspectionError: selectionExists ? current.inspectionError : null,
         inspectionLoading: selectionExists ? current.inspectionLoading : false,
@@ -202,19 +202,19 @@ export function useWorkbench() {
     void revocation;
   }, [api, resetPrivateState]);
 
-  const inspectProject = useCallback(async (workspaceId: string, preserveInspection = false) => {
+  const inspectProject = useCallback(async (workspace: string, preserveInspection = false) => {
     const session = api.sessionGeneration;
     if (!api.isConfirmed) return false;
     const request = ++inspectionSequence.current;
     selectionRevision.current++;
-    selectedId.current = workspaceId;
+    selectedName.current = workspace;
     commit(current => {
       const keepCurrent = preserveInspection
-        && current.selectedId === workspaceId
-        && current.inspection?.workspace.id === workspaceId;
+        && current.selectedName === workspace
+        && current.inspection?.workspace.name === workspace;
       return {
         ...current,
-        selectedId: workspaceId,
+        selectedName: workspace,
         inspection: keepCurrent ? current.inspection : null,
         inspectionError: null,
         inspectionLoading: true,
@@ -230,21 +230,21 @@ export function useWorkbench() {
       };
     });
     try {
-      const inspection = await api.inspect(workspaceId);
-      if (!api.isCurrent(session) || request !== inspectionSequence.current || selectedId.current !== workspaceId) return false;
+      const inspection = await api.inspect(workspace);
+      if (!api.isCurrent(session) || request !== inspectionSequence.current || selectedName.current !== workspace) return false;
       commit(current => ({ ...current, inspection, inspectionLoading: false }));
-      void listWorkstreamsFor(workspaceId, session);
+      void listWorkstreamsFor(workspace, inspection.workspace.id, session);
       return true;
     } catch (error) {
       if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && request === inspectionSequence.current && selectedId.current === workspaceId) {
+      if (api.isCurrent(session) && request === inspectionSequence.current && selectedName.current === workspace) {
         commit(current => ({ ...current, inspectionLoading: false, inspectionError: errorMessage(error) }));
       }
       return false;
     }
   }, [api, commit, handleSessionExpired]);
 
-  const inspectServices = useCallback(async (workspaceId: string) => {
+  const inspectServices = useCallback(async (workspace: string) => {
     const session = api.sessionGeneration;
     if (!api.isConfirmed) return false;
     const request = ++servicesSequence.current;
@@ -254,25 +254,25 @@ export function useWorkbench() {
       servicesError: null,
     }));
     try {
-      const services = await api.services(workspaceId);
-      if (!api.isCurrent(session) || request !== servicesSequence.current || selectedId.current !== workspaceId) return false;
+      const services = await api.services(workspace);
+      if (!api.isCurrent(session) || request !== servicesSequence.current || selectedName.current !== workspace) return false;
       commit(current => ({ ...current, services, servicesLoading: false }));
       return true;
     } catch (error) {
       if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && request === servicesSequence.current && selectedId.current === workspaceId) {
+      if (api.isCurrent(session) && request === servicesSequence.current && selectedName.current === workspace) {
         commit(current => ({ ...current, servicesLoading: false, servicesError: errorMessage(error) }));
       }
       return false;
     }
   }, [api, commit, handleSessionExpired]);
 
-  const listWorkstreamsFor = useCallback(async (workspaceId: string, session: number) => {
+  const listWorkstreamsFor = useCallback(async (workspace: string, workspaceId: string, session: number) => {
     const request = ++workstreamsSequence.current;
     commit(current => ({ ...current, workstreamsLoading: true, workstreamsError: null }));
     try {
       const [workstreams, leases] = await Promise.all([api.workstreams(), api.leases()]);
-      if (!api.isCurrent(session) || request !== workstreamsSequence.current || selectedId.current !== workspaceId) return false;
+      if (!api.isCurrent(session) || request !== workstreamsSequence.current || selectedName.current !== workspace) return false;
       commit(current => ({
         ...current,
         workstreamsLoading: false,
@@ -282,7 +282,7 @@ export function useWorkbench() {
       return true;
     } catch (error) {
       if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session) && request === workstreamsSequence.current && selectedId.current === workspaceId) {
+      if (api.isCurrent(session) && request === workstreamsSequence.current && selectedName.current === workspace) {
         commit(current => ({ ...current, workstreamsLoading: false, workstreamsError: errorMessage(error) }));
       }
       return false;
@@ -303,12 +303,12 @@ export function useWorkbench() {
     }
   }, [api, commit, handleSessionExpired]);
 
-  const loadRecords = useCallback(async (workspaceId: string) => {
+  const loadRecords = useCallback(async (workspace: string) => {
     const session = api.sessionGeneration;
     if (!api.isConfirmed) return false;
     commit(current => ({ ...current, recordsLoading: true, recordsError: null }));
     try {
-      const [learnings, runs] = await Promise.all([api.learnings(), api.recentRuns(workspaceId)]);
+      const [learnings, runs] = await Promise.all([api.learnings(), api.recentRuns(workspace, undefined)]);
       if (!api.isCurrent(session)) return false;
       commit(current => ({
         ...current,
@@ -329,7 +329,7 @@ export function useWorkbench() {
   }, [api, commit, handleSessionExpired]);
 
   const refreshSelected = useCallback(async () => {
-    const selection = selectedId.current;
+    const selection = selectedName.current;
     if (!selection) return refresh();
 
     const session = api.sessionGeneration;
@@ -345,7 +345,7 @@ export function useWorkbench() {
     }
 
     let inspected = true;
-    if (selectedId.current === selection && api.isConfirmed) {
+    if (selectedName.current === selection && api.isConfirmed) {
       inspected = await inspectProject(selection, true);
     }
     if (api.isCurrent(session) && request === refreshSequence.current && revision === mutationRevision.current) {
@@ -358,8 +358,8 @@ export function useWorkbench() {
     selectionRevision.current++;
     inspectionSequence.current++;
     servicesSequence.current++;
-    selectedId.current = null;
-    commit(current => ({ ...current, selectedId: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, workstreams: [], workstreamsError: null, workstreamsLoading: false, leases: [], leasesError: null }));
+    selectedName.current = null;
+    commit(current => ({ ...current, selectedName: null, inspection: null, inspectionError: null, inspectionLoading: false, services: null, servicesError: null, servicesLoading: false, workstreams: [], workstreamsError: null, workstreamsLoading: false, leases: [], leasesError: null }));
   }, [commit]);
 
   const mutate = useCallback(async <T,>(key: string, action: () => Promise<T>, successMessage: string) => {
@@ -419,7 +419,7 @@ export function useWorkbench() {
       () => api.register(value.name, value.roots),
       'Project registered. Bounded metadata was read immediately; nothing was started or changed.',
     );
-    if (result.ok && api.isCurrent(session)) await inspectProject(result.value.id);
+    if (result.ok && api.isCurrent(session)) await inspectProject(result.value.name);
     return result;
   }, [api, inspectProject, mutate]);
 
@@ -437,9 +437,9 @@ export function useWorkbench() {
     }
   }, [api, handleSessionExpired, resetPrivateState]);
 
-  const removeWorkspace = useCallback(async (workspaceId: string) => {
-    if (selectedId.current === workspaceId) clearSelection();
-    await mutate(busyKeyForWorkspace(workspaceId), () => api.remove(workspaceId), 'Project registration removed. No project files or runtime resources were deleted.');
+  const removeWorkspace = useCallback(async (workspace: string) => {
+    if (selectedName.current === workspace) clearSelection();
+    await mutate(busyKeyForWorkspace(workspace), () => api.remove(workspace), 'Project registration removed. No project files or runtime resources were deleted.');
   }, [api, clearSelection, mutate]);
 
   const copyText = useCallback(async (text: string, successMessage: string): Promise<boolean> => {

@@ -94,33 +94,33 @@ test('reads record sanitized descriptors and failures never leak literals', asyn
   const origin = await app.listen(0);
   const headers = { Authorization: `Bearer ${app.mcpToken}`, 'Content-Type': 'application/json' };
   await fetch(`${origin}/api/overview`, { headers });
-  await fetch(`${origin}/api/workspaces/${f.workspace.id}`, { headers });
-  await fetch(`${origin}/api/workspaces/${f.workspace.id}/onboarding`, { headers });
-  await fetch(`${origin}/api/workspaces/${f.workspace.id}/services`, { method: 'POST', headers, body: '{}' });
+  await fetch(`${origin}/api/workspaces/${f.workspace.name}`, { headers });
+  await fetch(`${origin}/api/workspaces/${f.workspace.name}/onboarding`, { headers });
+  await fetch(`${origin}/api/workspaces/${f.workspace.name}/services`, { method: 'POST', headers, body: '{}' });
   await fetch(`${origin}/api/workstreams`, { headers });
   await fetch(`${origin}/api/leases`, { headers });
   const learnings = await fetch(`${origin}/api/learnings`, { headers });
   assert.deepEqual(await learnings.json(), { milestones: [] }, 'the read API returns narrative notes only');
-  const denied = await fetch(`${origin}/api/workspaces/00000000-0000-4000-8000-000000000000`, { headers });
+  const denied = await fetch(`${origin}/api/workspaces/Missing%20project`, { headers });
   assert.equal(denied.status, 400);
   // Failed mutation attempts carrying secrets must not reach activity either.
   const secretSql = 'SELECT * FROM users WHERE email = \'someone@example.com\'';
   const secretUrl = 'http://127.0.0.1:9/?token=sk-test-secret-marker';
-  await fetch(`${origin}/api/workspaces/${f.workspace.id}/datastore/query`, {
+  await fetch(`${origin}/api/workspaces/${f.workspace.name}/datastore/query`, {
     method: 'POST', headers, body: JSON.stringify({ database: 'appdb', role: 'reader', sql: secretSql }),
   });
-  await fetch(`${origin}/api/workspaces/${f.workspace.id}/browser/check`, {
+  await fetch(`${origin}/api/workspaces/${f.workspace.name}/browser/check`, {
     method: 'POST', headers, body: JSON.stringify({ url: secretUrl }),
   });
   const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${app.mcpToken}` } })).json() as Array<{ operation: string; detail: string; workspaceId: string | null }>;
   const details = activity.map(entry => entry.detail);
   assert.ok(details.some(detail => detail === 'workspace_list → ok'));
-  assert.ok(details.some(detail => detail === `workspace_inspect ${f.workspace.id.slice(0, 8)} → ok`));
-  assert.ok(details.some(detail => detail === `onboarding_plan ${f.workspace.id.slice(0, 8)} → ok`));
-  assert.ok(details.some(detail => detail === `workspace_services ${f.workspace.id.slice(0, 8)} → ok`));
+  assert.ok(details.some(detail => detail === `workspace_inspect ${f.workspace.name} → ok`));
+  assert.ok(details.some(detail => detail === `onboarding_plan ${f.workspace.name} → ok`));
+  assert.ok(details.some(detail => detail === `workspace_services ${f.workspace.name} → ok`));
   assert.ok(details.some(detail => detail === 'workspace_workstreams → ok'));
   assert.ok(details.some(detail => detail === 'workspace_leases → ok'));
-  assert.ok(details.some(detail => detail === 'workspace_inspect 00000000 → denied'));
+  assert.ok(details.some(detail => detail === 'workspace_inspect Missing project → denied'));
   const serialized = JSON.stringify(activity);
   for (const leaked of [secretSql, 'sk-test-secret-marker', 'someone@example.com', '127.0.0.1:9']) {
     assert.ok(!serialized.includes(leaked), `activity must never carry ${leaked}`);
@@ -182,9 +182,9 @@ test('verify persists a bounded summary and recent_runs resolves scopes with cap
   const service = new WorkspaceService(store, undefined, undefined, runners.runCommand);
   const workspace = await service.register('Learning project', [project]);
   try {
-    const result = await service.verify(workspace.id, { repositoryPath: project, scriptName: 'test' });
+    const result = await service.verify(workspace.name, { repositoryPath: project, scriptName: 'test' });
     assert.equal(result.outcome, 'failed');
-    const listed = await service.recentRuns(workspace.id, 5);
+    const listed = await service.recentRuns(workspace.name, undefined, 5);
     assert.equal(listed.length, 1);
     assert.equal(listed[0].scriptName, 'test');
     assert.equal(listed[0].durationMs, 321);
@@ -198,8 +198,8 @@ test('verify persists a bounded summary and recent_runs resolves scopes with cap
         status: 'active', checkpointNote: null, checkpointHistory: [], completions: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       });
     });
-    assert.equal((await service.recentRuns(workstreamId, 5)).length, 1);
-    await assert.rejects(service.recentRuns('22222222-2222-4222-8222-222222222222', 5), /Workspace not found/);
+    assert.equal((await service.recentRuns('Learning project', 'Stream', 5)).length, 1);
+    await assert.rejects(service.recentRuns('Missing project', undefined, 5), /Workspace not found/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -222,12 +222,13 @@ test('read tools enforce caps and never self-record', async t => {
     assert.equal((await fetch(`${origin}/api/activity?limit=51`, { headers })).status, 400);
     assert.equal((await fetch(`${origin}/api/activity?limit=0`, { headers })).status, 400);
     assert.deepEqual(await (await fetch(`${origin}/api/activity?limit=not-a-number`, { headers })).json(), { error: 'Use a result limit within the allowed range.' });
-    const runs = await fetch(`${origin}/api/runs/recent?scope=${workspace.id}`, { headers });
+    const runs = await fetch(`${origin}/api/runs/recent?workspace=${encodeURIComponent(workspace.name)}`, { headers });
     assert.equal(runs.status, 200);
     assert.deepEqual(await runs.json(), []);
-    assert.equal((await fetch(`${origin}/api/runs/recent?scope=${workspace.id}&limit=21`, { headers })).status, 400);
-    assert.equal((await fetch(`${origin}/api/runs/recent?scope=nope`, { headers })).status, 400);
-    assert.deepEqual(await (await fetch(`${origin}/api/runs/recent?scope=33333333-3333-4333-8333-333333333333`, { headers })).json(), { error: 'Workspace not found. Register it first.' });
+    assert.equal((await fetch(`${origin}/api/runs/recent?workspace=${encodeURIComponent(workspace.name)}&limit=21`, { headers })).status, 400);
+    assert.equal((await fetch(`${origin}/api/runs/recent?workspace=nope`, { headers })).status, 400);
+    assert.deepEqual(await (await fetch(`${origin}/api/runs/recent?workspace=Missing%20project`, { headers })).json(), { error: 'Workspace not found. Register it first.' });
+    assert.deepEqual(await (await fetch(`${origin}/api/runs/recent?workspace=33333333-3333-4333-8333-333333333333`, { headers })).json(), { error: 'Provide the registered name, not the ID.' });
     const after = ((await (await fetch(`${origin}/api/activity`, { headers })).json()) as unknown[]).length;
     assert.equal(after, before);
   } finally {

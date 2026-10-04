@@ -1,0 +1,288 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store, writePrivateJson } from '../src/store.js';
+import { WorkspaceService } from '../src/workspace.js';
+import { nameMessages } from '../src/store.js';
+import { workspaceMessages } from '../src/workspace.js';
+import { workstreamMessages } from '../src/workstreams.js';
+import { environmentMessages } from '../src/environment.js';
+import { createApp } from '../src/http.js';
+import { fixtureStaticAssets } from './helpers/static-assets.js';
+
+async function fixture(t: { after: (cleanup: () => void | Promise<void>) => void }, name = 'names-fixture') {
+  const root = await realpath(await mkdtemp(join(tmpdir(), name)));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = join(root, 'project');
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, 'package.json'), '{"scripts":{"check":"node check.js"}}');
+  const store = new Store(join(root, 'state'));
+  await store.initialize();
+  const service = new WorkspaceService(store);
+  return { root, project, store, service };
+}
+
+test('workspace names are unique globally, case-insensitively, with UUID/charset refusal', async t => {
+  const f = await fixture(t);
+  const first = await f.service.register('Gate Project', [f.project]);
+  assert.equal(first.name, 'Gate Project');
+  await assert.rejects(f.service.register('gate project', [f.project]), new RegExp(escapeRegExp(workspaceMessages.projectNameTaken)));
+  await assert.rejects(f.service.register('  Gate Project  ', [f.project]), new RegExp(escapeRegExp(workspaceMessages.projectNameTaken)));
+  await assert.rejects(
+    f.service.register('12345678-1234-4234-8234-1234567890ab', [f.project]),
+    new RegExp(escapeRegExp(nameMessages.useTheName)),
+  );
+  for (const bad of ['', '   ', 'has/slash', '.', '..', 'has\0nul', 'has\nnewline']) {
+    await assert.rejects(f.service.register(bad, [f.project]), new RegExp(escapeRegExp(workspaceMessages.projectName)));
+  }
+  assert.equal((await f.store.read()).workspaces.length, 1);
+});
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+test('workstream names are unique per workspace; the same name works in another workspace', async t => {
+  const f = await fixture(t);
+  const second = join(f.root, 'second');
+  await mkdir(second, { recursive: true });
+  await f.service.register('One', [f.project]);
+  await f.service.register('Two', [second]);
+  await f.service.createWorkstream({ name: 'Stream', workspace: 'One', checkouts: [f.project] });
+  await assert.rejects(
+    f.service.createWorkstream({ name: 'stream', workspace: 'One', checkouts: [f.project] }),
+    new RegExp(escapeRegExp(workstreamMessages.workstreamNameTaken)),
+  );
+  const other = await f.service.createWorkstream({ name: 'Stream', workspace: 'Two', checkouts: [second] });
+  assert.equal(other.name, 'Stream');
+});
+
+test('environment set replaces case-insensitively instead of duplicating', async t => {
+  const f = await fixture(t);
+  await f.service.register('Stack', [f.project]);
+  const draft = {
+    services: [{ id: 'api', repositoryPath: f.project, scriptName: 'check', port: null as number | null, readiness: { kind: 'process-alive' as const } }],
+  };
+  const first = await f.service.environmentSet('Stack', { name: 'local', ...draft });
+  const second = await f.service.environmentSet('STACK', { name: 'LOCAL', ...draft });
+  assert.equal(second.id, first.id, 'same record replaced in place');
+  assert.equal(second.name, 'local', 'stored casing preserved; rename is the explicit path');
+  assert.equal((await f.service.environmentList('Stack')).length, 1);
+});
+
+test('workspace rename preserves identity, roots, workstreams, runs and activity', async t => {
+  const f = await fixture(t);
+  const registered = await f.service.register('Before', [f.project]);
+  await f.service.createWorkstream({ name: 'Stream', workspace: 'Before', checkouts: [f.project] });
+  await f.service.recordActivity({ actor: 'mcp', operation: 'register', workspaceId: registered.id, detail: 'Before' });
+  const renamed = await f.service.renameWorkspace('before', 'After');
+  assert.equal(renamed.id, registered.id, 'stable ID preserved');
+  assert.equal(renamed.name, 'After');
+  assert.deepEqual(renamed.roots, [registered.roots[0]]);
+  assert.equal((await f.service.workstream('After', 'Stream')).workspaceId, registered.id);
+  const state = await f.store.read();
+  assert.equal(state.workspaces[0].id, registered.id);
+  assert.ok(state.activity.some(entry => entry.workspaceId === registered.id), 'activity still keyed by stable ID');
+  await assert.rejects(f.service.inspect('Before'), /Workspace not found/);
+  assert.equal((await f.service.inspect('After')).workspace.id, registered.id);
+});
+
+test('workspace rename to a taken name is refused; casing-only rename works', async t => {
+  const f = await fixture(t);
+  const second = join(f.root, 'second');
+  await mkdir(second, { recursive: true });
+  await f.service.register('Alpha', [f.project]);
+  await f.service.register('Beta', [second]);
+  await assert.rejects(f.service.renameWorkspace('Alpha', 'beta'), new RegExp(escapeRegExp(workspaceMessages.projectNameTaken)));
+  const recased = await f.service.renameWorkspace('Alpha', 'ALPHA');
+  assert.equal(recased.name, 'ALPHA');
+});
+
+test('workstream rename preserves state; environment rename preserves owned and lifecycle', async t => {
+  const f = await fixture(t);
+  await f.service.register('Stack', [f.project]);
+  const created = await f.service.createWorkstream({ name: 'Stream', workspace: 'Stack', checkouts: [f.project] });
+  await f.service.acquireLease({ resource: 'port:3000', workspace: 'Stack', workstream: 'Stream' });
+  const renamed = await f.service.renameWorkstream('Stack', 'Stream', 'River');
+  assert.equal(renamed.id, created.id);
+  assert.equal(renamed.name, 'River');
+  assert.deepEqual(renamed.checkouts, created.checkouts);
+  const leases = await f.service.listLeases();
+  assert.equal(leases.length, 1, 'leases follow the stable workstream ID across rename');
+  await f.service.createWorkstream({ name: 'Other', workspace: 'Stack', checkouts: [f.project] });
+  await assert.rejects(
+    f.service.renameWorkstream('Stack', 'River', 'other'),
+    new RegExp(escapeRegExp(workstreamMessages.workstreamNameTaken)),
+  );
+
+  const env = await f.service.environmentSet('Stack', {
+    name: 'local',
+    services: [{ id: 'api', repositoryPath: f.project, scriptName: 'check', port: null as number | null, readiness: { kind: 'process-alive' as const } }],
+  });
+  const renamedEnv = await f.service.renameEnvironment('Stack', 'LOCAL', 'dev');
+  assert.equal(renamedEnv.id, env.id, 'stable env ID preserved');
+  assert.deepEqual(renamedEnv.owned, env.owned, 'owned processes preserved');
+  assert.equal(renamedEnv.state, env.state, 'lifecycle state preserved');
+  await f.service.environmentSet('Stack', {
+    name: 'other',
+    services: [{ id: 'web', repositoryPath: f.project, scriptName: 'check', port: null as number | null, readiness: { kind: 'process-alive' as const } }],
+  });
+  await assert.rejects(
+    f.service.renameEnvironment('Stack', 'dev', 'OTHER'),
+    new RegExp(escapeRegExp(environmentMessages.envNameTaken)),
+  );
+});
+
+test('legacy duplicate names resolve to an ambiguity error carrying candidates', async t => {
+  const f = await fixture(t);
+  const second = join(f.root, 'second');
+  await mkdir(second, { recursive: true });
+  const at = new Date().toISOString();
+  await writePrivateJson(join(f.store.directory, 'state.json'), {
+    workspaces: [
+      { id: '11111111-1111-4111-8111-111111111111', name: 'Dupe', roots: [f.project], linkedContainers: [], createdAt: at },
+      { id: '22222222-2222-4222-8222-222222222222', name: 'dupe', roots: [second], linkedContainers: [], createdAt: at },
+    ],
+    workstreams: [],
+  });
+  const service = new WorkspaceService(f.store);
+  const error = await service.inspect('DUPE').catch((error: unknown) => error);
+  assert.ok(error instanceof Error);
+  assert.match(error.message, new RegExp(`^${escapeRegExp(nameMessages.ambiguous)} Candidates: `));
+  assert.match(error.message, /"Dupe"/);
+  assert.match(error.message, /"dupe"/);
+  const candidates = (error as { candidates?: Array<{ name: string; rootLabel: string; createdAt: string }> }).candidates;
+  assert.equal(candidates?.length, 2);
+  assert.deepEqual(candidates?.map(candidate => candidate.name).sort(), ['Dupe', 'dupe']);
+  assert.ok(candidates?.every(candidate => typeof candidate.rootLabel === 'string' && typeof candidate.createdAt === 'string'));
+});
+
+test('HTTP boundary: names round-trip encoded, UUID inputs rejected, ambiguity lists candidates', async t => {
+  const f = await fixture(t, 'names-http');
+  const spaced = join(f.root, 'my project');
+  await mkdir(spaced, { recursive: true });
+  await writeFile(join(spaced, 'package.json'), '{"scripts":{"check":"node check.js"}}');
+  const service = f.service;
+  const app = createApp(service, { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const mcp = { Authorization: `Bearer ${app.mcpToken}`, 'Content-Type': 'application/json' };
+
+  const registered = await (await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: mcp, body: JSON.stringify({ name: 'Spaced Project', roots: [spaced] }),
+  })).json() as { id: string; name: string };
+  assert.equal(registered.name, 'Spaced Project');
+
+  // URL-encoded space round-trip through inspect, update-roots and remove paths.
+  const encoded = `${origin}/api/workspaces/${encodeURIComponent('Spaced Project')}`;
+  assert.equal((await fetch(encoded, { headers: mcp })).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/Spaced%20Project/roots`, {
+    method: 'POST', headers: mcp, body: JSON.stringify({ roots: [spaced] }),
+  })).status, 200);
+
+  // UUID-shaped inputs are rejected with the use-the-name guidance everywhere.
+  const setDraft = {
+    services: [{ id: 'api', repositoryPath: spaced, scriptName: 'check', port: null as number | null, readiness: { kind: 'process-alive' as const } }],
+  };
+  const uuidCases: Array<{ path: string; method: string; body?: unknown }> = [
+    { path: `${origin}/api/workspaces/11111111-1111-4111-8111-111111111111`, method: 'GET' },
+    { path: `${origin}/api/workspaces/11111111-1111-4111-8111-111111111111/roots`, method: 'POST', body: { roots: [spaced] } },
+    { path: `${origin}/api/workstreams/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/status`, method: 'POST', body: { status: 'paused' } },
+    { path: `${origin}/api/workspaces/11111111-1111-4111-8111-111111111111/environments/status?environment=local`, method: 'GET' },
+    { path: `${origin}/api/workspaces/${encodeURIComponent('Spaced Project')}/environments/set`, method: 'POST', body: { name: '11111111-1111-4111-8111-111111111111', ...setDraft } },
+  ];
+  for (const { path, method, body } of uuidCases) {
+    const denied = await fetch(path, { method, headers: mcp, body: body === undefined ? undefined : JSON.stringify(body) });
+    assert.equal(denied.status, 400, path);
+    assert.deepEqual(await denied.json(), { error: nameMessages.useTheName }, path);
+  }
+  // Malformed env names never persist or occupy a slot.
+  for (const bad of ['has/slash', '..', '  ']) {
+    const refused = await fetch(`${origin}/api/workspaces/${encodeURIComponent('Spaced Project')}/environments/set`, {
+      method: 'POST', headers: mcp, body: JSON.stringify({ name: bad, ...setDraft }),
+    });
+    assert.equal(refused.status, 400, bad);
+    assert.deepEqual(await refused.json(), { error: environmentMessages.badTopology }, bad);
+  }
+  assert.deepEqual(await service.environmentList('Spaced Project'), [], 'refused sets store nothing');
+
+  // Rename over HTTP preserves the ID; the old name stops resolving.
+  const renamed = await (await fetch(`${encoded}/rename`, {
+    method: 'POST', headers: mcp, body: JSON.stringify({ name: 'Renamed Project' }),
+  })).json() as { id: string; name: string };
+  assert.equal(renamed.id, registered.id);
+  assert.equal(renamed.name, 'Renamed Project');
+  assert.equal((await fetch(encoded, { headers: mcp })).status, 400);
+  assert.equal((await fetch(`${origin}/api/workspaces/${encodeURIComponent('Renamed Project')}`, { headers: mcp })).status, 200);
+
+  // Legacy duplicates surface the candidate list over HTTP.
+  const at = new Date().toISOString();
+  await writePrivateJson(join(f.store.directory, 'state.json'), {
+    workspaces: [
+      { id: '11111111-1111-4111-8111-111111111111', name: 'Dupe', roots: [spaced], linkedContainers: [], createdAt: at },
+      { id: '22222222-2222-4222-8222-222222222222', name: 'dupe', roots: [spaced], linkedContainers: [], createdAt: at },
+    ],
+    workstreams: [],
+  });
+  const ambiguous = await fetch(`${origin}/api/workspaces/dupe`, { headers: mcp });
+  assert.equal(ambiguous.status, 400);
+  const ambiguousBody = await ambiguous.json() as { error: string; candidates: Array<{ name: string; rootLabel: string; createdAt: string }> };
+  assert.match(ambiguousBody.error, new RegExp(`^${escapeRegExp(nameMessages.ambiguous)} Candidates: `));
+  assert.deepEqual(ambiguousBody.candidates.map(candidate => candidate.name), ['Dupe', 'dupe']);
+  assert.ok(ambiguousBody.candidates.every(candidate => candidate.createdAt === at));
+  assert.ok(ambiguousBody.candidates.every(candidate => candidate.rootLabel.length <= 60), 'labels truncated');
+});
+
+test('end-to-end run addressed only by name keeps receipts intact across a rename', async t => {
+  const f = await fixture(t, 'names-e2e');
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const mcp = { Authorization: `Bearer ${app.mcpToken}`, 'Content-Type': 'application/json' };
+  const call = async (path: string, body?: unknown) =>
+    fetch(`${origin}${path}`, { method: 'POST', headers: mcp, body: JSON.stringify(body ?? {}) });
+
+  const registered = await (await call('/api/workspaces', { name: 'Journey', roots: [f.project] })).json() as { id: string };
+  const setBody = {
+    name: 'local',
+    services: [{ id: 'api', repositoryPath: f.project, scriptName: 'check', port: null, readiness: { kind: 'process-alive' } }],
+  };
+  assert.equal((await call(`/api/workspaces/${encodeURIComponent('Journey')}/environments/set`, setBody)).status, 200);
+  const status = await (await fetch(
+    `${origin}/api/workspaces/${encodeURIComponent('Journey')}/environments/status?environment=${encodeURIComponent('local')}`,
+    { headers: mcp },
+  )).json() as { environmentId: string };
+  assert.ok(status.environmentId, 'status carries the stable internal ID');
+  await call('/api/workstreams', { name: 'Flow', workspace: 'Journey', checkouts: [f.project] });
+  assert.equal((await call('/api/leases/acquire', { resource: 'port:3000', workspace: 'Journey', workstream: 'Flow' })).status, 200);
+  const imported = await (await call('/api/runs/import', {
+    workspace: 'Journey', scriptName: 'check', outcome: 'passed', durationMs: 7, excerpt: 'upstream ok',
+  })).json() as { workspaceId: string };
+  assert.equal(imported.workspaceId, registered.id, 'runs stay keyed by the stable ID');
+  const runs = await (await fetch(
+    `${origin}/api/runs/recent?workspace=${encodeURIComponent('Journey')}&workstream=${encodeURIComponent('Flow')}`,
+    { headers: mcp },
+  )).json() as Array<{ workspaceId: string }>;
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].workspaceId, registered.id);
+
+  // Rename mid-journey: receipts and leases follow the stable IDs.
+  assert.equal((await call(`/api/workspaces/${encodeURIComponent('Journey')}/rename`, { name: 'Odyssey' })).status, 200);
+  assert.equal((await call('/api/workstreams/Odyssey/Flow/rename', { name: 'Current' })).status, 200);
+  const after = await (await fetch(
+    `${origin}/api/runs/recent?workspace=${encodeURIComponent('Odyssey')}&workstream=${encodeURIComponent('Current')}`,
+    { headers: mcp },
+  )).json() as Array<{ workspaceId: string }>;
+  assert.equal(after.length, 1, 'runs intact across both renames');
+  assert.equal(after[0].workspaceId, registered.id);
+  const leases = await (await fetch(`${origin}/api/leases`, { headers: mcp })).json() as Array<{ status: string }>;
+  assert.deepEqual(leases.map(lease => lease.status), ['held']);
+  const activity = await (await fetch(`${origin}/api/activity`, { headers: mcp })).json() as Array<{ operation: string; detail: string; workspaceId: string | null }>;
+  for (const operation of ['register', 'environment-set', 'workstream-create', 'lease-acquire', 'run-import', 'workspace-rename', 'workstream-rename']) {
+    assert.ok(activity.some(entry => entry.operation === operation), `activity records ${operation}`);
+  }
+  assert.ok(activity.every(entry => entry.workspaceId === registered.id || entry.workspaceId === null),
+    'activity stays keyed by the stable ID across renames');
+});

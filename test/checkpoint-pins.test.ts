@@ -38,7 +38,7 @@ async function approvedFixture(prefix: string, withVerifyRunner = false) {
   const service = new WorkspaceService(store, undefined, undefined, stubRun);
   const workspace = await service.register('Pin project', [project]);
   const workstream = await service.createWorkstream({
-    name: 'Stream', workspaceId: workspace.id, checkouts: [project],
+    name: 'Stream', workspace: workspace.name, checkouts: [project],
   });
   return { root, project, store, service, workspace, workstream };
 }
@@ -55,28 +55,28 @@ async function runFiles(store: Store, workspaceId: string): Promise<string[]> {
 test('evidence links pin a run past the 20-file ring with flags both ways', async t => {
   const f = await approvedFixture('openworkspace-pin-ring-', true);
   t.after(() => rm(f.root, { recursive: true, force: true }));
-  const first = await f.service.verify(f.workspace.id, { repositoryPath: f.project, scriptName: 'test' });
+  const first = await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
   assert.equal(first.outcome, 'passed');
-  const [seeded] = await f.service.recentRuns(f.workspace.id, 5);
+  const [seeded] = await f.service.recentRuns(f.workspace.name, undefined, 5);
   assert.ok(seeded.id, 'run entries carry a stable opaque ID');
-  const pinned = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: [seeded.id] }));
+  const pinned = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [seeded.id] }));
   assert.deepEqual(pinned.checkpointNote?.evidence, [seeded.id]);
 
   // Correlation both ways: the note names the ID, the run entry flags the pin.
-  const flaggedEarly = await f.service.recentRuns(f.workspace.id, 20);
+  const flaggedEarly = await f.service.recentRuns(f.workspace.name, undefined, 20);
   assert.equal(flaggedEarly.find(entry => entry.id === seeded.id)?.pinnedByNote, true);
   assert.ok(flaggedEarly.filter(entry => entry.id !== seeded.id).every(entry => entry.pinnedByNote === false));
 
   // 21 more verifies push the ring past 20; the pinned run must survive while
   // the oldest unpinned run evicts.
   for (let index = 0; index < 21; index++) {
-    await f.service.verify(f.workspace.id, { repositoryPath: f.project, scriptName: 'test' });
+    await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
   }
   const files = await runFiles(f.store, f.workspace.id);
   assert.equal(files.length, 21, 'ring holds 20 plus the one pin');
   assert.ok(files.includes(`${seeded.id}.json`), 'pinned run survives eviction');
 
-  const reread = await f.service.workstream(f.workstream.id);
+  const reread = await f.service.workstream(f.workspace.name, f.workstream.name);
   assert.deepEqual(reread.checkpointNote?.evidence, [seeded.id], 'note → run link survives');
   // Secret-free: IDs only, no excerpts or content duplicated into the note.
   assert.ok(!JSON.stringify(reread.checkpointNote).includes('ok 1 fine'));
@@ -86,7 +86,7 @@ test('unknown and out-of-scope run IDs are refused with a safe error', async t =
   const f = await approvedFixture('openworkspace-pin-unknown-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: ['0000-deadbeef'] })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: ['0000-deadbeef'] })),
     (error: unknown) => {
       assert.equal((error as Error).message, checkpointEvidenceMessage);
       return true;
@@ -100,13 +100,13 @@ test('unknown and out-of-scope run IDs are refused with a safe error', async t =
     workspaceId: other.id, scriptName: 'test', outcome: 'passed', durationMs: 3, output: 'ok', outputTruncated: false,
   });
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: [foreign.id] })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [foreign.id] })),
     (error: unknown) => {
       assert.equal((error as Error).message, checkpointEvidenceMessage);
       return true;
     },
   );
-  assert.equal((await f.service.workstream(f.workstream.id)).checkpointNote, null, 'refused note stores nothing');
+  assert.equal((await f.service.workstream(f.workspace.name, f.workstream.name)).checkpointNote, null, 'refused note stores nothing');
 });
 
 test('checkpoint evidence is revalidated inside queued status writes after pruning', async t => {
@@ -140,7 +140,7 @@ test('checkpoint evidence is revalidated inside queued status writes after pruni
         return originalUpdate(change);
       };
       await assert.rejects(
-        f.service.setWorkstreamStatus(f.workstream.id, status, note({ evidence: [oldEvidenceId] })),
+        f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, status, note({ evidence: [oldEvidenceId] })),
         (error: unknown) => {
           assert.equal((error as Error).message, checkpointEvidenceMessage);
           return true;
@@ -148,7 +148,7 @@ test('checkpoint evidence is revalidated inside queued status writes after pruni
         `${status} update must reject evidence evicted before its queued commit`,
       );
       assert.equal((await listRunIds(f.store.directory, f.workspace.id)).has(oldEvidenceId), false, 'the competing prune evicted the unpinned run');
-      const unchanged = await f.service.workstream(f.workstream.id);
+      const unchanged = await f.service.workstream(f.workspace.name, f.workstream.name);
       assert.equal(unchanged.status, 'active');
       assert.equal(unchanged.checkpointNote, null, 'no dangling note is committed');
     } finally {
@@ -169,7 +169,7 @@ test('evidence holds at most five well-formed IDs', async t => {
     ids.push(summary.id as string);
   }
   await assert.rejects(
-    f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: ids })),
+    f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: ids })),
     (error: unknown) => {
       assert.equal((error as Error).message, checkpointBoundsMessage);
       return true;
@@ -177,7 +177,7 @@ test('evidence holds at most five well-formed IDs', async t => {
   );
   for (const malformed of ['/etc/passwd', '..\\escape', 'has space', '', 'x'.repeat(129)]) {
     await assert.rejects(
-      f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: [malformed] })),
+      f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [malformed] })),
       (error: unknown) => {
         assert.equal((error as Error).message, checkpointBoundsMessage);
         return true;
@@ -185,33 +185,33 @@ test('evidence holds at most five well-formed IDs', async t => {
       `must refuse ${malformed.slice(0, 20)}`,
     );
   }
-  const five = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: ids.slice(0, 5) }));
+  const five = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: ids.slice(0, 5) }));
   assert.deepEqual(five.checkpointNote?.evidence, ids.slice(0, 5));
-  const flagged = await f.service.recentRuns(f.workspace.id, 20);
+  const flagged = await f.service.recentRuns(f.workspace.name, undefined, 20);
   assert.equal(flagged.filter(entry => entry.pinnedByNote).length, 5);
 });
 
 test('editing the note to drop a ref unpins and re-enables eviction', async t => {
   const f = await approvedFixture('openworkspace-pin-unpin-', true);
   t.after(() => rm(f.root, { recursive: true, force: true }));
-  await f.service.verify(f.workspace.id, { repositoryPath: f.project, scriptName: 'test' });
-  const [seeded] = await f.service.recentRuns(f.workspace.id, 5);
-  await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: [seeded.id] }));
+  await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
+  const [seeded] = await f.service.recentRuns(f.workspace.name, undefined, 5);
+  await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [seeded.id] }));
   for (let index = 0; index < 21; index++) {
-    await f.service.verify(f.workspace.id, { repositoryPath: f.project, scriptName: 'test' });
+    await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
   }
   assert.ok((await runFiles(f.store, f.workspace.id)).includes(`${seeded.id}.json`), 'pinned survives first');
 
   // No separate unpin tool: rewriting the note without evidence drops the pin.
-  const edited = await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note());
+  const edited = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note());
   assert.deepEqual(edited.checkpointNote?.evidence, [], 'omitted evidence means no links');
   for (let index = 0; index < 21; index++) {
-    await f.service.verify(f.workspace.id, { repositoryPath: f.project, scriptName: 'test' });
+    await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
   }
   const files = await runFiles(f.store, f.workspace.id);
   assert.equal(files.length, 20, 'ring returns to 20 with no pins');
   assert.ok(!files.includes(`${seeded.id}.json`), 'unpinned run evicts again');
-  assert.ok((await f.service.recentRuns(f.workspace.id, 20)).every(entry => entry.pinnedByNote === false));
+  assert.ok((await f.service.recentRuns(f.workspace.name, undefined, 20)).every(entry => entry.pinnedByNote === false));
 });
 
 test('pins never push a scope past the 30-file hard ceiling', async t => {
@@ -270,7 +270,7 @@ test('notes written before evidence links parse with no links', async t => {
       }],
     });
     const service = new WorkspaceService(store);
-    const loaded = await service.workstream(workstreamId);
+    const loaded = await service.workstream('Old', 'Old stream');
     assert.deepEqual(loaded.checkpointNote?.evidence, [], 'old notes read as no links');
     assert.deepEqual(pinnedRunIds((await store.read()).workstreams, workspaceId), new Set());
     // Legacy run files without an id field fall back to the file stem.
@@ -296,10 +296,10 @@ test('removal cleans up the scope dir, including pinned runs', async t => {
   const summary = await persistRunSummary(f.store.directory, {
     workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 5, output: 'ok', outputTruncated: false,
   });
-  await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: [summary.id] }));
+  await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [summary.id] }));
   // No workstream removal exists: workspace removal is refused while any
   // workstream references it, so pins only clear via note edit.
-  await assert.rejects(f.service.remove(f.workspace.id), /Remove its workstreams first/);
+  await assert.rejects(f.service.remove(f.workspace.name), /Remove its workstreams first/);
   const bare = await approvedFixture('openworkspace-pin-removal-bare-');
   t.after(() => rm(bare.root, { recursive: true, force: true }));
   await persistRunSummary(bare.store.directory, {
@@ -313,7 +313,7 @@ test('removal cleans up the scope dir, including pinned runs', async t => {
   await bare.store.update(state => {
     state.workstreams = state.workstreams.filter(workstream => workstream.workspaceId !== bare.workspace.id);
   });
-  await bare.service.remove(bare.workspace.id);
+  await bare.service.remove(bare.workspace.name);
   await assert.rejects(readdir(join(bare.store.directory, 'runs', bare.workspace.id)), /ENOENT/);
   assert.deepEqual(await listRunIds(bare.store.directory, bare.workspace.id), new Set());
 });
@@ -328,23 +328,23 @@ test('evidence links travel the HTTP boundary with safe errors', async t => {
   const summary = await persistRunSummary(f.store.directory, {
     workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 5, output: 'ok', outputTruncated: false,
   });
-  const linked = await fetch(`${origin}/api/workstreams/${f.workstream.id}/status`, {
+  const linked = await fetch(`${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/status`, {
     method: 'POST', headers, body: JSON.stringify({ status: 'paused', note: { ...note(), evidence: [summary.id] } }),
   });
   assert.equal(linked.status, 200);
   assert.deepEqual((await linked.json() as { checkpointNote: { evidence: string[] } }).checkpointNote.evidence, [summary.id]);
-  const unknown = await fetch(`${origin}/api/workstreams/${f.workstream.id}/status`, {
+  const unknown = await fetch(`${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/status`, {
     method: 'POST', headers, body: JSON.stringify({ status: 'paused', note: { ...note(), evidence: ['0000-deadbeef'] } }),
   });
   assert.equal(unknown.status, 400);
   assert.deepEqual(await unknown.json(), { error: checkpointEvidenceMessage });
-  const oversized = await fetch(`${origin}/api/workstreams/${f.workstream.id}/status`, {
+  const oversized = await fetch(`${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/status`, {
     method: 'POST', headers,
     body: JSON.stringify({ status: 'paused', note: { ...note(), evidence: [summary.id, summary.id, 'a', 'b', 'c', 'd'] } }),
   });
   assert.equal(oversized.status, 400);
   assert.deepEqual(await oversized.json(), { error: checkpointBoundsMessage });
-  const recent = await (await fetch(`${origin}/api/runs/recent?scope=${f.workspace.id}`, { headers })).json() as Array<{ id: string; pinnedByNote: boolean }>;
+  const recent = await (await fetch(`${origin}/api/runs/recent?workspace=${encodeURIComponent(f.workspace.name)}`, { headers })).json() as Array<{ id: string; pinnedByNote: boolean }>;
   assert.equal(recent.find(entry => entry.id === summary.id)?.pinnedByNote, true);
 });
 
@@ -359,12 +359,12 @@ test('recent runs stay newest-first so linked rows sit adjacent in the timeline 
   });
   await writeFile(join(runsDir, '1000-old.json'), summary('2026-09-01T00:00:00.000Z'));
   await writeFile(join(runsDir, '2000-new.json'), summary('2026-09-03T00:00:00.000Z'));
-  await f.service.setWorkstreamStatus(f.workstream.id, 'paused', note({ evidence: ['2000-new'] }));
-  const listed = await f.service.recentRuns(f.workspace.id, 5);
+  await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: ['2000-new'] }));
+  const listed = await f.service.recentRuns(f.workspace.name, undefined, 5);
   assert.deepEqual(listed.map(entry => entry.id), ['2000-new', '1000-old'], 'newest-first without rebuilding the merge');
   assert.deepEqual(listed.map(entry => entry.pinnedByNote), [true, false]);
   // The pinned run carries its evidence ID back to the note: the merge key.
-  const reread = await f.service.workstream(f.workstream.id);
+  const reread = await f.service.workstream(f.workspace.name, f.workstream.name);
   assert.ok(reread.checkpointNote && listed[0].id !== undefined && reread.checkpointNote.evidence.includes(listed[0].id));
   const raw = await readFile(join(runsDir, '2000-new.json'), 'utf8');
   assert.ok(!raw.includes('finish checkout review'), 'run files never duplicate note content');

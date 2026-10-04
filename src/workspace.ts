@@ -1,22 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Store } from './store.js';
+import { Store, foldName, parseNameInput, resolveEnvironmentRecord, resolveWorkspaceRecord, resolveWorkstreamRecord } from './store.js';
 import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readDockerServiceLogs, readPm2ServiceLogs, runPm2Action, runPm2Logs, runPm2Start, serviceInventory, startPm2Service, type AnyServiceLogTarget, type ServiceInventory, type ServiceLogStream, type ServiceStartRequest } from './services.js';
 import { dockerFailureMessage, listDockerContainers, runDockerLogs } from './services-docker.js';
 import { runVerification, verifyMessages, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
-import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, validAssignmentId, maxCheckpointHistory, type CheckpointNote, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, renameWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, unknownWorkstreamStatusMessage, validAssignmentId, maxCheckpointHistory, workspaceAccessMessage, workstreamMessages, workstreamNameMessage, type CheckpointNote, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
 import { acquireLease, expireLeasesOnRead, finishWorkstreamLeasesInState, listLeases, releaseLease, touchLease, type Lease, type LeaseActor } from './leases.js';
-import { listRecentRuns, listRunIds, persistRunSummary, importExternalRun, parseExternalRunImport, type RunListEntry, type RunSummary } from './run-summaries.js';
+import { parseExternalRunImport, importExternalRun, externalImportInvalidMessage, listRecentRuns, listRunIds, persistRunSummary, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listMilestones } from './milestones.js';
 import { appendLearningRule, readLearningIndex, selectSituationalLessons, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
-import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, setEnvironment } from './environment.js';
+import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, renameEnvironment, setEnvironment } from './environment.js';
 import { availableSkills } from './consumer-skills.js';
 
 export interface RootInspection {
@@ -33,6 +33,7 @@ export interface RootInspection {
 // dockerFailureMessage. http.ts composes its allowlist from workspaceMessages.
 export const workspaceMessages = {
   projectName: 'Provide a project name with 100 characters or fewer.',
+  projectNameTaken: 'A project with this name is already registered.',
   projectLimit: 'Project limit reached.',
   containerIdShape: 'Provide a full Docker container ID or a hexadecimal ID prefix of at least 12 characters.',
   containerNotFound: 'Docker container was not found.',
@@ -84,8 +85,7 @@ export class WorkspaceService {
   }
 
   async register(name: string, roots: string[]) {
-    const projectName = name.trim();
-    if (!projectName || projectName.length > 100) throw new Error(workspaceMessages.projectName);
+    const projectName = parseNameInput(name, workspaceMessages.projectName);
     const rootsError = projectRootsError(roots);
     if (rootsError) throw new Error(rootsError);
     const canonicalRoots = await Promise.all(roots.map(root => approvedRoot(root)));
@@ -93,13 +93,36 @@ export class WorkspaceService {
     if (canonicalError) throw new Error(canonicalError);
     return this.store.update(state => {
       if (state.workspaces.length >= 50) throw new Error(workspaceMessages.projectLimit);
-      const workspace = { id: randomUUID(), name: projectName, roots: canonicalRoots, linkedContainers: [], createdAt: new Date().toISOString() };
+      // Names are unique globally (trimmed, case-insensitive); display
+      // preserves the registered casing.
+      if (state.workspaces.some(workspace => foldName(workspace.name) === foldName(projectName))) {
+        throw new Error(workspaceMessages.projectNameTaken);
+      }
+      const workspace = { name: projectName, id: randomUUID(), roots: canonicalRoots, linkedContainers: [], createdAt: new Date().toISOString() };
       state.workspaces.push(workspace);
       return workspace;
     });
   }
 
-  async updateRoots(id: string, roots: string[]) {
+  /**
+   * Explicit rename: the new name validates like registration, conflicts
+   * with a taken name are refused, and the ID plus roots, leases,
+   * workstreams, environments, runs and activity are preserved untouched.
+   */
+  async renameWorkspace(name: string, newName: string) {
+    const trimmed = parseNameInput(newName, workspaceMessages.projectName);
+    return this.store.update(state => {
+      const workspace = resolveWorkspaceRecord(state, name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
+      if (foldName(workspace.name) !== foldName(trimmed)
+        && state.workspaces.some(entry => foldName(entry.name) === foldName(trimmed))) {
+        throw new Error(workspaceMessages.projectNameTaken);
+      }
+      workspace.name = trimmed;
+      return workspace;
+    });
+  }
+
+  async updateRoots(name: string, roots: string[]) {
     // Full-list replacement: the caller supplies the complete new exact root
     // list (worktrees come and go). Validation mirrors registration exactly
     // and runs before any state write, so a failure commits nothing.
@@ -109,8 +132,7 @@ export class WorkspaceService {
     const canonicalError = projectRootsError(canonicalRoots);
     if (canonicalError) throw new Error(canonicalError);
     return this.store.update(state => {
-      const workspace = state.workspaces.find(workspace => workspace.id === id);
-      if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+      const workspace = resolveWorkspaceRecord(state, name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
       const previousRoots = workspace.roots.length;
       workspace.roots = canonicalRoots;
       // UUID, name, timestamps, leases, workstreams and activity are untouched:
@@ -119,9 +141,9 @@ export class WorkspaceService {
     });
   }
 
-  async inspect(id: string) {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async inspect(name: string) {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     const roots: RootInspection[] = await Promise.all(workspace.roots.map(async path => {
       try {
         const inspection = await discover(path);
@@ -139,22 +161,23 @@ export class WorkspaceService {
     return { workspace, target: { id: 'local', kind: 'local' }, roots };
   }
 
-  async services(id: string, options: { includeUnmanaged?: boolean } = {}): Promise<ServiceInventory> {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async services(name: string, options: { includeUnmanaged?: boolean } = {}): Promise<ServiceInventory> {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     return serviceInventory(workspace.roots, this.listPm2, this.listDocker, {
       linkedContainerIds: workspace.linkedContainers,
       includeUnmanaged: options.includeUnmanaged,
     });
   }
 
-  async containerLink(workspaceId: string, action: 'link' | 'unlink', requestedId: string) {
+  async containerLink(workspaceName: string, action: 'link' | 'unlink', requestedId: string) {
     if (!/^[a-f\d]{12,64}$/i.test(requestedId)) {
       throw new Error(workspaceMessages.containerIdShape);
     }
     const prefix = requestedId.toLowerCase();
-    const initial = (await this.store.read()).workspaces.find(workspace => workspace.id === workspaceId);
-    if (!initial) throw new Error(verifyMessages.notFoundRegister);
+    const initial = resolveWorkspaceRecord(
+      await this.store.read(), workspaceName, workspaceMessages.projectName, verifyMessages.notFoundRegister);
+    const workspaceId = initial.id;
 
     if (action === 'link') {
       const listed = await this.listDocker();
@@ -189,21 +212,21 @@ export class WorkspaceService {
     });
   }
 
-  async serviceAction(id: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async serviceAction(name: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     return controlPm2Service(workspace.roots, action, target, this.listPm2, this.serviceRunner);
   }
 
-  async serviceStart(id: string, request: ServiceStartRequest) {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async serviceStart(name: string, request: ServiceStartRequest) {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     return startPm2Service(workspace.roots, request, this.listPm2, this.serviceStarter);
   }
 
-  async serviceLogs(id: string, target: AnyServiceLogTarget, options: { lines?: number; stream?: ServiceLogStream } = {}) {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async serviceLogs(name: string, target: AnyServiceLogTarget, options: { lines?: number; stream?: ServiceLogStream } = {}) {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     if (!('pmId' in target)) return readDockerServiceLogs(workspace.roots, target, {
       ...options,
       list: this.listDocker,
@@ -215,65 +238,69 @@ export class WorkspaceService {
 
   // Environment topology (M1: propose/set/get/status-read only — no spawn).
   // HTTP + MCP are thin: parse → call → recordActivity → respond.
-  async environmentPropose(id: string) {
-    return proposeForWorkspace(this.store, id);
+  async environmentPropose(name: string) {
+    return proposeForWorkspace(this.store, name);
   }
 
-  async environmentSet(id: string, input: unknown) {
-    return setEnvironment(this.store, id, input);
+  async environmentSet(name: string, input: unknown) {
+    return setEnvironment(this.store, name, input);
   }
 
-  async environmentGet(id: string, environmentId: string) {
-    return getEnvironment(this.store, id, environmentId);
+  async environmentGet(name: string, environment: string) {
+    return getEnvironment(this.store, name, environment);
   }
 
-  async environmentList(id: string) {
-    return listEnvironments(this.store, id);
+  async environmentList(name: string) {
+    return listEnvironments(this.store, name);
   }
 
-  async environmentStatus(id: string, environmentId: string) {
-    return environmentStatus(this.store, id, environmentId, this.listPm2);
+  async environmentStatus(name: string, environment: string) {
+    return environmentStatus(this.store, name, environment, this.listPm2);
   }
 
   // M2 runtime: ordered up with readiness, owned-only down, receipt-bound
   // verify. Thin delegates — the operation lives in environment.ts so HTTP
   // and MCP share one implementation. Runtime seams pass the production
   // runners (tests inject fakes at the environment.ts level).
-  async environmentUp(id: string, environmentId: string) {
-    return environmentUp(this.store, id, environmentId, {
+  async environmentUp(name: string, environment: string) {
+    return environmentUp(this.store, name, environment, {
       list: this.listPm2,
       starter: this.serviceStarter,
       runner: this.serviceRunner,
     });
   }
 
-  async environmentDown(id: string, environmentId: string) {
-    return environmentDown(this.store, id, environmentId, {
+  async environmentDown(name: string, environment: string) {
+    return environmentDown(this.store, name, environment, {
       list: this.listPm2,
       runner: this.serviceRunner,
     });
   }
 
-  async environmentVerify(id: string, input: { environmentId: string; repositoryPath: string; scriptName: string }, signal?: AbortSignal) {
-    return environmentVerify(this.store, id, input, {
+  async environmentVerify(name: string, input: { environment: string; repositoryPath: string; scriptName: string }, signal?: AbortSignal) {
+    return environmentVerify(this.store, name, input, {
       list: this.listPm2,
       runCommand: this.verifyRunner,
       signal,
     });
   }
 
-  async verify(id: string, request: VerificationRequest, signal?: AbortSignal): Promise<VerificationResult> {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async renameEnvironment(workspace: string, environment: string, newName: string) {
+    return renameEnvironment(this.store, workspace, environment, newName);
+  }
+
+  async verify(name: string, request: VerificationRequest, signal?: AbortSignal): Promise<VerificationResult> {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     const result = await runVerification(workspace.roots, request, { list: this.listPm2, runCommand: this.verifyRunner, signal });
     // Bounded run summaries feed the learning loop; a persist failure is loud
     // in server logs but never fails the verification that succeeded.
     // This snapshot can be stale by prune time; store-backed persistence
     // recomputes pins inside the serialized prune operation below.
       try {
-      const pins = pinnedRunIds((await this.store.read()).workstreams, id);
+      const pins = pinnedRunIds((await this.store.read()).workstreams, workspace.id);
       await persistRunSummary(this.store.directory, {
-        workspaceId: id,
+        workspaceId: workspace.id,
         scriptName: request.scriptName,
         outcome: result.outcome,
         durationMs: result.durationMs,
@@ -289,9 +316,9 @@ export class WorkspaceService {
     return result;
   }
 
-  async datastoreQuery(id: string, request: unknown, options: DatastoreRunnerOptions = {}): Promise<DatastoreQueryResult> {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async datastoreQuery(name: string, request: unknown, options: DatastoreRunnerOptions = {}): Promise<DatastoreQueryResult> {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     return runDatastoreQuery(workspace.roots, request, { run: options.run ?? this.datastoreRunner, socketDir: options.socketDir, port: options.port, executablePath: options.executablePath });
   }
 
@@ -300,30 +327,37 @@ export class WorkspaceService {
     return this.localTools.snapshot();
   }
 
-  async localToolCall(id: string, body: unknown, options: { actor?: 'dashboard' | 'mcp' } = {}): Promise<DatastoreQueryResult> {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
-    return this.localTools.call(id, workspace.roots, body, options);
+  async localToolCall(name: string, body: unknown, options: { actor?: 'dashboard' | 'mcp' } = {}): Promise<DatastoreQueryResult> {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
+    return this.localTools.call(workspace.id, workspace.roots, body, options);
   }
 
-  async browserCheck(id: string, request: unknown, options: BrowserRunnerOptions = {}): Promise<BrowserCheckResult> {
-    const workspace = (await this.store.read()).workspaces.find(workspace => workspace.id === id);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  async browserCheck(name: string, request: unknown, options: BrowserRunnerOptions = {}): Promise<BrowserCheckResult> {
+    const workspace = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
     return runBrowserCheck(workspace.roots, request, options);
   }
 
-  async createWorkstream(input: { name: string; workspaceId: string; checkouts: string[] }): Promise<Workstream> {
+  async createWorkstream(input: { name: string; workspace: string; checkouts: string[] }): Promise<Workstream> {
     return createWorkstream(this.store, input, this.revisionRunner ?? this.verifyRunner);
+  }
+
+  async renameWorkstream(workspace: string, workstream: string, newName: string): Promise<Workstream> {
+    return renameWorkstream(this.store, workspace, workstream, newName);
   }
 
   async listWorkstreams(): Promise<Workstream[]> {
     return (await this.store.read()).workstreams;
   }
 
-  async workstream(id: string): Promise<Workstream> {
-    const workstream = (await this.store.read()).workstreams.find(workstream => workstream.id === id);
-    if (!workstream) throw new Error(unknownWorkstreamMessage);
-    return workstream;
+  async workstream(workspace: string, workstream: string): Promise<Workstream> {
+    return resolveWorkstreamRecord(await this.store.read(), workspace, workstream, {
+      workspaceInvalid: workspaceAccessMessage,
+      workspaceNotFound: workspaceAccessMessage,
+      workstreamInvalid: workstreamNameMessage,
+      workstreamNotFound: unknownWorkstreamMessage,
+    }).workstream;
   }
 
   /**
@@ -332,22 +366,22 @@ export class WorkspaceService {
     * pinned checkouts and scoped recent runs (existing caps).
    * Read-only: never records activity, like recentRuns/recentActivity.
    */
-  async workstreamContext(id: string, limit = 5, assignmentId?: string): Promise<WorkstreamContext> {
+  async workstreamContext(workspace: string, workstream: string, limit = 5, assignmentId?: string): Promise<WorkstreamContext> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
       throw new Error(workspaceMessages.resultLimit);
     }
     if (assignmentId !== undefined && !validAssignmentId(assignmentId)) throw new Error(workspaceMessages.assignmentId);
-    const workstream = await this.workstream(id);
+    const record = await this.workstream(workspace, workstream);
     const state = await this.store.read();
-    const latest: CheckpointNote | null = workstream.checkpointNote;
+    const latest: CheckpointNote | null = record.checkpointNote;
     const completionsByAssignmentId = Object.create(null) as Record<string, CompletionRecord[]>;
-    for (const completion of workstream.completions ?? []) {
+    for (const completion of record.completions ?? []) {
       (completionsByAssignmentId[completion.assignmentId] ??= []).push(completion);
     }
     const completionRecords = assignmentId === undefined ? [] : completionsByAssignmentId[assignmentId] ?? [];
     // These are countable present/missing states, not a basis for claiming percentage rates.
     const runs = await listRecentRuns(
-      this.store.directory, workstream.workspaceId, limit, pinnedRunIds(state.workstreams, workstream.workspaceId),
+      this.store.directory, record.workspaceId, limit, pinnedRunIds(state.workstreams, record.workspaceId),
     );
     // AMENDMENT (waste-lesson milestone, beyond the planner text): the
     // server builds a TaskContext string so setup-sequence lessons fire at
@@ -360,7 +394,7 @@ export class WorkspaceService {
     // context against lesson situation tags is what lets a "service started
     // → missing secret → set it" lesson surface before the next detour.
     const environmentServices: string[] = [];
-    const environmentRecord = state.environments.find(entry => entry.workspaceId === workstream.workspaceId);
+    const environmentRecord = state.environments.find(entry => entry.workspaceId === record.workspaceId);
     for (const item of (environmentRecord?.items ?? []).slice(0, 5)) {
       for (const service of item.services.slice(0, 10)) {
         environmentServices.push(service.name ?? service.id);
@@ -370,12 +404,12 @@ export class WorkspaceService {
       }
     }
     const taskContext = [
-      workstream.name,
+      record.name,
       latest?.goal ?? '',
       latest?.blocker ?? '',
       latest?.next ?? '',
       ...state.activity
-        .filter(entry => entry.workspaceId === null || entry.workspaceId === workstream.workspaceId)
+        .filter(entry => entry.workspaceId === null || entry.workspaceId === record.workspaceId)
         .slice(-20)
         .map(entry => entry.operation),
       ...environmentServices,
@@ -384,17 +418,17 @@ export class WorkspaceService {
     // flips suspect state and never records activity.
     const situationalLessons = selectSituationalLessons(await readLearningIndex(this.store.directory), taskContext);
     return {
-      workstreamId: workstream.id,
-      name: workstream.name,
-      status: workstream.status,
-      checkpoint: { latest, historyCount: checkpointHistoryOf(workstream).length },
+      workstreamId: record.id,
+      name: record.name,
+      status: record.status,
+      checkpoint: { latest, historyCount: checkpointHistoryOf(record).length },
       completionsByAssignmentId,
-      latestCompletion: workstream.completions?.at(-1) ?? null,
+      latestCompletion: record.completions?.at(-1) ?? null,
       assignmentCompletion: assignmentId === undefined ? null : {
         assignmentId, present: completionRecords.length > 0, records: completionRecords,
       },
       open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
-      checkouts: workstream.checkouts,
+      checkouts: record.checkouts,
       situationalLessons,
       recentRuns: runs.map(run => ({
         ...run,
@@ -404,13 +438,13 @@ export class WorkspaceService {
     };
   }
 
-  async appendWorkstreamCompletion(id: string, input: unknown): Promise<Workstream> {
-    const workstream = await this.workstream(id);
-    return appendWorkstreamCompletion(this.store, id, input, () =>
-      listRunIds(this.store.directory, workstream.workspaceId));
+  async appendWorkstreamCompletion(workspace: string, workstream: string, input: unknown): Promise<Workstream> {
+    const record = await this.workstream(workspace, workstream);
+    return appendWorkstreamCompletion(this.store, record.id, input, () =>
+      listRunIds(this.store.directory, record.workspaceId));
   }
 
-  async setWorkstreamStatus(id: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }, actor: LeaseActor = 'mcp'): Promise<Workstream> {
+  async setWorkstreamStatus(workspace: string, workstream: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }, actor: LeaseActor = 'mcp'): Promise<Workstream> {
     let sanitizedNote: ReturnType<typeof sanitizeCheckpointNote> | undefined;
     if (note !== undefined) {
       // Shape checks are safe before queueing; evidence existence is checked
@@ -418,24 +452,26 @@ export class WorkspaceService {
       sanitizedNote = sanitizeCheckpointNote(note);
     }
     const readAccessibleRunIds = (workspaceId: string) => listRunIds(this.store.directory, workspaceId);
-    if (status !== 'done') return setWorkstreamStatus(this.store, id, status, readAccessibleRunIds, note);
+    const record = await this.workstream(workspace, workstream);
+    if (status !== 'done') return setWorkstreamStatus(this.store, record.id, status, readAccessibleRunIds, note);
 
     const now = this.leaseClock();
+    const workstreamId = record.id;
     return this.store.update(async state => {
-      const workstream = state.workstreams.find(workstream => workstream.id === id);
-      if (!workstream) throw new Error(unknownWorkstreamMessage);
+      const entry = state.workstreams.find(candidate => candidate.id === workstreamId);
+      if (!entry) throw new Error(unknownWorkstreamMessage);
       if (sanitizedNote?.evidence.length) {
-        assertCheckpointEvidence(sanitizedNote.evidence, await readAccessibleRunIds(workstream.workspaceId));
+        assertCheckpointEvidence(sanitizedNote.evidence, await readAccessibleRunIds(entry.workspaceId));
       }
-      workstream.status = 'done';
+      entry.status = 'done';
       if (sanitizedNote) {
-        const entry: CheckpointNote = { ...sanitizedNote, at: new Date(now).toISOString() };
-        workstream.checkpointNote = entry;
-        workstream.checkpointHistory = [...checkpointHistoryOf(workstream), entry].slice(-maxCheckpointHistory);
+        const noteEntry: CheckpointNote = { ...sanitizedNote, at: new Date(now).toISOString() };
+        entry.checkpointNote = noteEntry;
+        entry.checkpointHistory = [...checkpointHistoryOf(entry), noteEntry].slice(-maxCheckpointHistory);
       }
-      workstream.updatedAt = new Date(now).toISOString();
-      finishWorkstreamLeasesInState(state, id, actor, now);
-      return workstream;
+      entry.updatedAt = new Date(now).toISOString();
+      finishWorkstreamLeasesInState(state, workstreamId, actor, now);
+      return entry;
     });
   }
 
@@ -443,16 +479,19 @@ export class WorkspaceService {
     return listLeases(this.store, actor, this.leaseClock);
   }
 
-  async acquireLease(input: { resource: string; workstreamId: string }, actor: LeaseActor = 'mcp') {
-    return acquireLease(this.store, input, actor, this.leaseClock);
+  async acquireLease(input: { resource: string; workspace: string; workstream: string }, actor: LeaseActor = 'mcp') {
+    const record = await this.workstream(input.workspace, input.workstream);
+    return acquireLease(this.store, { resource: input.resource, workstreamId: record.id }, actor, this.leaseClock);
   }
 
-  async touchLease(input: { resource: string; workstreamId: string }, actor: LeaseActor = 'mcp') {
-    return touchLease(this.store, input, actor, this.leaseClock);
+  async touchLease(input: { resource: string; workspace: string; workstream: string }, actor: LeaseActor = 'mcp') {
+    const record = await this.workstream(input.workspace, input.workstream);
+    return touchLease(this.store, { resource: input.resource, workstreamId: record.id }, actor, this.leaseClock);
   }
 
-  async releaseLease(input: { resource: string; workstreamId: string }, actor: LeaseActor = 'mcp') {
-    return releaseLease(this.store, input, actor, this.leaseClock);
+  async releaseLease(input: { resource: string; workspace: string; workstream: string }, actor: LeaseActor = 'mcp') {
+    const record = await this.workstream(input.workspace, input.workstream);
+    return releaseLease(this.store, { resource: input.resource, workstreamId: record.id }, actor, this.leaseClock);
   }
 
   async recordActivity(entry: { actor: 'dashboard' | 'mcp'; operation: string; workspaceId: string | null; detail: string }): Promise<void> {
@@ -463,21 +502,26 @@ export class WorkspaceService {
     return recentActivity(this.store);
   }
 
-  async recentRuns(scopeId: string, limit: number): Promise<RunListEntry[]> {
+  async recentRuns(workspace: string, workstream: string | undefined, limit: number): Promise<RunListEntry[]> {
     const state = await this.store.read();
-    const workspaceId = state.workspaces.some(workspace => workspace.id === scopeId)
-      ? scopeId
-      : state.workstreams.find(workstream => workstream.id === scopeId)?.workspaceId;
-    if (!workspaceId) throw new Error(verifyMessages.notFoundRegister);
+    const workspaceRecord = resolveWorkspaceRecord(state, workspace, workspaceMessages.projectName, verifyMessages.notFoundRegister);
+    let workspaceId = workspaceRecord.id;
+    if (workstream !== undefined) {
+      workspaceId = resolveWorkstreamRecord(state, workspace, workstream, {
+        workspaceInvalid: workspaceAccessMessage,
+        workspaceNotFound: workspaceAccessMessage,
+        workstreamInvalid: workstreamNameMessage,
+        workstreamNotFound: unknownWorkstreamMessage,
+      }).workstream.workspaceId;
+    }
     return listRecentRuns(this.store.directory, workspaceId, limit, pinnedRunIds(state.workstreams, workspaceId));
   }
 
   async importExternalRun(raw: unknown): Promise<RunSummary> {
     const parsed = parseExternalRunImport(raw);
     const state = await this.store.read();
-    const workspace = state.workspaces.find(workspace => workspace.id === parsed.workspaceId);
-    if (!workspace) throw new Error(verifyMessages.notFoundRegister);
-    return importExternalRun(this.store.directory, parsed, pinnedRunIds(state.workstreams, parsed.workspaceId), this.store);
+    const workspace = resolveWorkspaceRecord(state, parsed.workspace, externalImportInvalidMessage, verifyMessages.notFoundRegister);
+    return importExternalRun(this.store.directory, parsed, workspace.id, pinnedRunIds(state.workstreams, workspace.id), this.store);
   }
 
   async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>> }> {
@@ -502,17 +546,19 @@ export class WorkspaceService {
     });
   }
 
-  async remove(id: string) {
+  async remove(name: string) {
+    const workspaceId = resolveWorkspaceRecord(
+      await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundBare).id;
     const result = await this.store.update(state => {
-      if (!state.workspaces.some(workspace => workspace.id === id)) throw new Error(verifyMessages.notFoundBare);
-      if (state.workstreams.some(workstream => workstream.workspaceId === id)) {
+      if (!state.workspaces.some(workspace => workspace.id === workspaceId)) throw new Error(verifyMessages.notFoundBare);
+      if (state.workstreams.some(workstream => workstream.workspaceId === workspaceId)) {
         throw new Error(workspaceMessages.removeBlocked);
       }
-      state.workspaces = state.workspaces.filter(workspace => workspace.id !== id);
+      state.workspaces = state.workspaces.filter(workspace => workspace.id !== workspaceId);
       // Environment topologies are workspace-scoped private state (stored
       // repository paths included): dropping the entry reclaims the outer
       // ≤50 cap and leaves no orphan behind. Runs-dir cleanup stays below.
-      state.environments = state.environments.filter(entry => entry.workspaceId !== id);
+      state.environments = state.environments.filter(entry => entry.workspaceId !== workspaceId);
       // Leases belong to workstreams, and removal is already refused while any
       // workstream references this workspace, so no lease can reference it here.
       return { removed: true };
@@ -522,15 +568,15 @@ export class WorkspaceService {
     // after the state commit: a cleanup failure is logged by path only and
     // never fails the removal itself.
     try {
-      await rm(join(this.store.directory, 'runs', id), { recursive: true, force: true });
+      await rm(join(this.store.directory, 'runs', workspaceId), { recursive: true, force: true });
     } catch (error) {
-      console.error(`Run cleanup failed for scope ${id.slice(0, 8)}:`, error instanceof Error ? error.message : error);
+      console.error(`Run cleanup failed for scope ${workspaceId.slice(0, 8)}:`, error instanceof Error ? error.message : error);
     }
     return result;
   }
 
-  async onboarding(id: string) {
-    const inspection = await this.inspect(id);
+  async onboarding(name: string) {
+    const inspection = await this.inspect(name);
     return {
       ...inspection,
       capabilities: await toolAvailability(),

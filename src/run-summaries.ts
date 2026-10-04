@@ -333,12 +333,12 @@ export const externalImportClaimMessage = 'Imported results are accepted on trus
 
 const maxImportExcerpt = 500;
 const maxImportDurationMs = 86_400_000;
-const allowedImportKeys = ['workspaceId', 'scriptName', 'outcome', 'durationMs', 'excerpt'];
+const allowedImportKeys = ['workspace', 'scriptName', 'outcome', 'durationMs', 'excerpt'];
 const forbiddenImportKeys = /verif|attest|proof|signatur|revision|hash|trust|certif/i;
 export const uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 export interface ExternalRunImport {
-  workspaceId: string;
+  workspace: string;
   scriptName: string;
   outcome: 'passed' | 'failed' | 'error';
   durationMs: number;
@@ -359,8 +359,12 @@ export function parseExternalRunImport(raw: unknown): ExternalRunImport {
     if (forbiddenImportKeys.test(key)) throw new Error(externalImportClaimMessage);
     if (!allowedImportKeys.includes(key)) throw new Error(externalImportInvalidMessage);
   }
-  const { workspaceId, scriptName, outcome, durationMs, excerpt } = record;
-  if (typeof workspaceId !== 'string' || !uuidPattern.test(workspaceId)) throw new Error(externalImportInvalidMessage);
+  const { workspace, scriptName, outcome, durationMs, excerpt } = record;
+  // Name shape only here (non-empty, bounded); the service resolves it to a
+  // registered workspace (UUID inputs rejected, unknown names refused).
+  if (typeof workspace !== 'string' || !workspace.trim() || workspace.trim().length > 100) {
+    throw new Error(externalImportInvalidMessage);
+  }
   if (typeof scriptName !== 'string' || !/^[\w:.-]{1,80}$/.test(scriptName)) throw new Error(externalImportInvalidMessage);
   if (outcome !== 'passed' && outcome !== 'failed' && outcome !== 'error') throw new Error(externalImportInvalidMessage);
   if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0 || durationMs > maxImportDurationMs) {
@@ -370,18 +374,18 @@ export function parseExternalRunImport(raw: unknown): ExternalRunImport {
     throw new Error(externalImportInvalidMessage);
   }
   if (/\bverified\b/i.test(excerpt)) throw new Error(externalImportClaimMessage);
-  return { workspaceId: workspaceId.toLowerCase(), scriptName, outcome, durationMs, excerpt };
+  return { workspace, scriptName, outcome, durationMs, excerpt };
 }
 
-export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport, pinned: ReadonlySet<string> = new Set(), store?: Store): Promise<RunSummary> {
-  const directory = scopeDirectory(homeDirectory, parsed.workspaceId);
+export async function importExternalRun(homeDirectory: string, parsed: ExternalRunImport, workspaceId: string, pinned: ReadonlySet<string> = new Set(), store?: Store): Promise<RunSummary> {
+  const directory = scopeDirectory(homeDirectory, workspaceId);
   await ensurePrivateDirectory(directory);
   const masked = maskSecrets(parsed.excerpt);
   const failing = parseFailingNames(masked);
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const summary: RunSummary = {
     id,
-    workspaceId: parsed.workspaceId,
+    workspaceId,
     scriptName: parsed.scriptName,
     outcome: parsed.outcome,
     durationMs: parsed.durationMs,

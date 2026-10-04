@@ -170,12 +170,12 @@ test('hostile slot values are refused pre-spawn with zero runs', async t => {
   assert.equal(hostile.length, 14);
   for (const value of hostile) {
     await assert.rejects(
-      injected.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: value, role: 'ow_read' } }),
+      injected.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: value, role: 'ow_read' } }),
       new RegExp(localToolCallMessages.invalidInputs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
       JSON.stringify(value),
     );
     await assert.rejects(
-      injected.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test', role: value } }),
+      injected.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test', role: value } }),
       new RegExp(localToolCallMessages.invalidInputs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
       `role=${JSON.stringify(value)}`,
     );
@@ -333,7 +333,7 @@ test('three consecutive query-stage failures quarantine with a closed-vocabulary
   const { service, workspace, home } = await quarantinableService(t, failOutcome('FATAL: relation "missing" does not exist'));
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await assert.rejects(
-      service.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
+      service.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
       /The database query failed without returning rows\./,
     );
   }
@@ -342,7 +342,7 @@ test('three consecutive query-stage failures quarantine with a closed-vocabulary
   assert.equal(entry?.status, 'quarantined');
   assert.equal(entry?.reasonCode, 'runtime-failures');
   await assert.rejects(
-    service.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
+    service.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
     new RegExp(localToolCallMessages.notAvailable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
   const reason = JSON.parse(await readFile(join(home, 'local-tools', 'quarantined', 'db_tables.reason.json'), 'utf8')) as Record<string, unknown>;
@@ -357,17 +357,17 @@ test('probe-stage failures, caller refusals and run-time unavailable never incre
   const probeFail = await quarantinableService(t, rowsOk);
   const failingProbe = toolRunner({ probe: failOutcome('FATAL: database "missing" does not exist') });
   const probeService = new WorkspaceService(probeFail.service.store, undefined, undefined, undefined, undefined, failingProbe.run);
-  const workspaceId = probeFail.workspace.id;
+  const workspaceName = probeFail.workspace.name;
   await probeService.localToolStatus();
   await assert.rejects(
-    probeService.localToolCall(workspaceId, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
+    probeService.localToolCall(workspaceName, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
     /The database query failed without returning rows\./,
   );
   assert.equal((await probeService.localToolStatus()).find(entry => entry.name === 'db_tables')?.consecFailures, 0);
 
   const { service, workspace } = await quarantinableService(t, rowsOk);
   await assert.rejects(
-    service.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: '-h', role: 'ow_read' } }),
+    service.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: '-h', role: 'ow_read' } }),
     new RegExp(localToolCallMessages.invalidInputs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
   assert.equal((await service.localToolStatus()).find(entry => entry.name === 'db_tables')?.consecFailures, 0);
@@ -378,7 +378,7 @@ test('probe-stage failures, caller refusals and run-time unavailable never incre
   const unavailableService = new WorkspaceService(service.store, undefined, undefined, undefined, undefined, unavailableRun.run);
   await unavailableService.localToolStatus();
   await assert.rejects(
-    unavailableService.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
+    unavailableService.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
     /PostgreSQL client is unavailable\./,
   );
   assert.equal((await unavailableService.localToolStatus()).find(entry => entry.name === 'db_tables')?.consecFailures, 0);
@@ -391,10 +391,10 @@ test('R1: query-stage success resets the counter; probe success alone does not',
     return calls <= 2 ? failOutcome('FATAL: relation "missing" does not exist') : rowsOk;
   });
   const body = { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } };
-  await assert.rejects(service.localToolCall(workspace.id, body), /failed without returning rows/);
-  await assert.rejects(service.localToolCall(workspace.id, body), /failed without returning rows/);
+  await assert.rejects(service.localToolCall(workspace.name, body), /failed without returning rows/);
+  await assert.rejects(service.localToolCall(workspace.name, body), /failed without returning rows/);
   assert.equal((await service.localToolStatus()).find(entry => entry.name === 'db_tables')?.consecFailures, 2);
-  const result = await service.localToolCall(workspace.id, body);
+  const result = await service.localToolCall(workspace.name, body);
   assert.equal(result.rowCount, 2);
   assert.equal((await service.localToolStatus()).find(entry => entry.name === 'db_tables')?.status, 'active');
   assert.equal((await service.localToolStatus()).find(entry => entry.name === 'db_tables')?.consecFailures, 0);
@@ -404,7 +404,7 @@ test('quarantined tools re-gate to active after a human move to pending', async 
   const { service, workspace, home } = await quarantinableService(t, failOutcome('FATAL: boom'));
   const body = { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } };
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await assert.rejects(service.localToolCall(workspace.id, body), /failed without returning rows/);
+    await assert.rejects(service.localToolCall(workspace.name, body), /failed without returning rows/);
   }
   assert.equal((await service.localToolStatus()).find(entry => entry.name === 'db_tables')?.status, 'quarantined');
   await rename(join(home, 'local-tools', 'quarantined', 'db_tables.json'), join(home, 'local-tools', 'pending', 'db_tables.json'));
@@ -412,7 +412,7 @@ test('quarantined tools re-gate to active after a human move to pending', async 
   const fixed = toolRunner({});
   const regated = new WorkspaceService(service.store, undefined, undefined, undefined, undefined, fixed.run);
   assert.equal((await regated.localToolStatus()).find(entry => entry.name === 'db_tables')?.status, 'active');
-  const result = await regated.localToolCall(workspace.id, body);
+  const result = await regated.localToolCall(workspace.name, body);
   assert.equal(result.rowCount, 2);
 });
 
@@ -428,30 +428,34 @@ test('call-time vocabulary yields exactly the listed messages', async t => {
   await writePending(f.store.directory, 'db_tables.json', dbTablesDecl());
   await service.localToolStatus();
   await assert.rejects(
-    service.localToolCall(workspace.id, { tool: 'nope_missing', inputs: {} }),
+    service.localToolCall(workspace.name, { tool: 'nope_missing', inputs: {} }),
     (error: unknown) => error instanceof Error && error.message === localToolCallMessages.notAvailable,
   );
   await assert.rejects(
-    service.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test' } }),
+    service.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test' } }),
     (error: unknown) => error instanceof Error && error.message === localToolCallMessages.invalidInputs,
   );
   await assert.rejects(
-    service.localToolCall(workspace.id, { tool: 5, inputs: {} }),
+    service.localToolCall(workspace.name, { tool: 5, inputs: {} }),
     (error: unknown) => error instanceof Error && error.message === localToolCallMessages.invalidCall,
   );
   await assert.rejects(
-    service.localToolCall(workspace.id, { tool: 'db_tables', inputs: {} , extra: 1 } as unknown),
+    service.localToolCall(workspace.name, { tool: 'db_tables', inputs: {} , extra: 1 } as unknown),
     (error: unknown) => error instanceof Error && error.message === localToolCallMessages.invalidCall,
+  );
+  await assert.rejects(
+    service.localToolCall('Missing project', { tool: 'db_tables', inputs: { database: 'a', role: 'b' } }),
+    /Workspace not found\. Register it first\./,
   );
   await assert.rejects(
     service.localToolCall('00000000-0000-4000-8000-000000000000', { tool: 'db_tables', inputs: { database: 'a', role: 'b' } }),
-    /Workspace not found\. Register it first\./,
+    /Provide the registered name, not the ID\./,
   );
   const superuser = toolRunner({ probe: okOutcome(`usesuper\nt\n(1 row)\n`) });
   const superService = new WorkspaceService(service.store, undefined, undefined, undefined, undefined, superuser.run);
   await superService.localToolStatus();
   await assert.rejects(
-    superService.localToolCall(workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
+    superService.localToolCall(workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
     (error: unknown) => error instanceof Error
       && error.message === 'Superuser database roles cannot be used for read-only queries.',
   );
@@ -469,7 +473,7 @@ test('empty PATH yields honest-unavailable with available:false', async t => {
   assert.equal(entry?.status, 'active');
   assert.equal(entry?.available, false);
   await assert.rejects(
-    f.service.localToolCall(f.workspace.id, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
+    f.service.localToolCall(f.workspace.name, { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } }),
     (error: unknown) => error instanceof Error && error.message === 'PostgreSQL client is unavailable.',
   );
   assert.equal((await f.service.localToolStatus()).find(item => item.name === 'db_tables')?.consecFailures, 0);
@@ -497,7 +501,7 @@ test('HTTP routes serve status reads and call errors with listed messages only',
   const activityAfter = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${app.mcpToken}` } })).json() as unknown[];
   assert.equal(activityAfter.length, activityBefore.length, 'status reads never record activity');
 
-  const call = (body: unknown) => fetch(`${origin}/api/workspaces/${workspace.id}/local-tools/call`, {
+  const call = (body: unknown) => fetch(`${origin}/api/workspaces/${workspace.name}/local-tools/call`, {
     method: 'POST', headers, body: JSON.stringify(body),
   });
   const happy = await call({ tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } });
@@ -556,20 +560,20 @@ test('db_tables is callable end-to-end over real MCP with stub psql', async t =>
   assert.ok(declared, 'db_tables is advertised after the gate passes');
   assert.ok((declared.description as string).startsWith('Local tool db_tables: '));
   assert.deepEqual(Object.keys((declared.inputSchema as { properties: object }).properties).sort(),
-    ['database', 'role', 'workspaceId']);
+    ['database', 'role', 'workspace']);
   const status = await client.callTool({ name: 'local_tool_status', arguments: {} });
   assert.ok(!status.isError);
   assert.match((status.content as Array<{ text: string }>)[0].text, /"status": "active"/);
   const called = await client.callTool({
     name: 'db_tables',
-    arguments: { workspaceId: workspace.id, database: 'ow_test', role: 'ow_read' },
+    arguments: { workspace: workspace.name, database: 'ow_test', role: 'ow_read' },
   });
   assert.ok(!called.isError);
   assert.match((called.content as Array<{ text: string }>)[0].text, /"rowCount": 2/);
   assert.match((called.content as Array<{ text: string }>)[0].text, /users/);
   const refused = await client.callTool({
     name: 'db_tables',
-    arguments: { workspaceId: workspace.id, database: '-h evil', role: 'ow_read' },
+    arguments: { workspace: workspace.name, database: '-h evil', role: 'ow_read' },
   });
   assert.equal(refused.isError, true);
   // The MCP SDK validates against the translated strict schema client-side,
@@ -586,7 +590,7 @@ test('db_tables is callable end-to-end over real MCP with stub psql', async t =>
   assert.match((unavailableStatus.content as Array<{ text: string }>)[0].text, /"available": false/);
   const unavailable = await client.callTool({
     name: 'db_tables',
-    arguments: { workspaceId: workspace.id, database: 'ow_test', role: 'ow_read' },
+    arguments: { workspace: workspace.name, database: 'ow_test', role: 'ow_read' },
   });
   assert.equal(unavailable.isError, true);
   assert.match((unavailable.content as Array<{ text: string }>)[0].text, /PostgreSQL client is unavailable\./);
@@ -620,7 +624,7 @@ test('M1: pending same-name declaration is refused and the active tool is untouc
   );
   await readFile(join(f.store.directory, 'local-tools', 'pending', 'evil.json'), 'utf8');
   const body = { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } };
-  assert.equal((await service.localToolCall(workspace.id, body)).rowCount, 2);
+  assert.equal((await service.localToolCall(workspace.name, body)).rowCount, 2);
   const dups = status.filter(entry => entry.name === 'dup_tool');
   assert.equal(dups.filter(entry => entry.status === 'active').length, 1);
   assert.equal(dups.filter(entry => entry.status === 'pending').length, 1);
@@ -651,7 +655,7 @@ test('M1 cold start: pre-existing active file wins over a clashing pending file'
   );
   await readFile(join(f.store.directory, 'local-tools', 'pending', 'evil.json'), 'utf8');
   const workspace = (await f.store.read()).workspaces[0];
-  assert.equal((await cold.localToolCall(workspace.id,
+  assert.equal((await cold.localToolCall(workspace.name,
     { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } })).rowCount, 2);
 });
 
@@ -719,7 +723,7 @@ test('L2: tool output reuses the shared secret masker on cells and headers', asy
   const workspace = (await f.store.read()).workspaces[0];
   await writePending(f.store.directory, 'db_tables.json', dbTablesDecl());
   await service.localToolStatus();
-  const result = await service.localToolCall(workspace.id,
+  const result = await service.localToolCall(workspace.name,
     { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } });
   assert.deepEqual(result.columns, [maskSecrets('token=xyz123456')]);
   assert.deepEqual(result.rows, [[maskSecrets('api_key=hunter2')]]);
@@ -764,7 +768,7 @@ test('hot-plug: a tool gated after MCP connect appears after local_tool_status',
     'post-connect registration propagates without an MCP restart');
   const called = await client.callTool({
     name: 'db_tables',
-    arguments: { workspaceId: workspace.id, database: 'ow_test', role: 'ow_read' },
+    arguments: { workspace: workspace.name, database: 'ow_test', role: 'ow_read' },
   });
   assert.ok(!called.isError);
   assert.match((called.content as Array<{ text: string }>)[0].text, /"rowCount": 1/);
@@ -779,7 +783,7 @@ test('quarantinePending: rename failure keeps the tool stopped and retries on re
   const body = { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } };
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await assert.rejects(service.localToolCall(workspace.id, body), /failed without returning rows/);
+      await assert.rejects(service.localToolCall(workspace.name, body), /failed without returning rows/);
     }
     const snap = service.localTools.snapshot();
     const entry = snap.find(item => item.name === 'db_tables');
@@ -790,7 +794,7 @@ test('quarantinePending: rename failure keeps the tool stopped and retries on re
     await readFile(activeFile, 'utf8');
     await assert.rejects(readFile(quarantinedFile, 'utf8'));
     await assert.rejects(
-      service.localToolCall(workspace.id, body),
+      service.localToolCall(workspace.name, body),
       (error: unknown) => error instanceof Error && error.message === localToolCallMessages.notAvailable,
     );
   } finally {
@@ -822,7 +826,7 @@ test('dashboard canonical path: local tool calls require the connected dashboard
   const origin = await app.listen(0);
   const issued = sessions.issue(app.mcpToken);
   assert.ok(issued);
-  const url = `${origin}/api/workspaces/${workspace.id}/local-tools/call`;
+  const url = `${origin}/api/workspaces/${workspace.name}/local-tools/call`;
   const base = {
     Authorization: `Bearer ${issued.dashboardToken}`,
     Origin: origin,
@@ -929,7 +933,7 @@ test('M2: hostile-but-gate-clean description stays in the description field only
     `Local tool db_tables: ${description}`,
     'presentation is a fixed prefix plus the raw description, never an instruction rewrite',
   );
-  const result = await service.localToolCall(workspace.id,
+  const result = await service.localToolCall(workspace.name,
     { tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } });
   assert.equal(result.rowCount, 2);
   const queries = calls.filter(call => call.args[0] !== '--version' && !(call.input ?? '').includes('usesuper'));

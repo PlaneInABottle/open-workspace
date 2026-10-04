@@ -66,7 +66,7 @@ test('datastore query sends flags-only argv with SQL on stdin and honors bounds'
   await mkdir(second);
   const anchored = await f.service.register('Anchored project', [f.first, second]);
   const { run, calls } = scriptedRunner({ probe: probeOk, main: rowsOk });
-  const result = await f.service.datastoreQuery(anchored.id,
+  const result = await f.service.datastoreQuery(anchored.name,
     { database: 'ow_test', role: 'ow_read', sql: 'SELECT id, val FROM t ORDER BY id' },
     { run });
   assert.deepEqual(result.columns, ['id', 'val']);
@@ -102,7 +102,7 @@ test('superuser roles are refused before the main query runs', async t => {
   const f = await registeredService(t);
   const { run, calls } = scriptedRunner({ probe: okOutcome(`usesuper\nt\n(1 row)\n`), main: rowsOk });
   await assert.rejects(
-    f.service.datastoreQuery(f.workspace.id, { database: 'ow_test', role: 'postgres', sql: 'SELECT 1' }, { run }),
+    f.service.datastoreQuery(f.workspace.name, { database: 'ow_test', role: 'postgres', sql: 'SELECT 1' }, { run }),
     /Superuser database roles cannot be used for read-only queries\./,
   );
   assert.equal(calls.length, 1);
@@ -168,7 +168,7 @@ test('non-read and multi-statement shapes are refused before execution', async t
       const workspace = await service.register('Neg', [project]);
       const { run, calls } = scriptedRunner({ probe: probeOk, main: rowsOk });
       await assert.rejects(
-        service.datastoreQuery(workspace.id, { database: 'ow_test', role: 'ow_read', sql }, { run }),
+        service.datastoreQuery(workspace.name, { database: 'ow_test', role: 'ow_read', sql }, { run }),
         /Only a single read-only SELECT-style statement is allowed\./,
         sql,
       );
@@ -196,7 +196,7 @@ test('read-only shapes are accepted', async t => {
   for (const sql of allowed) {
     const f = await registeredService(t);
     const { run, calls } = scriptedRunner({ probe: probeOk, main: okOutcome(`a\n1\n(1 row)\n`) });
-    const result = await f.service.datastoreQuery(f.workspace.id, { database: 'ow_test', role: 'ow_read', sql }, { run });
+    const result = await f.service.datastoreQuery(f.workspace.name, { database: 'ow_test', role: 'ow_read', sql }, { run });
     assert.equal(result.rowCount, 1, sql);
     assert.equal(calls.length, 2, sql);
   }
@@ -209,7 +209,7 @@ test('hostile parameter values cannot form a second statement', async t => {
     probe: probeOk,
     main: input => { seen = input; return okOutcome(`a\n1\n(1 row)\n`); },
   });
-  const result = await f.service.datastoreQuery(f.workspace.id,
+  const result = await f.service.datastoreQuery(f.workspace.name,
     { database: 'ow_test', role: 'ow_read', sql: 'SELECT $1, $2', params: ["'; DROP TABLE t; --", 7] }, { run });
   assert.equal(result.rowCount, 1);
   assert.equal(calls.length, 2);
@@ -219,7 +219,7 @@ test('hostile parameter values cannot form a second statement', async t => {
   const hostile = await registeredService(t);
   const second = scriptedRunner({ probe: probeOk, main: rowsOk });
   await assert.rejects(
-    hostile.service.datastoreQuery(hostile.workspace.id,
+    hostile.service.datastoreQuery(hostile.workspace.name,
       { database: 'ow_test', role: 'ow_read', sql: '$1', params: ['SELECT 1'] }, { run: second.run }),
     /Only a single read-only SELECT-style statement is allowed\./,
   );
@@ -227,7 +227,7 @@ test('hostile parameter values cannot form a second statement', async t => {
 
   const missing = scriptedRunner({ probe: probeOk, main: rowsOk });
   await assert.rejects(
-    hostile.service.datastoreQuery(hostile.workspace.id,
+    hostile.service.datastoreQuery(hostile.workspace.name,
       { database: 'ow_test', role: 'ow_read', sql: 'SELECT $2', params: ['a'] }, { run: missing.run }),
     /Only a single read-only SELECT-style statement is allowed\./,
   );
@@ -237,7 +237,7 @@ test('hostile parameter values cannot form a second statement', async t => {
 test('rows truncate to maxRows with counts preserved', async t => {  const f = await registeredService(t);
   const lines = ['n', ...Array.from({ length: 5 }, (_, i) => String(i + 1)), '(5 rows)'];
   const { run } = scriptedRunner({ probe: probeOk, main: okOutcome(`${lines.join('\n')}\n`) });
-  const result = await f.service.datastoreQuery(f.workspace.id,
+  const result = await f.service.datastoreQuery(f.workspace.name,
     { database: 'ow_test', role: 'ow_read', sql: 'SELECT n FROM big', maxRows: 2 }, { run });
   assert.deepEqual(result.rows, [['1'], ['2']]);
   assert.equal(result.rowCount, 5);
@@ -250,7 +250,7 @@ test('wire newlines in values parse as extra rows (documented limitation)', asyn
   // display text and the capture/row caps still bound the result.
   const f = await registeredService(t);
   const { run } = scriptedRunner({ probe: probeOk, main: okOutcome('a\nline1\nline2\n(2 rows)\n') });
-  const result = await f.service.datastoreQuery(f.workspace.id,
+  const result = await f.service.datastoreQuery(f.workspace.name,
     { database: 'ow_test', role: 'ow_read', sql: 'SELECT a FROM t' }, { run });
   assert.deepEqual(result.rows, [['line1'], ['line2']]);
   assert.equal(result.rowCount, 2);
@@ -260,21 +260,21 @@ test('schema rejects connection fields and bad identifiers', async t => {
   const f = await registeredService(t);
   const { run, calls } = scriptedRunner({ probe: probeOk, main: rowsOk });
   const valid = { database: 'ow_test', role: 'ow_read', sql: 'SELECT 1' };
-  await assert.rejects(f.service.datastoreQuery(f.workspace.id, { ...valid, host: 'x' }, { run }));
-  await assert.rejects(f.service.datastoreQuery(f.workspace.id, { ...valid, port: 5432 }, { run }));
-  await assert.rejects(f.service.datastoreQuery(f.workspace.id, { ...valid, socketDir: '/tmp' }, { run }));
-  await assert.rejects(f.service.datastoreQuery(f.workspace.id, { ...valid, url: 'postgres://x' }, { run }));
+  await assert.rejects(f.service.datastoreQuery(f.workspace.name, { ...valid, host: 'x' }, { run }));
+  await assert.rejects(f.service.datastoreQuery(f.workspace.name, { ...valid, port: 5432 }, { run }));
+  await assert.rejects(f.service.datastoreQuery(f.workspace.name, { ...valid, socketDir: '/tmp' }, { run }));
+  await assert.rejects(f.service.datastoreQuery(f.workspace.name, { ...valid, url: 'postgres://x' }, { run }));
   await assert.rejects(
-    f.service.datastoreQuery(f.workspace.id, { ...valid, database: 'bad-name!' }, { run }),
+    f.service.datastoreQuery(f.workspace.name, { ...valid, database: 'bad-name!' }, { run }),
     /Provide a database and role using 1–63 letters, digits or underscores\./,
   );
   await assert.rejects(
-    f.service.datastoreQuery(f.workspace.id, { ...valid, role: '' }, { run }),
+    f.service.datastoreQuery(f.workspace.name, { ...valid, role: '' }, { run }),
     /Provide a database and role using 1–63 letters, digits or underscores\./,
   );
   assert.equal(calls.length, 0);
   await assert.rejects(
-    f.service.datastoreQuery('00000000-0000-4000-8000-000000000000', valid, { run }),
+    f.service.datastoreQuery('Missing project', valid, { run }),
     /Workspace not found\. Register it first\./,
   );
 });
@@ -290,7 +290,7 @@ test('timeouts and client failures map to safe messages', async t => {
     const f = await registeredService(t);
     const { run } = scriptedRunner({ probe: probeOk, main });
     await assert.rejects(
-      f.service.datastoreQuery(f.workspace.id, { database: 'ow_test', role: 'ow_read', sql: 'SELECT 1' }, { run }),
+      f.service.datastoreQuery(f.workspace.name, { database: 'ow_test', role: 'ow_read', sql: 'SELECT 1' }, { run }),
       message,
     );
   }
@@ -378,7 +378,7 @@ test('real PostgreSQL: bounded read-only behavior with honest skip', async t => 
   }
   const count = pg.count;
   const f = await registeredService(t);
-  const via = (input: unknown) => f.service.datastoreQuery(f.workspace.id, input, { socketDir: pg.socketDir, port: pg.port });
+  const via = (input: unknown) => f.service.datastoreQuery(f.workspace.name, input, { socketDir: pg.socketDir, port: pg.port });
 
   const selected = await via({ database: 'ow_test', role: 'ow_read', sql: 'SELECT id, name FROM items ORDER BY id' }) as {
     columns: string[]; rows: (string | null)[][]; rowCount: number; truncated: boolean; timedOut: boolean;
@@ -461,7 +461,7 @@ test('real stdio MCP and HTTP serve datastore_query without leaking SQL', async 
     'Content-Type': 'application/json',
   };
 
-  const queried = await fetch(`${origin}/api/workspaces/${workspace.id}/datastore/query`, {
+  const queried = await fetch(`${origin}/api/workspaces/${workspace.name}/datastore/query`, {
     method: 'POST',
     headers: mcpHeaders,
     body: JSON.stringify({ database: 'appdb', role: 'appreader', sql: 'SELECT 1' }),
@@ -476,7 +476,7 @@ test('real stdio MCP and HTTP serve datastore_query without leaking SQL', async 
   assert.ok(activity.some(entry => entry.detail === 'appdb → 1 rows'));
   assert.ok(!JSON.stringify(activity).includes('SELECT 1'), 'activity must never carry SQL');
 
-  assert.equal((await fetch(`${origin}/api/workspaces/${workspace.id}/datastore/query`, {
+  assert.equal((await fetch(`${origin}/api/workspaces/${workspace.name}/datastore/query`, {
     method: 'POST',
     headers: mcpHeaders,
     body: JSON.stringify({ database: 'appdb', role: 'appreader', sql: 'SELECT 1', host: 'remote' }),
@@ -484,7 +484,7 @@ test('real stdio MCP and HTTP serve datastore_query without leaking SQL', async 
 
   // A schema-valid call with 20 full-size params is ~20 KiB: above the default
   // 8 KiB JSON cap, inside the datastore 32 KiB limit.
-  const wide = await fetch(`${origin}/api/workspaces/${workspace.id}/datastore/query`, {
+  const wide = await fetch(`${origin}/api/workspaces/${workspace.name}/datastore/query`, {
     method: 'POST',
     headers: mcpHeaders,
     body: JSON.stringify({ database: 'appdb', role: 'appreader', sql: 'SELECT 1', params: Array.from({ length: 20 }, () => 'x'.repeat(1000)) }),
@@ -510,13 +510,13 @@ test('real stdio MCP and HTTP serve datastore_query without leaking SQL', async 
   assert.ok(Object.keys((registered?.inputSchema as { properties: object }).properties).length <= 5);
   const called = await client.callTool({
     name: 'datastore_query',
-    arguments: { workspaceId: workspace.id, database: 'appdb', role: 'appreader', sql: 'SELECT 1', options: { maxRows: 10 } },
+    arguments: { workspace: workspace.name, database: 'appdb', role: 'appreader', sql: 'SELECT 1', options: { maxRows: 10 } },
   });
   assert.ok(!called.isError);
   assert.match((called.content as Array<{ text: string }>)[0].text, /"rowCount": 1/);
   const refused = await client.callTool({
     name: 'datastore_query',
-    arguments: { workspaceId: workspace.id, database: 'appdb', role: 'appreader', sql: 'DROP TABLE t' },
+    arguments: { workspace: workspace.name, database: 'appdb', role: 'appreader', sql: 'DROP TABLE t' },
   });
   assert.equal(refused.isError, true);
 });

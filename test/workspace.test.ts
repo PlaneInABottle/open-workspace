@@ -29,7 +29,7 @@ test('registration reads bounded metadata immediately without an approval queue'
   const f = await fixture(); t.after(f.cleanup);
   await assert.rejects(f.service.register('Not present', [join(f.root, 'not-present')]), /real directory|absolute/);
   const workspace = await f.service.register('Project', [f.project]);
-  const found = await f.service.inspect(workspace.id);
+  const found = await f.service.inspect(workspace.name);
   assert.deepEqual(found.roots[0].repositories.map(repo => repo.name).sort(), ['api','project','web']);
   assert.deepEqual(found.roots[0].repositories.find(repo => repo.name === 'project')?.composeFiles, ['compose.yaml']);
   assert.deepEqual(found.roots[0].repositories.find(repo => repo.name === 'web')?.scriptNames, ['dev','test']);
@@ -52,7 +52,7 @@ test('discovery skips symlinked repos and manifests, hidden secret folders and o
   await writeFile(join(f.project, '.secrets/package.json'), '{}');
   await mkdir(join(f.project, 'large')); await writeFile(join(f.project, 'large/package.json'), 'X'.repeat(300 * 1024));
   const workspace = await f.service.register('Project', [f.project]);
-  const found = await f.service.inspect(workspace.id);
+  const found = await f.service.inspect(workspace.name);
   assert.ok(!found.roots[0].repositories.some(repo => /linked|secrets|large/.test(repo.name)));
   assert.equal(found.roots[0].warnings.length, 1);
 });
@@ -63,7 +63,7 @@ test('registered root identity cannot be replaced with a symlink', async t => {
   await rm(f.project, { recursive: true });
   await mkdir(join(f.root, 'replacement'));
   await symlink(join(f.root, 'replacement'), f.project);
-  const inspection = await f.service.inspect(workspace.id);
+  const inspection = await f.service.inspect(workspace.name);
   assert.equal(inspection.roots[0].unavailable, true);
   assert.deepEqual(inspection.roots[0].repositories, []);
   assert.equal(inspection.roots[0].error?.includes('identity changed'), true);
@@ -104,9 +104,9 @@ test('state persists and concurrent registrations are not lost', async t => {
   const reopened = new Store(f.store.directory); await reopened.initialize();
   assert.equal((await reopened.read()).workspaces.length, 20);
   const first = (await reopened.read()).workspaces[0];
-  await f.service.remove(first.id);
+  await f.service.remove(first.name);
   assert.equal((await reopened.read()).workspaces.length, 19);
-  await assert.rejects(f.service.remove(first.id), /Workspace not found/);
+  await assert.rejects(f.service.remove(first.name), /Workspace not found/);
 });
 
 test('private state rejects public permissions and symlinked files', async t => {
@@ -150,8 +150,8 @@ test('state setup rejects redirected ancestors before creating files', async t =
 test('removing a registration prevents subsequent discovery without touching the project', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const workspace = await f.service.register('Project', [f.project]);
-  await f.service.remove(workspace.id);
-  await assert.rejects(f.service.inspect(workspace.id), /Workspace not found/);
+  await f.service.remove(workspace.name);
+  await assert.rejects(f.service.inspect(workspace.name), /Workspace not found/);
   assert.equal(await readFile(join(f.project, 'api/pom.xml'), 'utf8'), '<project/>');
 });
 
@@ -256,14 +256,14 @@ test('multi-root registration is all-or-nothing, groups same-basename roots inde
   const registered = await f.service.register('Two repositories', [firstRoot, secondRoot]);
   assert.deepEqual(registered.roots, [await realpath(firstRoot), await realpath(secondRoot)]);
   const approved = registered;
-  const inspection = await f.service.inspect(approved.id);
+  const inspection = await f.service.inspect(approved.name);
   assert.deepEqual(inspection.roots.map(root => root.path), approved.roots);
   assert.deepEqual(inspection.roots.map(root => root.repositories.map(repository => repository.name)), [['same-name'], ['same-name']]);
   assert.ok(inspection.roots.every(root => !root.unavailable));
 
   await rm(secondRoot, { recursive: true });
   await symlink(outsideRoot, secondRoot);
-  const partial = await f.service.inspect(approved.id);
+  const partial = await f.service.inspect(approved.name);
   assert.equal(partial.roots[0].unavailable, false);
   assert.equal(partial.roots[1].unavailable, true);
   assert.deepEqual(partial.roots[1].repositories, []);

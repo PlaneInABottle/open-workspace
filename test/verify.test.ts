@@ -58,7 +58,7 @@ test('verification runs the approved manifest script with git, service and time 
   };
   const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [processFor(f.project)] });
   const service = new WorkspaceService(f.store, list, undefined, run);
-  const result = await service.verify(f.approved.id, {
+  const result = await service.verify(f.approved.name, {
     repositoryPath: f.project, scriptName: 'check',
     service: { pmId: 3, name: 'api', namespace: 'default' },
   });
@@ -88,22 +88,22 @@ test('verification refuses paths, scripts and repositories outside the approved 
   };
   const service = new WorkspaceService(f.store, undefined, undefined, run);
   await assert.rejects(
-    service.verify(f.approved.id, { repositoryPath: join(f.root, 'elsewhere'), scriptName: 'check' }),
+    service.verify(f.approved.name, { repositoryPath: join(f.root, 'elsewhere'), scriptName: 'check' }),
     /not inside an registered project root/,
   );
   await assert.rejects(
-    service.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'deploy' }),
+    service.verify(f.approved.name, { repositoryPath: f.project, scriptName: 'deploy' }),
     /no runnable test script/,
   );
   await assert.rejects(
-    service.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'check; rm -rf /' }),
+    service.verify(f.approved.name, { repositoryPath: f.project, scriptName: 'check; rm -rf /' }),
     /no runnable test script/,
   );
   const link = join(f.root, 'linked');
   await mkdir(link);
   await symlink(f.project, join(link, 'alias'));
   await assert.rejects(
-    service.verify(f.approved.id, { repositoryPath: join(link, 'alias'), scriptName: 'check' }),
+    service.verify(f.approved.name, { repositoryPath: join(link, 'alias'), scriptName: 'check' }),
     /not a real directory|not inside an registered project root/,
   );
   assert.equal(runs, 0);
@@ -122,7 +122,7 @@ test('verification refuses an unmapped service link without running the test', a
   const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [processFor(outside)] });
   const service = new WorkspaceService(f.store, list, undefined, run);
   await assert.rejects(
-    service.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'check', service: { pmId: 3, name: 'api' } }),
+    service.verify(f.approved.name, { repositoryPath: f.project, scriptName: 'check', service: { pmId: 3, name: 'api' } }),
     /not uniquely mapped/,
   );
   assert.equal(runs, 0);
@@ -135,7 +135,7 @@ test('verification reports timeout, missing npm and output overflow honestly', a
     if (command === 'npm') return outcome({ exitCode: null, timedOut: true, stdout: 'partial' });
     return git(command, args, { cwd: f.project, timeoutMs: 1, outputLimit: 1 });
   });
-  const timedOut = await hanging.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'check' });
+  const timedOut = await hanging.verify(f.approved.name, { repositoryPath: f.project, scriptName: 'check' });
   assert.equal(timedOut.outcome, 'failed');
   assert.equal(timedOut.timedOut, true);
   assert.match(timedOut.message, /not a pass/);
@@ -144,7 +144,7 @@ test('verification reports timeout, missing npm and output overflow honestly', a
     if (command === 'npm') return outcome({ spawnFailed: true });
     return git(command, args, { cwd: f.project, timeoutMs: 1, outputLimit: 1 });
   });
-  const unavailable = await missing.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'check' });
+  const unavailable = await missing.verify(f.approved.name, { repositoryPath: f.project, scriptName: 'check' });
   assert.equal(unavailable.outcome, 'error');
   assert.match(unavailable.message, /npm is unavailable/);
 
@@ -152,7 +152,7 @@ test('verification reports timeout, missing npm and output overflow honestly', a
     if (command === 'npm') return outcome({ exitCode: null, truncated: true, stdout: 'x'.repeat(10) });
     return git(command, args, { cwd: f.project, timeoutMs: 1, outputLimit: 1 });
   });
-  const overflowed = await overflowing.verify(f.approved.id, { repositoryPath: f.project, scriptName: 'check' });
+  const overflowed = await overflowing.verify(f.approved.name, { repositoryPath: f.project, scriptName: 'check' });
   assert.equal(overflowed.outcome, 'failed');
   assert.equal(overflowed.truncated, true);
   assert.match(overflowed.message, /bounded capture/);

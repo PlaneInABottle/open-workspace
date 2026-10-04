@@ -26,7 +26,7 @@ import {
   type DirtyFingerprint,
 } from './verify.js';
 import { persistRunSummary, type EnvironmentReceipt } from './run-summaries.js';
-import { Store, privateJsonLimit, type EnvironmentOwned, type EnvironmentRecord, type EnvironmentService } from './store.js';
+import { Store, privateJsonLimit, foldName, parseNameInput, resolveEnvironmentRecord, resolveWorkspaceRecord, type EnvironmentOwned, type EnvironmentRecord, type EnvironmentService } from './store.js';
 import { verifyMessages } from './verify.js';
 
 // Canonical owner of every user-visible environment-topology message.
@@ -34,6 +34,7 @@ import { verifyMessages } from './verify.js';
 export const environmentMessages = {
   envNotFound: 'Environment not found. Propose and set its topology first.',
   envLimit: 'Environment limit reached for this workspace.',
+  envNameTaken: 'An environment with this name already exists in this workspace.',
   serviceLimit: 'An environment holds at most 10 services.',
   outerLimit: 'Environment registry is full.',
   oversize: 'Environment topology would exceed the private state size limit.',
@@ -302,14 +303,17 @@ async function validatedServices(
 
 export async function setEnvironment(
   store: Store,
-  workspaceId: string,
+  workspaceName: string,
   input: unknown,
   readScripts: typeof readStartScripts = readStartScripts,
 ): Promise<EnvironmentRecord> {
   const parsed = environmentSetInput.parse(input);
+  // Validate before matching/storing: an unresolvable name (UUID-shaped,
+  // bad charset, blank) must never persist and occupy an env slot.
+  const name = parseNameInput(parsed.name, environmentMessages.badTopology);
   const state = await store.read();
-  const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
-  if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  const workspace = resolveWorkspaceRecord(state, workspaceName, verifyMessages.notFoundRegister, verifyMessages.notFoundRegister);
+  const workspaceId = workspace.id;
   const services = await validatedServices(workspace.roots, parsed.services, readScripts);
   return store.update(state => {
     let entry = state.environments.find(entry => entry.workspaceId === workspaceId);
@@ -318,7 +322,10 @@ export async function setEnvironment(
       entry = { workspaceId, items: [] };
       state.environments.push(entry);
     }
-    const existing = entry.items.find(item => item.name === parsed.name);
+    // Names match case-insensitively: set replaces per name, so `Local`
+    // never duplicates `local`. Stored casing is preserved; rename is the
+    // explicit path for changing it.
+    const existing = entry.items.find(item => foldName(item.name) === foldName(name));
     if (!existing && entry.items.length >= maxEnvironmentsPerWorkspace) {
       throw new Error(environmentMessages.envLimit);
     }
@@ -332,7 +339,7 @@ export async function setEnvironment(
       existing.updatedAt = now;
       record = existing;
     } else {
-      record = { id: randomUUID(), name: parsed.name, services, owned: [], state: 'down', updatedAt: now };
+      record = { name, id: randomUUID(), services, owned: [], state: 'down', updatedAt: now, createdAt: now };
       entry.items.push(record);
     }
     // Pre-commit serialized-size refusal: the file stays byte-identical when
@@ -344,24 +351,51 @@ export async function setEnvironment(
   });
 }
 
-export async function getEnvironment(store: Store, workspaceId: string, environmentId: string): Promise<EnvironmentRecord> {
+export async function getEnvironment(store: Store, workspaceName: string, environmentName: string): Promise<EnvironmentRecord> {
   const state = await store.read();
-  if (!state.workspaces.some(workspace => workspace.id === workspaceId)) {
-    throw new Error(verifyMessages.notFoundRegister);
-  }
-  const record = state.environments
-    .find(entry => entry.workspaceId === workspaceId)?.items
-    .find(item => item.id === environmentId);
-  if (!record) throw new Error(environmentMessages.envNotFound);
-  return record;
+  return resolveEnvironmentRecord(state, workspaceName, environmentName, {
+    workspaceInvalid: verifyMessages.notFoundRegister,
+    workspaceNotFound: verifyMessages.notFoundRegister,
+    environmentInvalid: environmentMessages.badTopology,
+    environmentNotFound: environmentMessages.envNotFound,
+  }).record;
 }
 
-export async function listEnvironments(store: Store, workspaceId: string): Promise<EnvironmentRecord[]> {
+export async function listEnvironments(store: Store, workspaceName: string): Promise<EnvironmentRecord[]> {
   const state = await store.read();
-  if (!state.workspaces.some(workspace => workspace.id === workspaceId)) {
-    throw new Error(verifyMessages.notFoundRegister);
-  }
-  return state.environments.find(entry => entry.workspaceId === workspaceId)?.items ?? [];
+  const workspace = resolveWorkspaceRecord(state, workspaceName, verifyMessages.notFoundRegister, verifyMessages.notFoundRegister);
+  return state.environments.find(entry => entry.workspaceId === workspace.id)?.items ?? [];
+}
+
+/**
+ * Explicit rename: the new name validates like creation, conflicts with a
+ * taken sibling name are refused, and the ID plus owned processes,
+ * lifecycle state, services and timestamps are preserved untouched.
+ */
+export async function renameEnvironment(
+  store: Store,
+  workspaceName: string,
+  environmentName: string,
+  newName: string,
+): Promise<EnvironmentRecord> {
+  const trimmed = parseNameInput(newName, environmentMessages.badTopology);
+  const messages = {
+    workspaceInvalid: verifyMessages.notFoundRegister,
+    workspaceNotFound: verifyMessages.notFoundRegister,
+    environmentInvalid: environmentMessages.badTopology,
+    environmentNotFound: environmentMessages.envNotFound,
+  };
+  return store.update(state => {
+    const { workspace, record } = resolveEnvironmentRecord(state, workspaceName, environmentName, messages);
+    const items = state.environments.find(entry => entry.workspaceId === workspace.id)?.items ?? [];
+    if (foldName(record.name) !== foldName(trimmed)
+      && items.some(item => foldName(item.name) === foldName(trimmed))) {
+      throw new Error(environmentMessages.envNameTaken);
+    }
+    record.name = trimmed;
+    record.updatedAt = new Date().toISOString();
+    return record;
+  });
 }
 
 export interface ServiceStatusEntry {
@@ -387,17 +421,17 @@ export interface EnvironmentStatus {
 // 'ready'/'skipped'; terminal PM2 states map honestly to 'down'/'failed'.
 export async function environmentStatus(
   store: Store,
-  workspaceId: string,
-  environmentId: string,
+  workspaceName: string,
+  environmentName: string,
   list: typeof listPm2Processes = listPm2Processes,
 ): Promise<EnvironmentStatus> {
   const state = await store.read();
-  const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
-  if (!workspace) throw new Error(verifyMessages.notFoundRegister);
-  const record = state.environments
-    .find(entry => entry.workspaceId === workspaceId)?.items
-    .find(item => item.id === environmentId);
-  if (!record) throw new Error(environmentMessages.envNotFound);
+  const { workspace, record } = resolveEnvironmentRecord(state, workspaceName, environmentName, {
+    workspaceInvalid: verifyMessages.notFoundRegister,
+    workspaceNotFound: verifyMessages.notFoundRegister,
+    environmentInvalid: environmentMessages.badTopology,
+    environmentNotFound: environmentMessages.envNotFound,
+  });
   const listed = await list();
   const live = listed.available ? await inspectPm2Services(workspace.roots, listed.processes) : null;
   const known = live ? [...live.services, ...live.ambiguousServices] : [];
@@ -545,11 +579,10 @@ export async function environmentStatus(
 
 export async function proposeForWorkspace(
   store: Store,
-  workspaceId: string,
+  workspaceName: string,
 ): Promise<{ services: ProposedService[]; order: string[] }> {
   const state = await store.read();
-  const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
-  if (!workspace) throw new Error(verifyMessages.notFoundRegister);
+  const workspace = resolveWorkspaceRecord(state, workspaceName, verifyMessages.notFoundRegister, verifyMessages.notFoundRegister);
   const roots = await Promise.all(workspace.roots.map(async root => {
     try {
       return await discover(root);
@@ -577,10 +610,10 @@ export async function proposeForWorkspace(
 // still match pmId + name + namespace + frozen expectedRoot.
 // ---------------------------------------------------------------------------
 
-export const environmentUpInput = z.object({ environmentId: z.string().uuid() }).strict();
-export const environmentDownInput = z.object({ environmentId: z.string().uuid() }).strict();
+export const environmentUpInput = z.object({ environment: z.string().min(1).max(100) }).strict();
+export const environmentDownInput = z.object({ environment: z.string().min(1).max(100) }).strict();
 export const environmentVerifyInput = z.object({
-  environmentId: z.string().uuid(),
+  environment: z.string().min(1).max(100),
   repositoryPath: z.string().min(1).max(4096),
   scriptName: z.string().min(1).max(80),
 }).strict();
@@ -851,30 +884,36 @@ async function expectedRootOf(workspaceRoots: string[], repositoryPath: string):
 
 async function withEnvironmentRecord<T>(
   store: Store,
-  workspaceId: string,
-  environmentId: string,
+  workspaceName: string,
+  environmentName: string,
   change: (record: EnvironmentRecord) => T | Promise<T>,
   options: { write: boolean } = { write: true },
-): Promise<{ workspaceRoots: string[]; result: Awaited<T> }> {
+): Promise<{ workspaceRoots: string[]; workspaceId: string; environmentId: string; result: Awaited<T> }> {
+  const messages = {
+    workspaceInvalid: verifyMessages.notFoundRegister,
+    workspaceNotFound: verifyMessages.notFoundRegister,
+    environmentInvalid: environmentMessages.badTopology,
+    environmentNotFound: environmentMessages.envNotFound,
+  };
   if (options.write) {
     return store.update(async state => {
-      const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
-      if (!workspace) throw new Error(verifyMessages.notFoundRegister);
-      const record = state.environments
-        .find(entry => entry.workspaceId === workspaceId)?.items
-        .find(item => item.id === environmentId);
-      if (!record) throw new Error(environmentMessages.envNotFound);
-      return { workspaceRoots: [...workspace.roots], result: await change(record) };
+      const { workspace, record } = resolveEnvironmentRecord(state, workspaceName, environmentName, messages);
+      return {
+        workspaceRoots: [...workspace.roots],
+        workspaceId: workspace.id,
+        environmentId: record.id,
+        result: await change(record),
+      };
     });
   }
   const state = await store.read();
-  const workspace = state.workspaces.find(workspace => workspace.id === workspaceId);
-  if (!workspace) throw new Error(verifyMessages.notFoundRegister);
-  const record = state.environments
-    .find(entry => entry.workspaceId === workspaceId)?.items
-    .find(item => item.id === environmentId);
-  if (!record) throw new Error(environmentMessages.envNotFound);
-  return { workspaceRoots: [...workspace.roots], result: await change(record) };
+  const { workspace, record } = resolveEnvironmentRecord(state, workspaceName, environmentName, messages);
+  return {
+    workspaceRoots: [...workspace.roots],
+    workspaceId: workspace.id,
+    environmentId: record.id,
+    result: await change(record),
+  };
 }
 
 function upsertOwned(
@@ -910,8 +949,8 @@ function isTerminalStatus(status: string): boolean {
 
 export async function environmentUp(
   store: Store,
-  workspaceId: string,
-  environmentId: string,
+  workspaceName: string,
+  environmentName: string,
   runtime: EnvironmentRuntime = {},
 ): Promise<EnvironmentUpResult> {
   const list = runtime.list ?? listPm2Processes;
@@ -922,7 +961,7 @@ export async function environmentUp(
   const now = runtime.now ?? Date.now;
   const intervalMs = runtime.pollIntervalMs ?? defaultPollIntervalMs;
   const aliveWatchMs = runtime.processAliveWatchMs ?? processAliveWatchSecs * 1000;
-  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceName, environmentName, record => ({
     name: record.name,
     order: topologicalOrder(record.services),
     services: record.services.map(service => ({ ...service })),
@@ -937,7 +976,7 @@ export async function environmentUp(
   // skipped so the file is untouched.
   let mutated = false;
   const commit = async (change: (record: EnvironmentRecord) => void): Promise<void> => {
-    await withEnvironmentRecord(store, workspaceId, environmentId, record => { change(record); });
+    await withEnvironmentRecord(store, workspaceName, environmentName, record => { change(record); });
     mutated = true;
   };
   for (const serviceId of plan.order) {
@@ -1138,7 +1177,7 @@ export async function environmentUp(
     });
   }
   const live = results.filter(entry => entry.status === 'ready' || entry.status === 'starting');
-  const stored = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+  const stored = await withEnvironmentRecord(store, workspaceName, environmentName, record => ({
     state: record.state,
   }), { write: false });
   const nextState: EnvironmentRecord['state'] = live.length === results.length && results.length > 0
@@ -1148,23 +1187,23 @@ export async function environmentUp(
   // unreadable, every service refused before any intent), the stored state
   // stands and the file is untouched.
   if (mutated) {
-    await withEnvironmentRecord(store, workspaceId, environmentId, record => {
+    await withEnvironmentRecord(store, workspaceName, environmentName, record => {
       record.state = nextState;
       record.updatedAt = new Date().toISOString();
     });
   }
-  return { environmentId, name: plan.name, state: mutated ? nextState : stored.result.state, order: plan.order, services: results };
+  return { environmentId: stored.environmentId, name: plan.name, state: mutated ? nextState : stored.result.state, order: plan.order, services: results };
 }
 
 export async function environmentDown(
   store: Store,
-  workspaceId: string,
-  environmentId: string,
+  workspaceName: string,
+  environmentName: string,
   runtime: EnvironmentRuntime = {},
 ): Promise<EnvironmentDownResult> {
   const list = runtime.list ?? listPm2Processes;
   const stopRunner = runtime.runner ?? runPm2Action;
-  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceName, environmentName, record => ({
     name: record.name,
     order: topologicalOrder(record.services).reverse(),
     owned: record.owned.map(entry => ({ ...entry })),
@@ -1178,7 +1217,7 @@ export async function environmentDown(
   const results: EnvironmentDownServiceResult[] = [];
   let mutated = false;
   const commit = async (change: (record: EnvironmentRecord) => void): Promise<void> => {
-    await withEnvironmentRecord(store, workspaceId, environmentId, record => { change(record); });
+    await withEnvironmentRecord(store, workspaceName, environmentName, record => { change(record); });
     mutated = true;
   };
   for (const owned of ordered) {
@@ -1242,7 +1281,7 @@ export async function environmentDown(
       done('failed', environmentMessages.stopFailed);
     }
   }
-  const stored = await withEnvironmentRecord(store, workspaceId, environmentId, record => ({
+  const stored = await withEnvironmentRecord(store, workspaceName, environmentName, record => ({
     state: record.state,
     owned: record.owned.length,
   }), { write: false });
@@ -1250,12 +1289,12 @@ export async function environmentDown(
   // No evidence, no state change: when PM2 is unreadable nothing is stopped
   // or cleared, so the stored state stands and the file is untouched.
   if (mutated) {
-    await withEnvironmentRecord(store, workspaceId, environmentId, record => {
+    await withEnvironmentRecord(store, workspaceName, environmentName, record => {
       record.state = nextState;
       record.updatedAt = new Date().toISOString();
     });
   }
-  return { environmentId, name: plan.name, state: mutated ? nextState : stored.result.state, order: plan.order, services: results };
+  return { environmentId: stored.environmentId, name: plan.name, state: mutated ? nextState : stored.result.state, order: plan.order, services: results };
 }
 
 async function observeRepoGit(
@@ -1299,14 +1338,14 @@ async function observeRepoGit(
 // workstream_context readers — no new view, no timeline fork.
 export async function environmentVerify(
   store: Store,
-  workspaceId: string,
-  input: { environmentId: string; repositoryPath: string; scriptName: string },
+  workspaceName: string,
+  input: { environment: string; repositoryPath: string; scriptName: string },
   runtime: EnvironmentRuntime = {},
 ): Promise<EnvironmentVerifyResult> {
   const parsed = environmentVerifyInput.parse(input);
   const list = runtime.list ?? listPm2Processes;
   const runCommand = runtime.runCommand ?? runBoundedCommand;
-  const { workspaceRoots, result: plan } = await withEnvironmentRecord(store, workspaceId, parsed.environmentId, record => ({
+  const { workspaceRoots, workspaceId, environmentId, result: plan } = await withEnvironmentRecord(store, workspaceName, parsed.environment, record => ({
     name: record.name,
     services: record.services.map(service => ({ ...service })),
     owned: record.owned.map(entry => ({ ...entry })),
@@ -1343,7 +1382,7 @@ export async function environmentVerify(
       dirty: git.dirty,
     });
   }
-  const receipt: EnvironmentReceipt = { envId: parsed.environmentId, envName: plan.name, services };
+  const receipt: EnvironmentReceipt = { envId: environmentId, envName: plan.name, services };
   const verification = await runVerification(
     workspaceRoots,
     { repositoryPath: parsed.repositoryPath, scriptName: parsed.scriptName },
@@ -1369,7 +1408,7 @@ export async function environmentVerify(
     console.error('Run summary persist failed:', error instanceof Error ? error.message : error);
   }
   return {
-    environmentId: parsed.environmentId,
+    environmentId,
     name: plan.name,
     outcome: verification.outcome,
     runId,

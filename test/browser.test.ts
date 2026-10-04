@@ -91,7 +91,7 @@ test('browser check denies non-loopback and non-http URLs without spawning', asy
   ];
   for (const url of denied) {
     await assert.rejects(
-      service.browserCheck(workspace.id, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir }),
+      service.browserCheck(workspace.name, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir }),
       /Provide an http\(s\) loopback URL\./,
       url,
     );
@@ -105,7 +105,7 @@ test('browser check runs one owned batch with exact argv, cwd, minimal env, then
   const { run, calls } = scriptedRunner(snapshotBatch(url, url, '- heading "Owned"'));
   process.env.OW_BROWSER_SECRET = 'must-not-leak';
   try {
-    const result = await service.browserCheck(workspace.id, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir });
+    const result = await service.browserCheck(workspace.name, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir });
     assert.equal(result.ok, true);
     assert.match(result.snapshotText, /Owned/);
     assert.equal(result.assertFound, null);
@@ -132,11 +132,11 @@ test('browser check reports the substring predicate', async t => {
   const { service, workspace, binDir } = await registeredService(t);
   const url = 'http://127.0.0.1:4318/';
   const batch = snapshotBatch(url, url, 'welcome to the owned fixture');
-  const found = await service.browserCheck(workspace.id, { url, assertText: 'owned' }, {
+  const found = await service.browserCheck(workspace.name, { url, assertText: 'owned' }, {
     run: scriptedRunner(batch).run, lookupHost: scriptedLookup, searchPath: binDir,
   });
   assert.equal(found.assertFound, true);
-  const missing = await service.browserCheck(workspace.id, { url, assertText: 'absent' }, {
+  const missing = await service.browserCheck(workspace.name, { url, assertText: 'absent' }, {
     run: scriptedRunner(batch).run, lookupHost: scriptedLookup, searchPath: binDir,
   });
   assert.equal(missing.assertFound, false);
@@ -150,7 +150,7 @@ test('browser check refuses a final URL outside loopback', async t => {
   const batch = snapshotBatch(url, 'http://example.com/', 'elsewhere');
   const { run, calls } = scriptedRunner(batch);
   await assert.rejects(
-    service.browserCheck(workspace.id, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir }),
+    service.browserCheck(workspace.name, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir }),
     /redirected outside loopback/,
   );
   assert.equal(calls.length, 2, 'the owned session is still closed on denial');
@@ -163,9 +163,9 @@ test('browser check propagates truncation and timeout flags', async t => {
   const url = 'http://127.0.0.1:4318/';
   const batch = snapshotBatch(url, url, 'short');
   const { run } = scriptedRunner(batch, { truncated: true });
-  const truncated = await service.browserCheck(workspace.id, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir });
+  const truncated = await service.browserCheck(workspace.name, { url }, { run, lookupHost: scriptedLookup, searchPath: binDir });
   assert.equal(truncated.truncated, true);
-  const long = await service.browserCheck(workspace.id, { url }, {
+  const long = await service.browserCheck(workspace.name, { url }, {
     run: scriptedRunner(snapshotBatch(url, url, 'x'.repeat(40 * 1024))).run,
     lookupHost: scriptedLookup, searchPath: binDir,
   });
@@ -173,7 +173,7 @@ test('browser check propagates truncation and timeout flags', async t => {
   assert.ok(long.snapshotText.length <= 32 * 1024);
   const { run: slow } = scriptedRunner(batch, { timedOut: true, exitCode: null });
   await assert.rejects(
-    service.browserCheck(workspace.id, { url }, { run: slow, lookupHost: scriptedLookup, searchPath: binDir }),
+    service.browserCheck(workspace.name, { url }, { run: slow, lookupHost: scriptedLookup, searchPath: binDir }),
     /did not finish within the bounded runtime/,
   );
 });
@@ -185,12 +185,12 @@ test('browser check reports honestly when the binary is missing or fails', async
   const emptyDir = join(workspace.roots[0], '..', 'empty-bin');
   await mkdir(emptyDir);
   await assert.rejects(
-    service.browserCheck(workspace.id, { url }, { run: scriptedRunner('[]').run, lookupHost: scriptedLookup, searchPath: emptyDir }),
+    service.browserCheck(workspace.name, { url }, { run: scriptedRunner('[]').run, lookupHost: scriptedLookup, searchPath: emptyDir }),
     /Browser check is unavailable\./,
   );
   const failing: CommandRunner = async () => ({ ...okOutcome(''), spawnFailed: true });
   await assert.rejects(
-    service.browserCheck(workspace.id, { url }, { run: failing, lookupHost: scriptedLookup, searchPath: fixtureBinDir }),
+    service.browserCheck(workspace.name, { url }, { run: failing, lookupHost: scriptedLookup, searchPath: fixtureBinDir }),
     /Browser check is unavailable\./,
   );
 });
@@ -201,12 +201,12 @@ test('HTTP browser route denies non-loopback with a safe message and clean activ
   t.after(() => app.close());
   const origin = await app.listen(0);
   const headers = { Authorization: `Bearer ${app.mcpToken}`, 'Content-Type': 'application/json' };
-  const denied = await fetch(`${origin}/api/workspaces/${workspace.id}/browser/check`, {
+  const denied = await fetch(`${origin}/api/workspaces/${workspace.name}/browser/check`, {
     method: 'POST', headers, body: JSON.stringify({ url: 'http://example.com/' }),
   });
   assert.equal(denied.status, 400);
   assert.deepEqual(await denied.json(), { error: 'Provide an http(s) loopback URL.' });
-  const unknown = await fetch(`${origin}/api/workspaces/00000000-0000-0000-0000-000000000000/browser/check`, {
+  const unknown = await fetch(`${origin}/api/workspaces/Missing%20project/browser/check`, {
     method: 'POST', headers, body: JSON.stringify({ url: 'http://127.0.0.1:9/' }),
   });
   assert.equal(unknown.status, 400);
@@ -235,7 +235,7 @@ test('MCP advertises browser_check within token budgets', async t => {
   assert.ok(tool, 'browser_check is advertised');
   assert.ok((tool.description ?? '').length <= 200, `description ${(tool.description ?? '').length} chars`);
   const properties = (tool.inputSchema as { properties: Record<string, { description?: string }> }).properties;
-  assert.deepEqual(Object.keys(properties).sort(), ['assertText', 'timeoutMs', 'url', 'workspaceId']);
+  assert.deepEqual(Object.keys(properties).sort(), ['assertText', 'timeoutMs', 'url', 'workspace']);
   for (const [key, schema] of Object.entries(properties)) {
     assert.ok(!schema.description || schema.description.length <= 80, `${key} description budget`);
   }
@@ -261,7 +261,7 @@ test('owned loopback goto and snapshot through the real CLI when present', async
   t.after(() => server.close());
   const port = (server.address() as { port: number }).port;
   const url = `http://127.0.0.1:${port}/`;
-  const result = await service.browserCheck(workspace.id, { url, assertText: 'Owned loopback probe' }, {});
+  const result = await service.browserCheck(workspace.name, { url, assertText: 'Owned loopback probe' }, {});
   assert.equal(result.ok, true);
   assert.equal(result.assertFound, true);
   assert.match(result.snapshotText, /Owned loopback probe/);
