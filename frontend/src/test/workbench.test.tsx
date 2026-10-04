@@ -447,6 +447,7 @@ describe('project-first workbench', () => {
       if (path === '/api/overview') return json(overview({ workspaces: [project] }));
       if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'runs-service'));
       if (path === '/api/learnings') return json({ milestones: [] });
+      if (path === '/api/lessons') return json([]);
       if (path === '/api/runs/recent') return json([run]);
       if (path === '/api/activity') return json([]);
       return json({ error: 'Not found.' }, 404);
@@ -475,6 +476,7 @@ describe('project-first workbench', () => {
       if (path === '/api/overview') return json(overview({ workspaces: [project] }));
       if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'activity-service'));
       if (path === '/api/learnings') return json({ milestones: [] });
+      if (path === '/api/lessons') return json([]);
       if (path === '/api/runs/recent') return json([]);
       if (path === '/api/activity') return json(trail);
       return json({ error: 'Not found.' }, 404);
@@ -497,6 +499,7 @@ describe('project-first workbench', () => {
       if (path === '/api/overview') return json(overview({ workspaces: [project] }));
       if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'loading-service'));
       if (path === '/api/learnings') return learningsGate.promise;
+      if (path === '/api/lessons') return json([]);
       if (path === '/api/runs/recent') return runsGate.promise;
       if (path === '/api/activity') return json([]);
       return json({ error: 'Not found.' }, 404);
@@ -543,6 +546,7 @@ describe('project-first workbench', () => {
       if (path === `/api/workspaces/${projectA.name}` && init.method === 'GET') return json(inspection(projectA, 'stale-service-a'));
       if (path === `/api/workspaces/${projectB.name}` && init.method === 'GET') return json(inspection(projectB, 'stale-service-b'));
       if (path === '/api/learnings') return json({ milestones: [] });
+      if (path === '/api/lessons') return json([]);
       if (path === '/api/runs/recent') {
         runsCalls++;
         // First call is A's in-flight read; the Records tab reload for B must

@@ -16,7 +16,7 @@ import { EnvironmentsSection } from '@/features/projects/environment-board';
 import { projectRootLabel } from '@/features/projects/root-label';
 import { WorkstreamCard, checkpointAgeLabel } from '@/features/projects/workstream-board';
 import { RecordsView } from '@/features/records/RecordsView';
-import type { ActivityEntry, Capability, EnvironmentRecord, EnvironmentStatus, Inspection, Learnings, Lease, ProjectRootPickerResult, RunListEntry, ServiceInventory, Workspace, Workstream } from '@/api';
+import type { ActivityEntry, Capability, EnvironmentRecord, EnvironmentStatus, Inspection, LearnedLesson, Learnings, Lease, ProjectRootPickerResult, RunListEntry, ServiceInventory, Workspace, Workstream } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -78,6 +78,7 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           activity={state.activity}
           activityLoading={state.activityLoading}
           learnings={state.learnings}
+          lessons={state.lessons}
           runs={state.runs}
           recordsLoading={state.recordsLoading}
           recordsError={state.recordsError}
@@ -233,7 +234,7 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ connected, inspection, loading, error, services, servicesLoading, servicesError, workstreams, workstreamsLoading, workstreamsError, leases, environments, environmentStatuses, environmentsLoading, environmentsError, activity, activityLoading, learnings, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onGoToAi, onLoadRecords }: {
+function ProjectInventory({ connected, inspection, loading, error, services, servicesLoading, servicesError, workstreams, workstreamsLoading, workstreamsError, leases, environments, environmentStatuses, environmentsLoading, environmentsError, activity, activityLoading, learnings, lessons, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onGoToAi, onLoadRecords }: {
   connected: boolean;
   inspection: Inspection | null;
   loading: boolean;
@@ -252,6 +253,7 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
   activity: ActivityEntry[];
   activityLoading: boolean;
   learnings: Learnings;
+  lessons: LearnedLesson[];
   runs: RunListEntry[];
   recordsLoading: boolean;
   recordsError: string | null;
@@ -315,6 +317,7 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
             workspace={inspection.workspace}
             activity={activity}
             learnings={learnings}
+            lessons={lessons}
             runs={runs}
             loading={recordsLoading}
             error={recordsError}

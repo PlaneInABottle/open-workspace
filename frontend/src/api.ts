@@ -255,6 +255,19 @@ export interface Learnings {
   milestones: MilestoneNote[];
 }
 
+/**
+ * Read-only projection of GET /api/lessons: lesson titles plus source file
+ * refs only, never rule bodies. File refs are relative names (AGENTS.md,
+ * skills/...) enforced server-side — never absolute paths.
+ */
+export interface LearnedLesson {
+  title: string;
+  file: string;
+  measured: boolean;
+  status: 'active' | 'suspect';
+  recurrenceCount: number;
+}
+
 export interface RunListEntry {
   /** Stable opaque summary ID within its scope. Older servers omit it. */
   id?: string;
@@ -462,6 +475,7 @@ export class ApiClient {
   }
   activity() { return this.request<ActivityEntry[]>('/api/activity'); }
   learnings() { return this.request<Learnings>('/api/learnings'); }
+  lessons() { return this.request<LearnedLesson[]>('/api/lessons'); }
   recentRuns(workspace: string, workstream: string | undefined, limit = 20) {
     const bounded = Number.isInteger(limit) ? Math.min(20, Math.max(1, limit)) : 20;
     const params = new URLSearchParams({ workspace, limit: String(bounded) });

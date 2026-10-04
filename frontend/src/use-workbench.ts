@@ -10,6 +10,7 @@ import {
   type Inspection,
   type ServiceInventory,
   type ActivityEntry,
+  type LearnedLesson,
   type Lease,
   type Learnings,
   type RunListEntry,
@@ -45,6 +46,7 @@ export interface WorkbenchState {
   activity: ActivityEntry[];
   activityLoading: boolean;
   learnings: Learnings;
+  lessons: LearnedLesson[];
   runs: RunListEntry[];
   recordsLoading: boolean;
   recordsError: string | null;
@@ -79,6 +81,7 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     activity: [],
     activityLoading: false,
     learnings: { milestones: [] },
+    lessons: [],
     runs: [],
     recordsLoading: false,
     recordsError: null,
@@ -240,11 +243,12 @@ export function useWorkbench() {
     const request = ++recordsSequence.current;
     commit(current => ({ ...current, recordsLoading: true, recordsError: null }));
     try {
-      const [learnings, runs] = await Promise.all([api.learnings(), api.recentRuns(workspace, undefined)]);
+      const [learnings, runs, lessons] = await Promise.all([api.learnings(), api.recentRuns(workspace, undefined), api.lessons()]);
       if (!api.isCurrent(session) || request !== recordsSequence.current || selectedName.current !== workspace) return false;
       commit(current => ({
         ...current,
         learnings,
+        lessons,
         runs,
         recordsLoading: false,
         recordsError: null,

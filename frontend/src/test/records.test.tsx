@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';import { describe, expect, it, vi } from 'vitest';
 import { RecordsView } from '../features/records/RecordsView';
 import { buildTimeline, filterTimeline, summarizeTimeline } from '../features/records/timeline';
-import type { ActivityEntry, Learnings, RunListEntry, Workspace } from '../api';
+import type { ActivityEntry, LearnedLesson, Learnings, RunListEntry, Workspace } from '../api';
 
 const workspace: Workspace = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Records fixture', roots: ['/tmp/records-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
 const workspaceId = workspace.id;
@@ -9,6 +9,8 @@ const workspaceId = workspace.id;
 const learnings: Learnings = {
   milestones: [{ at: '2026-10-02T00:05:00.000Z', text: 'Checkout flow live for reviewers.', source: '1700000000-checkout.md' }],
 };
+
+const lessons: LearnedLesson[] = [];
 
 const activity: ActivityEntry[] = [
   { at: '2026-10-02T00:01:00.000Z', actor: 'mcp', operation: 'verify', workspaceId, detail: 'check → passed' },
@@ -50,6 +52,7 @@ function renderRecords(overrides: Partial<Parameters<typeof RecordsView>[0]> = {
       workspace={workspace}
       activity={activity}
       learnings={learnings}
+      lessons={lessons}
       runs={runs}
       loading={false}
       error={null}
@@ -126,6 +129,7 @@ describe('records timeline', () => {
         workspace,
         activity: [] as ActivityEntry[],
         learnings: { milestones: [] } as Learnings,
+        lessons: [] as LearnedLesson[],
         runs: [] as RunListEntry[],
         loading: false,
         error: null,

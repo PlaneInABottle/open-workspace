@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { ActivityEntry, Learnings, RunListEntry, Workspace } from '@/api';
+import type { ActivityEntry, LearnedLesson, Learnings, RunListEntry, Workspace } from '@/api';
 import {
   buildTimeline,
   filterTimeline,
@@ -107,10 +107,48 @@ function TimelineItem({ row, expanded, onToggle }: { row: TimelineRow; expanded:
   );
 }
 
-export function RecordsView({ workspace, activity, learnings, runs, loading, error, updatedAt, onReload }: {
+function LessonShelf({ lessons, loading }: { lessons: LearnedLesson[]; loading: boolean }) {
+  return (
+    <section aria-labelledby="records-lessons-heading" className="max-w-4xl">
+      <p className="eyebrow">LEARNED LESSONS</p>
+      <h2 id="records-lessons-heading" className="text-base font-semibold">What the workspace learned</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Titles and source notes only — review is manual, and nothing here changes project files.
+      </p>
+      {loading && lessons.length === 0 ? (
+        <p role="status" className="py-5 text-sm text-muted-foreground">Reading learned lessons…</p>
+      ) : lessons.length === 0 ? (
+        <p role="status" className="py-5 text-sm text-muted-foreground">No lessons recorded yet. Lessons appear here after your assistant records one from a past failure.</p>
+      ) : (
+        <ul className="mt-3 grid gap-2">
+          {lessons.map(lesson => (
+            <li key={`${lesson.title} ${lesson.file}`} className="rounded-lg border border-border px-3 py-2.5">
+              <p className="break-words text-sm font-medium">{lesson.title}</p>
+              <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{lesson.file}</p>
+              <p className="mt-2 flex flex-wrap gap-1.5">
+                <Badge variant="outline">{lesson.measured ? 'measured' : 'situational'}</Badge>
+                <Badge variant={lesson.status === 'suspect' ? 'destructive' : 'outline'}>
+                  {lesson.status === 'suspect' ? 'needs-review' : 'active'}
+                </Badge>
+                <Badge variant="outline">
+                  {lesson.recurrenceCount >= 1
+                    ? `recurred ${lesson.recurrenceCount}× in last 20 runs`
+                    : 'no recurrence in last 20 runs'}
+                </Badge>
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+export function RecordsView({ workspace, activity, learnings, lessons, runs, loading, error, updatedAt, onReload }: {
   workspace: Workspace;
   activity: ActivityEntry[];
   learnings: Learnings;
+  lessons: LearnedLesson[];
   runs: RunListEntry[];
   loading: boolean;
   error: string | null;
@@ -164,6 +202,8 @@ export function RecordsView({ workspace, activity, learnings, runs, loading, err
           </div>
         </dl>
       </section>
+
+      <LessonShelf lessons={lessons} loading={loading} />
 
       <section aria-labelledby="records-timeline-heading" className="max-w-4xl">
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
