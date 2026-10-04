@@ -1,6 +1,6 @@
 ---
 name: openworkspace-onboarding
-description: Guide a user's existing coding assistant through OpenWorkspace project discovery, registration and prerequisite explanation. Use when connecting a local project to OpenWorkspace, not for implementation, deployment or unrestricted machine setup.
+description: Guide a user's coding assistant through OpenWorkspace discovery, registration and prerequisites. Not for implementation, deployment or unrestricted machine setup.
 ---
 
 # OpenWorkspace onboarding

@@ -29,7 +29,7 @@ const sectionHeadings = [
   'What to do (one pass):',
   'Step 1 — Identify client:',
   'Generated local MCP entry (secret-free, this machine only):',
-  'Step 2 — Skills (no copy by default):',
+  'Step 2 — Skills (MCP-served by default; pinned files only on request):',
   'Step 3 — AGENTS.md note (diff first):',
   'Step 4 — Reload + Step 5 — Verify (free reads only):',
   'Step 6 — Handoff (≤120 words):',
@@ -117,11 +117,24 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('never write a shared ancestor/parent outside the active project without separate explicit authorization');
   });
 
-  it('defaults skills to MCP-served with no file copy', () => {
+  it('defaults skills to MCP-served with opt-in pinned project-local install', () => {
     const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('`skill/openworkspace-onboarding`');
-    expect(material!.copyText).toContain('Do NOT copy SKILL.md files anywhere unless I explicitly ask');
+    expect(material!.copyText).toContain('pinned slash commands');
+    expect(material!.copyText).toContain('copy the generated pack verbatim');
+    expect(material!.copyText).toContain('`plugins/<client>/`');
+    expect(material!.copyText).toContain("parent of the companion script\u2019s `bin/`");
+    expect(material!.copyText).toContain('`.claude/commands/openworkspace-<name>.md`');
+    expect(material!.copyText).toContain('`.opencode/commands/openworkspace-<name>.md`');
+    expect(material!.copyText).toContain('`.agents/skills/openworkspace-<name>/SKILL.md`');
+    expect(material!.copyText).toContain('`.github/skills/openworkspace-<name>/SKILL.md`');
+    expect(material!.copyText).toContain('Merge preserving every existing setting');
+    expect(material!.copyText).toContain('never write user-wide scope');
+    expect(material!.copyText).toContain('re-copy the same paths on update');
+    expect(material!.copyText).toContain('MCP-served is fresher');
+    expect(material!.copyText).toContain('Delete snapshots to return to MCP-served');
+    expect(material!.copyText).toContain('UNVERIFIED until run');
   });
 
   it('exposes no legacy manual-adapt flow or collapsed-guide surface', () => {
