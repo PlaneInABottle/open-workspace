@@ -542,6 +542,73 @@ test('workstream_context task tokens ignore other workspaces activity', async t 
   );
 });
 
+test('completion write returns its open IDs and reads back by assignment', async t => {
+  const f = await approvedFixture('openworkspace-completion-id-roundtrip-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  t.after(() => app.close());
+  const origin = await app.listen(0);
+  const headers = { Authorization: `Bearer ${app.mcpToken}`, 'Content-Type': 'application/json' };
+  const statusUrl = `${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/status`;
+  const id = randomUUID();
+  const written = await fetch(statusUrl, {
+    method: 'POST', headers, body: JSON.stringify({ completion: completion('roundtrip-assignment', id) }),
+  });
+  assert.equal(written.status, 200);
+  const receipt = await written.json() as { completionId: string; assignmentId: string; status: string };
+  assert.equal(receipt.completionId, id.toLowerCase(), 'success response carries the stored completion ID');
+  assert.equal(receipt.assignmentId, 'roundtrip-assignment', 'success response carries the resolved assignment group');
+  assert.equal(receipt.status, 'active', 'completion still never transitions status');
+  // Same-ID retry is idempotent and returns the same open IDs.
+  const replay = await (await fetch(statusUrl, {
+    method: 'POST', headers, body: JSON.stringify({ completion: completion('roundtrip-assignment', id.toUpperCase()) }),
+  })).json() as { completionId: string; assignmentId: string };
+  assert.equal(replay.completionId, id.toLowerCase());
+  assert.equal(replay.assignmentId, 'roundtrip-assignment');
+  assert.equal((await f.service.workstream(f.workspace.name, f.workstream.name)).completions.length, 1);
+  // Coordinator read-back by the same assignment shows the persisted ID.
+  const bundle = await f.service.workstreamContext(f.workspace.name, f.workstream.name, 5, 'roundtrip-assignment');
+  assert.equal(bundle.assignmentCompletion?.present, true);
+  assert.equal(bundle.assignmentCompletion?.records[0].completionId, id.toLowerCase());
+  const overHttp = await (await fetch(
+    `${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/context?assignmentId=roundtrip-assignment`,
+    { headers },
+  )).json() as { assignmentCompletion: { present: boolean; records: Array<{ completionId: string }> } };
+  assert.equal(overHttp.assignmentCompletion.present, true);
+  assert.equal(overHttp.assignmentCompletion.records[0].completionId, id.toLowerCase());
+});
+
+test('workstream_context separates assignment acceptance from workstream-wide acceptance', async t => {
+  const f = await approvedFixture('openworkspace-acceptance-split-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const first = completion('assignment-one');
+  first.checks = [
+    { name: 'backend-tests', result: 'passed' as const, environment: 'node22-macos-local', evidenceIds: [] },
+    { name: 'frontend-tests', result: 'failed' as const, environment: 'node22-macos-local', evidenceIds: [] },
+  ];
+  await f.service.appendWorkstreamCompletion(f.workspace.name, f.workstream.name, first);
+  await f.service.appendWorkstreamCompletion(f.workspace.name, f.workstream.name, completion('assignment-two'));
+  const bundle = await f.service.workstreamContext(f.workspace.name, f.workstream.name, 5, 'assignment-one');
+  assert.equal(bundle.acceptance.assignment?.assignmentId, 'assignment-one');
+  assert.equal(bundle.acceptance.assignment?.present, true);
+  assert.deepEqual(
+    bundle.acceptance.assignment?.criteria.map(criterion => [criterion.name, criterion.result]),
+    [['backend-tests', 'passed'], ['frontend-tests', 'failed']],
+    'assignment block carries only this assignment’s criteria',
+  );
+  assert.ok(bundle.acceptance.assignment?.criteria.every(criterion =>
+    criterion.completionId === first.completionId.toLowerCase() && criterion.outcome === 'passed'));
+  assert.equal(bundle.acceptance.general.latestOutcome, 'passed');
+  assert.equal(bundle.acceptance.general.latestAssignmentId, 'assignment-two');
+  assert.equal(bundle.acceptance.general.totalCompletions, 2);
+  assert.deepEqual(bundle.acceptance.general.assignmentIds.sort(), ['assignment-one', 'assignment-two']);
+  const unqueried = await f.service.workstreamContext(f.workspace.name, f.workstream.name);
+  assert.equal(unqueried.acceptance.assignment, null, 'no assignment query means no assignment block');
+  assert.equal(unqueried.acceptance.general.totalCompletions, 2, 'general block needs no query');
+  const missing = await f.service.workstreamContext(f.workspace.name, f.workstream.name, 5, 'assignment-absent');
+  assert.deepEqual(missing.acceptance.assignment, { assignmentId: 'assignment-absent', present: false, criteria: [] });
+});
+
 test('workstream_context auto-creates the stable default but still refuses other missing names', async t => {
   const f = await approvedFixture('openworkspace-subagent-default-');
   t.after(() => rm(f.root, { recursive: true, force: true }));

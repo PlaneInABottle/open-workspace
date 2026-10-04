@@ -383,7 +383,7 @@ export async function runMcpBridge(): Promise<void> {
       : note === undefined ? { status } : { status, note });
   });
   server.registerTool('workstream_context', {
-    description: 'Lists handoff context: checkpoint, completions, runs, situational lessons. A missing main workstream is created from registered roots.',
+    description: 'Lists handoff context: checkpoint, completions, acceptance, runs, situational lessons. A missing main workstream is created from registered roots.',
     inputSchema: z.object({
       workspace: workspaceName,
       workstream: workstreamName,

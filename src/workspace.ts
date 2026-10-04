@@ -7,7 +7,7 @@ import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readDockerServiceLogs, readPm2ServiceLogs, runPm2Action, runPm2Logs, runPm2Start, serviceInventory, startPm2Service, type AnyServiceLogTarget, type ServiceInventory, type ServiceLogStream, type ServiceStartRequest } from './services.js';
 import { dockerFailureMessage, listDockerContainers, runDockerLogs } from './services-docker.js';
 import { runVerification, verifyMessages, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
-import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, defaultWorkstreamName, renameWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, unknownWorkstreamStatusMessage, validAssignmentId, maxCheckpointHistory, workspaceAccessMessage, workstreamMessages, workstreamNameMessage, type CheckpointNote, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, defaultWorkstreamName, renameWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, unknownWorkstreamStatusMessage, validAssignmentId, maxCheckpointHistory, workspaceAccessMessage, workstreamMessages, workstreamNameMessage, type CheckpointNote, type CompletionCheckResult, type CompletionOutcome, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
@@ -69,6 +69,27 @@ export interface WorkstreamContext {
   completionsByAssignmentId: Record<string, CompletionRecord[]>;
   latestCompletion: CompletionRecord | null;
   assignmentCompletion: { assignmentId: string; present: boolean; records: CompletionRecord[] } | null;
+  /**
+   * Additive acceptance split (derived read-only view; stored completions
+   * untouched): assignment-scoped criteria — the check names from that
+   * assignment's completion records with their agent-reported results — shown
+   * separately from the workstream-wide summary (latest outcome, assignment
+   * and counts: standing, not criteria). Assignment is null when no
+   * assignmentId was queried.
+   */
+  acceptance: {
+    assignment: {
+      assignmentId: string;
+      present: boolean;
+      criteria: Array<{ completionId: string; outcome: CompletionOutcome; name: string; result: CompletionCheckResult }>;
+    } | null;
+    general: {
+      latestOutcome: CompletionOutcome | null;
+      latestAssignmentId: string | null;
+      totalCompletions: number;
+      assignmentIds: string[];
+    };
+  };
   open: { blocker: string; next: string };
   checkouts: Workstream['checkouts'];
   recentRuns: Array<RunListEntry & { evidenceSource: 'openworkspace_run' | 'external_import' | 'unknown_source' }>;
@@ -443,6 +464,8 @@ export class WorkspaceService {
       (completionsByAssignmentId[completion.assignmentId] ??= []).push(completion);
     }
     const completionRecords = assignmentId === undefined ? [] : completionsByAssignmentId[assignmentId] ?? [];
+    const storedCompletions = record.completions ?? [];
+    const latestCompletion = storedCompletions.at(-1) ?? null;
     // These are countable present/missing states, not a basis for claiming percentage rates.
     // Single bounded scan: the signal windows ride the same fetch the
     // response uses, sliced to `limit` at return time. One readdir pass even
@@ -550,9 +573,27 @@ export class WorkspaceService {
       status: record.status,
       checkpoint: { latest, historyCount: checkpointHistoryOf(record).length },
       completionsByAssignmentId,
-      latestCompletion: record.completions?.at(-1) ?? null,
+      latestCompletion,
       assignmentCompletion: assignmentId === undefined ? null : {
         assignmentId, present: completionRecords.length > 0, records: completionRecords,
+      },
+      acceptance: {
+        assignment: assignmentId === undefined ? null : {
+          assignmentId,
+          present: completionRecords.length > 0,
+          criteria: completionRecords.flatMap(entry => entry.checks.map(check => ({
+            completionId: entry.completionId,
+            outcome: entry.outcome,
+            name: check.name,
+            result: check.result,
+          }))),
+        },
+        general: {
+          latestOutcome: latestCompletion?.outcome ?? null,
+          latestAssignmentId: latestCompletion?.assignmentId ?? null,
+          totalCompletions: storedCompletions.length,
+          assignmentIds: Object.keys(completionsByAssignmentId),
+        },
       },
       open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
       checkouts: record.checkouts,

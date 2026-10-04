@@ -29,6 +29,7 @@ import {
   completionEvidenceMessage,
   completionIdConflictMessage,
   completionPatternMessage,
+  soloDefaultAssignmentId,
   unknownWorkstreamMessage,
   unknownWorkstreamStatusMessage,
   workspaceAccessMessage,
@@ -720,7 +721,18 @@ export function createApp(service: WorkspaceService, options: {
             } else {
               await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
             }
-            json(response, 200, updated);
+            json(response, 200, input.completion
+              ? {
+                ...updated,
+                // Explicit open IDs for the coordinator round-trip: the
+                // emitted completionId (lowercased at response time; the
+                // stored record keeps its bytes) plus the resolved
+                // assignment group, so the coordinator reads back the same
+                // assignment via workstream_context without scanning the ring.
+                completionId: input.completion.completionId.toLowerCase(),
+                assignmentId: input.completion.assignmentId ?? soloDefaultAssignmentId,
+              }
+              : updated);
             return;
           }
           if (url.pathname === '/api/runs/import' && request.method === 'POST') {
