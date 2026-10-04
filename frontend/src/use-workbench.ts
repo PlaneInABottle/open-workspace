@@ -5,6 +5,8 @@ import {
   SessionExpiredError,
   type Capability,
   type ClientConfig,
+  type EnvironmentRecord,
+  type EnvironmentStatus,
   type Inspection,
   type ServiceInventory,
   type ActivityEntry,
@@ -36,7 +38,12 @@ export interface WorkbenchState {
   workstreamsLoading: boolean;
   leases: Lease[];
   leasesError: string | null;
+  environments: EnvironmentRecord[];
+  environmentStatuses: Record<string, EnvironmentStatus>;
+  environmentsLoading: boolean;
+  environmentsError: string | null;
   activity: ActivityEntry[];
+  activityLoading: boolean;
   learnings: Learnings;
   runs: RunListEntry[];
   recordsLoading: boolean;
@@ -65,7 +72,12 @@ function initialState(phase: ConnectionPhase): WorkbenchState {
     workstreamsLoading: false,
     leases: [],
     leasesError: null,
+    environments: [],
+    environmentStatuses: {},
+    environmentsLoading: false,
+    environmentsError: null,
     activity: [],
+    activityLoading: false,
     learnings: { milestones: [] },
     runs: [],
     recordsLoading: false,
@@ -97,6 +109,8 @@ export function useWorkbench() {
   const inspectionSequence = useRef(0);
   const servicesSequence = useRef(0);
   const workstreamsSequence = useRef(0);
+  const environmentsSequence = useRef(0);
+  const recordsSequence = useRef(0);
   const selectionRevision = useRef(0);
   const selectedName = useRef<string | null>(null);
 
@@ -202,6 +216,50 @@ export function useWorkbench() {
     void revocation;
   }, [api, resetPrivateState]);
 
+  const loadActivity = useCallback(async () => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    commit(current => ({ ...current, activityLoading: true }));
+    try {
+      const trail = await api.activity();
+      if (!api.isCurrent(session)) return false;
+      commit(current => ({ ...current, activity: trail, activityLoading: false }));
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session)) {
+        commit(current => ({ ...current, activityLoading: false }));
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired]);
+
+  const loadRecords = useCallback(async (workspace: string) => {
+    const session = api.sessionGeneration;
+    if (!api.isConfirmed) return false;
+    const request = ++recordsSequence.current;
+    commit(current => ({ ...current, recordsLoading: true, recordsError: null }));
+    try {
+      const [learnings, runs] = await Promise.all([api.learnings(), api.recentRuns(workspace, undefined)]);
+      if (!api.isCurrent(session) || request !== recordsSequence.current || selectedName.current !== workspace) return false;
+      commit(current => ({
+        ...current,
+        learnings,
+        runs,
+        recordsLoading: false,
+        recordsError: null,
+        recordsUpdatedAt: new Date().toISOString(),
+      }));
+      return true;
+    } catch (error) {
+      if (handleSessionExpired(error)) return false;
+      if (api.isCurrent(session) && request === recordsSequence.current && selectedName.current === workspace) {
+        commit(current => ({ ...current, recordsLoading: false, recordsError: errorMessage(error) }));
+      }
+      return false;
+    }
+  }, [api, commit, handleSessionExpired]);
+
   const inspectProject = useCallback(async (workspace: string, preserveInspection = false) => {
     const session = api.sessionGeneration;
     if (!api.isConfirmed) return false;
@@ -226,6 +284,10 @@ export function useWorkbench() {
         workstreamsLoading: false,
         leases: keepCurrent ? current.leases : [],
         leasesError: null,
+        environments: keepCurrent ? current.environments : [],
+        environmentStatuses: keepCurrent ? current.environmentStatuses : {},
+        environmentsLoading: false,
+        environmentsError: null,
         notice: null,
       };
     });
@@ -234,6 +296,13 @@ export function useWorkbench() {
       if (!api.isCurrent(session) || request !== inspectionSequence.current || selectedName.current !== workspace) return false;
       commit(current => ({ ...current, inspection, inspectionLoading: false }));
       void listWorkstreamsFor(workspace, inspection.workspace.id, session);
+      void listEnvironmentsFor(workspace, session);
+      // Runs and activity also feed the setup signal, but neither is loaded
+      // on the Project tab otherwise (runs via RecordsView mount, activity
+      // via the setup view). Fetch both here — existing read-only endpoints,
+      // no new backend — so the banner reflects all four signals.
+      void loadRecords(workspace);
+      void loadActivity();
       return true;
     } catch (error) {
       if (handleSessionExpired(error)) return false;
@@ -242,7 +311,7 @@ export function useWorkbench() {
       }
       return false;
     }
-  }, [api, commit, handleSessionExpired]);
+  }, [api, commit, handleSessionExpired, loadActivity, loadRecords]);
 
   const inspectServices = useCallback(async (workspace: string) => {
     const session = api.sessionGeneration;
@@ -289,40 +358,32 @@ export function useWorkbench() {
     }
   }, [api, commit, handleSessionExpired]);
 
-  const loadActivity = useCallback(async () => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
+  const listEnvironmentsFor = useCallback(async (workspace: string, session: number) => {
+    const request = ++environmentsSequence.current;
+    commit(current => ({ ...current, environmentsLoading: true, environmentsError: null }));
     try {
-      const trail = await api.activity();
-      if (!api.isCurrent(session)) return false;
-      commit(current => ({ ...current, activity: trail }));
-      return true;
-    } catch (error) {
-      if (handleSessionExpired(error)) return false;
-      return false;
-    }
-  }, [api, commit, handleSessionExpired]);
-
-  const loadRecords = useCallback(async (workspace: string) => {
-    const session = api.sessionGeneration;
-    if (!api.isConfirmed) return false;
-    commit(current => ({ ...current, recordsLoading: true, recordsError: null }));
-    try {
-      const [learnings, runs] = await Promise.all([api.learnings(), api.recentRuns(workspace, undefined)]);
-      if (!api.isCurrent(session)) return false;
+      const records = await api.environments(workspace);
+      // Read-only per-environment live status; a single failing environment
+      // degrades to topology-only instead of failing the whole section.
+      const settled = await Promise.all(records.map(record =>
+        api.environmentStatus(workspace, record.name).catch(() => null),
+      ));
+      if (!api.isCurrent(session) || request !== environmentsSequence.current || selectedName.current !== workspace) return false;
+      const statuses: Record<string, EnvironmentStatus> = {};
+      settled.forEach((status, index) => {
+        if (status) statuses[records[index].name] = status;
+      });
       commit(current => ({
         ...current,
-        learnings,
-        runs,
-        recordsLoading: false,
-        recordsError: null,
-        recordsUpdatedAt: new Date().toISOString(),
+        environmentsLoading: false,
+        environments: records,
+        environmentStatuses: statuses,
       }));
       return true;
     } catch (error) {
       if (handleSessionExpired(error)) return false;
-      if (api.isCurrent(session)) {
-        commit(current => ({ ...current, recordsLoading: false, recordsError: errorMessage(error) }));
+      if (api.isCurrent(session) && request === environmentsSequence.current && selectedName.current === workspace) {
+        commit(current => ({ ...current, environmentsLoading: false, environmentsError: errorMessage(error) }));
       }
       return false;
     }

@@ -174,6 +174,59 @@ export interface Workstream {
   updatedAt: string;
 }
 
+/**
+ * Minimal read-only projection of the backend environment topology
+ * (GET /api/workspaces/:name/environments returns EnvironmentRecord[]).
+ * Absolute repository paths exist on the wire but are deliberately not
+ * declared here: the dashboard never renders them.
+ */
+export interface EnvironmentServiceTopology {
+  id: string;
+  name?: string;
+  port: number | null;
+  dependsOn: string[];
+  readiness: { kind: 'http-200'; path: string; timeoutSecs: number } | { kind: 'process-alive' };
+}
+
+export interface EnvironmentLastPoll {
+  status: 'ready' | 'starting' | 'failed' | 'skipped';
+  attempts: number;
+  httpStatus: number | null;
+  checkedAt: string;
+}
+
+export interface EnvironmentRecord {
+  id: string;
+  name: string;
+  services: EnvironmentServiceTopology[];
+  state: 'down' | 'partial' | 'up';
+  updatedAt: string;
+  createdAt?: string;
+}
+
+/**
+ * Minimal read-only projection of GET
+ * /api/workspaces/:name/environments/status?environment=X. Status vocabulary
+ * (down/starting/ready/failed/skipped/stale) and the per-entry detail line
+ * come straight from the backend; the owned projection keeps only the
+ * identity plus the last readiness poll (the up/down receipt summary).
+ */
+export interface ServiceStatusEntry {
+  serviceId: string;
+  name: string;
+  status: 'down' | 'starting' | 'ready' | 'failed' | 'skipped' | 'stale';
+  detail: string;
+  owned: { serviceId: string; name: string; lastPoll: EnvironmentLastPoll | null } | null;
+}
+
+export interface EnvironmentStatus {
+  environmentId: string;
+  name: string;
+  state: 'down' | 'partial' | 'up';
+  order: string[];
+  services: ServiceStatusEntry[];
+}
+
 export interface Lease {
   resource: string;
   workstreamId: string;
@@ -414,6 +467,15 @@ export class ApiClient {
     const params = new URLSearchParams({ workspace, limit: String(bounded) });
     if (workstream !== undefined) params.set('workstream', workstream);
     return this.request<RunListEntry[]>(`/api/runs/recent?${params}`);
+  }
+  /** Read-only environment topology for one project (M1 topology + store). */
+  environments(workspace: string) {
+    return this.request<EnvironmentRecord[]>(`/api/workspaces/${safeName(workspace)}/environments`);
+  }
+  /** Read-only live status for one named environment. */
+  environmentStatus(workspace: string, environment: string) {
+    const params = new URLSearchParams({ environment });
+    return this.request<EnvironmentStatus>(`/api/workspaces/${safeName(workspace)}/environments/status?${params}`);
   }
 
   private async revokeDashboardSession(token: string): Promise<void> {

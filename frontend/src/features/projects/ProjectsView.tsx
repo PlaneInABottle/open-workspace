@@ -12,9 +12,11 @@ import {
 } from '@/components/ui/table';
 import { ProjectRequestForm } from '@/features/projects/ProjectRequestForm';
 import { ProjectStatusBlock } from '@/features/projects/ProjectStatusBlock';
+import { EnvironmentsSection } from '@/features/projects/environment-board';
 import { projectRootLabel } from '@/features/projects/root-label';
+import { WorkstreamCard, checkpointAgeLabel } from '@/features/projects/workstream-board';
 import { RecordsView } from '@/features/records/RecordsView';
-import type { ActivityEntry, Capability, Inspection, Learnings, Lease, ProjectRootPickerResult, RunListEntry, ServiceInventory, Workspace, Workstream } from '@/api';
+import type { ActivityEntry, Capability, EnvironmentRecord, EnvironmentStatus, Inspection, Learnings, Lease, ProjectRootPickerResult, RunListEntry, ServiceInventory, Workspace, Workstream } from '@/api';
 import type { WorkbenchState } from '@/use-workbench';
 import type { ProjectRequest } from '@/validation';
 
@@ -66,10 +68,15 @@ export function OverviewView({ state, onProjectRequest, onPickRoots, onSelectPro
           workstreamsLoading={state.workstreamsLoading}
           workstreamsError={state.workstreamsError}
           leases={state.leases}
+          environments={state.environments}
+          environmentStatuses={state.environmentStatuses}
+          environmentsLoading={state.environmentsLoading}
+          environmentsError={state.environmentsError}
           onRetry={() => onRetryInspection(selected.name)}
           onInspectServices={() => onInspectServices(selected.name)}
           onGoToAi={onGoToAi}
           activity={state.activity}
+          activityLoading={state.activityLoading}
           learnings={state.learnings}
           runs={state.runs}
           recordsLoading={state.recordsLoading}
@@ -166,6 +173,51 @@ function StateText({ label, value }: { label: string; value: string }) {
   );
 }
 
+export interface SetupSignalInput {
+  workstreams: Workstream[];
+  environments: EnvironmentRecord[];
+  runs: RunListEntry[];
+  activity: ActivityEntry[];
+}
+
+export interface SetupSignal {
+  performed: boolean;
+  lastActivityAt: string | null;
+}
+
+/**
+ * "Technical setup performed" predicate for one workspace, derived from
+ * dashboard state loaded during project inspection (no new endpoint):
+ * workstreams and environments load with the inspection, and runs plus
+ * activity are fetched alongside them so every signal fires on the Project
+ * tab. Performed when any of: a recorded workstream scoped to this
+ * workspace, a recorded environment (fetched per workspace), a run scoped to
+ * this workspace, or an mcp-actor activity entry scoped to this workspace
+ * id. Presence-only: an empty array may mean "not loaded yet", so callers
+ * must render a neutral loading state while any of the four reads are in
+ * flight instead of claiming either variant. lastActivityAt is the newest
+ * valid timestamp across the matching signals, or null when nothing matched.
+ */
+export function setupSignalFor(workspaceId: string, signals: SetupSignalInput): SetupSignal {
+  const candidates: string[] = [];
+  for (const workstream of signals.workstreams) {
+    if (workstream.workspaceId === workspaceId) candidates.push(workstream.updatedAt);
+  }
+  // Environment records carry no workspace id; the workbench fetches them per
+  // workspace, so every entry here already belongs to this workspace.
+  for (const environment of signals.environments) candidates.push(environment.updatedAt);
+  for (const run of signals.runs) {
+    if (run.workspaceId === workspaceId) candidates.push(run.at);
+  }
+  for (const entry of signals.activity) {
+    if (entry.actor === 'mcp' && entry.workspaceId === workspaceId) candidates.push(entry.at);
+  }
+  const valid = candidates.filter(at => Number.isFinite(Date.parse(at)));
+  if (valid.length === 0) return { performed: false, lastActivityAt: null };
+  valid.sort();
+  return { performed: true, lastActivityAt: valid[valid.length - 1] };
+}
+
 function RepositorySource({ repository }: { repository: Inspection['roots'][number]['repositories'][number] }) {
   const sources = [
     ...repository.manifests,
@@ -181,7 +233,7 @@ function RepositorySource({ repository }: { repository: Inspection['roots'][numb
   );
 }
 
-function ProjectInventory({ connected, inspection, loading, error, services, servicesLoading, servicesError, workstreams, workstreamsLoading, workstreamsError, leases, activity, learnings, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onGoToAi, onLoadRecords }: {
+function ProjectInventory({ connected, inspection, loading, error, services, servicesLoading, servicesError, workstreams, workstreamsLoading, workstreamsError, leases, environments, environmentStatuses, environmentsLoading, environmentsError, activity, activityLoading, learnings, runs, recordsLoading, recordsError, recordsUpdatedAt, onRetry, onInspectServices, onGoToAi, onLoadRecords }: {
   connected: boolean;
   inspection: Inspection | null;
   loading: boolean;
@@ -193,7 +245,12 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
   workstreamsLoading: boolean;
   workstreamsError: string | null;
   leases: Lease[];
+  environments: EnvironmentRecord[];
+  environmentStatuses: Record<string, EnvironmentStatus>;
+  environmentsLoading: boolean;
+  environmentsError: string | null;
   activity: ActivityEntry[];
+  activityLoading: boolean;
   learnings: Learnings;
   runs: RunListEntry[];
   recordsLoading: boolean;
@@ -249,7 +306,7 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
           className={`min-h-9 px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${tab === 'records' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setTab('records')}
         >
-          Kayıtlar
+          Records
         </button>
       </div>
       {tab === 'records' ? (
@@ -296,24 +353,82 @@ function ProjectInventory({ connected, inspection, loading, error, services, ser
         onInspectServices={onInspectServices}
       />
       {inspection && (
+        <EnvironmentsSection
+          environments={environments}
+          statuses={environmentStatuses}
+          loading={environmentsLoading}
+          error={environmentsError}
+        />
+      )}
+      {inspection && (
         <WorkstreamsSection
           workstreams={workstreams}
           leases={leases}
+          runs={runs}
           loading={workstreamsLoading}
           error={workstreamsError}
         />
       )}
-      <section className="next-step" aria-labelledby="project-next-step-heading">
-        <div className="min-w-0">
-          <p className="eyebrow">NEXT STEP</p>
-          <h2 id="project-next-step-heading" className="text-base font-semibold">Connect your AI to prepare this project</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Technical setup has not been performed. Your assistant can explain and propose next steps; nothing starts automatically.</p>
-        </div>
-        <Button type="button" onClick={onGoToAi} className="shrink-0">Connect your AI <ArrowRight aria-hidden="true" data-icon="inline-end" /></Button>
-      </section>
+      <SetupNextStep
+        workspaceId={inspection.workspace.id}
+        workstreams={workstreams}
+        workstreamsLoading={workstreamsLoading}
+        environments={environments}
+        environmentsLoading={environmentsLoading}
+        runs={runs}
+        recordsLoading={recordsLoading}
+        activity={activity}
+        activityLoading={activityLoading}
+        onGoToAi={onGoToAi}
+      />
       </div>
       )}
     </div>
+  );
+}
+
+function SetupNextStep({ workspaceId, workstreams, workstreamsLoading, environments, environmentsLoading, runs, recordsLoading, activity, activityLoading, onGoToAi }: {
+  workspaceId: string;
+  workstreams: Workstream[];
+  workstreamsLoading: boolean;
+  environments: EnvironmentRecord[];
+  environmentsLoading: boolean;
+  runs: RunListEntry[];
+  recordsLoading: boolean;
+  activity: ActivityEntry[];
+  activityLoading: boolean;
+  onGoToAi: () => void;
+}) {
+  const signal = setupSignalFor(workspaceId, { workstreams, environments, runs, activity });
+  // While any scoping read is in flight, an empty array may mean "not loaded
+  // yet" rather than "no setup". Render a neutral status so neither the setup
+  // banner nor the done state flashes incorrectly. Read errors keep the setup
+  // banner: it is the conservative default that keeps AI setup discoverable
+  // instead of hiding it behind a stale spinner.
+  if (!signal.performed && (workstreamsLoading || environmentsLoading || recordsLoading || activityLoading)) {
+    return <p role="status" className="border-y border-border py-5 text-sm text-muted-foreground">Checking whether technical setup has been performed…</p>;
+  }
+  if (signal.performed) {
+    return (
+      <section aria-labelledby="project-next-step-heading" className="flex flex-col gap-4 border-l-2 border-border px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+        <div className="min-w-0">
+          <p className="eyebrow">SETUP</p>
+          <h2 id="project-next-step-heading" className="text-base font-semibold">AI setup recorded</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">AI connected · last activity {signal.lastActivityAt ? checkpointAgeLabel(signal.lastActivityAt) : 'date unknown'}.</p>
+        </div>
+        <Button type="button" variant="outline" onClick={onGoToAi} className="shrink-0">Review AI setup <ArrowRight aria-hidden="true" data-icon="inline-end" /></Button>
+      </section>
+    );
+  }
+  return (
+    <section className="next-step" aria-labelledby="project-next-step-heading">
+      <div className="min-w-0">
+        <p className="eyebrow">NEXT STEP</p>
+        <h2 id="project-next-step-heading" className="text-base font-semibold">Connect your AI to prepare this project</h2>
+        <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Technical setup has not been performed. Your assistant can explain and propose next steps; nothing starts automatically.</p>
+      </div>
+      <Button type="button" onClick={onGoToAi} className="shrink-0">Connect your AI <ArrowRight aria-hidden="true" data-icon="inline-end" /></Button>
+    </section>
   );
 }
 
@@ -387,44 +502,10 @@ function RootInventory({ root, index }: { root: Inspection['roots'][number]; ind
   );
 }
 
-function WorkstreamEntry({ workstream, leases }: {
-  workstream: Workstream;
-  leases: Lease[];
-}) {
-  const mine = leases.filter(lease => lease.workstreamId === workstream.id);
-  const queuePosition = (target: Lease) => leases
-    .filter(lease => lease.resource === target.resource && lease.status === 'queued')
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .findIndex(lease => lease.workstreamId === target.workstreamId && lease.createdAt === target.createdAt) + 1;
-  return (
-    <li className="py-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">{workstream.name}</p>
-        <Badge variant="outline">{workstream.status}</Badge>
-      </div>
-      <ul className="mt-1 grid gap-1">
-        {workstream.checkouts.map(checkout => (
-          <li key={checkout.root} className="break-all font-mono text-xs text-muted-foreground">
-            {checkout.root} · rev {checkout.revision ? `${checkout.revision.slice(0, 12)}…` : 'unknown'}
-          </li>
-        ))}
-      </ul>
-      {mine.length > 0 && (
-        <ul className="mt-2 grid gap-1">
-          {mine.map(lease => (
-            <li key={`${lease.resource}-${lease.createdAt}`} className="break-all font-mono text-xs text-muted-foreground">
-              <span>{lease.resource} · {lease.status}{lease.status === 'queued' ? ` (position ${queuePosition(lease)})` : ''}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-function WorkstreamsSection({ workstreams, leases, loading, error }: {
+function WorkstreamsSection({ workstreams, leases, runs, loading, error }: {
   workstreams: Workstream[];
   leases: Lease[];
+  runs: RunListEntry[];
   loading: boolean;
   error: string | null;
 }) {
@@ -442,13 +523,17 @@ function WorkstreamsSection({ workstreams, leases, loading, error }: {
       {error && (
         <p role="alert" className="mt-3 text-sm text-destructive">Workstreams could not be read: {error}</p>
       )}
+      {loading && workstreams.length === 0 && !error && (
+        <p role="status" className="mt-3 text-sm text-muted-foreground">Reading workstreams…</p>
+      )}
       {workstreams.length > 0 && (
         <ul className="mt-4 divide-y divide-border border-y border-border">
           {workstreams.map(workstream => (
-            <WorkstreamEntry
+            <WorkstreamCard
               key={workstream.id}
               workstream={workstream}
               leases={leases}
+              runs={runs}
             />
           ))}
         </ul>
@@ -480,6 +565,12 @@ function ServicesPanel({ services, loading, error, onInspectServices }: {
       </header>
       {error && !services && (
         <p role="alert" className="mt-3 text-sm text-destructive">Service information could not be read: {error}</p>
+      )}
+      {loading && !services && !error && (
+        <p role="status" className="mt-3 text-sm text-muted-foreground">Reading service information…</p>
+      )}
+      {!loading && !services && !error && (
+        <p className="mt-3 text-sm text-muted-foreground">Service information has not been inspected yet. Inspecting reads PM2 metadata; nothing is started.</p>
       )}
       {services && !services.available && (
         <p role="status" className="mt-4 text-sm text-muted-foreground">PM2 service metadata is unavailable on this machine. It has not been checked; install or start PM2 if you need this capability.</p>

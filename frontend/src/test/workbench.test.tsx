@@ -360,7 +360,8 @@ describe('project-first workbench', () => {
     await waitFor(() => expect(inspectionCalls).toBe(1));
     expect(await screen.findByRole('heading', { name: registered.name })).toBeInTheDocument();
     expect((await screen.findAllByText('registered-service')).length).toBeGreaterThan(0);
-    expect(screen.getByRole('heading', { name: 'Connect your AI to prepare this project' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connect your AI to prepare this project' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'AI setup recorded' })).not.toBeInTheDocument();
 
     await act(async () => {
       stale.resolve(json(overview()));
@@ -391,6 +392,185 @@ describe('project-first workbench', () => {
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith(setupPrompt.textContent);
     expect(await screen.findByText('Copied the setup prompt. Paste it to your assistant; the dashboard records what ran.')).toBeInTheDocument();
+  });
+
+  it('replaces the setup banner with a quiet done state once setup work is recorded', async () => {
+    const project = workspace('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Setup fixture', '/tmp/setup-fixture');
+    const recorded = {
+      id: 'ws-setup-1',
+      name: 'parallel-one',
+      workspaceId: project.id,
+      checkouts: [],
+      status: 'active',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    };
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [project] }));
+      if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'setup-service'));
+      if (path === '/api/workstreams') return json([recorded]);
+      if (path === '/api/leases') return json([]);
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Setup fixture/ }));
+
+    expect(await screen.findByRole('heading', { name: 'AI setup recorded' })).toBeInTheDocument();
+    expect(screen.getByText(/AI connected · last activity/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connect your AI to prepare this project' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Records' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Review AI setup/ }));
+    expect(await screen.findByRole('heading', { name: 'Connect your AI' })).toBeInTheDocument();
+  });
+
+  it('shows the done state when only runs record setup work on the Project tab', async () => {
+    const project = workspace('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Runs fixture', '/tmp/runs-fixture');
+    const run = {
+      id: 'run-setup-1',
+      workspaceId: project.id,
+      scriptName: 'verify.sh',
+      outcome: 'passed',
+      durationMs: 1200,
+      at: new Date(Date.now() - 10 * 60_000).toISOString(),
+      failingNames: [],
+      failingTruncated: false,
+      excerptPreview: '',
+      excerptTruncated: false,
+      outputTruncated: false,
+    };
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [project] }));
+      if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'runs-service'));
+      if (path === '/api/learnings') return json({ milestones: [] });
+      if (path === '/api/runs/recent') return json([run]);
+      if (path === '/api/activity') return json([]);
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Runs fixture/ }));
+
+    expect(await screen.findByRole('heading', { name: 'AI setup recorded' })).toBeInTheDocument();
+    expect(screen.getByText(/AI connected · last activity/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connect your AI to prepare this project' })).not.toBeInTheDocument();
+  });
+
+  it('shows the done state when only mcp activity records setup work on the Project tab', async () => {
+    const project = workspace('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Activity fixture', '/tmp/activity-fixture');
+    const trail = [{
+      at: new Date(Date.now() - 20 * 60_000).toISOString(),
+      actor: 'mcp',
+      operation: 'workspace_inspect',
+      workspaceId: project.id,
+      detail: 'workspace_inspect setup-proj → ok',
+    }];
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [project] }));
+      if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'activity-service'));
+      if (path === '/api/learnings') return json({ milestones: [] });
+      if (path === '/api/runs/recent') return json([]);
+      if (path === '/api/activity') return json(trail);
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Activity fixture/ }));
+
+    expect(await screen.findByRole('heading', { name: 'AI setup recorded' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connect your AI to prepare this project' })).not.toBeInTheDocument();
+  });
+
+  it('holds a neutral setup status while runs are still loading', async () => {
+    const project = workspace('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'Loading fixture', '/tmp/loading-fixture');
+    const learningsGate = deferred<Response>();
+    const runsGate = deferred<Response>();
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [project] }));
+      if (path === `/api/workspaces/${project.name}` && init.method === 'GET') return json(inspection(project, 'loading-service'));
+      if (path === '/api/learnings') return learningsGate.promise;
+      if (path === '/api/runs/recent') return runsGate.promise;
+      if (path === '/api/activity') return json([]);
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Loading fixture/ }));
+
+    expect(await screen.findByText('Checking whether technical setup has been performed…')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connect your AI to prepare this project' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'AI setup recorded' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      learningsGate.resolve(json({ milestones: [] }));
+      runsGate.resolve(json([]));
+    });
+    expect(await screen.findByRole('heading', { name: 'Connect your AI to prepare this project' })).toBeInTheDocument();
+    expect(screen.queryByText('Checking whether technical setup has been performed…')).not.toBeInTheDocument();
+  });
+
+  it('drops stale runs when a superseded project resolves after switching projects', async () => {
+    const projectA = workspace('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'Stale fixture A', '/tmp/stale-fixture-a');
+    const projectB = workspace('ffffffff-ffff-4fff-8fff-ffffffffffff', 'Stale fixture B', '/tmp/stale-fixture-b');
+    const staleRuns = deferred<Response>();
+    const recordRuns = deferred<Response>();
+    const runFor = (project: Workspace, scriptName: string) => ({
+      id: `run-${scriptName}`,
+      workspaceId: project.id,
+      scriptName,
+      outcome: 'passed',
+      durationMs: 100,
+      at: '2026-10-03T00:00:00.000Z',
+      failingNames: [],
+      failingTruncated: false,
+      excerptPreview: '',
+      excerptTruncated: false,
+      outputTruncated: false,
+    });
+    let runsCalls = 0;
+    installFetch(async (path, init) => {
+      if (path === '/api/client-config') return json(clientConfig);
+      if (path === '/api/overview') return json(overview({ workspaces: [projectA, projectB] }));
+      if (path === `/api/workspaces/${projectA.name}` && init.method === 'GET') return json(inspection(projectA, 'stale-service-a'));
+      if (path === `/api/workspaces/${projectB.name}` && init.method === 'GET') return json(inspection(projectB, 'stale-service-b'));
+      if (path === '/api/learnings') return json({ milestones: [] });
+      if (path === '/api/runs/recent') {
+        runsCalls++;
+        // First call is A's in-flight read; the Records tab reload for B must
+        // stay pending so the stale write is observable instead of masked.
+        if (runsCalls === 1) return staleRuns.promise;
+        if (runsCalls === 2) return json([runFor(projectB, 'verify-b')]);
+        return recordRuns.promise;
+      }
+      if (path === '/api/activity') return json([]);
+      return json({ error: 'Not found.' }, 404);
+    });
+    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
+    render(<App />);
+    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
+    fireEvent.click(within(rail).getByRole('button', { name: /Stale fixture A/ }));
+    expect(await screen.findByRole('heading', { name: projectA.name })).toBeInTheDocument();
+
+    fireEvent.click(within(rail).getByRole('button', { name: /Stale fixture B/ }));
+    // B's own runs must commit before the superseded A read resolves last.
+    expect(await screen.findByRole('heading', { name: 'AI setup recorded' })).toBeInTheDocument();
+    // Superseded A read resolves last; B must keep showing B's runs.
+    await act(async () => {
+      staleRuns.resolve(json([runFor(projectA, 'verify-a')]));
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Records' }));
+    expect(await screen.findByText(/verify-b → passed/)).toBeInTheDocument();
+    expect(screen.queryByText(/verify-a → passed/)).not.toBeInTheDocument();
   });
 
   it('asks for a confirming refresh when registration succeeds but the follow-up refresh fails', async () => {
@@ -528,7 +708,8 @@ describe('project-first workbench', () => {
     expect(screen.getAllByText(roots[2]).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('web').length).toBeGreaterThan(0);
     expect(screen.getAllByText('api').length).toBeGreaterThan(0);
-    expect(screen.getByRole('alert')).toHaveTextContent('unavailable');
+    const alerts = screen.getAllByRole('alert').map(element => element.textContent ?? '');
+    expect(alerts.some(text => text.includes('unavailable'))).toBe(true);
 
     fireEvent.click(screen.getAllByRole('link', { name: 'Projects' })[0]);
     expect(await screen.findByRole('heading', { name: 'Choose a project' })).toBeInTheDocument();
