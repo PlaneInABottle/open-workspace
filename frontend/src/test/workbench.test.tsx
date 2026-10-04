@@ -373,25 +373,25 @@ describe('project-first workbench', () => {
 
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
     expect(await screen.findByRole('heading', { name: 'Connect your AI' })).toBeInTheDocument();
-    const setupRequest = screen.getByRole('region', { name: 'Setup request preview' });
-    expect(setupRequest).toHaveTextContent(registered.id);
-    expect(setupRequest).toHaveTextContent('Verify the MCP connection with workspace_list');
-    expect(setupRequest).toHaveTextContent('workspace_inspect and onboarding_plan');
-    expect(setupRequest).toHaveTextContent('mcpServers');
-    expect(setupRequest).toHaveTextContent('OPENWORKSPACE_HOME');
-    expect(setupRequest.textContent).not.toContain(registered.name);
-    expect(setupRequest.textContent).not.toContain(registered.roots[0]);
-    expect(screen.getByRole('button', { name: 'Copy setup request' })).toBeInTheDocument();
+    const setupPrompt = screen.getByRole('region', { name: 'Setup prompt preview' });
+    expect(setupPrompt).toHaveTextContent(registered.id);
+    expect(setupPrompt).toHaveTextContent('workspace_list');
+    expect(setupPrompt).toHaveTextContent('workspace_inspect');
+    expect(setupPrompt).toHaveTextContent('mcpServers');
+    expect(setupPrompt).toHaveTextContent('OPENWORKSPACE_HOME');
+    expect(setupPrompt).toHaveTextContent('What to do (one pass):');
+    expect(setupPrompt).toHaveTextContent('Step 6 — Handoff');
+    expect(setupPrompt.textContent).not.toContain(registered.name);
+    expect(setupPrompt.textContent).not.toContain(registered.roots[0]);
+    expect(screen.getByRole('button', { name: 'Copy setup prompt' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy setup request' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy MCP configuration' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy onboarding request' })).not.toBeInTheDocument();
-    expect([...document.querySelectorAll('details')].every(details => !details.open)).toBe(true);
-    const clientDocLinks = [...document.querySelectorAll<HTMLAnchorElement>('details a[target="_blank"]')];
-    expect(clientDocLinks).toHaveLength(4);
-    expect(clientDocLinks.every(link => link.rel.includes('noreferrer'))).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy setup request' }));
+    expect(document.querySelectorAll('details')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy setup prompt' }));
     expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith(setupRequest.textContent);
-    expect(await screen.findByText('Copied the setup request. Review the proposed client configuration before applying it.')).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(setupPrompt.textContent);
+    expect(await screen.findByText('Copied the setup prompt. Paste it to your assistant and approve each proposed write in chat.')).toBeInTheDocument();
   });
 
   it('asks for a confirming refresh when registration succeeds but the follow-up refresh fails', async () => {
@@ -911,7 +911,7 @@ describe('project-first workbench', () => {
     fireEvent.click(within(currentRail).getByRole('button', { name: new RegExp(current.name) }));
     expect((await screen.findAllByText('new-sentinel-repository')).length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
-    const newSetupRequest = await screen.findByRole('region', { name: 'Setup request preview' });
+    const newSetupRequest = await screen.findByRole('region', { name: 'Setup prompt preview' });
     expect(newSetupRequest).toHaveTextContent('MCP_CONFIG_SENTINEL');
     expect(newSetupRequest).toHaveTextContent(current.id);
     expect(newSetupRequest.textContent).not.toContain(current.name);
@@ -1081,7 +1081,7 @@ describe('project-first workbench', () => {
     expect(await screen.findByRole('heading', { name: 'Choose a project' })).toBeInTheDocument();
     expect(selector).toHaveValue('');
     fireEvent.click(screen.getAllByRole('link', { name: 'Connect your AI' })[0]);
-    const genericSetupRequest = await screen.findByRole('region', { name: 'Setup request preview' });
+    const genericSetupRequest = await screen.findByRole('region', { name: 'Setup prompt preview' });
     expect(genericSetupRequest).toHaveTextContent('workspace_list first');
     expect(genericSetupRequest).toHaveTextContent('workspace_register with {name, roots}');
     expect(genericSetupRequest.textContent).not.toContain(approved.id);

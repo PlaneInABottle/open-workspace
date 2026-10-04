@@ -1,17 +1,7 @@
 import type { ClientConfig } from '@/api';
 
-export interface ClientSetupGuide {
-  id: 'vscode-copilot' | 'claude-code' | 'opencode-v2' | 'codex';
-  title: string;
-  sourceUrl: string;
-  location: string;
-  guidance: string[];
-  configuration: string;
-}
-
 export interface SetupRequestMaterial {
   copyText: string;
-  clientGuides: ClientSetupGuide[];
 }
 
 interface LocalStdioServer {
@@ -21,7 +11,6 @@ interface LocalStdioServer {
 }
 
 const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const openCodeSchema = 'https://opencode.ai/config.json';
 
 function localStdioServer(configuration: ClientConfig | null): LocalStdioServer | null {
   const candidate = configuration?.mcpServers?.openworkspace;
@@ -37,31 +26,10 @@ function localStdioServer(configuration: ClientConfig | null): LocalStdioServer 
   };
 }
 
-function tomlBasicString(value: string): string {
-  let result = '"';
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)!;
-    if (character === '"') result += '\\"';
-    else if (character === '\\') result += '\\\\';
-    else if (character === '\b') result += '\\b';
-    else if (character === '\t') result += '\\t';
-    else if (character === '\n') result += '\\n';
-    else if (character === '\f') result += '\\f';
-    else if (character === '\r') result += '\\r';
-    else if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) {
-      result += codePoint <= 0xffff
-        ? `\\u${codePoint.toString(16).padStart(4, '0')}`
-        : `\\U${codePoint.toString(16).padStart(8, '0')}`;
-    } else result += character;
-  }
-  return `${result}"`;
-}
-
-function jsonConfig(server: LocalStdioServer, includeStdioType: boolean) {
+function jsonConfig(server: LocalStdioServer) {
   return JSON.stringify({
     mcpServers: {
       openworkspace: {
-        ...(includeStdioType ? { type: 'stdio' } : {}),
         command: server.command,
         args: server.args,
         env: server.env,
@@ -70,98 +38,34 @@ function jsonConfig(server: LocalStdioServer, includeStdioType: boolean) {
   }, null, 2);
 }
 
-function makeClientGuides(server: LocalStdioServer): ClientSetupGuide[] {
-  const json = jsonConfig(server, true);
-  const openCode = JSON.stringify({
-    $schema: openCodeSchema,
-    mcp: {
-      servers: {
-        openworkspace: {
-          type: 'local',
-          command: [server.command, ...server.args],
-          environment: server.env,
-        },
-      },
-    },
-  }, null, 2);
-  const codex = [
-    '[mcp_servers.openworkspace]',
-    `command = ${tomlBasicString(server.command)}`,
-    `args = [${server.args.map(tomlBasicString).join(', ')}]`,
-    '',
-    '[mcp_servers.openworkspace.env]',
-    `OPENWORKSPACE_HOME = ${tomlBasicString(server.env.OPENWORKSPACE_HOME)}`,
-  ].join('\n');
-
-  return [
-    {
-      id: 'vscode-copilot',
-      title: 'VS Code with GitHub Copilot',
-      sourceUrl: 'https://code.visualstudio.com/docs/agent-customization/mcp-servers',
-      location: 'Use .mcp.json at the workspace root for a portable project setting. Copilot Global is optional and applies to your user account.',
-      guidance: [
-        'Open the Command Palette and run “MCP: Add Server”. Choose .mcp.json for this workspace, or Copilot Global only if you intend a user-wide setting.',
-        'Review the proposed merge, preserve existing servers and settings, and trust the local server only if you choose to.',
-        'Use “MCP: List Servers” to verify the entry. Organization policy may disable MCP; do not bypass it.',
-      ],
-      configuration: json,
-    },
-    {
-      id: 'claude-code',
-      title: 'Claude Code',
-      sourceUrl: 'https://code.claude.com/docs/en/mcp',
-      location: 'Use Claude Code local scope for the current project. This is private to you and stored under this project in ~/.claude.json; use .mcp.json only when you deliberately share the entry with the team.',
-      guidance: [
-        'Use local scope rather than user scope. Preserve existing local entries and project settings, and never replace other servers or settings.',
-        'For a project-local .mcp.json, review whether the machine-local Node and OPENWORKSPACE_HOME paths should be shared in version control.',
-        'Review the exact change and approve it in Claude Code when prompted.',
-        'Run “claude mcp list” to verify the configured entry. An entry in the list does not by itself prove the server is responding.',
-      ],
-      configuration: json,
-    },
-    {
-      id: 'opencode-v2',
-      title: 'OpenCode v2',
-      sourceUrl: 'https://opencode.ai/v2/docs/mcp-servers',
-      location: 'Use opencode.jsonc at the project root, or .opencode/opencode.jsonc for project configuration. This format is for OpenCode v2 only.',
-      guidance: [
-        'Merge the mcp.servers.openworkspace object into the existing configuration; preserve unrelated servers and settings.',
-        'The command array starts with the generated executable followed by its arguments; the environment map contains only OPENWORKSPACE_HOME.',
-        'Use “opencode mcp list” or “/mcps” to check the entry. A listed configuration is not proof of a successful tool call.',
-      ],
-      configuration: openCode,
-    },
-    {
-      id: 'codex',
-      title: 'Codex',
-      sourceUrl: 'https://developers.openai.com/codex/extend/mcp',
-      location: 'Use .codex/config.toml in the project for project scope. ~/.codex/config.toml is an optional user-wide location.',
-      guidance: [
-        'Merge these TOML tables into the chosen config file and preserve existing MCP entries. The state-directory path is local to this machine; do not commit it as a reusable team path.',
-        'Review the exact change before applying it. Use Codex MCP settings or “/mcp” to verify; a displayed entry alone does not prove successful connection.',
-      ],
-      configuration: codex,
-    },
-  ];
-}
+const agentsNote = [
+  '## OpenWorkspace',
+  'Use OpenWorkspace MCP for local workspace inventory and verification (workspace_list, workspace_inspect, onboarding_plan).',
+  'Reads run immediately; mutations need my approval per client settings; the dashboard only records what ran.',
+  'Project secrets stay out of chat, config, and repo files.',
+].join('\n');
 
 export function formatSetupRequest(configuration: ClientConfig | null, selectedId: string | null): SetupRequestMaterial | null {
   const server = localStdioServer(configuration);
   if (!server) return null;
 
-  const workspaceContext = selectedId && workspaceIdPattern.test(selectedId)
-    ? `Context: This named project is registered (UUID ${selectedId}) with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this UUID only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
-    : 'Context: Verify the MCP connection with workspace_list first. If my project is absent, ask me to choose its name and exact repository folders, then call workspace_register with {name, roots}. Registration reads bounded metadata immediately. Never infer a shared parent. Mutations need my approval per my client settings; the dashboard only records what ran.';
+  const boundContext = selectedId && workspaceIdPattern.test(selectedId)
+    ? `Context: this named project is registered (UUID ${selectedId}) with an explicit set of repository roots. Verify the MCP connection with workspace_list, then call workspace_inspect and onboarding_plan for this UUID only. Review every returned root group separately; do not infer or include the project name or root paths in setup instructions.`
+    : 'Context: verify the MCP connection with workspace_list first. If my project is absent, ask me to choose its name and exact repository folders, then call workspace_register with {name, roots}. Registration reads bounded metadata immediately. Never infer a shared parent. Mutations need my approval per my client settings; the dashboard only records what ran.';
   const copyText = [
-    'Identify the assistant client I am using and adapt only this generated OpenWorkspace stdio entry to that client’s documented project-local format. Use the current project only; do not write user-wide or global MCP settings. For Claude Code, use Claude’s local scope (private to this project in ~/.claude.json), not user scope or a shared .mcp.json unless I explicitly ask. Preserve every existing server and setting, show the exact proposed change, and ask for my review before writing configuration.',
-    'Generated local MCP entry:',
-    '```json',
-    jsonConfig(server, false),
-    '```',
-    workspaceContext,
-    'This source preview requires the existing OpenWorkspace Node runtime; it is not a Node-free installer. Do not run project commands, install tools, read secrets, write project files, or claim setup is complete. OPENWORKSPACE_HOME is machine-local and must not be committed as a reusable team path.',
-    'Jira is optional; discuss Atlassian MCP only if I use Jira.',
+    'Paste this whole message to your own coding assistant. It installs the OpenWorkspace MCP connection for this project; your agent installs it, you approve each write in chat.',
+    'What to do (one pass): identify my client, install the MCP entry project-local, set skills to MCP-served, propose the AGENTS.md note, tell me to reload, verify with free reads, then hand off short. Ask before any file write and show the exact diff.',
+    'Step 1 — Identify client: detect the client from these files/config (or ask me if ambiguous): Claude Code (local scope, private to this project in `~/.claude.json`), Codex (`.codex/config.toml` project, `~/.codex/config.toml` only if I ask user-wide), VS Code/Copilot (`.mcp.json` project root), OpenCode v2 (`opencode.jsonc`). Use that client\u2019s documented project-local format as of today; if docs moved, follow current official docs and say so. Never write user-wide/global scope unless I explicitly ask. References to check: Claude Code https://code.claude.com/docs/en/mcp, Codex https://developers.openai.com/codex/extend/mcp, VS Code/Copilot https://code.visualstudio.com/docs/agent-customization/mcp-servers, OpenCode v2 https://opencode.ai/v2/docs/mcp-servers. Live per-client install paths are UNVERIFIED until run.',
+    'Generated local MCP entry (secret-free, this machine only):\n```json\n'
+    + `${jsonConfig(server)}\n`
+    + '```\nMerge `mcpServers.openworkspace` preserving every existing server/setting. `OPENWORKSPACE_HOME` is machine-local; never commit it as a team path. No tokens are involved; never ask for or paste any.',
+    'Step 2 — Skills (no copy by default): use MCP prompts `skill/openworkspace-onboarding` after connect (and `skill/learn-from-mistake` only on demand). Do NOT copy SKILL.md files anywhere unless I explicitly ask for pinned files; then copy current text verbatim to the client\u2019s documented project-local skills path, warn it will rot, and confirm first.',
+    `Step 3 — AGENTS.md note (confirmed write): propose this note in the user-named repo root (default: first registered root when I defer). Target the first existing file in order \`AGENTS.md\` → \`CLAUDE.md\` → \`MUSE.md\` → \`GEMINI.md\`, else create \`AGENTS.md\` at that root. Ask which file when ambiguous; never write a shared ancestor/parent outside the active project without separate explicit authorization.\n${agentsNote}\nMerge with marker block \`<!-- openworkspace:begin -->\` … note … \`<!-- openworkspace:end -->\`; absent → append with one blank-line separator; present → replace inside markers only (idempotent re-paste). Everything outside markers stays byte-identical. Show the exact diff first, then ask: "Write this OpenWorkspace note to <file>? Reply yes to apply; nothing is written until you confirm. Personal content outside the marked block is preserved." If I decline, the root/file is ambiguous, the target is not a regular writable text file, or an ancestor write lacks explicit authorization, report which and stop that step; other verified steps stand.`,
+    `${'Step 4 — Reload + Step 5 — Verify (free reads only): tell me the client\u2019s MCP reload step, wait until I confirm reload, then call `workspace_list`.'
+    + ` ${boundContext} Success means those calls return without error (UUID visible when supplied). A config listing alone (\`claude mcp list\`, \`MCP: List Servers\`, \`/mcps\`, \`/mcp\`) is not verification. Never run project commands, install tools, read secrets, or claim done before these calls succeed.`
+    + ' Already connected? Re-paste the current prompt and re-merge the entry, re-apply the AGENTS.md block idempotently, and re-verify with workspace_list.'}`,
+    'Step 6 — Handoff (≤120 words): report client + scope file; AGENTS.md file; verification calls + one-line results; skills mode (`MCP-served`); next human action; limitation/unverified note. Guardrails: POSIX-only; no global writes unless I explicitly ask; personal edits outside the marked block stay byte-identical; tokens never in chat/repo/config; Jira is optional (discuss Atlassian MCP only if I use Jira). This preview needs the existing OpenWorkspace Node runtime; it is not a Node-free installer.',
   ].join('\n\n');
 
-  return { copyText, clientGuides: makeClientGuides(server) };
+  return { copyText };
 }

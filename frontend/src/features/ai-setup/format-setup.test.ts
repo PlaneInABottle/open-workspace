@@ -25,7 +25,26 @@ const config: ClientConfig = {
   },
 };
 
+const sectionHeadings = [
+  'What to do (one pass):',
+  'Step 1 — Identify client:',
+  'Generated local MCP entry (secret-free, this machine only):',
+  'Step 2 — Skills (no copy by default):',
+  'Step 3 — AGENTS.md note (confirmed write):',
+  'Step 4 — Reload + Step 5 — Verify (free reads only):',
+  'Step 6 — Handoff (≤120 words):',
+];
+
 describe('formatSetupRequest', () => {
+  it('emits all seven self-install sections within the size cap', () => {
+    const material = formatSetupRequest(config, selectedId);
+    expect(material).not.toBeNull();
+    for (const heading of sectionHeadings) {
+      expect(material!.copyText).toContain(heading);
+    }
+    expect(new TextEncoder().encode(material!.copyText).length).toBeLessThanOrEqual(6 * 1024);
+  });
+
   it('copies one secret-free generated entry and targets only the selected UUID', () => {
     const material = formatSetupRequest(config, selectedId);
     expect(material).not.toBeNull();
@@ -37,9 +56,9 @@ describe('formatSetupRequest', () => {
       },
     });
     expect(material!.copyText).toContain(selectedId);
-    expect(material!.copyText).toContain('Verify the MCP connection with workspace_list');
-    expect(material!.copyText).toContain('workspace_inspect and onboarding_plan');
-    expect(material!.copyText).toContain('repository roots');
+    expect(material!.copyText).toContain('workspace_list');
+    expect(material!.copyText).toContain('workspace_inspect');
+    expect(material!.copyText).toContain('onboarding_plan');
     expect(material!.copyText).toContain('every returned root group separately');
     expect(material!.copyText).not.toContain(projectName);
     expect(material!.copyText).not.toContain(projectPath);
@@ -57,45 +76,52 @@ describe('formatSetupRequest', () => {
     expect(generic?.copyText).toContain('the dashboard only records what ran');
     expect(generic?.copyText).toContain('Never infer a shared parent');
     expect(generic?.copyText).not.toContain(selectedId);
-    expect(formatSetupRequest(config, 'stale-id')?.copyText).not.toContain(selectedId);
+    expect(formatSetupRequest(config, 'stale-id')?.copyText).not.toContain('stale-id');
     expect(formatSetupRequest(null, selectedId)).toBeNull();
   });
 
-  it('renders accurate client formats including TOML-safe paths and collapsed-guide data', () => {
-    const guides = formatSetupRequest(config, selectedId)?.clientGuides;
-    expect(guides?.map(guide => guide.id)).toEqual(['vscode-copilot', 'claude-code', 'opencode-v2', 'codex']);
+  it('stays project-local with confirm-before-write guardrails', () => {
+    const material = formatSetupRequest(config, selectedId);
+    expect(material).not.toBeNull();
+    expect(material!.copyText).toContain('Never write user-wide/global scope unless I explicitly ask');
+    expect(material!.copyText).toContain('Ask before any file write and show the exact diff');
+    expect(material!.copyText).toContain('Reply yes to apply; nothing is written until you confirm');
+    expect(material!.copyText).toContain('tokens never in chat/repo/config');
+  });
 
-    const vscode = JSON.parse(guides![0].configuration) as { mcpServers: { openworkspace: { type: string } } };
-    const claude = JSON.parse(guides![1].configuration) as { mcpServers: { openworkspace: { type: string } } };
-    expect(vscode.mcpServers.openworkspace.type).toBe('stdio');
-    expect(claude.mcpServers.openworkspace.type).toBe('stdio');
-    expect(guides![0].location).toContain('.mcp.json');
-    expect(guides![0].guidance.join(' ')).toContain('MCP: Add Server');
-    expect(guides![0].guidance.join(' ')).toContain('MCP: List Servers');
-    expect(guides![0].sourceUrl).toBe('https://code.visualstudio.com/docs/agent-customization/mcp-servers');
-    expect(guides![1].guidance.join(' ')).toContain('claude mcp list');
-    expect(guides![1].sourceUrl).toBe('https://code.claude.com/docs/en/mcp');
+  it('requires free-read verification and rejects config listings as proof', () => {
+    const material = formatSetupRequest(config, selectedId);
+    expect(material).not.toBeNull();
+    expect(material!.copyText).toContain('wait until I confirm reload, then call `workspace_list`');
+    expect(material!.copyText).toContain('A config listing alone');
+    expect(material!.copyText).toContain('is not verification');
+    expect(material!.copyText).toContain('Never run project commands, install tools, read secrets, or claim done before these calls succeed');
+  });
 
-    const openCode = JSON.parse(guides![2].configuration) as {
-      $schema: string;
-      mcp: { servers: { openworkspace: { type: string; command: string[]; environment: Record<string, string> } } };
-      mcpServers?: unknown;
-    };
-    expect(openCode.$schema).toBe('https://opencode.ai/config.json');
-    expect(openCode.mcp.servers.openworkspace.type).toBe('local');
-    expect(openCode.mcp.servers.openworkspace.command).toEqual([command, ...args]);
-    expect(openCode.mcp.servers.openworkspace.environment).toEqual({ OPENWORKSPACE_HOME: statePath });
-    expect(openCode.mcpServers).toBeUndefined();
-    expect(guides![2].title).toContain('v2');
-    expect(guides![2].sourceUrl).toBe('https://opencode.ai/v2/docs/mcp-servers');
+  it('carries the idempotent marker-block AGENTS.md merge policy preserving personal edits', () => {
+    const material = formatSetupRequest(config, selectedId);
+    expect(material).not.toBeNull();
+    expect(material!.copyText).toContain('<!-- openworkspace:begin -->');
+    expect(material!.copyText).toContain('<!-- openworkspace:end -->');
+    expect(material!.copyText).toContain('replace inside markers only (idempotent re-paste)');
+    expect(material!.copyText).toContain('Everything outside markers stays byte-identical');
+    expect(material!.copyText).toContain('## OpenWorkspace');
+    expect(material!.copyText).toContain('Project secrets stay out of chat, config, and repo files.');
+    expect(material!.copyText).toContain('`AGENTS.md` → `CLAUDE.md` → `MUSE.md` → `GEMINI.md`');
+    expect(material!.copyText).toContain('never write a shared ancestor/parent outside the active project without separate explicit authorization');
+  });
 
-    const expectedToml = String.raw`OPENWORKSPACE_HOME = "/tmp/private state 'quoted'\\folder/\"double\""`;
-    expect(guides![3].configuration).toContain(`command = "${command}"`);
-    expect(guides![3].configuration).toContain(`args = ["${args[0]}", "/tmp/project's MCP path.mjs"]`);
-    expect(guides![3].configuration).toContain(expectedToml);
-    expect(guides![3].location).toContain('.codex/config.toml');
-    expect(guides![3].guidance.join(' ')).toContain('/mcp');
-    expect(guides![3].sourceUrl).toBe('https://developers.openai.com/codex/extend/mcp');
-    expect(guides!.every(guide => !guide.configuration.includes(mcpToken) && !guide.configuration.includes(dashboardToken))).toBe(true);
+  it('defaults skills to MCP-served with no file copy', () => {
+    const material = formatSetupRequest(config, selectedId);
+    expect(material).not.toBeNull();
+    expect(material!.copyText).toContain('`skill/openworkspace-onboarding`');
+    expect(material!.copyText).toContain('Do NOT copy SKILL.md files anywhere unless I explicitly ask');
+  });
+
+  it('exposes no legacy manual-adapt flow or collapsed-guide surface', () => {
+    const material = formatSetupRequest(config, selectedId);
+    expect(material).not.toBeNull();
+    expect(material).toEqual({ copyText: expect.any(String) });
+    expect('clientGuides' in material!).toBe(false);
   });
 });
