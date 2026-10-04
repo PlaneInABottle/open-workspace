@@ -30,6 +30,10 @@ The primary learning target is setup friction in an unknown world: a service sta
 2. Call the `learning_record` tool with 1–10 lowercase situation tags describing the detour context (for example `missing secret`, `service start`), the detour's own run as evidence, and whatever failure signature exists — a waste lesson may carry an empty failure signature when it carries tags. Such entries stay unmeasured: they surface as `[situational]` guidance and never auto-flag, no matter how often the detour repeats.
 3. Review `[situational]` lessons opportunistically while writing nearby rules: fix the rule text when the setup changed, or leave it while it still applies. There is no age-based flagging and no separate review queue; fixes count toward the 5-rule cap above.
 
+## Probe offer (offer-only)
+
+When a suspect `[needs-review]` measured lesson or a repeated situational detour (`detourNudge`) is under review in this invocation, read this offer once and continue: "This recurring friction could become a pre-flight check. Reply 'yes, scaffold a local-tool check' to follow the scaffold-local-tool flow unchanged, or 'yes, draft a regression test at <path>' for a guidance note (at most 2KiB) inside the active project only, run by nobody. Nothing is created unless you accept."
+
 Write only patterns. Never record secrets, literal credentials, absolute user paths or path values, customer data, SQL literals, URLs containing credentials, or log/transcript content. Do not create a draft, quarantine file, or separate learning store. Do not modify product code, global configuration, or unrelated instruction files as a side effect.
 
 For task planning — opening context, closing with a verification receipt, milestone notes, handoff checks, and checkpoint-nudge plus shared-resource lease advisories — use the **new-task** skill instead; turning session surprises into durable reusable rules stays here.

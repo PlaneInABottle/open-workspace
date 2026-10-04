@@ -16,6 +16,7 @@ import { parseExternalRunImport, importExternalRun, externalImportInvalidMessage
 import { listMilestones } from './milestones.js';
 import { appendLearningRule, readLearningIndex, selectSituationalLessons, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
+import { detourFailWindow, evaluateDetourSignal, evaluateGoldenSignal, goldenWindow } from './signals.js';
 import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, renameEnvironment, setEnvironment } from './environment.js';
 import { availableSkills } from './consumer-skills.js';
 
@@ -59,6 +60,26 @@ export interface WorkstreamContext {
   recentRuns: Array<RunListEntry & { evidenceSource: 'openworkspace_run' | 'external_import' | 'unknown_source' }>;
   /** Additive waste-lesson surfacing: up to 3 situation-matched lesson titles for this task (read-only). */
   situationalLessons: string[];
+  /**
+   * Additive golden reference: the newest passed local run when it was
+   * notably fast (at or below half the priors median, ≥5 priors in a
+   * 20-window). Carries the environment name as a label when the receipt has
+   * one. Absent when there is no such run — never an error.
+   */
+  goldenPath?: {
+    runId: string;
+    scriptName: string;
+    envName: string | null;
+    durationMs: number;
+    medianMs: number;
+    at: string;
+  };
+  /**
+   * Additive advisory nudge (≤200B) from setup/fail/queue metadata only.
+   * At most one line per call, advisory wording, never blocking. Absent when
+   * no trigger fires — never an error.
+   */
+  detourNudge?: string;
   /**
    * True when this call minted the stable default workstream. Pure reads
    * return false and record nothing; a mint is a mutation the caller audits.
@@ -409,8 +430,12 @@ export class WorkspaceService {
     }
     const completionRecords = assignmentId === undefined ? [] : completionsByAssignmentId[assignmentId] ?? [];
     // These are countable present/missing states, not a basis for claiming percentage rates.
+    // Single bounded scan: the signal windows ride the same fetch the
+    // response uses, sliced to `limit` at return time. One readdir pass even
+    // at the default limit — no second scan for the signal window.
+    const signalLimit = Math.max(limit, goldenWindow, detourFailWindow);
     const runs = await listRecentRuns(
-      this.store.directory, record.workspaceId, limit, pinnedRunIds(state.workstreams, record.workspaceId),
+      this.store.directory, record.workspaceId, signalLimit, pinnedRunIds(state.workstreams, record.workspaceId),
     );
     // AMENDMENT (waste-lesson milestone, beyond the planner text): the
     // server builds a TaskContext string so setup-sequence lessons fire at
@@ -446,6 +471,65 @@ export class WorkspaceService {
     // Pure index read (fail-closed, no writes): situational surfacing never
     // flips suspect state and never records activity.
     const situationalLessons = selectSituationalLessons(await readLearningIndex(this.store.directory), taskContext);
+    // Task-start signals (feedback-loops M1): read-only, fail-closed, derived
+    // from the scan above. Golden = newest passed local run at or below half
+    // the priors median (≥5 priors, 20-window), one per workspace with the
+    // receipt env name as label. Detour = OR of chain/fails/lease metadata
+    // triggers, first firing wins, one advisory line. Allowed inputs only:
+    // run durations/timestamps/outcomes/sources, activity operation names,
+    // lease resource/status/createdAt. Absence of either field is never an
+    // error, and a derivation failure yields both fields absent while the
+    // call still succeeds.
+    let goldenPath: WorkstreamContext['goldenPath'];
+    let detourNudge: string | undefined;
+    try {
+      const signalRuns = runs;
+      const byRecency = [...signalRuns]
+        .filter(run => run.source === 'openworkspace-run' && Number.isFinite(Date.parse(run.at)))
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+      const passedLocal = byRecency.filter(run => run.outcome === 'passed'
+        && typeof run.durationMs === 'number' && Number.isFinite(run.durationMs));
+      const golden = evaluateGoldenSignal(passedLocal.slice(0, goldenWindow).map(run => run.durationMs));
+      if (golden && passedLocal.length > 0) {
+        const latest = passedLocal[0];
+        goldenPath = {
+          runId: latest.id,
+          scriptName: latest.scriptName.slice(0, 80),
+          // Capped at 64 (below the receipt's own 100) so the field holds
+          // its 300B response budget even at max-length labels.
+          envName: typeof latest.environment?.envName === 'string' && latest.environment.envName
+            ? latest.environment.envName.slice(0, 64)
+            : null,
+          durationMs: golden.durationMs,
+          medianMs: golden.medianMs,
+          at: latest.at,
+        };
+      }
+      // Chain span: latest verify-pass time minus the newest preceding
+      // environment-up activity time in this workspace (operation names only).
+      let chainMs: number | null = null;
+      if (passedLocal.length > 0) {
+        const verifyAt = Date.parse(passedLocal[0].at);
+        const upTimes = state.activity
+          .filter(entry => entry.workspaceId === record.workspaceId && entry.operation === 'environment-up')
+          .map(entry => Date.parse(entry.at))
+          .filter(at => Number.isFinite(at) && at <= verifyAt);
+        if (upTimes.length > 0) chainMs = verifyAt - Math.max(...upTimes);
+      }
+      const recentFails = byRecency
+        .slice(0, detourFailWindow)
+        .filter(run => run.outcome === 'failed' || run.outcome === 'error').length;
+      const queued = state.leases.find(lease => lease.workstreamId === record.id && lease.status === 'queued');
+      let leaseWaitMs: number | null = null;
+      if (queued) {
+        const created = Date.parse(queued.createdAt);
+        if (Number.isFinite(created)) leaseWaitMs = this.leaseClock() - created;
+      }
+      detourNudge = evaluateDetourSignal({ chainMs, recentFails, leaseWaitMs });
+    } catch {
+      goldenPath = undefined;
+      detourNudge = undefined;
+    }
     return {
       workstreamId: record.id,
       name: record.name,
@@ -459,8 +543,10 @@ export class WorkspaceService {
       open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
       checkouts: record.checkouts,
       situationalLessons,
+      ...(goldenPath !== undefined ? { goldenPath } : {}),
+      ...(detourNudge !== undefined ? { detourNudge } : {}),
       mintedDefaultWorkstream,
-      recentRuns: runs.map(run => ({
+      recentRuns: runs.slice(0, limit).map(run => ({
         ...run,
         evidenceSource: run.source === 'openworkspace-run' ? 'openworkspace_run'
           : run.source === 'external-import' ? 'external_import' : 'unknown_source',
