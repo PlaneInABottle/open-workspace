@@ -800,12 +800,10 @@ describe('project-first workbench', () => {
         unavailable: false,
       }],
     };
-    let verificationCalls = 0;
     installFetch(async (path, init) => {
       if (path === '/api/client-config') return json(clientConfig);
       if (path === '/api/overview') return json(overview({ workspaces: [approved] }));
       if (path === `/api/workspaces/${approved.name}` && init.method === 'GET') return json(nodeInspection);
-      if (path === `/api/workspaces/${approved.name}/verify` && init.method === 'POST') { verificationCalls++; return json({}); }
       return json({ error: 'Not found.' }, 404);
     });
     sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
@@ -816,7 +814,6 @@ describe('project-first workbench', () => {
     expect(await screen.findByRole('heading', { name: 'Project inventory' })).toBeInTheDocument();
     expect(screen.getAllByText('web').length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /Run repository test/ })).not.toBeInTheDocument();
-    expect(verificationCalls).toBe(0);
   });
 
   it('shows a concise workstream empty state without operation controls', async () => {

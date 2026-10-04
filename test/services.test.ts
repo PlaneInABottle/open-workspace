@@ -44,53 +44,6 @@ test('PM2 service metadata is scoped to registered project roots only', async t 
   assert.ok(!JSON.stringify(inventory).includes(f.outside));
 });
 
-test('container links resolve bounded exact IDs, persist, refuse unknown or ambiguous prefixes, unlink stale IDs and clear on removal', async t => {
-  const f = await approvedProject(t);
-  const containerId = 'e'.repeat(64);
-  let containers = [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }];
-  const dockerList = async () => ({ available: true as const, containers });
-  const pm2List = async (): Promise<Pm2ListResult> => ({ available: true, processes: [] });
-  const service = new WorkspaceService(f.store, pm2List, undefined, undefined, undefined, undefined, undefined, Date.now, dockerList);
-  const workspace = await service.register('Project', [f.project]);
-  const otherWorkspace = await service.register('Other project', [f.project]);
-
-  const linked = await service.containerLink(workspace.name, 'link', containerId.slice(0, 12));
-  assert.deepEqual(linked, { workspaceId: workspace.id, action: 'link', containerId, changed: true });
-  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, [containerId]);
-  await assert.rejects(service.containerLink(otherWorkspace.name, 'link', containerId), /already linked to another workspace/);
-  await service.updateRoots(workspace.name, [f.project]);
-  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, [containerId], 'root replacement preserves workspace-level links');
-  await assert.rejects(service.containerLink(workspace.name, 'link', 'f'.repeat(12)), /Docker container was not found/);
-
-  containers = [
-    { id: 'a'.repeat(64), name: 'one', image: 'one:1', state: 'running', labels: {} },
-    { id: `${'a'.repeat(12)}${'b'.repeat(52)}`, name: 'two', image: 'two:1', state: 'running', labels: {} },
-  ];
-  await assert.rejects(service.containerLink(workspace.name, 'link', 'a'.repeat(12)), /ID prefix is ambiguous/);
-
-  containers = [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }];
-  const restarted = new WorkspaceService(new Store(f.store.directory), pm2List, undefined, undefined, undefined, undefined, undefined, Date.now, dockerList);
-  const inventory = await restarted.services(workspace.name);
-  assert.deepEqual(inventory.docker.services.map(container => [container.containerId, container.mappingSource]), [[containerId, 'explicit-link']]);
-
-  const fullLinkSet = Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(64, '0'));
-  await f.store.update(state => { state.workspaces[0].linkedContainers = fullLinkSet; });
-  containers = [{ id: 'f'.repeat(64), name: 'overflow', image: 'busybox:1', state: 'running', labels: {} }];
-  await assert.rejects(service.containerLink(workspace.name, 'link', 'f'.repeat(64)), /Project container link limit reached/);
-  assert.equal((await f.store.read()).workspaces[0].linkedContainers.length, 20);
-
-  await f.store.update(state => { state.workspaces[0].linkedContainers = [containerId]; });
-  containers = [];
-  const unlinked = await service.containerLink(workspace.name, 'unlink', containerId.slice(0, 12));
-  assert.equal(unlinked.containerId, containerId, 'unlink can clean a stale persisted identity');
-  assert.deepEqual((await f.store.read()).workspaces[0].linkedContainers, []);
-  containers = [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }];
-  await service.containerLink(workspace.name, 'link', containerId);
-  await service.remove(workspace.name);
-  await service.remove(otherWorkspace.name);
-  assert.equal((await f.store.read()).workspaces.length, 0, 'project removal clears its persisted link');
-});
-
 test('nested registered roots produce an explicit ambiguous service rather than a fake match', async () => {
   const processPath = await mkdtemp(join(tmpdir(), 'openworkspace-services-ambiguous-'));
   try {
@@ -106,65 +59,6 @@ test('nested registered roots produce an explicit ambiguous service rather than 
   } finally {
     await rm(processPath, { recursive: true, force: true });
   }
-});
-
-test('service control runs only against an exactly mapped PM2 process', async t => {
-  const f = await approvedProject(t);
-  const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [process(f.inner), process(f.outside, 'outside')] });
-  const calls: Array<{ action: string; pmId: number }> = [];
-  const service = new WorkspaceService(f.store, list, async (action, pmId) => {
-    calls.push({ action, pmId });
-    return { ok: true };
-  });
-  const approved = await service.register('Project', [f.project]);
-
-  const result = await service.serviceAction(approved.name, 'restart', { pmId: 1, name: 'api', namespace: 'default' });
-  assert.deepEqual(calls, [{ action: 'restart', pmId: 1 }]);
-  assert.equal(result.status, 'completed');
-  assert.equal(result.serviceStatus, 'online');
-  assert.match(result.message, /not readiness/);
-
-  const stopped = await service.serviceAction(approved.name, 'stop', { pmId: 1, name: 'api', namespace: 'default' });
-  assert.deepEqual(calls[1], { action: 'stop', pmId: 1 });
-  assert.equal(stopped.status, 'completed');
-});
-
-test('service control refuses targets that are outside approved or ambiguous roots', async t => {
-  const f = await approvedProject(t);
-  const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [process(f.inner), process(f.outside, 'outside')] });
-  let runnerCalls = 0;
-  const service = new WorkspaceService(f.store, list, async () => {
-    runnerCalls += 1;
-    return { ok: true };
-  });
-  const approved = await service.register('Project', [f.project]);
-
-  const outside = await service.serviceAction(approved.name, 'stop', { pmId: 1, name: 'outside', namespace: 'default' });
-  assert.equal(outside.status, 'failed');
-  const renamed = await service.serviceAction(approved.name, 'restart', { pmId: 99, name: 'api', namespace: 'default' });
-  assert.equal(renamed.status, 'failed');
-  const anonymous = await service.serviceAction(approved.name, 'restart', { pmId: null, name: 'api' });
-  assert.equal(anonymous.status, 'failed');
-  assert.equal(runnerCalls, 0);
-});
-
-test('service control does not claim success when PM2 or fresh metadata is unavailable', async t => {
-  const f = await approvedProject(t);
-  const proposal = await serviceWithState(f.store, f.project);
-  const list = async (): Promise<Pm2ListResult> => ({ available: true, processes: [process(f.inner)] });
-  const failing = new WorkspaceService(f.store, list, async () => ({ ok: false, error: 'missing' }));
-  const failed = await failing.serviceAction(proposal.name, 'restart', { pmId: 1, name: 'api', namespace: 'default' });
-  assert.equal(failed.status, 'failed');
-  assert.equal(failed.serviceStatus, 'online');
-
-  let reads = 0;
-  const flaky = new WorkspaceService(f.store, async (): Promise<Pm2ListResult> => {
-    reads += 1;
-    return reads === 1 ? { available: true, processes: [process(f.inner)] } : { available: false, error: 'timeout' };
-  }, async () => ({ ok: true }));
-  const unknown = await flaky.serviceAction(proposal.name, 'restart', { pmId: 1, name: 'api', namespace: 'default' });
-  assert.equal(unknown.status, 'unknown');
-  assert.match(unknown.message, /fresh service metadata is unavailable/);
 });
 
 async function serviceWithState(store: Store, root: string) {

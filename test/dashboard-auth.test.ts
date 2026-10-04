@@ -229,26 +229,20 @@ test('dashboard and MCP share workspace operations; only browser session managem
   assert.equal(secondRegistration.status, 201);
   const secondRegistered = await secondRegistration.json() as { id: string; name: string };
 
-  const serviceActionPath = `/api/workspaces/${secondRegistered.name}/services/restart`;
-  const serviceBody = JSON.stringify({ pmId: 1, name: 'api', namespace: 'default' });
-  const mcpAction = await fetch(`${origin}${serviceActionPath}`, {
-    method: 'POST', headers: mcpHeaders, body: serviceBody,
-  });
-  assert.equal(mcpAction.status, 200);
-  assert.equal((await mcpAction.json() as { status: string }).status, 'failed');
-  assert.equal((await fetch(`${origin}${serviceActionPath}`, {
-    method: 'POST', headers: dashboardHeaders, body: serviceBody,
+  // Shed per-service control surface (pivot): restart/stop/start/logs routes
+  // are gone — the harness shell covers process control now. Removed paths
+  // fail closed at the role gate for the MCP credential (403) and fall
+  // through to 404 for the dashboard, so nothing is served anywhere.
+  const retiredServicePath = `/api/workspaces/${secondRegistered.name}/services/restart`;
+  const retiredBody = JSON.stringify({ pmId: 1, name: 'api', namespace: 'default' });
+  assert.equal((await fetch(`${origin}${retiredServicePath}`, {
+    method: 'POST', headers: mcpHeaders, body: retiredBody,
   })).status, 403);
-  assert.equal((await fetch(`${origin}${serviceActionPath}`, {
+  assert.equal((await fetch(`${origin}${retiredServicePath}`, {
     method: 'POST',
     headers: { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: serviceBody,
-  })).status, 200);
-  assert.equal((await fetch(`${origin}${serviceActionPath}`, {
-    method: 'POST',
-    headers: { ...dashboardHeaders, Origin: 'http://localhost:4318', 'Sec-Fetch-Site': 'same-origin' },
-    body: serviceBody,
-  })).status, 403);
+    body: retiredBody,
+  })).status, 404);
   assert.equal((await fetch(`${origin}/api/project-root-picker`, {
     method: 'POST', headers: mcpHeaders, body: '{}',
   })).status, 403);
@@ -315,11 +309,10 @@ test('dashboard and MCP share workspace operations; only browser session managem
   assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${secondMcpToken}` } })).status, 200);
 });
 
-test('dashboard container link changes require canonical context; MCP needs none', async t => {
+test('retired container link route stays gone on every role', async t => {
   const f = await fixture(t);
   const containerId = 'a'.repeat(64);
-  const service = new WorkspaceService(f.store, undefined, undefined, undefined, undefined, undefined, undefined, Date.now,
-    async () => ({ available: true, containers: [{ id: containerId, name: 'task-db', image: 'postgres:17', state: 'running', labels: {} }] }));
+  const service = new WorkspaceService(f.store);
   const mcpToken = 'd'.repeat(64);
   const app = createApp(service, { mcpToken, assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
@@ -335,30 +328,16 @@ test('dashboard container link changes require canonical context; MCP needs none
   });
   assert.equal(connected.status, 201);
   const { dashboardToken } = await connected.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const canonicalDashboardHeaders = { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const canonicalDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const path = `${origin}/api/workspaces/${workspace.name}/containers/link`;
   const linkBody = JSON.stringify({ action: 'link', containerId });
 
-  const missingContext = await fetch(path, { method: 'POST', headers: dashboardHeaders, body: linkBody });
-  assert.equal(missingContext.status, 403);
-  const wrongContext = await fetch(path, {
-    method: 'POST',
-    headers: { ...canonicalDashboardHeaders, Origin: origin.replace('127.0.0.1', 'localhost') },
-    body: linkBody,
-  });
-  assert.equal(wrongContext.status, 403);
-  const allowed = await fetch(path, {
-    method: 'POST',
-    headers: canonicalDashboardHeaders,
-    body: linkBody,
-  });
-  assert.equal(allowed.status, 200);
-
-  const mcpUnlink = await fetch(path, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ action: 'unlink', containerId }),
-  });
-  assert.equal(mcpUnlink.status, 200, 'MCP operations carry no intent header');
+  // The link route is removed (pivot): explicit container linking has no
+  // product surface. The removed path fails closed at the role gate for the
+  // MCP credential (403) and falls through to 404 for the dashboard —
+  // nothing served anywhere, nothing recorded.
+  assert.equal((await fetch(path, { method: 'POST', headers: mcpHeaders, body: linkBody })).status, 403);
+  assert.equal((await fetch(path, { method: 'POST', headers: canonicalDashboardHeaders, body: linkBody })).status, 404);
 });
 
 test('registration bodies are byte-bounded and decoded once with fatal UTF-8', async t => {
@@ -521,70 +500,6 @@ test('closing a dashboard picker request aborts only its pending picker operatio
   assert.equal((await f.store.read()).workspaces.length, 0);
 });
 
-test('repository verification runs only the registered manifest script', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-verify-http-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const project = join(root, 'project');
-  await mkdir(project);
-  await writeFile(join(project, 'package.json'), JSON.stringify({ scripts: { check: 'node -e "process.exit(0)"' } }));
-  const store = new Store(join(root, 'state'));
-  await store.initialize();
-  const service = new WorkspaceService(store);
-
-  const mcpToken = 'c'.repeat(64);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const app = createApp(service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-
-  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify({ name: 'Verify project', roots: [project] }),
-  });
-  assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string; name: string };
-
-  const verifyPath = `${origin}/api/workspaces/${proposal.name}/verify`;
-  const verifyBody = JSON.stringify({ repositoryPath: project, scriptName: 'check' });
-  const fromMcp = await fetch(verifyPath, { method: 'POST', headers: mcpHeaders, body: verifyBody });
-  assert.equal(fromMcp.status, 200);
-  assert.equal((await fromMcp.json() as { outcome: string }).outcome, 'passed');
-  assert.equal((await fetch(verifyPath, { method: 'POST', headers: bareDashboardHeaders, body: verifyBody })).status, 403);
-
-  const allowed = await fetch(verifyPath, {
-    method: 'POST', headers: dashboardHeaders, body: verifyBody,
-  });
-  assert.equal(allowed.status, 200);
-  const result = await allowed.json() as {
-    outcome: string; exitCode: number; scriptName: string; repositoryPath: string;
-    git: { revisionState: string; worktree: string }; service: null; message: string;
-  };
-  assert.equal(result.outcome, 'passed');
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.scriptName, 'check');
-  assert.equal(result.repositoryPath, project);
-  assert.equal(result.git.revisionState, 'unknown');
-  assert.equal(result.git.worktree, 'unknown');
-  assert.equal(result.service, null);
-  assert.match(result.message, /not a CI verdict/);
-
-  const unknownScript = await fetch(verifyPath, {
-    method: 'POST',
-    headers: dashboardHeaders,
-    body: JSON.stringify({ repositoryPath: project, scriptName: 'deploy' }),
-  });
-  assert.equal(unknownScript.status, 400);
-});
-
 test('workstreams bind registered roots over every surface', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-workstreams-http-')));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -731,158 +646,6 @@ test('leases serialize shared resources over every surface', async t => {
   const released = await release(mcpHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' });
   assert.equal(released.status, 200);
   assert.deepEqual(await released.json(), { released: true, promoted: two.id });
-});
-
-test('service control reaches only the designated registered-root process', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-service-action-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const project = join(root, 'project');
-  await mkdir(join(project, 'api'), { recursive: true });
-  const store = new Store(join(root, 'state'));
-  await store.initialize();
-
-  const runnerCalls: Array<{ action: string; pmId: number }> = [];
-  const service = new WorkspaceService(store, async () => ({
-    available: true,
-    processes: [{ pmId: 7, name: 'api', namespace: 'default', status: 'online', cwd: join(project, 'api'), restartCount: 0, startedAt: null }],
-  }), async (action, pmId) => {
-    runnerCalls.push({ action, pmId });
-    return { ok: true };
-  });
-
-  const mcpToken = 'b'.repeat(64);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const app = createApp(service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-
-  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Service project', roots: [project] }),
-  });
-  assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string; name: string };
-
-  const actionPath = `${origin}/api/workspaces/${proposal.name}/services/restart`;
-  const actionBody = JSON.stringify({ pmId: 7, name: 'api', namespace: 'default' });
-  const fromMcp = await fetch(actionPath, { method: 'POST', headers: mcpHeaders, body: actionBody });
-  assert.equal(fromMcp.status, 200);
-  assert.equal((await fromMcp.json() as { status: string }).status, 'completed');
-  assert.equal((await fetch(actionPath, { method: 'POST', headers: bareDashboardHeaders, body: actionBody })).status, 403);
-  assert.deepEqual(runnerCalls, [{ action: 'restart', pmId: 7 }]);
-
-  const allowed = await fetch(actionPath, {
-    method: 'POST', headers: dashboardHeaders, body: actionBody,
-  });
-  assert.equal(allowed.status, 200);
-  const result = await allowed.json() as { status: string; serviceStatus: string; message: string };
-  assert.equal(result.status, 'completed');
-  assert.equal(result.serviceStatus, 'online');
-  assert.match(result.message, /not readiness/);
-  assert.deepEqual(runnerCalls, [{ action: 'restart', pmId: 7 }, { action: 'restart', pmId: 7 }]);
-});
-
-test('service logs return bounded output while activity records counts only', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-service-logs-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const project = join(root, 'project');
-  await mkdir(join(project, 'api'), { recursive: true });
-  const store = new Store(join(root, 'state'));
-  await store.initialize();
-
-  const logCalls: Array<{ pmId: number; stream: string; lines: number }> = [];
-  const dockerId = 'c'.repeat(64);
-  const dockerLogCalls: Array<{ containerId: string; lines: number }> = [];
-  const dockerLogSecret = 'DOCKER_APP_PRINTED_SECRET_SENTINEL';
-  const service = new WorkspaceService(store, async () => ({
-    available: true,
-    processes: [{ pmId: 7, name: 'api', namespace: 'default', status: 'online', cwd: join(project, 'api'), restartCount: 0, startedAt: null }],
-  }), undefined, undefined, undefined, undefined, async (pmId, stream, lines) => {
-    logCalls.push({ pmId, stream, lines });
-    return { ok: true, output: 'hello\nsk-test-secret-marker', truncated: false };
-  }, Date.now, async () => ({ available: true, containers: [
-    { id: dockerId, name: 'postgres', image: 'postgres:17', state: 'running', labels: { 'com.docker.compose.project.working_dir': project } },
-    { id: 'd'.repeat(64), name: 'unmanaged-cache', image: 'redis:7', state: 'running', labels: {} as Record<string, string> },
-  ] }), async (containerId, lines) => {
-    dockerLogCalls.push({ containerId, lines });
-    return { ok: true, output: dockerLogSecret, truncated: false };
-  });
-
-  const mcpToken = 'b'.repeat(64);
-  const app = createApp(service, { mcpToken, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, 'Content-Type': 'application/json' };
-
-  const proposal = await (await fetch(`${origin}/api/workspaces`, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'Logs project', roots: [project] }),
-  })).json() as { id: string; name: string };
-
-  const logsPath = `${origin}/api/workspaces/${proposal.name}/services/logs`;
-  const denied = await fetch(logsPath, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: { pmId: 99, name: 'api' } }),
-  });
-  assert.equal(denied.status, 200);
-  assert.match((await denied.json() as { message: string }).message, /not uniquely mapped/);
-  assert.deepEqual(logCalls, []);
-
-  const tailed = await fetch(logsPath, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: { pmId: 7, name: 'api', namespace: 'default' }, lines: 10, stream: 'out' }),
-  });
-  assert.equal(tailed.status, 200);
-  const tail = await tailed.json() as { output: string; linesReturned: number; truncated: boolean; stream: string };
-  assert.equal(tail.output, 'hello\nsk-test-secret-marker');
-  assert.equal(tail.linesReturned, 2);
-  assert.equal(tail.truncated, false);
-  assert.equal(tail.stream, 'out');
-  assert.deepEqual(logCalls, [{ pmId: 7, stream: 'out', lines: 10 }]);
-
-  const services = await fetch(`${origin}/api/workspaces/${proposal.name}/services`, {
-    method: 'POST', headers: mcpHeaders, body: '{}',
-  });
-  assert.equal(services.status, 200);
-  const serviceInventory = await services.json() as { docker: { services: Array<{ runner: string; name: string }>; unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string }> } };
-  assert.deepEqual(serviceInventory.docker.services.map(entry => [entry.runner, entry.name]), [['docker', 'postgres']]);
-  assert.equal(serviceInventory.docker.unmanagedContainerCount, 1);
-  assert.deepEqual(serviceInventory.docker.unmanagedContainers, []);
-  const detailedServices = await fetch(`${origin}/api/workspaces/${proposal.name}/services`, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ includeUnmanaged: true }),
-  });
-  const detailedInventory = await detailedServices.json() as { docker: { unmanagedContainerCount: number; unmanagedContainers: Array<{ name: string; image: string }> } };
-  assert.equal(detailedInventory.docker.unmanagedContainerCount, 1);
-  assert.deepEqual(detailedInventory.docker.unmanagedContainers.map(entry => [entry.name, entry.image]), [['unmanaged-cache', 'redis:7']]);
-
-  const dockerTarget = { runner: 'docker', containerId: dockerId, name: 'postgres' };
-  const dockerTail = await fetch(logsPath, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ target: dockerTarget, lines: 12 }),
-  });
-  assert.equal(dockerTail.status, 200);
-  const dockerResult = await dockerTail.json() as { output: string; linesReturned: number; target: { runner: string } };
-  assert.equal(dockerResult.output, dockerLogSecret);
-  assert.equal(dockerResult.linesReturned, 1);
-  assert.equal(dockerResult.target.runner, 'docker');
-  assert.deepEqual(dockerLogCalls, [{ containerId: dockerId, lines: 12 }]);
-
-  const deniedControl = await fetch(`${origin}/api/workspaces/${proposal.name}/services/stop`, {
-    method: 'POST', headers: mcpHeaders, body: JSON.stringify(dockerTarget),
-  });
-  assert.equal(deniedControl.status, 400);
-  assert.deepEqual(dockerLogCalls, [{ containerId: dockerId, lines: 12 }], 'Docker has no service control path');
-
-  const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${mcpToken}` } })).json() as Array<{ detail: string }>;
-  assert.ok(activity.some(entry => entry.detail === 'api → 2 lines'));
-  assert.ok(activity.some(entry => entry.detail === 'postgres → 1 lines'));
-  assert.ok(!JSON.stringify(activity).includes('sk-test-secret-marker'), 'activity must never carry log text');
-  assert.ok(!JSON.stringify(activity).includes(dockerLogSecret), 'Docker activity must never carry log text');
 });
 
 test('authenticated activity renews the dashboard session while idle sessions still expire', async t => {

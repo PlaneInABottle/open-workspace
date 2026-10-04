@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
-import { gateDeclaration, localToolGateMessages } from '../src/local-tools.js';
 
 const skillPath = new URL('../skills/learn-from-mistake/SKILL.md', import.meta.url);
 
@@ -45,15 +44,15 @@ async function ownedProject(prefix: string) {
 
 // ---- Offer wording (consent review contract) ----
 
-test('probe offer names both acceptance paths and closes with the consent sentence', async () => {
+test('probe offer names the regression-note path and closes with the consent sentence', async () => {
   const subsection = probeSubsection(await skillText());
   assert.ok(subsection.includes('[needs-review]'), 'suspect-lesson trigger named');
   assert.ok(subsection.includes('detourNudge'), 'detour vocabulary referenced consistently');
-  assert.ok(subsection.includes("'yes, scaffold a local-tool check'"), 'path-A acceptance grammar named');
-  assert.ok(subsection.includes("'yes, draft a regression test at <path>'"), 'path-B acceptance grammar named');
-  assert.ok(subsection.includes('(at most 2KiB)'), 'path-B size bound pinned');
-  assert.ok(subsection.includes('inside the active project only'), 'path-B project boundary pinned');
-  assert.ok(subsection.includes('run by nobody'), 'path-B inertness pinned');
+  assert.ok(subsection.includes("'yes, draft a regression test at <path>'"), 'acceptance grammar named');
+  assert.ok(subsection.includes('(at most 2KiB)'), 'size bound pinned');
+  assert.ok(subsection.includes('inside the active project only'), 'project boundary pinned');
+  assert.ok(subsection.includes('run by nobody'), 'inertness pinned');
+  assert.ok(!subsection.includes('scaffold'), 'no scaffold path: the declared local-tool engine is shed');
   assert.ok(
     subsection.includes('Nothing is created unless you accept."'),
     'offer closes with the fixed consent sentence',
@@ -65,11 +64,6 @@ test('probe offer names both acceptance paths and closes with the consent senten
   );
 });
 
-test('probe offer subsection stays within its byte budget', async () => {
-  const text = await skillText();
-  assert.ok(Buffer.byteLength(text, 'utf8') <= 8 * 1024, 'skill stays within 8KiB');
-});
-
 // ---- Decline / no-reply: nothing is created ----
 
 test('decline and no-reply write nothing: zero pending/proposals files, zero repo writes', async t => {
@@ -78,57 +72,7 @@ test('decline and no-reply write nothing: zero pending/proposals files, zero rep
   // A review pass with no explicit `yes`: read context, then stop. The offer
   // is text-only, so declining issues no write call at all.
   await f.service.workstreamContext(f.workspace.name, f.workstream.name);
-  assert.deepEqual(await filesUnder(join(f.store.directory, 'local-tools', 'pending')), []);
-  assert.deepEqual(await filesUnder(join(f.store.directory, 'local-tools', 'proposals')), []);
   assert.deepEqual(await filesUnder(f.project), ['package.json'], 'no repo writes without acceptance');
-});
-
-// ---- Accept path A: the unchanged scaffold-local-tool gate flow ----
-
-function scaffoldDecl(proposal: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    name: 'db_tables',
-    description: 'List public-schema tables of a local database over a read-only socket connection.',
-    executable: 'psql-fixed-select',
-    slots: { database: { kind: 'identifier' }, role: { kind: 'identifier' } },
-    statement: "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1",
-    caps: {},
-    provenance: { origin: 'scaffolded', proposal, createdAt: '2026-10-03T00:00:00.000Z' },
-    ...overrides,
-  };
-}
-
-const proposalShape = [
-  '# Keep local queries bounded',
-  '',
-  '- Scope: project/**',
-  '- Rule: Keep repeated local queries fixed and bounded.',
-  '- Source: runId 12345-abcde123',
-  '- Status: proposal',
-  '',
-].join('\n');
-
-test('accept path A reuses the unmodified scaffold gate: pre-flight passes, nothing activates alone', async t => {
-  const home = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-probe-gate-')));
-  t.after(() => rm(home, { recursive: true, force: true }));
-  const proposals = join(home, 'local-tools', 'proposals');
-  await mkdir(proposals, { recursive: true });
-  const basename = 'bounded-query-rule.md';
-  await writeFile(join(proposals, basename), proposalShape);
-  assert.ok(Buffer.byteLength(proposalShape, 'utf8') <= 2 * 1024, 'proposal respects the 2KiB cap');
-  const gate = (decl: unknown) => gateDeclaration(decl, {
-    homeDir: home, acceptedCount: 0, searchPath: '', probe: async () => true,
-  });
-  const decl = scaffoldDecl(basename);
-  assert.ok(Buffer.byteLength(JSON.stringify(decl), 'utf8') <= 8 * 1024, 'pending declaration respects the 8KiB cap');
-  const valid = await gate(decl);
-  assert.equal(valid.origin, 'scaffolded', 'valid scaffolded declaration passes the unchanged pre-flight');
-  await assert.rejects(
-    gate(scaffoldDecl('missing.md')),
-    error => error instanceof Error && error.message === localToolGateMessages.invalid,
-    'the gate still refuses a missing proposal without writing anything',
-  );
-  assert.deepEqual(await filesUnder(join(home, 'local-tools', 'active')), [], 'gating alone activates nothing: stays pending');
 });
 
 // ---- Accept path B: bounded inert note inside the fixture root only ----

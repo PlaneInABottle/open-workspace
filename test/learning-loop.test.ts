@@ -108,14 +108,17 @@ test('reads record sanitized descriptors and failures never leak literals', asyn
   const denied = await fetch(`${origin}/api/workspaces/Missing%20project`, { headers });
   assert.equal(denied.status, 400);
   // Failed mutation attempts carrying secrets must not reach activity either.
+  // The removed datastore/browser routes stay gone: secret-carrying posts to
+  // those paths are refused at the MCP role gate (fail-closed, nothing
+  // recorded), so the secrets below must never appear in activity.
   const secretSql = 'SELECT * FROM users WHERE email = \'someone@example.com\'';
   const secretUrl = 'http://127.0.0.1:9/?token=sk-test-secret-marker';
-  await fetch(`${origin}/api/workspaces/${f.workspace.name}/datastore/query`, {
+  assert.equal((await fetch(`${origin}/api/workspaces/${f.workspace.name}/datastore/query`, {
     method: 'POST', headers, body: JSON.stringify({ database: 'appdb', role: 'reader', sql: secretSql }),
-  });
-  await fetch(`${origin}/api/workspaces/${f.workspace.name}/browser/check`, {
+  })).status, 403);
+  assert.equal((await fetch(`${origin}/api/workspaces/${f.workspace.name}/browser/check`, {
     method: 'POST', headers, body: JSON.stringify({ url: secretUrl }),
-  });
+  })).status, 403);
   const activity = await (await fetch(`${origin}/api/activity`, { headers: { Authorization: `Bearer ${app.mcpToken}` } })).json() as Array<{ operation: string; detail: string; workspaceId: string | null }>;
   const details = activity.map(entry => entry.detail);
   assert.ok(details.some(detail => detail === 'workspace_list → ok'));
@@ -175,19 +178,20 @@ test('run summaries persist masked excerpts with a 20-per-scope ring', async t =
   assert.ok(!JSON.stringify(listed).includes('tokenvalue'), 'excerpts are masked');
 });
 
-test('verify persists a bounded summary and recent_runs resolves scopes with caps', async t => {
+test('run summaries persist bounded excerpts and recent_runs resolves scopes with caps', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-learning-verify-')));
   const project = join(root, 'project');
   await mkdir(project);
   await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
   const store = new Store(join(root, 'state'));
   await store.initialize();
-  const runners = { runCommand: async () => ({ exitCode: 1, timedOut: false, aborted: false, truncated: false, stdout: 'not ok 1 login flow', stderr: '', durationMs: 321, spawnFailed: false }) };
-  const service = new WorkspaceService(store, undefined, undefined, runners.runCommand);
+  const service = new WorkspaceService(store);
   const workspace = await service.register('Learning project', [project]);
   try {
-    const result = await service.verify(workspace.name, { repositoryPath: project, scriptName: 'test' });
-    assert.equal(result.outcome, 'failed');
+    await persistRunSummary(store.directory, {
+      workspaceId: workspace.id, scriptName: 'test', outcome: 'failed', durationMs: 321,
+      output: 'not ok 1 login flow', outputTruncated: false,
+    });
     const listed = await service.recentRuns(workspace.name, undefined, 5);
     assert.equal(listed.length, 1);
     assert.equal(listed[0].scriptName, 'test');

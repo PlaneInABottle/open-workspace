@@ -11,10 +11,7 @@ import type { StaticAssets } from './static-assets.js';
 import { maxProjectRootLength, maxProjectRoots, projectRootMessages } from './project-roots.js';
 import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-picker.js';
 import { verifyMessages, verifySocketTimeoutMs } from './verify.js';
-import { datastoreMessages, datastoreQuerySchema, datastoreSocketTimeoutMs } from './datastore.js';
-import { localToolSocketTimeoutMs } from './local-tools-allowlist.js';
-import { localToolCallBodySchema, localToolCallMessages, localToolGateMessages } from './local-tools.js';
-import { browserCheckSchema, browserMessages, browserSocketTimeoutMs } from './browser.js';
+import { datastoreMessages } from './datastore.js';
 import { dockerMetadataMessages } from './services-docker.js';
 import { leaseMessages } from './leases.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
@@ -51,42 +48,6 @@ const rootsUpdateSchema = z.object({
 const consentSchema = z.object({ consent: z.literal(true) }).strict();
 const disconnectSchema = z.object({}).strict();
 const projectRootPickerSchema = z.object({}).strict();
-const serviceTargetSchema = z.object({
-  pmId: z.number().int().nonnegative().nullable(),
-  name: z.string().min(1).max(200),
-  namespace: z.string().max(80).nullable().optional(),
-}).strict();
-const serviceActionSchema = serviceTargetSchema;
-const serviceStartSchema = z.object({
-  repositoryPath: z.string().min(1).max(4096),
-  scriptName: z.string().min(1).max(80),
-  name: z.string().min(1).max(80).optional(),
-}).strict();
-const serviceLogsSchema = z.object({
-  target: z.union([
-    serviceTargetSchema,
-    z.object({
-      runner: z.literal('docker'),
-      containerId: z.string().regex(/^[a-f\d]{64}$/i),
-      name: z.string().min(1).max(256),
-    }).strict(),
-  ]),
-  lines: z.number().int().min(1).max(200).optional(),
-  stream: z.enum(['out', 'err', 'both']).optional(),
-}).strict();
-const containerLinkSchema = z.object({
-  action: z.enum(['link', 'unlink']),
-  containerId: z.string().regex(/^[a-f\d]{12,64}$/i),
-}).strict();
-const verificationSchema = z.object({
-  repositoryPath: z.string().min(1).max(4096),
-  scriptName: z.string().min(1).max(80),
-  service: z.object({
-    pmId: z.number().int().nonnegative().nullable(),
-    name: z.string().min(1).max(200),
-    namespace: z.string().max(80).nullable().optional(),
-  }).strict().optional(),
-}).strict();
 const workstreamSchema = z.object({
   name: z.string().min(1).max(100),
   workspace: z.string().min(1).max(100),
@@ -146,9 +107,6 @@ const renameSchema = z.object({
 const nameSegment = '[^/]+';
 const proposalBodyLimit = 512 * 1024;
 const workstreamStatusBodyLimit = 64 * 1024;
-// Schema-valid datastore calls carry up to 8000 SQL chars plus 20 params of
-// up to 1000 chars, so the default 8 KiB JSON cap would reject them.
-const datastoreBodyLimit = 32 * 1024;
 
 // Transport-owned messages: the only allowlist entries defined in this
 // module (thrown by body() above). Everything else is composed from owner
@@ -213,14 +171,7 @@ export const safeMessages: readonly string[] = [
   datastoreMessages.timeout,
   datastoreMessages.failed,
   datastoreMessages.unavailable,
-  browserMessages.loopbackUrl,
-  browserMessages.redirect,
-  browserMessages.unavailable,
-  browserMessages.timeout,
-  browserMessages.navFailed,
   projectRootMessages.approvedIdentity,
-  ...Object.values(localToolGateMessages),
-  ...Object.values(localToolCallMessages),
   workspaceMessages.resultLimit,
   ...Object.values(environmentMessages),
   ...Object.values(nameMessages),
@@ -269,7 +220,6 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/learnings'
     || pathname === '/api/lessons'
     || pathname === '/api/runs/recent'
-    || pathname === '/api/local-tools/status'
     || new RegExp(`^/api/workspaces/${nameSegment}(?:/onboarding)?$`).test(pathname)
     || pathname === '/api/workstreams'
     || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}(?:/context)?$`).test(pathname)
@@ -280,12 +230,6 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${nameSegment}/rename$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/roots$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/services$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/services/(restart|stop|start|logs)$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/containers/link$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/verify$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/browser/check$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/datastore/query$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/local-tools/call$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environments/(propose|set|up|down)$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environments/[^/]+/rename$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environment/verify$`).test(pathname)
@@ -513,139 +457,6 @@ export function createApp(service: WorkspaceService, options: {
             response.removeListener('close', abortIfDisconnected);
           }
         } else {
-          const containerLinkMatch = /^\/api\/workspaces\/([^/]+)\/containers\/link$/.exec(url.pathname);
-          if (containerLinkMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Container link changes require the connected dashboard.' });
-              return;
-            }
-            const name = decodeNameSegment(containerLinkMatch[1], workspaceMessages.projectName);
-            const input = containerLinkSchema.parse(await body(request));
-            const result = await service.containerLink(name, input.action, input.containerId);
-            await record('container-link', result.workspaceId, `${result.containerId.slice(0, 12)} → ${result.action}${result.changed ? '' : ' (unchanged)'}`);
-            json(response, 200, result);
-            return;
-          }
-          const serviceLogsMatch = /^\/api\/workspaces\/([^/]+)\/services\/logs$/.exec(url.pathname);
-          if (serviceLogsMatch && request.method === 'POST') {
-            const name = decodeNameSegment(serviceLogsMatch[1], workspaceMessages.projectName);
-            const input = serviceLogsSchema.parse(await body(request));
-            const result = await service.serviceLogs(name, input.target, { lines: input.lines, stream: input.stream });
-            // Activity records counts only; raw log text is never persisted.
-            await record('service-logs', await workspaceScopeId(name), `${input.target.name} → ${result.linesReturned} lines${result.truncated ? ' (truncated)' : ''}`);
-            json(response, 200, result);
-            return;
-          }
-          const serviceStartMatch = /^\/api\/workspaces\/([^/]+)\/services\/start$/.exec(url.pathname);
-          if (serviceStartMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Service actions require the connected dashboard.' });
-              return;
-            }
-            const name = decodeNameSegment(serviceStartMatch[1], workspaceMessages.projectName);
-            const input = serviceStartSchema.parse(await body(request));
-            const result = await service.serviceStart(name, input);
-            await record('service-start', await workspaceScopeId(name), `${input.scriptName} → ${result.status}`);
-            json(response, 200, result);
-            return;
-          }
-          const serviceActionMatch = /^\/api\/workspaces\/([^/]+)\/services\/(restart|stop)$/.exec(url.pathname);
-          if (serviceActionMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Service actions require the connected dashboard.' });
-              return;
-            }
-            const name = decodeNameSegment(serviceActionMatch[1], workspaceMessages.projectName);
-            const input = serviceActionSchema.parse(await body(request));
-            const result = await service.serviceAction(name, serviceActionMatch[2] as 'restart' | 'stop', input);
-            await record(`service-${serviceActionMatch[2]}`, await workspaceScopeId(name), `${input.name} → ${result.status}`);
-            json(response, 200, result);
-            return;
-          }
-          const verificationMatch = /^\/api\/workspaces\/([^/]+)\/verify$/.exec(url.pathname);
-          if (verificationMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
-              return;
-            }
-            request.setTimeout(verifySocketTimeoutMs);
-            const name = decodeNameSegment(verificationMatch[1], workspaceMessages.projectName);
-            const input = verificationSchema.parse(await body(request));
-            if (request.aborted || response.destroyed) return;
-            const controller = new AbortController();
-            const abortIfDisconnected = () => {
-              if (!response.writableEnded) controller.abort();
-            };
-            request.once('aborted', abortIfDisconnected);
-            response.once('close', abortIfDisconnected);
-            try {
-              const result = await service.verify(name, input, controller.signal);
-              await record('verify', await workspaceScopeId(name), `${input.scriptName} → ${result.outcome}`);
-              if (!controller.signal.aborted && !response.destroyed) json(response, 200, result);
-            } finally {
-              request.removeListener('aborted', abortIfDisconnected);
-              response.removeListener('close', abortIfDisconnected);
-            }
-            return;
-          }
-          const browserMatch = /^\/api\/workspaces\/([^/]+)\/browser\/check$/.exec(url.pathname);
-          if (browserMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Browser checks require the connected dashboard.' });
-              return;
-            }
-            request.setTimeout(browserSocketTimeoutMs);
-            const name = decodeNameSegment(browserMatch[1], workspaceMessages.projectName);
-            const input = browserCheckSchema.parse(await body(request));
-            if (request.aborted || response.destroyed) return;
-            const result = await service.browserCheck(name, input);
-            // Activity records sizes only; the URL may carry secrets and the
-            // snapshot text is never persisted.
-            await record('browser-check', await workspaceScopeId(name), `snapshot ${result.snapshotText.length} chars${result.truncated ? ' (truncated)' : ''}, assert ${result.assertFound === null ? 'unchecked' : result.assertFound ? 'found' : 'not found'}`);
-            if (!response.destroyed) json(response, 200, result);
-            return;
-          }
-          const datastoreMatch = /^\/api\/workspaces\/([^/]+)\/datastore\/query$/.exec(url.pathname);
-          if (datastoreMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Datastore queries require the connected dashboard.' });
-              return;
-            }
-            request.setTimeout(datastoreSocketTimeoutMs);
-            const name = decodeNameSegment(datastoreMatch[1], workspaceMessages.projectName);
-            const input = datastoreQuerySchema.parse(await body(request, datastoreBodyLimit));
-            if (request.aborted || response.destroyed) return;
-            const result = await service.datastoreQuery(name, input);
-            await record('datastore-query', await workspaceScopeId(name), `${result.database} → ${result.rowCount} rows`);
-            if (!response.destroyed) json(response, 200, result);
-            return;
-          }
-          const localToolCallMatch = /^\/api\/workspaces\/([^/]+)\/local-tools\/call$/.exec(url.pathname);
-          if (localToolCallMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Local tool calls require the connected dashboard.' });
-              return;
-            }
-            request.setTimeout(localToolSocketTimeoutMs);
-            let input: unknown;
-            try {
-              input = localToolCallBodySchema.parse(await body(request));
-            } catch (error) {
-              if (error instanceof z.ZodError) throw new Error(localToolCallMessages.invalidCall);
-              throw error;
-            }
-            if (request.aborted || response.destroyed) return;
-            const name = decodeNameSegment(localToolCallMatch[1], workspaceMessages.projectName);
-            const result = await service.localToolCall(name, input, { actor });
-            if (!response.destroyed) json(response, 200, result);
-            return;
-          }
-          if (url.pathname === '/api/local-tools/status' && request.method === 'GET') {
-            // The read itself never records activity (mirroring activity/run
-            // reads); registry transitions the rescan discovers still audit.
-            json(response, 200, await service.localToolStatus(actor));
-            return;
-          }
           const workstreamContextMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/context$`).exec(url.pathname);
           if (workstreamContextMatch && request.method === 'GET') {
             // Reader-only handoff bundle: pure reads never record activity
@@ -822,7 +633,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const workspaceMatch = new RegExp(`^/api/workspaces/(${nameSegment})$`).exec(url.pathname);
           // Full-list root replacement uses POST like the other workspace
-          // mutations (services, verify, ...), not PUT: the client helper
+          // mutations (services, ...), not PUT: the client helper
           // defaults to POST for bodies and no PUT handling exists.
           const rootsMatch = new RegExp(`^/api/workspaces/(${nameSegment})/roots$`).exec(url.pathname);
           if (rootsMatch && request.method === 'POST') {

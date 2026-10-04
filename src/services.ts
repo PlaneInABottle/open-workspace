@@ -467,8 +467,8 @@ export async function runPm2Start(input: {
 
 // Service start derives the command from an already-registered,
 // already-discovered source only: an existing package.json script name in a
-// repository inside exactly one registered root (the verification_run
-// precedent). There is deliberately no explicit-argv path: no caller field
+// repository inside exactly one registered root. There is deliberately no
+// explicit-argv path: no caller field
 // ever reaches a shell or an interpreter choice, so arbitrary shell,
 // out-of-root binaries and non-allowlisted interpreters are refused by
 // construction — the runner stays `pm2`, cwd is the owning repository, and

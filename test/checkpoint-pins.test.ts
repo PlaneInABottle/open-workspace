@@ -22,20 +22,14 @@ import { fixtureStaticAssets } from './helpers/static-assets.js';
 
 const SHA = 'd'.repeat(40);
 
-async function approvedFixture(prefix: string, withVerifyRunner = false) {
+async function approvedFixture(prefix: string) {
   const root = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   const project = join(root, 'project');
   await mkdir(project, { recursive: true });
   await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
   const store = new Store(join(root, 'state'));
   await store.initialize();
-  const stubRun = withVerifyRunner
-    ? (async () => ({
-        exitCode: 0, timedOut: false, aborted: false, truncated: false,
-        stdout: 'ok 1 fine', stderr: '', durationMs: 11, spawnFailed: false,
-      }))
-    : undefined;
-  const service = new WorkspaceService(store, undefined, undefined, stubRun);
+  const service = new WorkspaceService(store);
   const workspace = await service.register('Pin project', [project]);
   const workstream = await service.createWorkstream({
     name: 'Stream', workspace: workspace.name, checkouts: [project],
@@ -53,10 +47,12 @@ async function runFiles(store: Store, workspaceId: string): Promise<string[]> {
 }
 
 test('evidence links pin a run past the 20-file ring with flags both ways', async t => {
-  const f = await approvedFixture('openworkspace-pin-ring-', true);
+  const f = await approvedFixture('openworkspace-pin-ring-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
-  const first = await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
-  assert.equal(first.outcome, 'passed');
+  await persistRunSummary(f.store.directory, {
+    workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 11,
+    output: 'ok 1 fine', outputTruncated: false,
+  }, f.store);
   const [seeded] = await f.service.recentRuns(f.workspace.name, undefined, 5);
   assert.ok(seeded.id, 'run entries carry a stable opaque ID');
   const pinned = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [seeded.id] }));
@@ -67,10 +63,13 @@ test('evidence links pin a run past the 20-file ring with flags both ways', asyn
   assert.equal(flaggedEarly.find(entry => entry.id === seeded.id)?.pinnedByNote, true);
   assert.ok(flaggedEarly.filter(entry => entry.id !== seeded.id).every(entry => entry.pinnedByNote === false));
 
-  // 21 more verifies push the ring past 20; the pinned run must survive while
+  // 21 more runs push the ring past 20; the pinned run must survive while
   // the oldest unpinned run evicts.
   for (let index = 0; index < 21; index++) {
-    await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
+    await persistRunSummary(f.store.directory, {
+      workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 11,
+      output: `ok 1 fine ${index}`, outputTruncated: false,
+    }, f.store);
   }
   const files = await runFiles(f.store, f.workspace.id);
   assert.equal(files.length, 21, 'ring holds 20 plus the one pin');
@@ -192,13 +191,19 @@ test('evidence holds at most five well-formed IDs', async t => {
 });
 
 test('editing the note to drop a ref unpins and re-enables eviction', async t => {
-  const f = await approvedFixture('openworkspace-pin-unpin-', true);
+  const f = await approvedFixture('openworkspace-pin-unpin-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
-  await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
+  await persistRunSummary(f.store.directory, {
+    workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 11,
+    output: 'ok 1 fine', outputTruncated: false,
+  }, f.store);
   const [seeded] = await f.service.recentRuns(f.workspace.name, undefined, 5);
   await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note({ evidence: [seeded.id] }));
   for (let index = 0; index < 21; index++) {
-    await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
+    await persistRunSummary(f.store.directory, {
+      workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 11,
+      output: `ok 1 fine ${index}`, outputTruncated: false,
+    }, f.store);
   }
   assert.ok((await runFiles(f.store, f.workspace.id)).includes(`${seeded.id}.json`), 'pinned survives first');
 
@@ -206,7 +211,10 @@ test('editing the note to drop a ref unpins and re-enables eviction', async t =>
   const edited = await f.service.setWorkstreamStatus(f.workspace.name, f.workstream.name, 'paused', note());
   assert.deepEqual(edited.checkpointNote?.evidence, [], 'omitted evidence means no links');
   for (let index = 0; index < 21; index++) {
-    await f.service.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
+    await persistRunSummary(f.store.directory, {
+      workspaceId: f.workspace.id, scriptName: 'test', outcome: 'passed', durationMs: 11,
+      output: `ok 1 fine second ${index}`, outputTruncated: false,
+    }, f.store);
   }
   const files = await runFiles(f.store, f.workspace.id);
   assert.equal(files.length, 20, 'ring returns to 20 with no pins');

@@ -31,11 +31,9 @@ import {
 } from '../src/workstreams.js';
 import { leaseMessages } from '../src/leases.js';
 import { datastoreMessages } from '../src/datastore.js';
-import { browserMessages } from '../src/browser.js';
 import { dockerLogMessages, dockerMetadataMessages } from '../src/services-docker.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from '../src/run-summaries.js';
 import { learningMessages } from '../src/rule-index.js';
-import { localToolCallMessages, localToolGateMessages } from '../src/local-tools.js';
 import { environmentMessages } from '../src/environment.js';
 import { nameMessages } from '../src/store.js';
 
@@ -67,11 +65,9 @@ const ownerGroups: ReadonlyArray<{ file: string; values: readonly string[] }> = 
   { file: 'workstreams.ts', values: workstreamMessageList },
   { file: 'leases.ts', values: Object.values(leaseMessages) },
   { file: 'datastore.ts', values: Object.values(datastoreMessages) },
-  { file: 'browser.ts', values: Object.values(browserMessages) },
   { file: 'services-docker.ts', values: Object.values(dockerMetadataMessages) },
   { file: 'run-summaries.ts', values: [externalImportInvalidMessage, externalImportClaimMessage] },
   { file: 'rule-index.ts', values: Object.values(learningMessages) },
-  { file: 'local-tools.ts', values: [...Object.values(localToolGateMessages), ...Object.values(localToolCallMessages)] },
   { file: 'environment.ts', values: Object.values(environmentMessages) },
   { file: 'store.ts', values: Object.values(nameMessages) },
   { file: 'http.ts', values: Object.values(httpTransportMessages) },
@@ -125,7 +121,6 @@ test('each allowlist message has one definition site and no literal throw site',
 // `throw new Error('<literal>')` in src/ must be either allowlisted above or
 // listed here — an unlisted literal fails the closed-world check below.
 const outOfAllowlist: ReadonlyArray<{ file: string; message: string; reason: string }> = [
-  { file: 'browser.ts', message: 'unshaped', reason: 'internal JSON-shape sentinel, always remapped to navFailed' },
   { file: 'connection.ts', message: 'Local connection must target the loopback service.', reason: 'companion-side guard, never thrown into the route catch' },
   { file: 'connection.ts', message: 'Local operation failed.', reason: 'client fallback default (expression throw), never allowlisted' },
   { file: 'dashboard-sessions.ts', message: 'Invalid dashboard session token source.', reason: 'server-constructed token invariant, surfaces as generic' },

@@ -59,25 +59,6 @@ export interface ServiceRecord {
   exactRootPath: string | null;
 }
 
-export interface ServiceActionResult {
-  action: 'restart' | 'stop';
-  target: { pmId: number; name: string; namespace: string | null };
-  status: 'completed' | 'failed' | 'unknown';
-  serviceStatus: string | null;
-  message: string;
-}
-
-export interface ServiceStartResult {
-  action: 'start';
-  target: { pmId: number; name: string; namespace: string | null };
-  repositoryPath: string;
-  rootPath: string;
-  scriptName: string;
-  status: 'completed' | 'failed' | 'unknown';
-  serviceStatus: string | null;
-  message: string;
-}
-
 export interface ServiceInventory {
   inspectedAt: string;
   runner: 'pm2';
@@ -88,38 +69,6 @@ export interface ServiceInventory {
   unmatchedProcessCount: number;
   services: ServiceRecord[];
   ambiguousServices: ServiceRecord[];
-}
-
-export interface VerificationResult {
-  verifiedAt: string;
-  repositoryPath: string;
-  rootPath: string;
-  scriptName: string;
-  scriptHash: string;
-  scriptPreview: string;
-  outcome: 'passed' | 'failed' | 'error';
-  exitCode: number | null;
-  timedOut: boolean;
-  aborted: boolean;
-  truncated: boolean;
-  durationMs: number;
-  output: string;
-  git: {
-    revision: string | null;
-    revisionState: 'observed' | 'unknown';
-    worktree: 'clean' | 'dirty' | 'unknown';
-    changedEntries: number | null;
-    /** Dirty-state fingerprint (content hash plus path names only); null/absent when clean or degraded. */
-    dirty?: { diffHash: string; files: string[]; truncated: boolean } | null;
-  };
-  service: { pmId: number; name: string; namespace: string | null; status: string } | null;
-  message: string;
-}
-
-export interface VerificationRequest {
-  repositoryPath: string;
-  scriptName: string;
-  service?: { pmId: number | null; name: string; namespace?: string | null };
 }
 
 export interface WorkstreamCheckout {
@@ -447,15 +396,6 @@ export class ApiClient {
     return result;
   }
   services(workspace: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeName(workspace)}/services`, {}); }
-  serviceAction(workspace: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
-    return this.request<ServiceActionResult>(`/api/workspaces/${safeName(workspace)}/services/${action}`, target);
-  }
-  serviceStart(workspace: string, start: { repositoryPath: string; scriptName: string; name?: string }) {
-    return this.request<ServiceStartResult>(`/api/workspaces/${safeName(workspace)}/services/start`, start);
-  }
-  verify(workspace: string, verification: VerificationRequest) {
-    return this.request<VerificationResult>(`/api/workspaces/${safeName(workspace)}/verify`, verification, { timeoutMs: 170_000 });
-  }
   workstreams() { return this.request<Workstream[]>('/api/workstreams'); }
   workstream(workspace: string, workstream: string) {
     return this.request<Workstream>(`/api/workstreams/${safeName(workspace)}/${safeName(workstream)}`);

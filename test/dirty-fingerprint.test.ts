@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
-import { listRecentRuns } from '../src/run-summaries.js';
+import { listRecentRuns, persistRunSummary } from '../src/run-summaries.js';
 import { runVerification, type CommandOutcome, type CommandRunner } from '../src/verify.js';
 
 const SHA = 'b'.repeat(40);
@@ -145,7 +145,7 @@ test('file list caps at 50 names and only hash plus path names persist', async t
   assert.ok(serialized.includes(result.git.dirty.diffHash), 'hash persists');
 });
 
-test('verify persists revision plus fingerprint and recent_runs carries them; legacy files stay readable', async t => {
+test('run summaries persist revision plus fingerprint and recent_runs carries them; legacy files stay readable', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-dirty-runs-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
@@ -153,12 +153,18 @@ test('verify persists revision plus fingerprint and recent_runs carries them; le
   await writeFile(join(project, 'package.json'), JSON.stringify({ scripts: { check: 'node check.mjs' } }));
   const store = new Store(join(root, 'state'));
   await store.initialize();
-  const service = new WorkspaceService(store, undefined, undefined, stubRun({
-    statusStdout: ' M src/a.ts\n', diffStdout: 'diff --git a/src/a.ts b/src/a.ts\n+one',
-  }));
+  const service = new WorkspaceService(store);
   const workspace = await service.register('Dirty project', [project]);
-  const result = await service.verify(workspace.name, { repositoryPath: project, scriptName: 'check' });
+  const result = await runVerification([project], { repositoryPath: project, scriptName: 'check' }, {
+    runCommand: stubRun({
+      statusStdout: ' M src/a.ts\n', diffStdout: 'diff --git a/src/a.ts b/src/a.ts\n+one',
+    }),
+  });
   assert.ok(result.git.dirty);
+  await persistRunSummary(store.directory, {
+    workspaceId: workspace.id, scriptName: 'check', outcome: result.outcome, durationMs: result.durationMs,
+    output: result.output, outputTruncated: result.truncated, revision: result.git.revision, dirty: result.git.dirty,
+  });
   const listed = await service.recentRuns(workspace.name, undefined, 5);
   assert.equal(listed.length, 1);
   assert.equal(listed[0].revision, SHA);

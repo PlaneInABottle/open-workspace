@@ -28,8 +28,14 @@ test('workspace names are unique globally, case-insensitively, with UUID/charset
   const f = await fixture(t);
   const first = await f.service.register('Gate Project', [f.project]);
   assert.equal(first.name, 'Gate Project');
-  await assert.rejects(f.service.register('gate project', [f.project]), new RegExp(escapeRegExp(workspaceMessages.projectNameTaken)));
-  await assert.rejects(f.service.register('  Gate Project  ', [f.project]), new RegExp(escapeRegExp(workspaceMessages.projectNameTaken)));
+  // Upsert (harness-first pivot): re-registering a taken name replaces its
+  // roots in place instead of refusing — the agent's path for fixing roots.
+  const same = await f.service.register('gate project', [f.project]);
+  assert.equal(same.id, first.id, 'same name upserts onto the stable ID');
+  assert.equal(same.name, 'Gate Project', 'stored casing preserved');
+  const padded = await f.service.register('  Gate Project  ', [f.project]);
+  assert.equal(padded.id, first.id);
+  assert.equal((await f.store.read()).workspaces.length, 1, 'upsert never duplicates');
   await assert.rejects(
     f.service.register('12345678-1234-4234-8234-1234567890ab', [f.project]),
     new RegExp(escapeRegExp(nameMessages.useTheName)),

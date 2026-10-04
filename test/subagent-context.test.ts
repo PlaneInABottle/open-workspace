@@ -9,7 +9,7 @@ import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import { checkpointHistoryOf, maxCheckpointHistory, maxWorkstreamCompletions, pinnedRunIds, soloDefaultAssignmentId, type CompletionInput } from '../src/workstreams.js';
 import { listRunIds, persistRunSummary } from '../src/run-summaries.js';
-import type { CommandRunner } from '../src/verify.js';
+import { runVerification, type CommandRunner } from '../src/verify.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 
 const SHA = 'e'.repeat(40);
@@ -337,7 +337,14 @@ test('verification prune refreshes pins after a completion commits against its s
     stdout: command === 'git' && args[0] === 'rev-parse' ? 'f'.repeat(40) : '',
     stderr: '', durationMs: 1, spawnFailed: false,
   });
-  const verifyingService = new WorkspaceService(f.store, undefined, undefined, verificationRunner);
+  const runAndPersist = async () => {
+    const result = await runVerification([f.project], { repositoryPath: f.project, scriptName: 'test' }, { runCommand: verificationRunner });
+    await persistRunSummary(f.store.directory, {
+      workspaceId: f.workspace.id, scriptName: 'test', outcome: result.outcome, durationMs: result.durationMs,
+      output: result.output, outputTruncated: result.truncated, revision: result.git.revision, dirty: result.git.dirty,
+    }, f.store);
+    return result;
+  };
   let releasePrune!: () => void;
   let notifyPrune!: () => void;
   const pruneReached = new Promise<void>(resolve => { notifyPrune = resolve; });
@@ -353,7 +360,7 @@ test('verification prune refreshes pins after a completion commits against its s
     return originalUpdate(change);
   };
 
-  const verification = verifyingService.verify(f.workspace.name, { repositoryPath: f.project, scriptName: 'test' });
+  const verification = runAndPersist();
   try {
     await pruneReached;
     const input = completion('verify-pin-race');

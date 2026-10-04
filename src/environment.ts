@@ -470,7 +470,7 @@ export interface EnvironmentStatus {
 }
 
 // Read-only status: the only process contact is read-only `pm2 jlist`
-// through the injected list seam (same as workspace_services). Nothing is
+// through the injected list seam (same as the dashboard services inventory). Nothing is
 // started, stopped, or probed. M1 ceiling is 'starting' for alive-but-unpolled
 // processes — without the M2 readiness poll no service is reported
 // 'ready'/'skipped'; terminal PM2 states map honestly to 'down'/'failed'.
@@ -1389,7 +1389,7 @@ async function observeRepoGit(
 
 // Receipt-bound E2E: snapshot owned identities + per-service git context,
 // run one repo-native script, persist a single RunSummary carrying the capped
-// environment receipt. Surfaces through the existing recent_runs /
+// environment receipt. Surfaces through the existing recent-runs /
 // workstream_context readers — no new view, no timeline fork.
 export async function environmentVerify(
   store: Store,

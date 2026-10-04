@@ -149,9 +149,6 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
     try {
       await service.environmentDown(workspace.name, record.name);
     } catch { /* best-effort teardown */ }
-    try {
-      await service.serviceAction(workspace.name, 'stop', { pmId: null, name: foreignId });
-    } catch { /* foreign fixture may already be gone */ }
     for (const name of [backendId, frontendId, foreignId]) {
       try {
         spawnSync('pm2', ['delete', name], { timeout: 10_000 });
@@ -189,9 +186,12 @@ test('live gate: refuse-with-foreigner → clean up → ready → receipt E2E �
   assert.ok(status.services.every(entry => entry.status === 'ready'));
 
   // Phase 3: a foreign PM2 process (root-matched but unowned) and a foreign
-  // listener are present while verify + down run.
-  const foreignStart = await service.serviceStart(workspace.name, { repositoryPath: other, scriptName: 'dev', name: foreignId });
-  assert.equal(foreignStart.status, 'completed');
+  // listener are present while verify + down run. The foreign process is
+  // started with a direct pm2 spawn (the per-service start adapter is shed;
+  // the harness owns raw process control now).
+  const foreignSpawn = spawnSync('pm2', ['start', 'npm', '--name', foreignId, '--', 'run', 'dev', '--silent'], { cwd: other, timeout: 30_000 });
+  assert.equal(foreignSpawn.status, 0, 'foreign fixture starts via direct pm2 spawn');
+  assert.ok((await ownedNames()).includes(foreignId), 'foreign process is visible in inventory');
   foreignListener = await listen(foreignPort, 'foreign');
   const verified = await service.environmentVerify(workspace.name, {
     environment: record.name,

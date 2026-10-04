@@ -169,7 +169,7 @@ test('HTTP roots route serves MCP directly and gates the dashboard by canonical 
   void counter;
 });
 
-test('MCP workspace_update_roots adds a worktree directory to the existing project end to end', async t => {
+test('MCP register upserts roots for an existing project end to end', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-update-roots-mcp-')));
   const store = new Store(join(root, 'state')); await store.initialize();
   const project = join(root, 'project'); await mkdir(project);
@@ -189,22 +189,22 @@ test('MCP workspace_update_roots adds a worktree directory to the existing proje
   const client = new Client({ name: 'openworkspace-test', version: '1.0.0' });
   try {
     await client.connect(transport);
+    // The update-roots MCP tool is shed (pivot): re-registering the same
+    // name replaces the root list in place, preserving the stable ID.
     const tools = await client.listTools();
-    const tool = tools.tools.find(candidate => candidate.name === 'workspace_update_roots');
-    assert.ok(tool, 'workspace_update_roots is listed');
-    assert.deepEqual(Object.keys((tool?.inputSchema.properties || {}) as object).sort(), ['roots', 'workspace']);
+    assert.ok(!tools.tools.some(candidate => candidate.name === 'workspace_update_roots'), 'workspace_update_roots is not served over MCP');
 
     const registered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project] } });
     assert.ok(!registered.isError);
     const workspace = JSON.parse((registered.content as Array<{ text: string }>)[0].text) as { id: string; name: string; roots: string[] };
 
-    const updated = await client.callTool({ name: 'workspace_update_roots', arguments: { workspace: workspace.name, roots: [project, worktree] } });
-    assert.ok(!updated.isError);
-    const body = JSON.parse((updated.content as Array<{ text: string }>)[0].text) as { id: string; name: string; roots: string[] };
-    assert.equal(body.id, workspace.id);
+    const upserted = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project, worktree] } });
+    assert.ok(!upserted.isError);
+    const body = JSON.parse((upserted.content as Array<{ text: string }>)[0].text) as { id: string; name: string; roots: string[] };
+    assert.equal(body.id, workspace.id, 'upsert preserves the stable ID');
     assert.deepEqual(body.roots, [await realpath(project), await realpath(worktree)]);
 
-    const invalid = await client.callTool({ name: 'workspace_update_roots', arguments: { workspace: workspace.name, roots: [join(root, 'missing')] } });
+    const invalid = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [join(root, 'missing')] } });
     assert.equal(invalid.isError, true);
     const inspected = await client.callTool({ name: 'workspace_inspect', arguments: { workspace: workspace.name } });
     assert.ok(!inspected.isError);
