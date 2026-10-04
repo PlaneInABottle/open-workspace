@@ -29,7 +29,7 @@ const sectionHeadings = [
   'What to do (one pass):',
   'Step 1 — Identify client:',
   'Generated local MCP entry (secret-free, this machine only):',
-  'Step 2 — Skills (fetch via MCP, save project-local):',
+  'Step 2 — Skills (MCP-served by default):',
   'Step 3 — AGENTS.md note:',
   'Step 4 — Reload + Step 5 — Verify (free reads only):',
   'Step 6 — Handoff (≤120 words):',
@@ -121,27 +121,42 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('never write a shared ancestor/parent outside the active project without separate explicit authorization');
   });
 
-  it('fetches skills via MCP then saves them verbatim project-local', () => {
+  it('defaults to MCP-served skills with opt-in local copies', () => {
     const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
-    expect(material!.copyText).toContain('fetch each skill fresh via its MCP prompt');
+    expect(material!.copyText).toContain('Step 2 — Skills (MCP-served by default)');
+    expect(material!.copyText).toContain('use the MCP-served skill prompts directly');
     expect(material!.copyText).toContain('`skill/browser-qa`');
     expect(material!.copyText).toContain('`skill/learn-from-mistake`');
     expect(material!.copyText).toContain('`skill/new-task`');
     expect(material!.copyText).toContain('`skill/onboarding`');
     expect(material!.copyText).toContain('`skill/update`');
     expect(material!.copyText).toContain('`skill/scaffold-local-tool`');
-    expect(material!.copyText).toContain('Save each fetched text verbatim, project-local only');
+    expect(material!.copyText).toContain('fetch only what the task needs');
+    expect(material!.copyText).toContain('`skill/onboarding` first');
+    expect(material!.copyText).toContain('You know your own harness');
+    expect(material!.copyText).toContain('only as a tiebreak');
     expect(material!.copyText).toContain('`.claude/commands/ow-<name>.md`');
     expect(material!.copyText).toContain('`.opencode/commands/ow-<name>.md`');
     expect(material!.copyText).toContain('`.agents/skills/ow-<name>/SKILL.md`');
     expect(material!.copyText).toContain('`.github/skills/ow-<name>/SKILL.md`');
-    expect(material!.copyText).toContain('merge preserving every existing setting');
-    expect(material!.copyText).toContain('never write user-wide scope');
-    expect(material!.copyText).toContain('re-fetch the same prompt on update');
-    expect(material!.copyText).toContain('MCP-served stays the fallback and refresh source');
-    expect(material!.copyText).toContain('Delete saved copies to return to MCP-served');
+    expect(material!.copyText).toContain('no prompts/get interface');
+    expect(material!.copyText).toContain('stay MCP-served-only');
+    expect(material!.copyText).toContain('and say so');
+    expect(material!.copyText).toContain('Local copies only when I explicitly ask');
+    expect(material!.copyText).toContain('save each fetched text verbatim, project-local only');
+    expect(material!.copyText).toContain('byte-identical → skip silently');
+    expect(material!.copyText).toContain('overwrite and report the diff');
+    expect(material!.copyText).toContain('let me decide before writing');
+    expect(material!.copyText).toContain('Never write user-wide scope');
+    expect(material!.copyText).toContain('MCP-served stays the refresh source');
+    expect(material!.copyText).toContain('Delete saved copies to return to pure MCP-served');
     expect(material!.copyText).toContain('UNVERIFIED until run');
+    expect(material!.copyText).not.toContain('fetch each skill fresh via its MCP prompt');
+    expect(material!.copyText).not.toContain('Save each fetched text verbatim');
+    expect(material!.copyText).not.toContain('File exists → merge preserving every existing setting');
+    expect(material!.copyText).not.toContain('edits there are overwritten');
+    expect(material!.copyText).not.toContain('MCP-served stays the fallback and refresh source');
     expect(material!.copyText).not.toContain('`plugins/<client>/`');
     expect(material!.copyText).not.toContain('copy the generated pack verbatim');
     expect(material!.copyText).not.toContain('pinned slash commands');

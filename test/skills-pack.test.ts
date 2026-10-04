@@ -182,9 +182,10 @@ test('fixture copy walkthrough: verbatim pinned files, preserved settings, same-
   assert.deepEqual(reread.mcpServers.other, existingSettings.mcpServers.other, 'existing settings preserved');
   assert.ok(reread.mcpServers.openworkspace, 'generated entry added');
 
-  // Update flow: re-copy over the same snapshot path only; a user edit to the
-  // snapshot is overwritten there (documented), personal files never touched.
-  await writeFile(snapshot, 'User-edited snapshot.\n');
+  // Update flow: re-copy over the same snapshot path only. A stale tool-owned
+  // snapshot is overwritten there with the diff reported; a personal edit needs
+  // the user's decision first (see the update skill). Personal files never touched.
+  await writeFile(snapshot, 'Stale tool-owned snapshot.\n');
   await writeFile(snapshot, packBytes);
   assert.equal((await readFile(snapshot)).toString(), packBytes.toString(), 're-copy restores the verbatim snapshot');
   assert.equal(await readFile(personalFile, 'utf8'), before, 'personal files still byte-identical');
