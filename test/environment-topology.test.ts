@@ -352,7 +352,7 @@ test('outer environment-entry cap refuses the 51st entry', async t => {
   );
 });
 
-test('dashboard set requires manage-environment intent; reads stay intent-free', async t => {
+test('dashboard set requires canonical context; reads need none', async t => {
   const f = await twoRepoFixture(t);
   const mcpToken = 'e'.repeat(64);
   const app = createApp(f.service, { mcpToken, assets: fixtureStaticAssets() });
@@ -361,30 +361,27 @@ test('dashboard set requires manage-environment intent; reads stay intent-free',
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const connected = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ consent: true }),
   });
   assert.equal(connected.status, 201);
   const { dashboardToken } = await connected.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   const setPath = `${origin}/api/workspaces/${f.workspace.id}/environments/set`;
   const setBody = JSON.stringify({ name: 'local', services: [httpService(f.backend, 'backend')] });
 
-  const missingIntent = await fetch(setPath, { method: 'POST', headers: dashboardHeaders, body: setBody });
-  assert.equal(missingIntent.status, 403);
-  const wrongIntent = await fetch(setPath, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'control-service' }, body: setBody,
-  });
-  assert.equal(wrongIntent.status, 403);
+  const missingContext = await fetch(setPath, { method: 'POST', headers: bareDashboardHeaders, body: setBody });
+  assert.equal(missingContext.status, 403);
   const dashboardSet = await fetch(setPath, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'manage-environment' }, body: setBody,
+    method: 'POST', headers: dashboardHeaders, body: setBody,
   });
   assert.equal(dashboardSet.status, 200);
   const created = await dashboardSet.json() as { id: string };
   assert.ok(created.id);
 
-  // MCP stays intent-free: the chat confirmation plus the client permission
-  // model is the authority, and the call itself is the audit record.
+  // MCP carries no extra header: the client permission model is the authority,
+  // and the call itself is the audit record.
   const mcpSet = await fetch(setPath, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'mcp-env', services: [httpService(f.backend, 'backend')] }),
   });

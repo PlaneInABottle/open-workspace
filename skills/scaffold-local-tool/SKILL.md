@@ -13,13 +13,9 @@ One JSON declaration; the gate decides activation. No new executables, flags, or
 - Proposal basename (`[a-z0-9-]{1,80}.md`) written by the agent under `OPENWORKSPACE_HOME/local-tools/proposals/` as part of this proposal. This is local-tool proposal provenance, not learn-from-mistake output.
 - Name (`[a-z][a-z0-9_]{0,39}`, never starting `workspace_|service_|verification_|lease_|workstream_|activity_|recent_|onboarding_|browser_|datastore_|local_`), description (1-200 chars), at most 5 slots.
 
-## Ask first — never scaffold silently
+## Write the proposal directly — never activate silently
 
-When you detect a repeated pattern worth turning into a tool, STOP and ask
-the user first. State the concrete benefit (what repetition it removes) and
-the cost (one tool slot of 20, a permanent surface). Only on explicit user
-approval write the proposal record plus the pending declaration; the gate
-decides activation. Without approval, write nothing. No silent tool creation.
+When you detect a repeated pattern worth turning into a tool, state the benefit and cost in the proposal record, then write the proposal plus the pending declaration directly (pending only, never active); the gate decides activation. Without the 3+ repetition evidence and the proposal inputs, write nothing. No silent activation.
 
 ## Refuse (name the rule, draft nothing)
 

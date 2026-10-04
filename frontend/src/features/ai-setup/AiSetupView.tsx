@@ -46,7 +46,7 @@ export function AiSetupView({ state, selectedId, onCopyText }: {
     if (!material || copying) return;
     setCopying(true);
     try {
-      await onCopyText(material.copyText, 'Copied the setup prompt. Paste it to your assistant and approve each proposed write in chat.');
+      await onCopyText(material.copyText, 'Copied the setup prompt. Paste it to your assistant; the dashboard records what ran.');
     } finally {
       setCopying(false);
     }
@@ -57,7 +57,7 @@ export function AiSetupView({ state, selectedId, onCopyText }: {
       <header className="border-b border-border pb-5">
         <p className="eyebrow">KEEP YOUR EXISTING WORKFLOW</p>
         <h1 className="text-2xl font-semibold tracking-tight">Connect your AI</h1>
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">Paste one prompt to your assistant and your agent installs it; you review each write.</p>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">Paste one prompt to your assistant and your agent installs it.</p>
       </header>
 
       <section className="max-w-4xl" aria-labelledby="setup-prompt-heading">
@@ -73,7 +73,7 @@ export function AiSetupView({ state, selectedId, onCopyText }: {
           <Copy aria-hidden="true" data-icon="inline-start" />
           {copying ? 'Copying…' : 'Copy setup prompt'}
         </Button>
-        <p className="mt-3 max-w-3xl text-xs leading-5 text-muted-foreground">Nothing is written until you approve in chat. The local state path in the generated entry is specific to this machine and should not be committed as a reusable team path.</p>
+        <p className="mt-3 max-w-3xl text-xs leading-5 text-muted-foreground">The local state path in the generated entry is specific to this machine and should not be committed as a reusable team path.</p>
       </section>
 
       <Separator />

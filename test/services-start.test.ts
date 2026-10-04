@@ -261,7 +261,7 @@ test('controlPm2Service still refuses foreign and anonymous targets after a star
   assert.equal(runnerCalls, 0);
 });
 
-test('service start route shares the control-service intent gate and audits names only', async t => {
+test('service start route shares the canonical dashboard gate and audits names only', async t => {
   const f = await approvedProject(t);
   let running = false;
   const service = new WorkspaceService(f.store,
@@ -292,19 +292,17 @@ test('service start route shares the control-service intent gate and audits name
 
   const issued = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ consent: true }),
   });
   assert.equal(issued.status, 201);
   const { dashboardToken } = await issued.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
 
-  assert.equal((await fetch(`${origin}${path}`, { method: 'POST', headers: dashboardHeaders, body: startBody })).status, 403);
-  assert.equal((await fetch(`${origin}${path}`, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'wrong' }, body: startBody,
-  })).status, 403);
+  assert.equal((await fetch(`${origin}${path}`, { method: 'POST', headers: bareDashboardHeaders, body: startBody })).status, 403);
   const dashboardStart = await fetch(`${origin}${path}`, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'control-service' }, body: startBody,
+    method: 'POST', headers: dashboardHeaders, body: startBody,
   });
   assert.equal(dashboardStart.status, 200);
   assert.equal((await dashboardStart.json() as { status: string }).status, 'completed');

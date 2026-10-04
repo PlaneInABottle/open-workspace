@@ -16,7 +16,6 @@ function consentHeaders(origin: string) {
     ...jsonHeaders,
     Origin: origin,
     'Sec-Fetch-Site': 'same-origin',
-    'X-OpenWorkspace-Intent': 'connect-dashboard',
   };
 }
 

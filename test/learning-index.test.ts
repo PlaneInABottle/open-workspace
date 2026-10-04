@@ -320,7 +320,7 @@ test('legacy homes without an index inject nothing and never crash', async t => 
   }
 });
 
-test('HTTP record round-trip gates dashboard intent and keeps activity counts-only', async t => {
+test('HTTP record round-trip gates dashboard context and keeps activity counts-only', async t => {
   const f = await registeredFixture('openworkspace-learning-http-');
   const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
@@ -334,24 +334,25 @@ test('HTTP record round-trip gates dashboard intent and keeps activity counts-on
       failureSignature: { tests: ['http round trip'], errorClasses: [] },
     };
     const created = await fetch(`${origin}/api/learnings/record`, { method: 'POST', headers: mcpHeaders, body: JSON.stringify(body) });
-    assert.equal(created.status, 201, 'MCP stays intent-free');
+    assert.equal(created.status, 201, 'MCP needs no extra header');
     const entry = await created.json() as LearningRuleEntry;
     assert.equal(entry.status, 'active');
     assert.match(entry.id, /^[0-9a-f-]{36}$/);
-    // Dashboard callers need the canonical context plus the record-learning intent.
+    // Dashboard callers need the canonical context.
     const connected = await fetch(`${origin}/api/dashboard-session`, {
       method: 'POST',
-      headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+      headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
       body: JSON.stringify({ consent: true }),
     });
     assert.equal(connected.status, 201);
     const { dashboardToken } = await connected.json() as { dashboardToken: string };
     const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-    const missingIntent = await fetch(`${origin}/api/learnings/record`, { method: 'POST', headers: dashboardHeaders, body: JSON.stringify(body) });
-    assert.equal(missingIntent.status, 403);
+    const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
+    const missingContext = await fetch(`${origin}/api/learnings/record`, { method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify(body) });
+    assert.equal(missingContext.status, 403);
     const dashboardCreated = await fetch(`${origin}/api/learnings/record`, {
       method: 'POST',
-      headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'record-learning' },
+      headers: dashboardHeaders,
       body: JSON.stringify({ ...body, title: 'Dashboard gated rule' }),
     });
     assert.equal(dashboardCreated.status, 201);

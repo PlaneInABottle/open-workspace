@@ -30,7 +30,7 @@ const sectionHeadings = [
   'Step 1 — Identify client:',
   'Generated local MCP entry (secret-free, this machine only):',
   'Step 2 — Skills (no copy by default):',
-  'Step 3 — AGENTS.md note (confirmed write):',
+  'Step 3 — AGENTS.md note (diff first):',
   'Step 4 — Reload + Step 5 — Verify (free reads only):',
   'Step 6 — Handoff (≤120 words):',
 ];
@@ -73,29 +73,35 @@ describe('formatSetupRequest', () => {
     expect(generic?.copyText).toContain('workspace_list first');
     expect(generic?.copyText).toContain('workspace_register with {name, roots}');
     expect(generic?.copyText).toContain('Registration reads bounded metadata immediately');
-    expect(generic?.copyText).toContain('the dashboard only records what ran');
+    expect(generic?.copyText).toContain('The dashboard records what ran');
     expect(generic?.copyText).toContain('Never infer a shared parent');
     expect(generic?.copyText).not.toContain(selectedId);
     expect(formatSetupRequest(config, 'stale-id')?.copyText).not.toContain('stale-id');
     expect(formatSetupRequest(null, selectedId)).toBeNull();
   });
 
-  it('stays project-local with confirm-before-write guardrails', () => {
+  it('stays project-local with record-only guardrails', () => {
     const material = formatSetupRequest(config, selectedId);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('Never write user-wide/global scope unless I explicitly ask');
-    expect(material!.copyText).toContain('Ask before any file write and show the exact diff');
-    expect(material!.copyText).toContain('Reply yes to apply; nothing is written until you confirm');
+    expect(material!.copyText).toContain('Show the exact diff for any file write');
+    expect(material!.copyText).toContain('the dashboard records what ran');
     expect(material!.copyText).toContain('tokens never in chat/repo/config');
+    expect(material!.copyText).not.toContain('Ask before any file write');
+    expect(material!.copyText).not.toContain('Reply yes to apply');
+    expect(material!.copyText).not.toContain('nothing is written until you confirm');
+    expect(material!.copyText).not.toContain('approve each write');
+    expect(material!.copyText).not.toContain('need my approval');
   });
 
   it('requires free-read verification and rejects config listings as proof', () => {
     const material = formatSetupRequest(config, selectedId);
     expect(material).not.toBeNull();
-    expect(material!.copyText).toContain('wait until I confirm reload, then call `workspace_list`');
+    expect(material!.copyText).toContain('then call `workspace_list` after reload');
     expect(material!.copyText).toContain('A config listing alone');
     expect(material!.copyText).toContain('is not verification');
     expect(material!.copyText).toContain('Never run project commands, install tools, read secrets, or claim done before these calls succeed');
+    expect(material!.copyText).not.toContain('wait until I confirm reload');
   });
 
   it('carries the idempotent marker-block AGENTS.md merge policy preserving personal edits', () => {

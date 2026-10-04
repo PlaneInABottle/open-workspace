@@ -301,7 +301,6 @@ export class ApiClient {
       cache: 'no-store',
       headers: {
         'Content-Type': 'application/json',
-        'X-OpenWorkspace-Intent': 'connect-dashboard',
       },
       body: JSON.stringify({ consent: true }),
       signal: AbortSignal.timeout(12_000),
@@ -360,16 +359,15 @@ export class ApiClient {
   inspect(workspaceId: string) { return this.request<Inspection>(`/api/workspaces/${safeId(workspaceId)}`); }
   register(name: string, roots: string[]) { return this.request<Workspace>('/api/workspaces', { name, roots }); }
   updateRoots(workspaceId: string, roots: string[]) {
-    return this.request<Workspace>(`/api/workspaces/${safeId(workspaceId)}/roots`, { roots }, { intent: 'update-workspace-roots' });
+    return this.request<Workspace>(`/api/workspaces/${safeId(workspaceId)}/roots`, { roots });
   }
   remove(workspaceId: string) {
-    return this.request<{ removed: true }>(`/api/workspaces/${safeId(workspaceId)}`, undefined, { method: 'DELETE', intent: 'remove-workspace' });
+    return this.request<{ removed: true }>(`/api/workspaces/${safeId(workspaceId)}`, undefined, { method: 'DELETE' });
   }
   async projectRootPicker(signal: AbortSignal): Promise<ProjectRootPickerResult> {
     const result = await this.request<ProjectRootPickerResult>('/api/project-root-picker', {}, {
       timeoutMs: 305_000,
       signal,
-      intent: 'select-project-roots',
     });
     if (typeof result !== 'object' || result === null || !['selected', 'cancelled', 'unavailable', 'timeout', 'error', 'aborted'].includes(result.status)) {
       throw new ApiError('The local folder picker returned an invalid response.');
@@ -379,30 +377,30 @@ export class ApiClient {
     }
     return result;
   }
-  services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}, { intent: 'inspect-services' }); }
+  services(workspaceId: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeId(workspaceId)}/services`, {}); }
   serviceAction(workspaceId: string, action: 'restart' | 'stop', target: { pmId: number | null; name: string; namespace?: string | null }) {
-    return this.request<ServiceActionResult>(`/api/workspaces/${safeId(workspaceId)}/services/${action}`, target, { intent: 'control-service' });
+    return this.request<ServiceActionResult>(`/api/workspaces/${safeId(workspaceId)}/services/${action}`, target);
   }
   serviceStart(workspaceId: string, start: { repositoryPath: string; scriptName: string; name?: string }) {
-    return this.request<ServiceStartResult>(`/api/workspaces/${safeId(workspaceId)}/services/start`, start, { intent: 'control-service' });
+    return this.request<ServiceStartResult>(`/api/workspaces/${safeId(workspaceId)}/services/start`, start);
   }
   verify(workspaceId: string, verification: VerificationRequest) {
-    return this.request<VerificationResult>(`/api/workspaces/${safeId(workspaceId)}/verify`, verification, { intent: 'run-verification', timeoutMs: 170_000 });
+    return this.request<VerificationResult>(`/api/workspaces/${safeId(workspaceId)}/verify`, verification, { timeoutMs: 170_000 });
   }
   workstreams() { return this.request<Workstream[]>('/api/workstreams'); }
   workstream(id: string) { return this.request<Workstream>(`/api/workstreams/${safeId(id)}`); }
   createWorkstream(input: { name: string; workspaceId: string; checkouts: string[] }) {
-    return this.request<Workstream>('/api/workstreams', input, { intent: 'create-workstream' });
+    return this.request<Workstream>('/api/workstreams', input);
   }
   setWorkstreamStatus(id: string, status: Workstream['status']) {
-    return this.request<Workstream>(`/api/workstreams/${safeId(id)}/status`, { status }, { intent: 'update-workstream' });
+    return this.request<Workstream>(`/api/workstreams/${safeId(id)}/status`, { status });
   }
   leases() { return this.request<Lease[]>('/api/leases'); }
   acquireLease(resource: string, workstreamId: string) {
-    return this.request<{ lease: Lease; position: number }>('/api/leases/acquire', { resource, workstreamId }, { intent: 'acquire-lease' });
+    return this.request<{ lease: Lease; position: number }>('/api/leases/acquire', { resource, workstreamId });
   }
   releaseLease(resource: string, workstreamId: string) {
-    return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId }, { intent: 'release-lease' });
+    return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workstreamId });
   }
   activity() { return this.request<ActivityEntry[]>('/api/activity'); }
   learnings() { return this.request<Learnings>('/api/learnings'); }
@@ -420,7 +418,6 @@ export class ApiClient {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
-          'X-OpenWorkspace-Intent': 'disconnect-dashboard',
         },
         body: JSON.stringify({}),
         signal: AbortSignal.timeout(5_000),
@@ -433,7 +430,6 @@ export class ApiClient {
   private async request<T>(path: string, data?: unknown, options: {
     timeoutMs?: number;
     signal?: AbortSignal;
-    intent?: string;
     method?: string;
   } = {}): Promise<T> {
     const generation = this.generation;
@@ -445,7 +441,6 @@ export class ApiClient {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(data === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(options.intent ? { 'X-OpenWorkspace-Intent': options.intent } : {}),
       },
       ...(data === undefined ? {} : { body: JSON.stringify(data) }),
       signal: options.signal

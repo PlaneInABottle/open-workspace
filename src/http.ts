@@ -287,10 +287,6 @@ function sameCanonicalDashboardRequest(request: IncomingMessage, origin: string)
     && request.headers['sec-fetch-site'] === 'same-origin';
 }
 
-function hasIntent(request: IncomingMessage, intent: string) {
-  return request.headers['x-openworkspace-intent'] === intent;
-}
-
 async function body(request: IncomingMessage, limit = 8192): Promise<unknown> {
   if (request.headers['content-type'] !== 'application/json') throw new Error(httpTransportMessages.json);
   const chunks: Buffer[] = [];
@@ -384,7 +380,6 @@ export function createApp(service: WorkspaceService, options: {
 
       if (url.pathname === '/api/dashboard-session' && request.method === 'POST') {
         if (!sameCanonicalDashboardRequest(request, origin)
-          || !hasIntent(request, 'connect-dashboard')
           || hasAuthorizationHeader(request)) {
           json(response, 403, { error: 'Use the local browser consent action to connect this dashboard.' });
           return;
@@ -400,8 +395,7 @@ export function createApp(service: WorkspaceService, options: {
       }
 
       if (url.pathname === '/api/dashboard-session' && request.method === 'DELETE') {
-        if (!sameCanonicalDashboardRequest(request, origin)
-          || !hasIntent(request, 'disconnect-dashboard')) {
+        if (!sameCanonicalDashboardRequest(request, origin)) {
           json(response, 403, { error: 'Use the local browser to disconnect this dashboard.' });
           return;
         }
@@ -456,8 +450,7 @@ export function createApp(service: WorkspaceService, options: {
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
           json(response, 200, clientConfig(service.store.directory));
         } else if (url.pathname === '/api/project-root-picker' && request.method === 'POST') {
-          if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin)
-            || !hasIntent(request, 'select-project-roots')) {
+          if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin)) {
             json(response, 403, { error: 'Use the connected local dashboard to select project folders.' });
             return;
           }
@@ -484,7 +477,7 @@ export function createApp(service: WorkspaceService, options: {
         } else {
           const containerLinkMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/containers\/link$/.exec(url.pathname);
           if (containerLinkMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-container-link'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Container link changes require the connected dashboard.' });
               return;
             }
@@ -505,7 +498,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const serviceStartMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/start$/.exec(url.pathname);
           if (serviceStartMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Service actions require the connected dashboard.' });
               return;
             }
@@ -517,7 +510,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const serviceActionMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/services\/(restart|stop)$/.exec(url.pathname);
           if (serviceActionMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'control-service'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Service actions require the connected dashboard.' });
               return;
             }
@@ -529,7 +522,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const verificationMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/verify$/.exec(url.pathname);
           if (verificationMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'run-verification'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
               return;
             }
@@ -554,7 +547,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const browserMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/browser\/check$/.exec(url.pathname);
           if (browserMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'check-browser'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Browser checks require the connected dashboard.' });
               return;
             }
@@ -570,7 +563,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const datastoreMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/datastore\/query$/.exec(url.pathname);
           if (datastoreMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'query-datastore'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Datastore queries require the connected dashboard.' });
               return;
             }
@@ -584,7 +577,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const localToolCallMatch = /^\/api\/workspaces\/([a-f0-9-]{36})\/local-tools\/call$/.exec(url.pathname);
           if (localToolCallMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'call-local-tool'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Local tool calls require the connected dashboard.' });
               return;
             }
@@ -628,7 +621,7 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (workstreamMatch && !workstreamMatch[1] && request.method === 'POST' && url.pathname === '/api/workstreams') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'create-workstream'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Workstream creation requires the connected dashboard.' });
               return;
             }
@@ -640,7 +633,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const workstreamStatusMatch = new RegExp(`^/api/workstreams/(${uuidPath})/status$`).exec(url.pathname);
           if (workstreamStatusMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'update-workstream'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Workstream updates require the connected dashboard.' });
               return;
             }
@@ -658,7 +651,7 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/runs/import' && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'import-run'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Recording a pasted result requires the connected dashboard.' });
               return;
             }
@@ -670,7 +663,7 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/learnings/record' && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'record-learning'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Recording a learning rule requires the connected dashboard.' });
               return;
             }
@@ -685,12 +678,10 @@ export function createApp(service: WorkspaceService, options: {
             json(response, 200, await recordRead('workspace-leases', null, 'workspace_leases', () => service.listLeases(actor)));
             return;
           }
-          // Dashboard renewal UI wiring is a follow-up; this route preserves an explicit intent gate.
+          // Dashboard renewal UI wiring is a follow-up; this route requires the connected dashboard.
           const leaseMatch = /^\/api\/leases\/(acquire|touch|release)$/.exec(url.pathname);
           if (leaseMatch && request.method === 'POST') {
-            const intent = leaseMatch[1] === 'acquire' ? 'acquire-lease'
-              : leaseMatch[1] === 'touch' ? 'touch-lease' : 'release-lease';
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, intent))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Lease changes require the connected dashboard.' });
               return;
             }
@@ -742,7 +733,7 @@ export function createApp(service: WorkspaceService, options: {
           // defaults to POST for bodies and no PUT handling exists.
           const rootsMatch = new RegExp(`^/api/workspaces/(${uuidPath})/roots$`).exec(url.pathname);
           if (rootsMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'update-workspace-roots'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Updating project roots requires the connected dashboard.' });
               return;
             }
@@ -754,11 +745,10 @@ export function createApp(service: WorkspaceService, options: {
             json(response, 200, workspace);
             return;
           }
-          // M1 environment topology: propose/status/list are reads (no intent
+          // M1 environment topology: propose/status/list are reads (no gate
           // beyond auth, like other reads); set keeps the standard dashboard
-          // intent gate (manage-environment) because dashboard calls bypass
-          // chat confirmation. MCP carries no intent header — the in-chat
-          // confirmation plus the client permission model is the authority.
+          // canonical-context check. Dashboard and MCP share the same
+          // operation; auth plus canonical origin are the only gates.
           const envProposeMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/propose$`).exec(url.pathname);
           if (envProposeMatch && request.method === 'POST') {
             z.object({}).strict().parse(await body(request));
@@ -767,7 +757,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envSetMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/set$`).exec(url.pathname);
           if (envSetMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-environment'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Environment changes require the connected dashboard.' });
               return;
             }
@@ -794,13 +784,11 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           // M2 runtime: ordered up (readiness-polled), owned-only down, and
-          // receipt-bound verify. Dashboard calls keep the standard intent
-          // gates (manage-environment / verify-environment); MCP carries no
-          // intent header — the in-chat confirmation plus the client
-          // permission model is the authority.
+          // receipt-bound verify. Dashboard and MCP share the same operation;
+          // auth plus canonical origin are the only gates.
           const envUpMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/up$`).exec(url.pathname);
           if (envUpMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-environment'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Environment changes require the connected dashboard.' });
               return;
             }
@@ -815,7 +803,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envDownMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environments/down$`).exec(url.pathname);
           if (envDownMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'manage-environment'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Environment changes require the connected dashboard.' });
               return;
             }
@@ -830,7 +818,7 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envVerifyMatch = new RegExp(`^/api/workspaces/(${uuidPath})/environment/verify$`).exec(url.pathname);
           if (envVerifyMatch && request.method === 'POST') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'verify-environment'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
               return;
             }
@@ -865,7 +853,7 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (workspaceMatch && request.method === 'DELETE') {
-            if (role === 'dashboard' && (!sameCanonicalDashboardRequest(request, origin) || !hasIntent(request, 'remove-workspace'))) {
+            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
               json(response, 403, { error: 'Removing a project requires the connected dashboard.' });
               return;
             }

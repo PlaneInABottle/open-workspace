@@ -516,7 +516,7 @@ test('down with PM2 unavailable fails closed: no stops, state and owned untouche
   assert.equal(down.state, 'up', 'stored state stands when nothing could be verified');
 });
 
-test('up route completes boundedly with dashboard intent when PM2 is unavailable', async t => {
+test('up route completes boundedly with dashboard canonical context when PM2 is unavailable', async t => {
   const r = await rig(t);
   const blindService = new WorkspaceService(r.store, async () => ({ available: false, error: 'missing' as const }));
   const app = createApp(blindService, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
@@ -524,7 +524,7 @@ test('up route completes boundedly with dashboard intent when PM2 is unavailable
   t.after(() => app.close());
   const connected = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ consent: true }),
   });
   assert.equal(connected.status, 201);
@@ -534,7 +534,7 @@ test('up route completes boundedly with dashboard intent when PM2 is unavailable
   const started = Date.now();
   const response = await fetch(`${origin}/api/workspaces/${r.workspaceId}/environments/up`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Authorization: `Bearer ${dashboardToken}`, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'manage-environment' },
+    headers: { ...jsonHeaders, Authorization: `Bearer ${dashboardToken}`, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ environmentId: r.recordId }),
   });
   const elapsed = Date.now() - started;
@@ -583,7 +583,7 @@ test('down clears an already-stopped process without a stop call', async t => {
   assert.equal(down.state, 'down');
 });
 
-test('dashboard up/down/verify require intent; MCP stays intent-free for reads', async t => {
+test('dashboard up/down/verify require canonical context; reads need none', async t => {
   const r = await rig(t);
   const mcpToken = 'e'.repeat(64);
   const app = createApp(r.service, { mcpToken, assets: fixtureStaticAssets() });
@@ -592,31 +592,28 @@ test('dashboard up/down/verify require intent; MCP stays intent-free for reads',
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const connected = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ consent: true }),
   });
   assert.equal(connected.status, 201);
   const { dashboardToken } = await connected.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   const upPath = `${origin}/api/workspaces/${r.workspaceId}/environments/up`;
   const downPath = `${origin}/api/workspaces/${r.workspaceId}/environments/down`;
   const verifyPath = `${origin}/api/workspaces/${r.workspaceId}/environment/verify`;
   const upBody = JSON.stringify({ environmentId: r.recordId });
   const verifyBody = JSON.stringify({ environmentId: r.recordId, repositoryPath: r.backend, scriptName: 'dev' });
 
-  assert.equal((await fetch(upPath, { method: 'POST', headers: dashboardHeaders, body: upBody })).status, 403);
-  assert.equal((await fetch(downPath, { method: 'POST', headers: dashboardHeaders, body: upBody })).status, 403);
-  assert.equal((await fetch(verifyPath, { method: 'POST', headers: dashboardHeaders, body: verifyBody })).status, 403);
-  const wrongIntent = await fetch(upPath, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'control-service' }, body: upBody,
+  assert.equal((await fetch(upPath, { method: 'POST', headers: bareDashboardHeaders, body: upBody })).status, 403);
+  assert.equal((await fetch(downPath, { method: 'POST', headers: bareDashboardHeaders, body: upBody })).status, 403);
+  assert.equal((await fetch(verifyPath, { method: 'POST', headers: bareDashboardHeaders, body: verifyBody })).status, 403);
+  const wrongOrigin = await fetch(upPath, {
+    method: 'POST', headers: { ...dashboardHeaders, Origin: 'http://localhost:4318' }, body: upBody,
   });
-  assert.equal(wrongIntent.status, 403);
-  const wrongVerify = await fetch(verifyPath, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'manage-environment' }, body: verifyBody,
-  });
-  assert.equal(wrongVerify.status, 403, 'verify keeps its own verify-environment gate');
+  assert.equal(wrongOrigin.status, 403);
 
-  // MCP reads stay intent-free; mutating calls are not exercised here because
+  // MCP reads carry no extra header; mutating calls are not exercised here because
   // they would spawn real processes (covered at the service level above).
   const mcpStatus = await fetch(
     `${origin}/api/workspaces/${r.workspaceId}/environments/status?environmentId=${r.recordId}`,

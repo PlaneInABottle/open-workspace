@@ -264,6 +264,10 @@ test('HTTP heartbeat is MCP-callable, dashboard-gated, strict and returns safe h
     Origin: origin,
     'Sec-Fetch-Site': 'same-origin',
   };
+  const bareDashboardHeaders = {
+    Authorization: `Bearer ${session.dashboardToken}`,
+    'Content-Type': 'application/json',
+  };
 
   const invalid = await fetch(`${origin}/api/leases/acquire`, {
     method: 'POST', headers: mcpHeaders,
@@ -280,9 +284,9 @@ test('HTTP heartbeat is MCP-callable, dashboard-gated, strict and returns safe h
 
   const touchPath = `${origin}/api/leases/touch`;
   const touchBody = JSON.stringify({ resource: 'port:3000', workstreamId: f.one.id });
-  assert.equal((await fetch(touchPath, { method: 'POST', headers: dashboardHeaders, body: touchBody })).status, 403);
+  assert.equal((await fetch(touchPath, { method: 'POST', headers: bareDashboardHeaders, body: touchBody })).status, 403);
   const touched = await fetch(touchPath, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'touch-lease' }, body: touchBody,
+    method: 'POST', headers: dashboardHeaders, body: touchBody,
   });
   assert.equal(touched.status, 200);
   assert.equal((await touched.json() as { expiresAt: string }).expiresAt, new Date(startedAt + leaseTtlMs).toISOString());

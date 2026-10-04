@@ -807,7 +807,7 @@ test('quarantinePending: rename failure keeps the tool stopped and retries on re
   assert.equal(reason['failures'], 3);
 });
 
-test('dashboard intent path: call-local-tool requires the connected dashboard intent', async t => {
+test('dashboard canonical path: local tool calls require the connected dashboard', async t => {
   const f = await toolService(t);
   const binDir = await stubPsqllDir(t);
   withPath(t, `${binDir}${delimiter}${process.env.PATH ?? ''}`);
@@ -830,25 +830,34 @@ test('dashboard intent path: call-local-tool requires the connected dashboard in
     'Content-Type': 'application/json',
   };
   const happy = JSON.stringify({ tool: 'db_tables', inputs: { database: 'ow_test', role: 'ow_read' } });
-  const denied = await fetch(url, { method: 'POST', headers: base, body: happy });
+  const bareBase = {
+    Authorization: `Bearer ${issued.dashboardToken}`,
+    'Content-Type': 'application/json',
+  };
+  const denied = await fetch(url, { method: 'POST', headers: bareBase, body: happy });
   assert.equal(denied.status, 403);
   assert.deepEqual(await denied.json(), { error: 'Local tool calls require the connected dashboard.' });
-  const wrongIntent = await fetch(url, {
-    method: 'POST',
-    headers: { ...base, 'X-OpenWorkspace-Intent': 'query-datastore' },
-    body: happy,
-  });
-  assert.equal(wrongIntent.status, 403);
   const routed = await fetch(url, {
     method: 'POST',
-    headers: { ...base, 'X-OpenWorkspace-Intent': 'call-local-tool' },
+    headers: {
+      Authorization: `Bearer ${issued.dashboardToken}`,
+      Origin: 'http://localhost:4318',
+      'Sec-Fetch-Site': 'same-origin',
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ tool: 'missing_tool', inputs: {} }),
   });
-  assert.equal(routed.status, 400);
-  assert.deepEqual(await routed.json(), { error: 'Local tool is not available.' });
+  assert.equal(routed.status, 403);
+  const missingTool = await fetch(url, {
+    method: 'POST',
+    headers: base,
+    body: JSON.stringify({ tool: 'missing_tool', inputs: {} }),
+  });
+  assert.equal(missingTool.status, 400);
+  assert.deepEqual(await missingTool.json(), { error: 'Local tool is not available.' });
   const ok = await fetch(url, {
     method: 'POST',
-    headers: { ...base, 'X-OpenWorkspace-Intent': 'call-local-tool' },
+    headers: base,
     body: happy,
   });
   assert.equal(ok.status, 200);
@@ -932,15 +941,18 @@ test('M2: hostile-but-gate-clean description stays in the description field only
   }
 });
 
-test('scaffold skill requires asking first and uses the proposal name', async () => {
+test('scaffold skill writes the proposal directly and never activates silently', async () => {
   const skill = await readFile(new URL('../skills/scaffold-local-tool/SKILL.md', import.meta.url), 'utf8');
   assert.match(skill, /name: scaffold-local-tool/);
   for (const required of [
-    'the user first', 'concrete benefit', 'one tool slot of 20',
-    'explicit user', 'No silent tool creation',
+    'state the benefit and cost in the proposal record', 'pending only, never active',
+    'the gate decides activation', 'Without the 3+ repetition evidence',
+    'No silent activation',
     'provenance.proposal', '`proposal`',
   ]) {
     assert.ok(skill.includes(required), `scaffold skill must cover ${required}`);
   }
   assert.ok(!skill.includes('sourceDraft'), 'scaffold skill must not use the renamed sourceDraft field');
+  assert.ok(!skill.includes('STOP and ask'), 'scaffold skill must not gate on asking first');
+  assert.ok(!skill.includes('Only on explicit user'), 'scaffold skill must not gate on explicit approval');
 });

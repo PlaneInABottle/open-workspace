@@ -15,7 +15,7 @@ export async function runMcpBridge(): Promise<void> {
   // Base instructions stay well under the 760-byte cap so the optional
   // learning-loop line below still fits; per-tool detail lives in each tool
   // description and in the lazily fetched onboarding_plan text.
-  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. Mutations need user approval per client settings; the dashboard only records what ran. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
+  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. The dashboard records what ran. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
   let instructions = baseInstructions;
   try {
     const suffix = await learningInstructionSuffix(stateDirectory());
@@ -41,7 +41,7 @@ export async function runMcpBridge(): Promise<void> {
     try { return result(await serviceRequest(path, data, timeoutMs, method)); }
     catch (error) {
       // Server denials carry actionable guidance (e.g. where to grant access); pass them through.
-      return { isError: true, ...result({ error: error instanceof Error && error.message ? error.message : 'Operation unavailable. Check the local service connection, service readiness and directory approval.' }) };
+      return { isError: true, ...result({ error: error instanceof Error && error.message ? error.message : 'Operation unavailable. Check the local service connection, service readiness and directory access.' }) };
     }
   }
   const readHints = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
@@ -87,7 +87,7 @@ export async function runMcpBridge(): Promise<void> {
     ...(includeUnmanaged !== undefined ? { includeUnmanaged } : {}),
   }));
   server.registerTool('workspace_container_link', {
-    description: 'Link/unlink a Docker container by full ID or unique 12+ hex-character prefix. No name guessing. Link requires a present container; unlink can remove stale links. Your request is approval.',
+    description: 'Link/unlink a Docker container by full ID or unique 12+ hex-character prefix. No name guessing. Link requires a present container; unlink can remove stale links.',
     inputSchema: z.object({
       workspaceId: z.string().uuid(),
       action: z.enum(['link', 'unlink']).describe('Explicitly link to or unlink from this workspace.'),
@@ -166,7 +166,7 @@ export async function runMcpBridge(): Promise<void> {
     (input.action === 'start' && input.start !== undefined && input.target === undefined)
     || (input.action !== 'start' && input.target !== undefined && input.start === undefined));
   server.registerTool('service_control', {
-    description: 'Control an exactly mapped PM2 service: restart/stop it, or start one existing package.json script as a PM2 process. Needs user approval; dashboard only records it.',
+    description: 'Control an exactly mapped PM2 service: restart/stop it, or start one existing package.json script as a PM2 process. Dashboard records it.',
     inputSchema: serviceControlObjectSchema,
     annotations: operateHints,
   }, args => {
@@ -204,7 +204,7 @@ export async function runMcpBridge(): Promise<void> {
     url, ...(assertText !== undefined ? { assertText } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }, 95_000));
   server.registerTool('verification_run', {
-    description: 'Run one existing package.json test script of a registered repository with bounded runtime and record revision/worktree/service/time context. Authorize this with the user per their client approval settings.',
+    description: 'Run one existing package.json test script of a registered repository with bounded runtime and record revision/worktree/service/time context.',
     inputSchema: z.object({
       workspaceId: z.string().uuid(),
       repositoryPath: z.string().min(1).max(4096),
@@ -214,10 +214,9 @@ export async function runMcpBridge(): Promise<void> {
     annotations: operateHints,
   }, ({ workspaceId, repositoryPath, scriptName, service }) => request(`/api/workspaces/${workspaceId}/verify`, { repositoryPath, scriptName, ...(service ? { service } : {}) }, 170_000));
   // M1 environment topology: discovery-proposed candidates (read-only),
-  // chat-approved set (full replacement per env name), and read-only status.
-  // No intent header — the in-chat user confirmation plus the client
-  // permission model is the authority, and the mutating call itself
-  // (visible in activity_list) is the audit record. Compose files are
+  // stored set (full replacement per env name), and read-only status.
+  // The client permission model is the authority, and the mutating call
+  // itself (visible in activity_list) is the audit record. Compose files are
   // presence-only, never controlled; readiness/E2E stay loopback-only.
   // Tool schemas reuse the canonical environment inputs (single definition
   // site in environment.ts): the set tool spreads environmentSetInput's
@@ -229,7 +228,7 @@ export async function runMcpBridge(): Promise<void> {
     annotations: readHints,
   }, ({ workspaceId }) => request(`/api/workspaces/${workspaceId}/environments/propose`, {}));
   server.registerTool('environment_set', {
-    description: 'Persist the chat-approved environment topology (full replacement per env name). Present propose candidates in chat and confirm before calling; this call is the record.',
+    description: 'Persist the environment topology (full replacement per env name). Propose output is a starting draft; this call applies it and is the record.',
     inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentSetInput.shape }).strict(),
     annotations: operateHints,
   }, ({ workspaceId, name, services }) => request(`/api/workspaces/${workspaceId}/environments/set`, { name, services }));
@@ -242,11 +241,10 @@ export async function runMcpBridge(): Promise<void> {
     annotations: readHints,
   }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/status?environmentId=${environmentId}`));
   // M2 runtime (owned-only + loopback-only; Compose is presence-only, never
-  // controlled). No intent header — the in-chat confirmation plus the client
-  // permission model is the authority, and each mutating call itself
-  // (visible in activity_list) is the audit record.
+  // controlled). The client permission model is the authority, and each
+  // mutating call itself (visible in activity_list) is the audit record.
   server.registerTool('environment_up', {
-    description: 'Start an owned multi-service environment in dependency order with port preflight (refuse, never kill) and http-200/process-alive readiness. Present propose candidates in chat and confirm before calling; this call is the record.',
+    description: 'Start an owned multi-service environment in dependency order with port preflight (refuse, never kill) and http-200/process-alive readiness. This call applies the stored topology and is the record.',
     inputSchema: z.object({ workspaceId: z.string().uuid(), ...environmentUpInput.shape }).strict(),
     annotations: operateHints,
   }, ({ workspaceId, environmentId }) => request(`/api/workspaces/${workspaceId}/environments/up`, { environmentId }, 170_000));
@@ -423,7 +421,7 @@ export async function runMcpBridge(): Promise<void> {
   server.registerPrompt('workspace_onboarding', {
     description: 'Guide an external assistant through safe local workspace onboarding.',
   }, () => ({ messages: [{ role: 'user', content: { type: 'text', text:
-    'Help me prepare my project. Use workspace_list first. If my project is missing, ask me to choose exact folders and a project name, then call workspace_register with {name, roots}. Do not infer a common parent or register roots I did not choose. Then use workspace_inspect and onboarding_plan, reviewing every root group and identifying unavailable roots separately. Jira is optional: only discuss Atlassian MCP if I use Jira. Use datastore_query for one read-only query, service_logs for a bounded log tail, and browser_check for one loopback text snapshot. Do not request secrets in chat, change global configuration or install tools. Mutations (service_control, verification_run, workstream_create, lease_acquire) need my approval per my settings; the dashboard only records what ran. Do not claim setup is done before a tool call succeeds.'
+    'Help me prepare my project. Use workspace_list first. If my project is missing, ask me to choose exact folders and a project name, then call workspace_register with {name, roots}. Do not infer a common parent or register roots I did not choose. Then use workspace_inspect and onboarding_plan, reviewing every root group and identifying unavailable roots separately. Jira is optional: only discuss Atlassian MCP if I use Jira. Use datastore_query for one read-only query, service_logs for a bounded log tail, and browser_check for one loopback text snapshot. Do not request secrets in chat, change global configuration or install tools. The dashboard records what ran. Do not claim setup is done before a tool call succeeds.'
   } }] }));
   for (const skill of consumerSkills) {
     server.registerPrompt(`skill/${skill.name}`, {

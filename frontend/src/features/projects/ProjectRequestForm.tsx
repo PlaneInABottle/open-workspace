@@ -53,7 +53,7 @@ export function ProjectRequestForm({ onSubmit, onPickRoots, onCancel }: ProjectR
         setRoots(selectedRoots);
         const rootError = validateProjectRoots(selectedRoots);
         setErrors(current => ({ ...current, roots: rootError }));
-        setPickerMessage(rootError ? 'Review the selected folder list before requesting approval.' : `${result.roots.length} folder${result.roots.length === 1 ? '' : 's'} added to this project draft.`);
+        setPickerMessage(rootError ? 'Review the selected folder list before registering.' : `${result.roots.length} folder${result.roots.length === 1 ? '' : 's'} added to this project draft.`);
       } else if (result.status === 'cancelled' || result.status === 'aborted') {
         setPickerMessage(result.status === 'aborted'
           ? 'Folder selection was stopped. Your project name and selected folders are unchanged.'

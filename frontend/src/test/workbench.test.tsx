@@ -137,7 +137,7 @@ describe('project-first workbench', () => {
     expect(tokens.every(value => value === `Bearer ${token}`)).toBe(true);
     const exchange = fetchMock.mock.calls.find(([input]) => new URL(String(input), window.location.href).pathname === '/api/dashboard-session');
     expect(exchange).toBeDefined();
-    expect(new Headers(exchange?.[1]?.headers).get('X-OpenWorkspace-Intent')).toBe('connect-dashboard');
+    expect(new Headers(exchange?.[1]?.headers).get('X-OpenWorkspace-Intent')).toBeNull();
     expect(new Headers(exchange?.[1]?.headers).has('Authorization')).toBe(false);
     expect(JSON.parse(String(exchange?.[1]?.body))).toEqual({ consent: true });
     expect(exchange?.[1]?.credentials).toBe('same-origin');
@@ -201,7 +201,7 @@ describe('project-first workbench', () => {
       if (path === '/api/project-root-picker' && init.method === 'POST') {
         pickerCalls++;
         expect(new Headers(init.headers).get('Authorization')).toBe(`Bearer ${dashboardToken}`);
-        expect(new Headers(init.headers).get('X-OpenWorkspace-Intent')).toBe('select-project-roots');
+        expect(new Headers(init.headers).get('X-OpenWorkspace-Intent')).toBeNull();
         expect(JSON.parse(String(init.body))).toEqual({});
         return pickerCalls === 1
           ? json({ status: 'cancelled' })
@@ -391,7 +391,7 @@ describe('project-first workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy setup prompt' }));
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith(setupPrompt.textContent);
-    expect(await screen.findByText('Copied the setup prompt. Paste it to your assistant and approve each proposed write in chat.')).toBeInTheDocument();
+    expect(await screen.findByText('Copied the setup prompt. Paste it to your assistant; the dashboard records what ran.')).toBeInTheDocument();
   });
 
   it('asks for a confirming refresh when registration succeeds but the follow-up refresh fails', async () => {

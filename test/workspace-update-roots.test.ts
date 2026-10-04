@@ -90,7 +90,7 @@ test('updateRoots failures commit nothing: the state file stays byte-identical a
   assert.deepEqual((await f.store.read()).workspaces[0].roots, [await realpath(f.project)]);
 });
 
-test('HTTP roots route serves MCP directly and gates the dashboard by canonical context plus intent', async t => {
+test('HTTP roots route serves MCP directly and gates the dashboard by canonical context', async t => {
   const f = await fixture(); t.after(f.cleanup);
   let now = 1_800_000_000_000;
   let counter = 0;
@@ -135,21 +135,21 @@ test('HTTP roots route serves MCP directly and gates the dashboard by canonical 
   assert.deepEqual(entry, { at: entry?.at, actor: 'mcp', operation: 'roots-update', workspaceId: registered.id, detail: '1 → 2 roots' });
   assert.ok(!entry.detail.includes(f.project), 'activity must carry counts only, never raw paths');
 
-  // Dashboard without intent is refused; with the update-workspace-roots
-  // intent and exact canonical context it succeeds.
+  // Dashboard without canonical context is refused; with exact canonical context it succeeds.
   const issued = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ consent: true }),
   });
   const { dashboardToken } = await issued.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   assert.equal((await fetch(path, {
-    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ roots: [f.project] }),
+    method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify({ roots: [f.project] }),
   })).status, 403);
   const allowed = await fetch(path, {
     method: 'POST',
-    headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'update-workspace-roots' },
+    headers: dashboardHeaders,
     body: JSON.stringify({ roots: [f.project] }),
   });
   assert.equal(allowed.status, 200);

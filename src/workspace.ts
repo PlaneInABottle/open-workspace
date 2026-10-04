@@ -541,7 +541,7 @@ export class WorkspaceService {
         { name: 'Bounded service log tails (mapped PM2 and Docker containers)', status: 'available', owner: 'assistant' },
         { name: 'Repository test verification', status: 'available', owner: 'assistant' },
         { name: 'Loopback browser text snapshot (owned session, bounded)', status: 'available', owner: 'assistant' },
-        { name: 'Install missing tools with approval', status: 'not_implemented', owner: 'assistant', milestone: 'M1' },
+        { name: 'Install missing tools', status: 'not_implemented', owner: 'assistant', milestone: 'M1' },
         { name: 'Add private resource credentials', status: 'not_implemented', owner: 'human', milestone: 'M1' },
       ],
       optionalIntegrations: ['Jira / Atlassian MCP — only if the user works with Jira'],

@@ -151,7 +151,7 @@ function ProjectRail({
       </section>
       <div className="mt-6 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">
         <p className="font-medium text-foreground">Local workspace</p>
-        <p>Reads metadata; runs only what you confirm.</p>
+        <p>Reads metadata; records what ran.</p>
       </div>
     </aside>
   );

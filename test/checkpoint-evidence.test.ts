@@ -327,7 +327,7 @@ test('status notes and run imports travel the HTTP boundary with safe errors', a
   assert.ok(!JSON.stringify(activity).includes('all green upstream'), 'activity never carries pasted excerpts');
 });
 
-test('run imports require the dashboard intent while MCP stays intent-free', async t => {
+test('run imports require the connected dashboard while MCP needs no header', async t => {
   const f = await approvedFixture('openworkspace-import-intent-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   const app = createApp(f.service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
@@ -336,18 +336,19 @@ test('run imports require the dashboard intent while MCP stays intent-free', asy
   const jsonHeaders = { 'Content-Type': 'application/json' };
   const issued = await fetch(`${origin}/api/dashboard-session`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ consent: true }),
   });
   assert.equal(issued.status, 201);
   const { dashboardToken } = await issued.json() as { dashboardToken: string };
   const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
+  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   const payload = { workspaceId: f.workspace.id, scriptName: 'check', outcome: 'passed', durationMs: 3, excerpt: 'upstream ok' };
-  const denied = await fetch(`${origin}/api/runs/import`, { method: 'POST', headers: dashboardHeaders, body: JSON.stringify(payload) });
+  const denied = await fetch(`${origin}/api/runs/import`, { method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify(payload) });
   assert.equal(denied.status, 403);
   assert.deepEqual(await denied.json(), { error: 'Recording a pasted result requires the connected dashboard.' });
   const allowed = await fetch(`${origin}/api/runs/import`, {
-    method: 'POST', headers: { ...dashboardHeaders, 'X-OpenWorkspace-Intent': 'import-run' }, body: JSON.stringify(payload),
+    method: 'POST', headers: dashboardHeaders, body: JSON.stringify(payload),
   });
   assert.equal(allowed.status, 201);
   assert.equal((await allowed.json() as { source: string }).source, 'external-import');

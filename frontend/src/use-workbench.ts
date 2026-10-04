@@ -198,7 +198,7 @@ export function useWorkbench() {
 
   const disconnect = useCallback(() => {
     const revocation = api.disconnectDashboard();
-    resetPrivateState('disconnected', { kind: 'info', message: 'This browser tab is disconnected. Approved workspaces remain on this machine.' });
+    resetPrivateState('disconnected', { kind: 'info', message: 'This browser tab is disconnected. Registered workspaces remain on this machine.' });
     void revocation;
   }, [api, resetPrivateState]);
 

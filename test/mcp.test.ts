@@ -96,7 +96,6 @@ test('real stdio MCP registers and operates without dashboard approval and survi
         Authorization: `Bearer ${app.mcpToken}`,
         Origin: origin,
         'Sec-Fetch-Site': 'same-origin',
-        'X-OpenWorkspace-Intent': 'connect-dashboard',
         'Content-Type': 'application/json',
       },
       body: '{}',
@@ -109,7 +108,6 @@ test('real stdio MCP registers and operates without dashboard approval and survi
         Authorization: `Bearer ${app.mcpToken}`,
         Origin: origin,
         'Sec-Fetch-Site': 'same-origin',
-        'X-OpenWorkspace-Intent': 'select-project-roots',
         'Content-Type': 'application/json',
       },
       body: '{}',
@@ -117,7 +115,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
 
     const connected = await fetch(`${origin}/api/dashboard-session`, {
       method: 'POST',
-      headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-OpenWorkspace-Intent': 'connect-dashboard', 'Content-Type': 'application/json' },
+      headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'application/json' },
       body: JSON.stringify({ consent: true }),
     });
     assert.equal(connected.status, 201);
