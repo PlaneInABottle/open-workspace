@@ -80,6 +80,17 @@ describe('formatSetupRequest', () => {
     expect(formatSetupRequest(null, selectedName)).toBeNull();
   });
 
+  it('steers single-workspace-multi-root as the default shape', () => {
+    const generic = formatSetupRequest(config, null);
+    expect(generic?.copyText).toContain('one workspace name for the whole endeavor');
+    expect(generic?.copyText).toContain('all its repository folders (up to 20 roots)');
+    expect(generic?.copyText).toContain('workspace_register with {name, roots}');
+    expect(generic?.copyText).toContain('New repos join as roots; do not open a new workspace per repo');
+    const bound = formatSetupRequest(config, selectedName);
+    expect(bound?.copyText).toContain('covers the whole endeavor with all its repository roots (up to 20)');
+    expect(bound?.copyText).toContain('new repos join this workspace as roots, not as new workspaces');
+  });
+
   it('stays project-local with record-only guardrails', () => {
     const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
@@ -98,10 +109,12 @@ describe('formatSetupRequest', () => {
     const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();
     expect(material!.copyText).toContain('then call `workspace_list` after reload');
-    expect(material!.copyText).toContain('Success = those calls return without error');
+    expect(material!.copyText).toContain('workspace_list plus workspace_inspect and onboarding_plan free reads return without error');
+    expect(material!.copyText).toContain('workspace_inspect');
+    expect(material!.copyText).toContain('onboarding_plan');
     expect(material!.copyText).toContain('A config listing alone');
     expect(material!.copyText).toContain('is not verification');
-    expect(material!.copyText).toContain('Never run project commands, install tools, or read secrets.');
+    expect(material!.copyText).toContain('Setup runs no project command, installs nothing, and reads no secret file.');
     expect(material!.copyText).not.toContain('wait until I confirm reload');
   });
 
@@ -114,6 +127,16 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('Everything outside markers stays byte-identical');
     expect(material!.copyText).toContain('## OpenWorkspace');
     expect(material!.copyText).toContain('Project secrets stay out of chat, config, and repo files.');
+    expect(material!.copyText).toContain('Use OpenWorkspace MCP for workspace work');
+    expect(material!.copyText).toContain('prefer them over ad-hoc shell for these');
+    expect(material!.copyText).toContain('Open task context at task start');
+    expect(material!.copyText).toContain('close with verification receipts');
+    expect(material!.copyText).toContain('/ow-new-task');
+    expect(material!.copyText).toContain('Reads run immediately. The dashboard records what ran.');
+    expect(material!.copyText).not.toContain('(workspace_list, workspace_inspect, onboarding_plan)');
+    expect(material!.copyText).not.toContain('workstream_context');
+    expect(material!.copyText).not.toContain('verification_run');
+    expect(material!.copyText).not.toContain('environment_verify');
     expect(material!.copyText).toContain('`AGENTS.md` → `CLAUDE.md` → `MUSE.md` → `GEMINI.md`');
     expect(material!.copyText).toContain("under your client\u2019s normal write flow");
     expect(material!.copyText).not.toContain('Show the exact diff first, then apply it');

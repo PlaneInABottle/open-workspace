@@ -14,7 +14,7 @@ Call `workspace_list` to check the local MCP connection and existing workspaces.
 ## Discovery
 
 1. Match an existing workspace. If ambiguous, ask the user to choose.
-2. If absent, request the project name and explicitly selected repository roots, which may live in unrelated folders, then call `workspace_register({name, roots})`. There is no singular `path` argument. The user can use Create new project and native folder selection in the dashboard; MCP cannot drive that picker. Registration reads bounded metadata immediately; nothing waits on a dashboard gate.
+2. If absent, request one workspace name for the whole endeavor (e.g. ResAI) and all its explicitly selected repository roots, which may live in unrelated folders, then call `workspace_register({name, roots})`. There is no singular `path` argument. Prefer adding later repos as roots of this workspace (up to 20); open a new workspace only for a genuinely separate endeavor. The user can use Create new project and native folder selection in the dashboard; MCP cannot drive that picker. Registration reads bounded metadata immediately; nothing waits on a dashboard gate.
 3. Register the exact whole root list the user chose. Do not infer a common parent, move repos or widen scope.
 4. Call `workspace_inspect` and `onboarding_plan` for the registered workspace name. Read each root group and report an unavailable/redirected root separately instead of treating the whole project as healthy. Use returned names, not guessed paths or another workspace's name. For PM2 process reality, call `workspace_services`; it returns bounded service metadata, not readiness.
 

@@ -70,6 +70,8 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   assert.ok(!/coordinator/i.test(onboarding), 'onboarding carries no role markers');
   assert.ok(onboarding.includes('Script names are candidates'), 'onboarding treats script names as candidates');
   assert.ok(!onboarding.includes('Run the listed script names as listed'), 'onboarding drops run-as-listed wording');
+  assert.ok(onboarding.includes('one workspace name for the whole endeavor'), 'onboarding steers one workspace per endeavor');
+  assert.ok(onboarding.includes('only for a genuinely separate endeavor'), 'onboarding reserves new workspaces for separate endeavors');
   const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
   assert.ok(mcpSource.includes('learn-from-mistake'), 'MCP instructions reference learn-from-mistake');
   assert.ok(mcpSource.includes('never runs automatically'));
