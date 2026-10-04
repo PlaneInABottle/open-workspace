@@ -210,4 +210,24 @@ describe('records timeline', () => {
     expect(within(pasted).getByText(/Pasted result — not verified here/)).toBeInTheDocument();
     expect(within(pasted).queryByText('verify')).not.toBeInTheDocument();
   });
+
+  it('labels environment operations instead of burying them as other', () => {
+    const envActivity: ActivityEntry[] = [
+      { at: '2026-10-02T00:01:30.000Z', actor: 'mcp', operation: 'environment-set', workspaceId, detail: 'local → 2 services' },
+      { at: '2026-10-02T00:02:30.000Z', actor: 'mcp', operation: 'environment-up', workspaceId, detail: 'local → up (2/2 live)' },
+    ];
+    const rows = buildTimeline([], envActivity, [], workspaceId);
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row.kind === 'env')).toBe(true);
+    expect(filterTimeline(rows, { kind: 'env', outcome: 'all' })).toHaveLength(2);
+    expect(filterTimeline(rows, { kind: 'other', outcome: 'all' })).toHaveLength(0);
+
+    renderRecords({ activity: [...activity, ...envActivity] });
+    const timeline = screen.getByRole('heading', { name: 'What happened here' }).closest('section')!;
+    expect(within(timeline).getAllByText('environment')).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'env' } });
+    expect(within(timeline).queryByText(/check → failed/)).not.toBeInTheDocument();
+    expect(within(timeline).getByText(/local → 2 services/)).toBeInTheDocument();
+  });
 });

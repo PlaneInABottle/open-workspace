@@ -91,7 +91,62 @@ export const environmentSetInput = z.object({
   services: z.array(environmentServiceInput).min(1).max(maxServicesPerEnvironment),
 }).strict();
 
+// Propose-only hint fields (single definition site): environment_propose
+// output carries these per service. The tolerant inputs below accept them so
+// raw propose output survives the strict SDK/HTTP boundary; set-side
+// coercion (coerceProposeDraft) then applies or drops them before the
+// canonical strict validation refuses unknown scripts, ghost/cyclic
+// dependencies and kind/port mismatches. Bounds stay tight so oversized
+// hint payloads cannot smuggle arbitrary data through.
+const proposeOnlyServiceFields = {
+  dependsOnSuggest: z.array(z.string().max(80)).max(10).optional(),
+  scriptAlternatives: z.array(z.string().max(80)).max(10).optional(),
+  portSource: z.enum(['script', 'procfile', 'none']).optional(),
+  notes: z.array(z.string().max(500)).max(10).optional(),
+  // dependsOn WITHOUT its [] default: the MCP SDK parses before the handler
+  // runs, and an early default would read as explicit and mask a suggestion
+  // from coercion. The canonical strict input still defaults [] after
+  // coercion, so an explicit [] keeps winning over suggestions.
+  dependsOn: z.array(z.string().regex(serviceIdPattern)).max(10).optional(),
+};
+
+export const environmentSetTolerantServiceInput = environmentServiceInput.extend(proposeOnlyServiceFields);
+
+export const environmentSetTolerantInput = environmentSetInput.extend({
+  services: z.array(environmentSetTolerantServiceInput).min(1).max(maxServicesPerEnvironment),
+});
+
 export type EnvironmentServiceDraft = z.infer<typeof environmentServiceInput>;
+
+/**
+ * Propose→set pass-through: environment_propose output feeds environment_set
+ * without hand-mapping. `dependsOnSuggest` becomes `dependsOn` (an explicit
+ * `dependsOn` always wins); propose-only hints (`scriptAlternatives`,
+ * `portSource`, `notes`) are dropped. Everything else passes through
+ * untouched, so set-side refusals stay intact — including the empty
+ * `scriptName` of a no-script proposal, unknown/cyclic dependencies, and
+ * port-vs-kind mismatches.
+ */
+export function coerceProposeDraft(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const record = input as Record<string, unknown>;
+  if (!Array.isArray(record.services)) return input;
+  return {
+    ...record,
+    services: record.services.map(service => {
+      if (!service || typeof service !== 'object' || Array.isArray(service)) return service;
+      const entry = { ...(service as Record<string, unknown>) };
+      if (entry.dependsOn === undefined && entry.dependsOnSuggest !== undefined) {
+        entry.dependsOn = entry.dependsOnSuggest;
+      }
+      delete entry.dependsOnSuggest;
+      delete entry.scriptAlternatives;
+      delete entry.portSource;
+      delete entry.notes;
+      return entry;
+    }),
+  };
+}
 
 export type ServiceStatus = 'down' | 'starting' | 'ready' | 'failed' | 'skipped' | 'stale';
 
@@ -307,7 +362,7 @@ export async function setEnvironment(
   input: unknown,
   readScripts: typeof readStartScripts = readStartScripts,
 ): Promise<EnvironmentRecord> {
-  const parsed = environmentSetInput.parse(input);
+  const parsed = environmentSetInput.parse(coerceProposeDraft(input));
   // Validate before matching/storing: an unresolvable name (UUID-shaped,
   // bad charset, blank) must never persist and occupy an env slot.
   const name = parseNameInput(parsed.name, environmentMessages.badTopology);

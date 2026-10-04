@@ -88,6 +88,12 @@ const maxWorkstreams = 50;
 // Assignment records outlive more checkpoint notes but remain strictly bounded.
 export const maxWorkstreamCompletions = 20;
 
+// The stable default workstream name: the first workstream_context call for
+// a workspace with this name creates it from the registered roots, so a new
+// task never needs an explicit create first. Any other missing name stays a
+// refusal (typos must not mint workstreams).
+export const defaultWorkstreamName = 'main';
+
 // Canonical workstream-path messages. leases.ts and workspace.ts reference
 // the shared 'Unknown workstream.' const (never a literal); http.ts composes
 // its allowlist from these exports, so a rename propagates.

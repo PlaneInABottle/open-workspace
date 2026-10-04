@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BadgeCheck,
+  Boxes,
   CircleDot,
   ClipboardPaste,
   Database,
@@ -28,6 +29,7 @@ const kindIcons: Record<TimelineKind, typeof CircleDot> = {
   verify: BadgeCheck,
   import: ClipboardPaste,
   service: RotateCw,
+  env: Boxes,
   data: Database,
   log: ScrollText,
   browser: Globe,
@@ -39,6 +41,7 @@ const kindLabels: Record<TimelineKind, string> = {
   verify: 'verify',
   import: 'imported',
   service: 'service',
+  env: 'environment',
   data: 'data',
   log: 'log',
   browser: 'browser',
@@ -185,6 +188,7 @@ export function RecordsView({ workspace, activity, learnings, runs, loading, err
                 <option value="verify">Verify</option>
                 <option value="import">Imported</option>
                 <option value="service">Service</option>
+                <option value="env">Environment</option>
                 <option value="data">Data</option>
                 <option value="log">Logs</option>
                 <option value="browser">Browser</option>

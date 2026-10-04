@@ -300,3 +300,57 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('real stdio MCP applies raw environment_propose output to environment_set', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-mcp-env-')));
+  const store = new Store(join(root, 'state')); await store.initialize();
+  const project = join(root, 'project'); await mkdir(project);
+  await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
+  const service = new WorkspaceService(store);
+  const app = createApp(service, { mcpToken: 'b'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url)),
+      fileURLToPath(new URL('../src/mcp.ts', import.meta.url))],
+    env: { PATH: process.env.PATH || '', OPENWORKSPACE_HOME: store.directory },
+    stderr: 'pipe',
+  });
+  const client = new Client({ name: 'openworkspace-test', version: '1.0.0' });
+  try {
+    await client.connect(transport);
+    const registered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Env', roots: [project] } });
+    assert.ok(!registered.isError);
+    const proposed = await client.callTool({ name: 'environment_propose', arguments: { workspace: 'Env' } });
+    assert.ok(!proposed.isError);
+    const proposal = JSON.parse((proposed.content as Array<{ text: string }>)[0].text) as { services: Array<Record<string, unknown>> };
+    assert.equal(proposal.services.length, 1);
+    // Raw propose output — propose-only keys included — must survive SDK
+    // validation and store with suggestions applied.
+    const applied = await client.callTool({
+      name: 'environment_set', arguments: { workspace: 'Env', name: 'local', services: proposal.services },
+    });
+    assert.ok(!applied.isError, JSON.stringify(applied));
+    const stored = JSON.parse((applied.content as Array<{ text: string }>)[0].text) as {
+      services: Array<{ id: string; scriptName: string; dependsOn: string[] }>;
+    };
+    assert.equal(stored.services.length, 1);
+    assert.equal(stored.services[0].scriptName, 'test');
+    // Refusals stay intact over MCP: ghost dependencies and unknown keys fail.
+    const ghost = await client.callTool({
+      name: 'environment_set',
+      arguments: { workspace: 'Env', name: 'bad', services: [{ ...proposal.services[0], dependsOnSuggest: ['ghost'] }] },
+    });
+    assert.equal(ghost.isError, true);
+    const bogus = await client.callTool({
+      name: 'environment_set',
+      arguments: { workspace: 'Env', name: 'bad', services: [{ ...proposal.services[0], bogus: 1 }] },
+    });
+    assert.equal(bogus.isError, true, 'the MCP set schema stays strict for unknown keys');
+  } finally {
+    await client.close();
+    await app.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

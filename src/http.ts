@@ -20,7 +20,7 @@ import { leaseMessages } from './leases.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
 import { learningMessages } from './rule-index.js';
 import { workspaceMessages } from './workspace.js';
-import { environmentDownInput, environmentMessages, environmentSetInput, environmentUpInput, environmentVerifyInput } from './environment.js';
+import { coerceProposeDraft, environmentDownInput, environmentMessages, environmentSetInput, environmentUpInput, environmentVerifyInput } from './environment.js';
 import {
   checkpointBoundsMessage,
   checkpointEvidenceMessage,
@@ -251,7 +251,9 @@ function apiRole(request: IncomingMessage, mcpToken: string, sessions: Dashboard
   const token = bearerToken(request);
   if (!token) return undefined;
   if (sameToken(token, mcpToken)) return 'mcp';
-  return sessions.isActive(token) ? 'dashboard' : undefined;
+  // Sliding renewal: every authenticated dashboard request extends the idle
+  // window (bounded by the absolute cap); expiry/revocation still fail closed.
+  return sessions.touch(token) ? 'dashboard' : undefined;
 }
 
 function mcpMayCall(role: ApiRole, method: string, pathname: string) {
@@ -644,8 +646,10 @@ export function createApp(service: WorkspaceService, options: {
           }
           const workstreamContextMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/context$`).exec(url.pathname);
           if (workstreamContextMatch && request.method === 'GET') {
-            // Reader-only handoff bundle: like activity/run/learn reads,
-            // reading never records activity (no feedback loop).
+            // Reader-only handoff bundle: pure reads never record activity
+            // (no feedback loop). Minting the stable default is the one
+            // mutation this route can perform, and it audits as a
+            // workstream-create like the explicit POST route.
             const limitRaw = url.searchParams.get('limit');
             const limit = limitRaw === null ? 5 : Number(limitRaw);
             if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
@@ -654,7 +658,11 @@ export function createApp(service: WorkspaceService, options: {
             const assignmentId = url.searchParams.get('assignmentId') ?? undefined;
             const workspace = decodeNameSegment(workstreamContextMatch[1], workspaceAccessMessage);
             const workstream = decodeNameSegment(workstreamContextMatch[2], workstreamNameMessage);
-            json(response, 200, await service.workstreamContext(workspace, workstream, limit, assignmentId));
+            const bundle = await service.workstreamContext(workspace, workstream, limit, assignmentId);
+            if (bundle.mintedDefaultWorkstream) {
+              await record('workstream-create', await workspaceScopeId(workspace), bundle.name.slice(0, 100));
+            }
+            json(response, 200, bundle);
             return;
           }
           const workstreamDetailMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})$`).exec(url.pathname);
@@ -842,7 +850,11 @@ export function createApp(service: WorkspaceService, options: {
               return;
             }
             const name = decodeNameSegment(envSetMatch[1], workspaceMessages.projectName);
-            const input = environmentSetInput.parse(await body(request, proposalBodyLimit));
+            // Boundary coercion before the strict parse: raw
+            // environment_propose output applies directly (dependsOnSuggest
+            // becomes dependsOn; propose-only hints are dropped). The service
+            // coerces again idempotently; refusals are unchanged.
+            const input = environmentSetInput.parse(coerceProposeDraft(await body(request, proposalBodyLimit)));
             const created = await service.environmentSet(name, input);
             // Activity records the env name and service count only — never
             // paths, ports, or script bodies.

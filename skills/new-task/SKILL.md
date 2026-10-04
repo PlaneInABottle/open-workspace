@@ -15,6 +15,10 @@ Call `workstream_context` once. Pass `{ workspace: "<project-name>", workstream:
 
 Call `environment_verify` once. Pass `{ workspace: "<project-name>", environment: "<env-name>", repositoryPath: "<repo-path>", scriptName: "<repo-script>" }`; it runs one repo-native script and returns the environment snapshot with the verification outcome and persisted run id. Tie the user-visible result to that receipt; a completion record alone is not proof.
 
+## Environment propose → set → up
+
+When the project needs a multi-service runtime, call `environment_propose` first (read-only candidates), then pass its services straight into `environment_set` with your chosen env name — no hand-mapping: `dependsOnSuggest` applies as `dependsOn` and propose-only hints are ignored. Then `environment_up` starts the stored setup. A proposal with an empty `scriptName` means no runnable script was found: pick the npm script that runs it before `set`.
+
 ## Assignment completion handoff
 
 Give each grouped piece of work an `assignmentId` (omit it for solo work — it groups under the default). Before treating that piece as handed off, query `workstream_context` with that ID and check its present/missing completion state. A completion is an append-only, idempotent result record; it does not change the workstream status. If the piece has no completion, ask the same person who did the work to record its result; never rerun tests, sends, or other side effects as a substitute for a missing handoff. Completion checks are `agent_report` claims, not independent proof or verified-by-us results. Existing `openworkspace_run` evidence is context-stamped separately; pasted/external evidence retains its unverified source and tone. Keep checks and evidence references bounded. Counts are queryable, but do not claim percentage rates from this bounded history.

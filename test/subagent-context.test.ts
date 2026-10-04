@@ -421,6 +421,21 @@ test('workstream_context travels HTTP GET without recording activity and within 
   const after = await (await fetch(`${origin}/api/activity`, { headers })).json();
   assert.deepEqual(after, before, 'context reads never record activity');
 
+  // Minting the stable default over GET is the one mutation this route
+  // performs, and it audits as a workstream-create.
+  const mint = await fetch(`${origin}/api/workstreams/${f.workspace.name}/main/context`, { headers });
+  assert.equal(mint.status, 200);
+  const minted = await mint.json() as { workstreamId: string; mintedDefaultWorkstream: boolean };
+  assert.equal(minted.mintedDefaultWorkstream, true);
+  const reread = await (await fetch(`${origin}/api/workstreams/${f.workspace.name}/main/context`, { headers })).json() as {
+    workstreamId: string; mintedDefaultWorkstream: boolean;
+  };
+  assert.equal(reread.workstreamId, minted.workstreamId);
+  assert.equal(reread.mintedDefaultWorkstream, false, 'the re-read records nothing new');
+  const creations = (await (await fetch(`${origin}/api/activity`, { headers })).json() as Array<{ operation: string; detail: string }>)
+    .filter(entry => entry.operation === 'workstream-create' && entry.detail === 'main');
+  assert.equal(creations.length, 1, 'the mint records exactly one bounded workstream-create row');
+
   const limited = await fetch(`${origin}/api/workstreams/${f.workspace.name}/${f.workstream.name}/context?limit=1`, { headers });
   assert.equal(limited.status, 200);
   assert.equal(((await limited.json()) as { recentRuns: unknown[] }).recentRuns.length <= 1, true);
@@ -525,4 +540,36 @@ test('workstream_context task tokens ignore other workspaces activity', async t 
     (await f.service.workstreamContext(f.workspace.name, f.workstream.name)).situationalLessons.some(title => title.includes('Freight audit guard')),
     'same-workspace activity still feeds the task context',
   );
+});
+
+test('workstream_context auto-creates the stable default but still refuses other missing names', async t => {
+  const f = await approvedFixture('openworkspace-subagent-default-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+
+  // First context call for the default needs no explicit create: it binds
+  // every registered root and is immediately usable.
+  const first = await f.service.workstreamContext(f.workspace.name, 'main');
+  assert.equal(first.name, 'main');
+  assert.equal(first.status, 'active');
+  assert.deepEqual(first.checkouts.map(checkout => checkout.root), [f.project]);
+  assert.equal(first.mintedDefaultWorkstream, true, 'the minting call flags itself for the audit');
+
+  // A second call reuses the same workstream instead of minting a duplicate.
+  const second = await f.service.workstreamContext(f.workspace.name, 'main');
+  assert.equal(second.workstreamId, first.workstreamId);
+  assert.equal(second.mintedDefaultWorkstream, false, 'pure re-reads claim no mint');
+
+  // An existing workstream never claims a mint either.
+  const existing = await f.service.workstreamContext(f.workspace.name, f.workstream.name);
+  assert.equal(existing.mintedDefaultWorkstream, false);
+
+  // Explicit named creation is unaffected.
+  const named = await f.service.createWorkstream({
+    name: 'Custom', workspace: f.workspace.name, checkouts: [f.project],
+  });
+  assert.equal(named.name, 'Custom');
+
+  // Any other missing name stays a refusal (typos must not mint workstreams).
+  await assert.rejects(f.service.workstreamContext(f.workspace.name, 'mian'), /Unknown workstream/);
+  await assert.rejects(f.service.workstreamContext('Missing project', 'main'), /Workspace access not found/);
 });

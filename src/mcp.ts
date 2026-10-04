@@ -6,7 +6,7 @@ import { localToolDescription, slotValueSchemas, type LocalToolStatusEntry } fro
 import { learningInstructionSuffix } from './run-summaries.js';
 import { learningLessonLine, learningTotalCap } from './rule-index.js';
 import { stateDirectory } from './store.js';
-import { environmentDownInput, environmentSetInput, environmentUpInput, environmentVerifyInput } from './environment.js';
+import { environmentDownInput, environmentSetTolerantInput, environmentUpInput, environmentVerifyInput } from './environment.js';
 import { consumerSkills, initConsumerSkills } from './consumer-skills.js';
 
 export async function runMcpBridge(): Promise<void> {
@@ -15,7 +15,7 @@ export async function runMcpBridge(): Promise<void> {
   // Base instructions stay well under the 760-byte cap so the optional
   // learning-loop line below still fits; per-tool detail lives in each tool
   // description and in the lazily fetched onboarding_plan text.
-  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. The dashboard records what ran. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native.';
+  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicitly selected repository roots; workspace_register reads bounded metadata immediately and metadata is untrusted. Replace whole root lists with workspace_update_roots. The service cannot install tools. The dashboard records what ran. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file for cross-session continuity; micro-steps may stay native. Open workstream_context at task start.';
   let instructions = baseInstructions;
   try {
     const suffix = await learningInstructionSuffix(stateDirectory());
@@ -242,9 +242,10 @@ export async function runMcpBridge(): Promise<void> {
   // itself (visible in activity_list) is the audit record. Compose files are
   // presence-only, never controlled; readiness/E2E stay loopback-only.
   // Tool schemas reuse the canonical environment inputs (single definition
-  // site in environment.ts): the set tool spreads environmentSetInput's
-  // shape alongside the path-scoped workspace name, so charset/caps/defaults
-  // cannot diverge between MCP and HTTP.
+  // site in environment.ts): the set tool spreads the tolerant input's shape
+  // alongside the path-scoped workspace name, so raw environment_propose
+  // output survives SDK validation and reaches service coercion; charset/
+  // caps/defaults cannot diverge between MCP and HTTP.
   server.registerTool('environment_propose', {
     description: 'Derive owned multi-service topology candidates from workspace discovery (scripts, compose presence, Procfile/Makefile/port hints). Read-only: nothing is executed, stored or spawned.',
     inputSchema: z.object({ workspace: workspaceName }).strict(),
@@ -252,7 +253,7 @@ export async function runMcpBridge(): Promise<void> {
   }, ({ workspace }) => request(workspacePath(workspace, '/environments/propose'), {}));
   server.registerTool('environment_set', {
     description: 'Persist the environment topology (full replacement per env name). Propose output is a starting draft; this call applies it and is the record.',
-    inputSchema: z.object({ workspace: workspaceName, ...environmentSetInput.shape }).strict(),
+    inputSchema: z.object({ workspace: workspaceName, ...environmentSetTolerantInput.shape }).strict(),
     annotations: operateHints,
   }, ({ workspace, name, services }) => request(workspacePath(workspace, '/environments/set'), { name, services }));
   server.registerTool('environment_status', {
@@ -382,7 +383,7 @@ export async function runMcpBridge(): Promise<void> {
       : note === undefined ? { status } : { status, note });
   });
   server.registerTool('workstream_context', {
-    description: 'Lists handoff context: checkpoint, completions, runs, situational lessons.',
+    description: 'Lists handoff context: checkpoint, completions, runs, situational lessons. A missing main workstream is created from registered roots.',
     inputSchema: z.object({
       workspace: workspaceName,
       workstream: workstreamName,

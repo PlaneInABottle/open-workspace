@@ -7,7 +7,7 @@ import { projectRootsError } from './project-roots.js';
 import { controlPm2Service, listPm2Processes, readDockerServiceLogs, readPm2ServiceLogs, runPm2Action, runPm2Logs, runPm2Start, serviceInventory, startPm2Service, type AnyServiceLogTarget, type ServiceInventory, type ServiceLogStream, type ServiceStartRequest } from './services.js';
 import { dockerFailureMessage, listDockerContainers, runDockerLogs } from './services-docker.js';
 import { runVerification, verifyMessages, type CommandRunner, type VerificationRequest, type VerificationResult } from './verify.js';
-import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, renameWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, unknownWorkstreamStatusMessage, validAssignmentId, maxCheckpointHistory, workspaceAccessMessage, workstreamMessages, workstreamNameMessage, type CheckpointNote, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
+import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, defaultWorkstreamName, renameWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, unknownWorkstreamStatusMessage, validAssignmentId, maxCheckpointHistory, workspaceAccessMessage, workstreamMessages, workstreamNameMessage, type CheckpointNote, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
 import { runDatastoreQuery, type DatastoreQueryResult, type DatastoreRunnerOptions } from './datastore.js';
 import { LocalToolRegistry, type LocalToolStatusEntry } from './local-tools.js';
 import { runBrowserCheck, type BrowserCheckResult, type BrowserRunnerOptions } from './browser.js';
@@ -59,6 +59,11 @@ export interface WorkstreamContext {
   recentRuns: Array<RunListEntry & { evidenceSource: 'openworkspace_run' | 'external_import' | 'unknown_source' }>;
   /** Additive waste-lesson surfacing: up to 3 situation-matched lesson titles for this task (read-only). */
   situationalLessons: string[];
+  /**
+   * True when this call minted the stable default workstream. Pure reads
+   * return false and record nothing; a mint is a mutation the caller audits.
+   */
+  mintedDefaultWorkstream: boolean;
 }
 
 export class WorkspaceService {
@@ -364,14 +369,38 @@ export class WorkspaceService {
    * One-call handoff bundle for a narrowly-scoped subagent: the latest
    * checkpoint plus history depth, open blocker/next from the latest note,
     * pinned checkouts and scoped recent runs (existing caps).
-   * Read-only: never records activity, like recentRuns/recentActivity.
+   * Reads never record activity, like recentRuns/recentActivity — except the
+   * stable-default mint below, which is a mutation the caller audits via the
+   * returned flag.
    */
   async workstreamContext(workspace: string, workstream: string, limit = 5, assignmentId?: string): Promise<WorkstreamContext> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
       throw new Error(workspaceMessages.resultLimit);
     }
     if (assignmentId !== undefined && !validAssignmentId(assignmentId)) throw new Error(workspaceMessages.assignmentId);
-    const record = await this.workstream(workspace, workstream);
+    let record: Workstream;
+    let mintedDefaultWorkstream = false;
+    try {
+      record = await this.workstream(workspace, workstream);
+    } catch (error) {
+      // Default-workstream affordance: the first context call naming the
+      // stable default binds every registered root (with pinned revisions),
+      // so a new task starts with one call. Any other missing name — and any
+      // invalid workspace — stays a refusal. A lost race re-reads the winner
+      // without claiming the mint.
+      if (!(error instanceof Error) || error.message !== unknownWorkstreamMessage
+        || foldName(workstream) !== defaultWorkstreamName) throw error;
+      const roots = resolveWorkspaceRecord(
+        await this.store.read(), workspace, workspaceAccessMessage, workspaceAccessMessage).roots;
+      try {
+        record = await this.createWorkstream({ name: defaultWorkstreamName, workspace, checkouts: [...roots] });
+        mintedDefaultWorkstream = true;
+      } catch (creationError) {
+        if (!(creationError instanceof Error)
+          || creationError.message !== workstreamMessages.workstreamNameTaken) throw creationError;
+        record = await this.workstream(workspace, workstream);
+      }
+    }
     const state = await this.store.read();
     const latest: CheckpointNote | null = record.checkpointNote;
     const completionsByAssignmentId = Object.create(null) as Record<string, CompletionRecord[]>;
@@ -430,6 +459,7 @@ export class WorkspaceService {
       open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
       checkouts: record.checkouts,
       situationalLessons,
+      mintedDefaultWorkstream,
       recentRuns: runs.map(run => ({
         ...run,
         evidenceSource: run.source === 'openworkspace-run' ? 'openworkspace_run'

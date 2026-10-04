@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { DashboardSessions } from '../src/dashboard-sessions.js';
+import { DashboardSessions, dashboardSessionLifetimeMs } from '../src/dashboard-sessions.js';
 import { createApp } from '../src/http.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
@@ -262,7 +262,12 @@ test('dashboard and MCP share workspace operations; only browser session managem
   const expiresAt = Date.parse(dashboardExpiresAt);
   now = expiresAt - 1;
   assert.equal((await fetch(`${origin}/api/overview`, { headers: dashboardHeaders })).status, 200);
+  // Sliding renewal: the request above extended the idle window, so the
+  // original deadline no longer ends the session ...
   now = expiresAt;
+  assert.equal((await fetch(`${origin}/api/overview`, { headers: dashboardHeaders })).status, 200);
+  // ... but an idle lifetime past the last activity still lapses into a 401.
+  now = expiresAt + dashboardSessionLifetimeMs;
   assert.equal((await fetch(`${origin}/api/overview`, { headers: dashboardHeaders })).status, 401);
 
   const reconnect = await fetch(`${origin}/api/dashboard-session`, {
@@ -878,4 +883,31 @@ test('service logs return bounded output while activity records counts only', as
   assert.ok(activity.some(entry => entry.detail === 'postgres → 1 lines'));
   assert.ok(!JSON.stringify(activity).includes('sk-test-secret-marker'), 'activity must never carry log text');
   assert.ok(!JSON.stringify(activity).includes(dockerLogSecret), 'Docker activity must never carry log text');
+});
+
+test('authenticated activity renews the dashboard session while idle sessions still expire', async t => {
+  const f = await fixture(t);
+  let now = 1_800_000_000_000;
+  let counter = 0;
+  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), dashboardSessions: sessions, assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const issued = await fetch(`${origin}/api/dashboard-session`, {
+    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
+  });
+  assert.equal(issued.status, 201);
+  const { dashboardToken } = await issued.json() as { dashboardToken: string };
+  const headers = { Authorization: `Bearer ${dashboardToken}` };
+
+  // Activity just before the idle deadline renews the session past it.
+  now += dashboardSessionLifetimeMs - 1;
+  assert.equal((await fetch(`${origin}/api/overview`, { headers })).status, 200);
+  now += dashboardSessionLifetimeMs - 1;
+  assert.equal((await fetch(`${origin}/api/overview`, { headers })).status, 200);
+
+  // Without further activity the renewed window still lapses into a 401.
+  now += dashboardSessionLifetimeMs;
+  assert.equal((await fetch(`${origin}/api/overview`, { headers })).status, 401);
 });

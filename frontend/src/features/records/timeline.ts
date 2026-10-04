@@ -1,6 +1,6 @@
 import type { ActivityEntry, MilestoneNote, RunListEntry } from '@/api';
 
-export type TimelineKind = 'note' | 'verify' | 'import' | 'service' | 'data' | 'log' | 'browser' | 'other';
+export type TimelineKind = 'note' | 'verify' | 'import' | 'service' | 'env' | 'data' | 'log' | 'browser' | 'other';
 export type TimelineOutcome = 'ok' | 'fail' | 'neutral';
 
 export interface TimelineRow {
@@ -17,6 +17,7 @@ export function kindOfOperation(operation: string): TimelineKind {
   if (operation === 'verify') return 'verify';
   if (operation === 'service-logs') return 'log';
   if (operation.startsWith('service-')) return 'service';
+  if (operation.startsWith('environment-')) return 'env';
   if (operation === 'datastore-query') return 'data';
   if (operation === 'browser-check') return 'browser';
   return 'other';

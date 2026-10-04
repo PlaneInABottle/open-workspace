@@ -9,6 +9,7 @@ import { Store, privateJsonLimit } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { discover, readProposalHints } from '../src/discovery.js';
 import {
+  coerceProposeDraft,
   environmentMessages,
   environmentServiceInput,
   environmentSetInput,
@@ -469,7 +470,7 @@ test('F3: same-basename repos across roots get deterministic qualified ids', asy
 
 test('F4: MCP set input reuses the canonical schema (no divergent copy)', async t => {
   const mcpSource = readFileSync(new URL('../src/mcp.ts', import.meta.url), 'utf8');
-  assert.ok(mcpSource.includes('environmentSetInput'), 'mcp.ts reuses the canonical set input');
+  assert.ok(mcpSource.includes('environmentSetTolerantInput'), 'mcp.ts reuses the canonical tolerant set input');
   assert.ok(!/const environmentServiceInput/.test(mcpSource), 'no divergent service-input copy in mcp.ts');
   // Canonical charset enforced at the single definition site …
   assert.throws(() => environmentServiceInput.parse({
@@ -523,4 +524,73 @@ test('F7: an out-of-range port match never blocks a later valid one', () => {
   assert.equal(extractPortHint(['PORT=99999', 'PORT=4321']), 4321);
   assert.equal(extractPortHint(['--port 70000 --port 9000']), 9000);
   assert.equal(extractPortHint([':99999']), null);
+});
+
+test('propose output feeds set without hand-mapping; refusals stay intact', async t => {
+  const f = await twoRepoFixture(t);
+  const inspection = await discover(f.root);
+  const candidates = [];
+  for (const repository of inspection.repositories) {
+    candidates.push({ repository, hints: await readProposalHints(repository.path) });
+  }
+  const { services, order } = proposeEnvironment(candidates);
+  assert.ok(services.every(service => 'dependsOnSuggest' in service), 'propose shape still carries suggestions');
+
+  // Raw propose services apply directly: suggestions become dependencies and
+  // propose-only hints are ignored.
+  const record = await f.service.environmentSet(f.workspace.name, { name: 'local', services });
+  assert.equal(record.services.length, 2);
+  assert.deepEqual(record.services.find(service => service.id === 'frontend')?.dependsOn, ['backend']);
+  assert.deepEqual(topologicalOrder(record.services), order);
+
+  // An explicit dependsOn always wins over the suggestion.
+  const coerced = coerceProposeDraft({
+    name: 'local',
+    services: [{ ...services[1], dependsOn: ['backend'] }],
+  }) as { services: Array<{ dependsOn: unknown; dependsOnSuggest?: unknown; notes?: unknown }> };
+  assert.deepEqual(coerced.services[0].dependsOn, ['backend']);
+  assert.ok(!('dependsOnSuggest' in coerced.services[0]) && !('notes' in coerced.services[0]));
+
+  // Refusals stay intact: a no-script proposal still cannot be stored, and
+  // unknown dependencies suggested by hand are still refused.
+  const noScript = await proposeEnvironment([{
+    repository: candidates[0].repository,
+    hints: { scripts: {}, procfile: [], makefileTargets: [] },
+  }]);
+  assert.equal(noScript.services[0].scriptName, '');
+  await assert.rejects(f.service.environmentSet(f.workspace.name, { name: 'bad', services: noScript.services }));
+  await assert.rejects(f.service.environmentSet(f.workspace.name, {
+    name: 'bad',
+    services: [{ ...services[0], dependsOnSuggest: ['ghost'] }],
+  }), /unknown service id/);
+});
+
+test('raw environment_propose output applies via the HTTP set route without hand-mapping', async t => {
+  const f = await twoRepoFixture(t);
+  const mcpToken = 'e'.repeat(64);
+  const app = createApp(f.service, { mcpToken, assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const headers = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders };
+  const proposed = await fetch(`${origin}/api/workspaces/${f.workspace.name}/environments/propose`, {
+    method: 'POST', headers, body: '{}',
+  });
+  assert.equal(proposed.status, 200);
+  const proposal = await proposed.json() as { services: unknown[]; order: string[] };
+  assert.equal(proposal.services.length, 2);
+  const setResponse = await fetch(`${origin}/api/workspaces/${f.workspace.name}/environments/set`, {
+    method: 'POST', headers, body: JSON.stringify({ name: 'local', services: proposal.services }),
+  });
+  assert.equal(setResponse.status, 200, 'real propose output must survive the strict HTTP boundary');
+  const stored = await setResponse.json() as { services: Array<{ id: string; dependsOn: string[] }> };
+  assert.deepEqual(stored.services.find(service => service.id === 'frontend')?.dependsOn, ['backend']);
+
+  // Refusals stay intact on the real path: a hand-suggested ghost dependency
+  // is still refused after coercion.
+  const ghost = await fetch(`${origin}/api/workspaces/${f.workspace.name}/environments/set`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: 'bad', services: [{ ...(proposal.services[0] as Record<string, unknown>), dependsOnSuggest: ['ghost'] }] }),
+  });
+  assert.equal(ghost.status, 400);
 });
