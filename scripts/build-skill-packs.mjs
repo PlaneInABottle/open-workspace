@@ -53,7 +53,7 @@ function readMetadata(text, file) {
 }
 
 function outputPath(client, skillName) {
-  const file = `openworkspace-${skillName}.md`;
+  const file = `ow-${skillName}.md`;
   return client === 'claude' ? join(pluginsDir, 'claude', 'commands', file) : join(pluginsDir, client, file);
 }
 
@@ -80,7 +80,7 @@ async function main() {
     if (Buffer.byteLength(body, 'utf8') > maxBodyBytes) {
       fail('BODY_TOO_LARGE', `skill "${name}": body is ${Buffer.byteLength(body, 'utf8')} bytes (cap ${maxBodyBytes})`);
     }
-    const content = `---\nname: openworkspace-${name}\ndescription: ${description}\n---\n${body}`;
+    const content = `---\nname: ow-${name}\ndescription: ${description}\n---\n${body}`;
     for (const client of clients) {
       outputs.push({ out: outputPath(client, name), content });
     }
@@ -91,7 +91,10 @@ async function main() {
   }
   const written = new Set(outputs.map(entry => entry.out));
   // Prune snapshots of skills that no longer exist (our namespaced files
-  // only — never anything else).
+  // only — never anything else). The legacy `openworkspace-` prefix is also
+  // pruned as a one-time flag-day transition so a generator run leaves zero
+  // `openworkspace-*` files behind.
+  const namespaced = file => (file.startsWith('ow-') || file.startsWith('openworkspace-')) && file.endsWith('.md');
   for (const client of clients) {
     const dir = client === 'claude' ? join(pluginsDir, 'claude', 'commands') : join(pluginsDir, client);
     let present = [];
@@ -102,7 +105,7 @@ async function main() {
     }
     for (const file of present) {
       const full = join(dir, file);
-      if (file.startsWith('openworkspace-') && file.endsWith('.md') && !written.has(full)) {
+      if (namespaced(file) && !written.has(full)) {
         await rm(full);
       }
     }

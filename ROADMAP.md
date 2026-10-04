@@ -92,6 +92,16 @@ Client guidance is version-checked against official sources and does not write s
 
 Show bounded source-preview instructions and external-client verification gaps honestly. Enterprise MCP policy restrictions are not permission to bypass organization controls. Actual external-client installation remains unverified. They are not a new provider/agent runtime.
 
+Installed command visibility is live-untested: every row below is UNVERIFIED until a real-client run proves it. Refresh installed copies via installed `/ow-update` (manual re-fetch + byte-compare + verbatim overwrite + diff report), or re-paste the setup prompt. There is no auto-refresh.
+
+| Installed copy (project-local) | Expected surfacing | Status |
+| --- | --- | --- |
+| `.claude/commands/ow-<name>.md` (Claude Code) | Slash-command list (`/ow-<name>`) | UNVERIFIED |
+| `.opencode/commands/ow-<name>.md` (OpenCode) | Slash commands (incl. picker) | UNVERIFIED |
+| `.agents/skills/ow-<name>/SKILL.md` (Codex) | Skill invocation; slash-vs-picker surfacing | UNVERIFIED |
+| `.github/skills/ow-<name>/SKILL.md` (VS Code/Copilot) | Preview-era path; slash-vs-picker surfacing | UNVERIFIED |
+| MCP `skill/<name>` prompts | Client's MCP prompt picker after connect; authoritative fallback always | UNVERIFIED rendering |
+
 The application's own language/toolchain must not be a prerequisite for operating OpenWorkspace. The future distribution should bundle its runtime so a Java-only user need not install Node/pnpm. Current source setup still requires Node/pnpm; no packaged Node-free installer or keychain integration is shipped. Do not put a capability secret in a URL/history/argv to chase zero-click behavior: one explicit short browser consent is the current bounded solution, separate from project registration.
 
 ### End-to-end adoption journey: GitHub to first value
@@ -126,7 +136,7 @@ M1 starts with a compact lesson store (scope, correction, source, verified date)
 
 Do not add a mandatory memory.md, vector database, automatic transcript mining or separate evidence.md. Long procedures remain skills; brief facts remain lessons; operation results and cleanup remain run state. A repeated failure should become an early probe or regression test when practical.
 
-Development guidance and consumer guidance have different homes: `AGENTS.md` plus `.agents/skills/openworkspace-development/` guide work on this product; `skills/openworkspace-onboarding/` is the consumer distribution source. Keep the latter out of the active development skill tree.
+Development guidance and consumer guidance have different homes: `AGENTS.md` plus `.agents/skills/openworkspace-development/` guide work on this product; `skills/onboarding/` is the consumer distribution source. Keep the latter out of the active development skill tree.
 
 For consumer distribution, favor a versioned client-native MCP + skill installation pack where the selected client supports one (the OpenSEO pattern), with a consent/config-diff step and verification. Keep plain SKILL.md + MCP instructions as a portable fallback. A generic skills CLI is an optional developer/power-user route, not the default for a Java-only user: its documented npx path requires a Node toolchain and has default telemetry. No package installation, telemetry or global skill write is implicit. Do not advertise unpublished repository/plugin install commands; verify target-client behavior before shipping either path.
 
@@ -221,7 +231,7 @@ Excluded: new coding agent/chat/IDE, generic visual workflow builder, MCP market
 | 11 | Subagent package: note history + workstream_context bundle + typed completions | Shipped (history append, context bundle, typed completions with solo default). Dashboard history view remains a possible follow-up. |
 | 12 | Token-cost worry | Deferred by user: no action until wire measurement shows manifest cost actually binding. Format budgets + byte-delta notes stay, no count cap, no dynamic discovery. |
 | 13 | Evidence pinning + correlation IDs (checkpoint kanıt zinciri) | Shipped (bounded evidence refs, pin-exempt eviction, ID correlation). Dashboard pin display remains a possible follow-up. |
-| 14 | Self-install setup prompt a la OpenSEO (Milestone 1 done, Milestone 2 pending) | Prompt + dashboard cutover shipped: tek-mesaj "Copy setup prompt" (7-section self-install: project-local MCP entry, MCP-served skills, onaylı AGENTS.md note, reload + workspace_list doğrulaması, ≤120-word handoff), collapsed client kılavuzları kaldırıldı, SKILL.md discovery yasağına Step 3 carve-out eklendi. Kalan (Milestone 2): fixture walkthrough + live-client UNVERIFIED sınırı kanıtı. Kişisel düzenlemeyi sormadan ezmek yok; MCP/dashboard token'ları chat'e/repo'ya girmez. |
+| 14 | Self-install setup prompt a la OpenSEO (skill-command layering M1–M2 done) | Prompt + dashboard cutover shipped: tek-mesaj "Copy setup prompt" (7-section self-install: project-local MCP entry, MCP-served skills, onaylı AGENTS.md note, reload + workspace_list doğrulaması, ≤120-word handoff), collapsed client kılavuzları kaldırıldı, SKILL.md discovery yasağına Step 3 carve-out eklendi. Update skill `/ow-update` + Step 2 pointer + stale→refresh fixture + per-client görünürlük tablosu (tümü UNVERIFIED) eklendi. Kalan: live-client runs (bounded experiment; sapma = prompt erratum, feature değil). Kişisel düzenlemeyi sormadan ezmek yok; MCP/dashboard token'ları chat'e/repo'ya girmez. |
 
 New user requests amend this queue; they do not discard unfinished earlier requests. Mark outcomes verified from actual code/runtime evidence, not from a plan or a suggested UX.
 

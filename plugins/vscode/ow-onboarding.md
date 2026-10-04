@@ -1,5 +1,5 @@
 ---
-name: openworkspace-openworkspace-onboarding
+name: ow-onboarding
 description: Guide a user's coding assistant through OpenWorkspace discovery, registration and prerequisites. Not for implementation, deployment or unrestricted machine setup.
 ---
 

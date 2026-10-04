@@ -11,7 +11,7 @@ function defaultSkillsDirectory(): string {
 const maxSkillBytes = 8 * 1024;
 const shortDescriptions: Record<string, string> = {
   'learn-from-mistake': 'Use on demand to write reusable skill and AGENTS.md guidance from session evidence.',
-  'openworkspace-onboarding': 'Use to connect an existing assistant to OpenWorkspace and onboard selected projects.',
+  'onboarding': 'Use to connect an existing assistant to OpenWorkspace and onboard selected projects.',
 };
 
 export interface ConsumerSkill {

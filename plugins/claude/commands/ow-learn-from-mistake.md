@@ -1,5 +1,5 @@
 ---
-name: openworkspace-learn-from-mistake
+name: ow-learn-from-mistake
 description: On explicit invocation, turn reusable session lessons into direct skill and AGENTS.md updates. Never runs automatically.
 ---
 

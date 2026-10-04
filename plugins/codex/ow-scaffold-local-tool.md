@@ -1,5 +1,5 @@
 ---
-name: openworkspace-scaffold-local-tool
+name: ow-scaffold-local-tool
 description: Draft one local-tool JSON into local-tools/pending/ from observed repetition. Never for secrets, chains, new executables, or writes.
 ---
 

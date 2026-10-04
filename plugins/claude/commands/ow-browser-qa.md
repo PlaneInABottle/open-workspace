@@ -1,5 +1,5 @@
 ---
-name: openworkspace-browser-qa
+name: ow-browser-qa
 description: Choose CLI browser exploration vs MCP verification with receipts, under the observer shim. Use for browser QA tasks and reading shim observations.
 ---
 

@@ -63,7 +63,7 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   assert.ok(!/coordinator|subagent/i.test(newTask) && !/coordinator|subagent/i.test(skill), 'skills stay role-agnostic');
   assert.ok(!/sk-|Bearer |@example\.com|\/Users\/|password\s*[:=]/.test(skill), 'skill carries no literal secrets or path values');
   assert.ok(!skill.includes('learnings/_drafts') && !skill.includes('Status: draft'), 'learning guidance writes directly without a draft pipeline');
-  const onboarding = await readFile(new URL('../skills/openworkspace-onboarding/SKILL.md', import.meta.url), 'utf8');
+  const onboarding = await readFile(new URL('../skills/onboarding/SKILL.md', import.meta.url), 'utf8');
   assert.ok(onboarding.includes('learn-from-mistake'), 'onboarding skill references learn-from-mistake');
   assert.ok(onboarding.includes('never runs automatically') && onboarding.includes('creates no drafts'));
   assert.ok(onboarding.includes('grouping ID supplied when the work was set up'), 'onboarding stays role-agnostic');

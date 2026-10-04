@@ -128,13 +128,14 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('`skill/browser-qa`');
     expect(material!.copyText).toContain('`skill/learn-from-mistake`');
     expect(material!.copyText).toContain('`skill/new-task`');
-    expect(material!.copyText).toContain('`skill/openworkspace-onboarding`');
+    expect(material!.copyText).toContain('`skill/onboarding`');
+    expect(material!.copyText).toContain('`skill/update`');
     expect(material!.copyText).toContain('`skill/scaffold-local-tool`');
     expect(material!.copyText).toContain('Save each fetched text verbatim, project-local only');
-    expect(material!.copyText).toContain('`.claude/commands/openworkspace-<name>.md`');
-    expect(material!.copyText).toContain('`.opencode/commands/openworkspace-<name>.md`');
-    expect(material!.copyText).toContain('`.agents/skills/openworkspace-<name>/SKILL.md`');
-    expect(material!.copyText).toContain('`.github/skills/openworkspace-<name>/SKILL.md`');
+    expect(material!.copyText).toContain('`.claude/commands/ow-<name>.md`');
+    expect(material!.copyText).toContain('`.opencode/commands/ow-<name>.md`');
+    expect(material!.copyText).toContain('`.agents/skills/ow-<name>/SKILL.md`');
+    expect(material!.copyText).toContain('`.github/skills/ow-<name>/SKILL.md`');
     expect(material!.copyText).toContain('merge preserving every existing setting');
     expect(material!.copyText).toContain('never write user-wide scope');
     expect(material!.copyText).toContain('re-fetch the same prompt on update');
@@ -145,6 +146,15 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).not.toContain('copy the generated pack verbatim');
     expect(material!.copyText).not.toContain('pinned slash commands');
     expect(material!.copyText).not.toContain('re-copy the same paths');
+  });
+
+  it('points refresh at the installed update command without claiming live-client surfacing', () => {
+    const material = formatSetupRequest(config, selectedName);
+    expect(material).not.toBeNull();
+    expect(material!.copyText).toContain('Refresh later via installed `/ow-update`, or re-paste this prompt');
+    expect(material!.copyText).toContain('UNVERIFIED until run');
+    expect(material!.copyText).not.toContain('will appear in');
+    expect(material!.copyText).not.toContain('shows up in');
   });
 
   it('exposes no legacy manual-adapt flow or collapsed-guide surface', () => {

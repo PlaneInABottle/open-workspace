@@ -1,5 +1,5 @@
 ---
-name: openworkspace-new-task
+name: ow-new-task
 description: Plan a task with OpenWorkspace: open workstream context, produce a verification receipt. Explicit invocation at task start.
 ---
 
