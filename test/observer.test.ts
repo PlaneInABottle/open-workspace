@@ -2,7 +2,7 @@
 // coverage against synthetic fixtures (no real tokens, paths or excerpts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,6 +19,7 @@ import {
   globalMistakes,
   globalStuck,
   groupByTask,
+  groupByTaskForSessions,
   joinSession,
   knownSessionIDs,
   listSessions,
@@ -30,6 +31,7 @@ import {
   readSidecarLines,
   resolveSessionPrefix,
   resolveSince,
+  sessionBriefings,
   sessionChildCounts,
   sessionFirstPrompts,
   sessionMessageCounts,
@@ -37,7 +39,6 @@ import {
   sessionPrompts,
   signature,
   stuckReport,
-  subagentBriefingPrefix,
   treeDetails,
 } from '../src/observer.js';
 
@@ -148,6 +149,8 @@ test('observer read model: windows, signatures, grouping, stuck, reads', async t
   assert.equal(signature('pnpm test'), 'pnpm test');
   assert.equal(signature('uv run pytest tests/a.py tests/b.py'), 'uv run pytest');
   assert.equal(signature(''), 'unknown');
+  assert.equal(signature('cd /Users/me/proj && pnpm typecheck:backend'), 'pnpm typecheck:backend');
+  assert.equal(signature('cd /tmp\nls -la'), 'ls -la');
 
   const { sessions } = await listSessions({ sinceMs: 7 * 86_400_000, now: Date.parse('2026-10-07T00:00:00.000Z') });
   assert.equal(sessions.length, 2);
@@ -204,10 +207,11 @@ test('observer read model: windows, signatures, grouping, stuck, reads', async t
   assert.deepEqual(reads[0].ranges, ['10-30', '12-32', '14-34']);
 });
 
-test('message headers classify user instructions vs subagent briefings', async t => {
+test('message headers classify user instructions vs subagent briefings structurally', async t => {
+  // classifyMessage never inspects wording: a literal "spawned subagent"
+  // phrase with no session structure behind it is a plain user message.
   assert.equal(classifyMessage('Fix the failing check'), 'user');
-  assert.equal(classifyMessage(`${subagentBriefingPrefix} by ses_abc to do work`), 'briefing');
-  assert.equal(classifyMessage(`  ${subagentBriefingPrefix.toUpperCase()} LATER`), 'briefing');
+  assert.equal(classifyMessage('You are a subagent spawned by another session'), 'user');
   assert.equal(classifyMessage(null), 'none');
   assert.equal(classifyMessage('   '), 'none');
   assert.equal(classifyMessage('(no task)'), 'none');
@@ -216,15 +220,73 @@ test('message headers classify user instructions vs subagent briefings', async t
   const restore = withObserverEnv(f.logPath, f.dbPath);
   t.after(restore);
 
-  // A briefing taskRef groups under a briefing kind with the subagent as target.
-  const briefing = `${subagentBriefingPrefix} by another session to explore fixtures`;
-  const grouped = groupByTask([
-    { sessionID: PARENT, agent: 'explore', command: 'git status', outcome: 'completed', intent: briefing, taskRef: briefing, model: null },
-    { sessionID: PARENT, agent: 'explore', command: 'git log', outcome: 'completed', intent: briefing, taskRef: briefing, model: null },
-  ]);
-  assert.equal(grouped.length, 1);
-  assert.equal(grouped[0].taskRefKind, 'briefing');
-  assert.equal(grouped[0].taskRefAgent, 'explore');
+  // CHILD already carries parent_id = PARENT in the fixture db (see writeDb).
+  // Every one of its user messages — with no special wording at all,
+  // including a later continuation/resumption prompt — is structurally the
+  // parent's briefing: the human never talks to a spawned session directly.
+  // PARENT has no parent_id, so its own messages are never attributed as a
+  // briefing no matter what they say.
+  const briefingText = 'Explore the fixture tree and report what you find';
+  const continuationText = 'Next milestone: tidy up the report you wrote';
+  const briefDb = new DatabaseSync(f.dbPath);
+  briefDb.prepare(`INSERT INTO session_message
+    (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('msg-child-brief', CHILD, 'user', 1, 1000, 1000, JSON.stringify({ text: briefingText }));
+  briefDb.prepare(`INSERT INTO session_message
+    (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('msg-child-asst', CHILD, 'assistant', 2, 1001, 1001, JSON.stringify({
+      content: [{ type: 'text', text: 'On it' }],
+    }));
+  // A later, same-session continuation prompt (no compaction in between) —
+  // still from the parent, structurally indistinguishable in origin from
+  // the opening message.
+  briefDb.prepare(`INSERT INTO session_message
+    (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('msg-child-brief-2', CHILD, 'user', 3, 1002, 1002, JSON.stringify({ text: continuationText }));
+  briefDb.prepare(`INSERT INTO session_message
+    (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('msg-child-asst-2', CHILD, 'assistant', 4, 1003, 1003, JSON.stringify({
+      content: [{ type: 'text', text: 'Continuing' }],
+    }));
+  briefDb.prepare(`UPDATE session_v2 SET title = NULL WHERE id = ?`).run(CHILD);
+  briefDb.close();
+
+  // sessionBriefings: structural, DB-level — PARENT is excluded (no
+  // parent_id) even though it also has a first user message. CHILD carries
+  // both of its own user-row texts, not only the first.
+  const db = new DatabaseSync(f.dbPath, { readOnly: true });
+  t.after(() => db.close());
+  const briefings = sessionBriefings(db as unknown as Parameters<typeof sessionBriefings>[0], [PARENT, CHILD]);
+  assert.deepEqual([...briefings.keys()], [CHILD]);
+  assert.deepEqual(briefings.get(CHILD), new Set([briefingText, continuationText]));
+
+  // groupByTask: a taskRef matching any of the child's structural briefing
+  // texts — including the later continuation prompt — groups as 'briefing'
+  // (regardless of wording); the parent's unrelated taskRef stays 'user'.
+  // Without a briefings map (default/no hints) the very same taskRefs never
+  // classify as 'briefing' — there is nothing to match on text.
+  const mixedRecords: Parameters<typeof groupByTask>[0] = [
+    { sessionID: CHILD, agent: 'explore', command: 'git status', outcome: 'completed', intent: briefingText, taskRef: briefingText, model: null },
+    { sessionID: CHILD, agent: 'explore', command: 'git log', outcome: 'completed', intent: continuationText, taskRef: continuationText, model: null },
+    { sessionID: PARENT, agent: 'implementer', command: 'pnpm test', outcome: 'completed', intent: 'Fix the failing check', taskRef: 'Fix the failing check', model: null },
+  ];
+  const grouped = groupByTask(mixedRecords, briefings);
+  const briefingGroup = grouped.find(g => g.taskRef === briefingText);
+  const continuationGroup = grouped.find(g => g.taskRef === continuationText);
+  const userGroup = grouped.find(g => g.taskRef === 'Fix the failing check');
+  assert.equal(briefingGroup?.taskRefKind, 'briefing');
+  assert.equal(briefingGroup?.taskRefAgent, 'explore');
+  assert.equal(continuationGroup?.taskRefKind, 'briefing');
+  assert.equal(userGroup?.taskRefKind, 'user');
+  const ungrouped = groupByTask(mixedRecords);
+  assert.equal(ungrouped.find(g => g.taskRef === briefingText)?.taskRefKind, 'user');
+  assert.equal(ungrouped.find(g => g.taskRef === continuationText)?.taskRefKind, 'user');
+
+  // groupByTaskForSessions resolves the briefings map itself from the db.
+  const viaSessions = await groupByTaskForSessions(f.dbPath, mixedRecords);
+  assert.equal(viaSessions.find(g => g.taskRef === briefingText)?.taskRefKind, 'briefing');
+  assert.equal(viaSessions.find(g => g.taskRef === continuationText)?.taskRefKind, 'briefing');
+  assert.equal(viaSessions.find(g => g.taskRef === 'Fix the failing check')?.taskRefKind, 'user');
 
   // The '(no task)' bucket carries no attribution.
   const empty = groupByTask([
@@ -234,17 +296,31 @@ test('message headers classify user instructions vs subagent briefings', async t
   assert.equal(empty[0].taskRefKind, 'none');
   assert.equal(empty[0].taskRefAgent, null);
 
-  // Briefing prompts keep their kind on the wire, and a prompt-fallback tree
-  // title inherits it (stored titles stay unattributed).
-  const briefingText = `${subagentBriefingPrefix} by another session to explore fixtures`;
-  const briefDb = new DatabaseSync(f.dbPath);
-  briefDb.prepare(`INSERT INTO session_message
-    (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run('msg-user-brief', CHILD, 'user', 1, 1000, 1000, JSON.stringify({ text: briefingText }));
-  briefDb.prepare(`UPDATE session_v2 SET title = NULL WHERE id = ?`).run(CHILD);
-  briefDb.close();
+  // sessionPrompts: every one of the child's prompts is 'briefing' with no
+  // special wording required; the parentless session's prompt stays 'user'.
   const childPrompts = await sessionPrompts({ sessionID: CHILD });
-  assert.deepEqual(childPrompts, [{ text: briefingText, kind: 'briefing' }]);
+  assert.deepEqual(childPrompts, [
+    { text: briefingText, kind: 'briefing' },
+    { text: continuationText, kind: 'briefing' },
+  ]);
+  const parentPrompts = await sessionPrompts({ sessionID: PARENT });
+  assert.deepEqual(parentPrompts, [{ text: 'Fix the failing check', kind: 'user' }]);
+
+  // globalMistakes: a failure whose resolved taskRef byte-matches the
+  // child's later continuation prompt (not its opening message) still
+  // classifies as 'briefing'.
+  await appendFile(f.logPath, `${record(CHILD, {
+    command: 'pytest', outcome: 'failure', exitCode: 1, excerpt: 'FAIL', messageID: 'msg-child-asst-2',
+  })}\n`);
+  const { rows: mistakeRows } = await globalMistakes({
+    sinceMs: 7 * 86_400_000, now: Date.parse('2026-10-07T00:00:00.000Z'), session: CHILD, limit: 10,
+  });
+  const childFailure = mistakeRows.find(row => row.signature === 'pytest');
+  assert.equal(childFailure?.taskRef, continuationText);
+  assert.equal(childFailure?.taskRefKind, 'briefing');
+
+  // treeDetails: a prompt-fallback title on a spawned session inherits
+  // 'briefing' structurally; the parent keeps its stored title ('other').
   const { by } = await loadTreeRecords({ sessionID: PARENT });
   const briefDetails = await treeDetails({ node: buildTree(PARENT, by), recordsBy: by });
   assert.equal(briefDetails.get(CHILD)?.titleKind, 'briefing');

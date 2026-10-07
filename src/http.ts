@@ -481,7 +481,7 @@ export function createApp(service: WorkspaceService, options: {
             };
             if (leaf === 'records') {
               if (tree) {
-                const { by, warnings, parentLinked } = await observer.loadTreeRecords({ sessionID });
+                const { by, warnings, parentLinked } = await observer.loadTreeRecords({ sessionID, sinceMs: since });
                 const filtered = new Map<string, observer.EnrichedRecord[]>();
                 for (const [id, recs] of by) filtered.set(id, observer.filterTools(observer.filterSince(recs, since), kind, tool));
                 const merged = [...filtered.values()].flat();
@@ -489,18 +489,18 @@ export function createApp(service: WorkspaceService, options: {
                 json(response, 200, {
                   session: sessionID,
                   warnings,
-                  groups: failFilter(observer.groupByTask(merged)),
+                  groups: failFilter(await observer.groupByTaskForSessions(undefined, merged)),
                   tree: observer.treeIds(root, await observer.treeDetails({ node: root, recordsBy: filtered })),
                 });
                 return;
               }
-              const { records, warnings } = await observer.joinSession({ sessionID });
+              const { records, warnings } = await observer.joinSession({ sessionID, sinceMs: since });
               const filtered = observer.filterTools(observer.filterSince(records, since), kind, tool);
-              json(response, 200, { session: sessionID, warnings, groups: failFilter(observer.groupByTask(filtered)) });
+              json(response, 200, { session: sessionID, warnings, groups: failFilter(await observer.groupByTaskForSessions(undefined, filtered)) });
               return;
             }
             if (leaf === 'reads') {
-              const { records, warnings } = await observer.joinSession({ sessionID });
+              const { records, warnings } = await observer.joinSession({ sessionID, sinceMs: since });
               json(response, 200, {
                 session: sessionID,
                 warnings,
@@ -510,7 +510,7 @@ export function createApp(service: WorkspaceService, options: {
             }
             if (leaf === 'stuck') {
               if (tree) {
-                const { by, warnings } = await observer.loadTreeRecords({ sessionID });
+                const { by, warnings } = await observer.loadTreeRecords({ sessionID, sinceMs: since });
                 const merged = [...by.values()].flat();
                 json(response, 200, {
                   session: sessionID,
@@ -519,7 +519,7 @@ export function createApp(service: WorkspaceService, options: {
                 });
                 return;
               }
-              const { records, warnings } = await observer.joinSession({ sessionID });
+              const { records, warnings } = await observer.joinSession({ sessionID, sinceMs: since });
               json(response, 200, {
                 session: sessionID,
                 warnings,

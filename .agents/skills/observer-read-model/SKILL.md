@@ -1,0 +1,37 @@
+---
+name: observer-read-model
+description: Rules for changing the dashboard observer read model (src/observer.ts, its HTTP routes, signature grouping). Use for any edit to session/message loading, intent join, task grouping, signatures, prompts, or tree records. Not for onboarding, registration, MCP tools, or companion CLI work.
+---
+
+# Observer read model
+
+The observer joins two growing sources: the append-only shell log and the agent session-message table. Both outgrow any fixed row cap on real long-lived sessions. Every rule below comes from a demonstrated production failure; do not weaken them for convenience.
+
+**Mirror warning:** this read model exists twice — `src/observer.ts` (dashboard, node:test) and `~/.config/opencode/opencode-plugins/shell-observer/{join,tree,signature}.ts` (CLI, bun:test). A fix in one must be mirrored in the other plus its regression tests, and the `ow` binary rebuilt (`bun build --compile ./cli.ts --outfile ow`). Drift between them has caused dashboard-fixed bugs to survive in the CLI.
+
+## 1. Window, never head-cap
+
+- No `ORDER BY seq LIMIT N` from the head on a growing table. A head-cap silently drops the newest rows once the table passes N (seen: 4395-row session vs 2000-row cap → all recent intents lost, records fell into `(no task)`).
+- Every loader takes `sinceMs`/`now` and filters `time_created >= now - sinceMs` (or the log equivalent) **before** applying the row cap. New params default to null (unbounded) so existing callers keep compiling.
+- Thread the window through **every** layer: HTTP handler resolves `since` once and passes `sinceMs` to `joinSession`/`loadTreeRecords`/`sessionPrompts`; `loadTreeRecords` forwards it to each `joinSession`; `joinSession` forwards it to `loadSessionMessages`. An unthreaded layer reintroduces the bug silently.
+
+## 2. Recency order for user-facing lists
+
+- Any "latest" list uses `ORDER BY seq DESC LIMIT n`, then reverses rows for chronological display. Never `ORDER BY seq LIMIT n` for recency (seen: prompts endpoint returned the session's first 20 messages from days ago instead of the current conversation).
+- Name the direction in a code comment so the next edit preserves it.
+
+## 3. Grouping key vs display are separate functions
+
+- `signature()` is the **grouping key**: stable, aggressive folding (`<path>`, `<n>`, `<arg>`). Grouping tests pin it; grouping code never calls anything else.
+- Readability enrichment (visible quoted search terms, pipe-stage stacking) lives in `displaySignature()` only — same shape, richer vitrine. Never enrich `signature()` to fix a display complaint; that reshuffles every group.
+
+## 4. Shell text is multiline
+
+- Chain separators are `&&`, `||`, `;` **and** `\n`. Agents emit `cd <path>\n<cmd>` shapes; without `\n` the `cd` prefix survives and the real tool hides (seen: `pnpm`/`agent-browser` invisible behind `cd` titles).
+- Drop `empty` pipe sides before joining (numeric-only redirections like `2>&1` tokenize to nothing — seen: `" | tail"` fragment signatures).
+- Regression tests use real observed shapes, not idealized one-liners.
+
+## 5. Prove it on the live database, read-only
+
+- Fixture tests cannot catch window/cap bugs — fixtures are small by construction. After any loader/grouping change, run the affected route against the real DB and assert zero degenerate groups (`(no task)` count, `cd`-prefixed or ` -`-prefixed signatures).
+- Open the DB with `readOnly: true` (or structural type-only casts) and prove no mutation (md5/stat before/after). Report the check; "fixtures pass" is not proof for this surface.

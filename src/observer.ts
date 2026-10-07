@@ -82,8 +82,10 @@ export interface GroupedLine {
 export interface TaskGroup {
   taskRef: string;
   /** Source of the header text: a user instruction, a synthetic subagent
-   * briefing, or none when the group has no message context. Derived by
-   * prefix match in groupByTask so headers stay attributable. */
+   * briefing, or none when the group has no message context. Derived
+   * structurally in groupByTask: the taskRef is a 'briefing' only when it
+   * byte-matches one of the user-row texts of a session with a parent_id
+   * (sessionBriefings), never by inspecting the text itself. */
   taskRefKind: 'user' | 'briefing' | 'none';
   /** First agent seen in the group; the briefing target when taskRefKind is
    * 'briefing'. Null when no record names an agent. */
@@ -398,6 +400,33 @@ export async function sessionChildCounts(options: {
   return counts;
 }
 
+/** Which of a bounded id list are spawned (child) sessions — i.e.
+ * session_v2.parent_id IS NOT NULL — for structural briefing attribution
+ * (one batched query, never throws). */
+export async function sessionsWithParent(options: {
+  dbPath?: string;
+  sessionIDs: string[];
+}): Promise<Set<string>> {
+  const children = new Set<string>();
+  if (options.sessionIDs.length === 0) return children;
+  const db = await openDb(options.dbPath ?? defaultDbPath(), []);
+  if (!db) return children;
+  try {
+    const placeholders = options.sessionIDs.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT id FROM session_v2 WHERE id IN (${placeholders}) AND parent_id IS NOT NULL`,
+    ).all(...options.sessionIDs) as { id: unknown }[];
+    for (const row of rows) {
+      if (typeof row.id === 'string') children.add(row.id);
+    }
+  } catch {
+    // best-effort; callers fall back to non-structural attribution
+  } finally {
+    db.close();
+  }
+  return children;
+}
+
 /** Message-row presence per session for a bounded id list (one batched
  * COUNT GROUP BY query, never throws). Distinguishes pre-recording-era
  * children (zero sidecar records but real session_message rows) from truly
@@ -602,23 +631,20 @@ async function openDb(dbPath: string, warnings: string[]): Promise<Db | null> {
   }
 }
 
-/** Synthetic subagent briefings arrive as user rows with this prefix (the
- * runtime injects them when spawning a child session). Prefix match keeps
- * long briefing headers attributable in every Observe view. */
-export const subagentBriefingPrefix = 'You are a subagent spawned';
-
 export type MessageKind = 'user' | 'briefing' | 'none';
 
 /**
- * Source of a message header text: 'none' for missing/empty text and the
- * '(no task)' group key (not a message), 'briefing' for synthetic subagent
- * briefings, 'user' for everything else (direct user instructions).
+ * Source of a message header text when no session structure is in play:
+ * 'none' for missing/empty text and the '(no task)' group key (not a
+ * message), 'user' for everything else. This never inspects wording for a
+ * briefing — a session spawned as a subagent (session_v2.parent_id IS NOT
+ * NULL) always has every one of its user rows attributed as 'briefing' by
+ * the callers that know that structure (sessionBriefings, groupByTask,
+ * globalMistakes, sessionPrompts, treeDetails), regardless of what it says.
  */
 export function classifyMessage(text: string | null): MessageKind {
   if (!text || text.trim().length === 0 || text === '(no task)') return 'none';
-  return text.trimStart().toLowerCase().startsWith(subagentBriefingPrefix.toLowerCase())
-    ? 'briefing'
-    : 'user';
+  return 'user';
 }
 
 /** A user instruction with its source, for the prompts feed. */
@@ -674,11 +700,13 @@ export function attachIntent(sidecar: SidecarRecord, rows: MessageRow[]): Enrich
   return { ...sidecar, intent: sameRow ?? taskRef, taskRef, model: modelOf(rows[index].data) };
 }
 
-export function loadSessionMessages(db: Db, sessionID: string): MessageRow[] | null {
+export function loadSessionMessages(db: Db, sessionID: string, sinceMs?: number | null, now = Date.now()): MessageRow[] | null {
   try {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_message'").all() as { name: unknown }[];
     if (tables.length === 0) return null;
-    const raw = db.prepare('SELECT id, type, data FROM session_message WHERE session_id = ? ORDER BY seq LIMIT ?').all(sessionID, maxMessageRows) as { id: unknown; type: unknown; data: unknown }[];
+    const where = sinceMs ? 'WHERE session_id = ? AND time_created >= ?' : 'WHERE session_id = ?';
+    const args = sinceMs ? [sessionID, now - sinceMs] : [sessionID];
+    const raw = db.prepare(`SELECT id, type, data FROM session_message ${where} ORDER BY seq LIMIT ?`).all(...args, maxMessageRows) as { id: unknown; type: unknown; data: unknown }[];
     return raw.flatMap(row => {
       if (typeof row.id !== 'string' || typeof row.type !== 'string' || typeof row.data !== 'string') return [];
       try {
@@ -694,10 +722,59 @@ export function loadSessionMessages(db: Db, sessionID: string): MessageRow[] | n
   }
 }
 
+/**
+ * User-row texts for child sessions only (session_v2.parent_id IS NOT
+ * NULL), keyed by session id — the structural briefing rule: a session
+ * spawned by a parent never receives a human user message (the human talks
+ * only to plan/build/coordinator/challenger sessions), so *every* user row
+ * of a child session is a briefing from its parent, regardless of wording,
+ * including later continuation/resumption messages on the same session —
+ * never just its opening message. Text extraction mirrors
+ * precedingUserText/attachIntent (clip(data.text), falling back to the
+ * first textParts entry) so each entry byte-matches the taskRef callers
+ * compare it against. Takes an already open db (caller owns its
+ * lifecycle); bounded id list and row count, never throws.
+ */
+export function sessionBriefings(db: Db, ids: string[]): Map<string, Set<string>> {
+  const briefings = new Map<string, Set<string>>();
+  if (ids.length === 0) return briefings;
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    const children = db.prepare(
+      `SELECT id FROM session_v2 WHERE id IN (${placeholders}) AND parent_id IS NOT NULL`,
+    ).all(...ids) as { id: unknown }[];
+    const childIDs = children.map(row => row.id).filter((id): id is string => typeof id === 'string');
+    if (childIDs.length === 0) return briefings;
+    const childPlaceholders = childIDs.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT session_id, data FROM session_message WHERE session_id IN (${childPlaceholders}) AND type = 'user' ORDER BY seq LIMIT ?`,
+    ).all(...childIDs, maxMessageRows) as { session_id: unknown; data: unknown }[];
+    for (const row of rows) {
+      if (typeof row.session_id !== 'string' || typeof row.data !== 'string') continue;
+      try {
+        const data = asDict(JSON.parse(row.data) as unknown);
+        if (!data) continue;
+        const text = clip(data.text) ?? textParts(data)[0] ?? null;
+        if (!text) continue;
+        const set = briefings.get(row.session_id) ?? new Set<string>();
+        set.add(text);
+        briefings.set(row.session_id, set);
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // briefings are best-effort; groups render without them
+  }
+  return briefings;
+}
+
 export async function joinSession(options: {
   dbPath?: string;
   logPath?: string;
   sessionID: string;
+  sinceMs?: number | null;
+  now?: number;
 }): Promise<{ records: EnrichedRecord[]; warnings: string[] }> {
   const warnings: string[] = [];
   const { records, warnings: recordWarnings } = await sessionRecords({ logPath: options.logPath, sessionID: options.sessionID });
@@ -711,7 +788,7 @@ export async function joinSession(options: {
     return { records: records.map(record => ({ ...record, intent: null, taskRef: null, model: null })), warnings };
   }
   try {
-    const rows = loadSessionMessages(db, options.sessionID);
+    const rows = loadSessionMessages(db, options.sessionID, options.sinceMs ?? null, options.now ?? Date.now());
     if (!rows) {
       warnings.push('message table unavailable — records emitted without intent');
       return { records: records.map(record => ({ ...record, intent: null, taskRef: null, model: null })), warnings };
@@ -759,6 +836,8 @@ export async function loadTreeRecords(options: {
   logPath?: string;
   sessionID: string;
   maxSessions?: number;
+  sinceMs?: number | null;
+  now?: number;
 }): Promise<{ by: Map<string, EnrichedRecord[]>; warnings: string[]; childCount: number; parentLinked: string[] }> {
   const max = options.maxSessions ?? maxTreeSessions;
   const by = new Map<string, EnrichedRecord[]>();
@@ -773,7 +852,7 @@ export async function loadTreeRecords(options: {
   };
   const fetch = async (id: string): Promise<void> => {
     if (by.has(id)) return;
-    const joined = await joinSession({ sessionID: id, dbPath: options.dbPath, logPath: options.logPath });
+    const joined = await joinSession({ sessionID: id, dbPath: options.dbPath, logPath: options.logPath, sinceMs: options.sinceMs ?? null, now: options.now });
     by.set(id, joined.records);
     pushWarnings(joined.warnings);
   };
@@ -893,10 +972,11 @@ export async function treeDetails(options: {
     for (const child of node.children) walk(child);
   };
   walk(options.node);
-  const [titles, prompts, messageCounts] = await Promise.all([
+  const [titles, prompts, messageCounts, childSessionIDs] = await Promise.all([
     sessionTitles({ dbPath: options.dbPath, sessionIDs: ids }),
     sessionFirstPrompts({ dbPath: options.dbPath, sessionIDs: ids }),
     sessionMessageCounts({ dbPath: options.dbPath, sessionIDs: ids }),
+    sessionsWithParent({ dbPath: options.dbPath, sessionIDs: ids }),
   ]);
   const details = new Map<string, TreeNodeDetail>();
   const idOf = (node: TreeNode): TreeNodeDetail => {
@@ -920,9 +1000,12 @@ export async function treeDetails(options: {
         prompt,
         workdir,
       }),
+      // Structural rule: a prompt-fallback title is 'briefing' only when the
+      // node's own session has a parent_id (sessionsWithParent) — never by
+      // inspecting the prompt text.
       titleKind: !titleFromPrompt || !prompt
         ? 'other'
-        : classifyMessage(prompt) === 'briefing' ? 'briefing' : 'user',
+        : childSessionIDs.has(node.sessionID) ? 'briefing' : 'user',
       agent,
       records: records.length,
       hasMessages: (messageCounts.get(node.sessionID) ?? 0) > 0,
@@ -1010,7 +1093,7 @@ export function filterTools(records: EnrichedRecord[], kind?: string, toolSub?: 
 
 const MAX_STORED_VARIANTS = 50;
 
-export function groupByTask(records: EnrichedRecord[]): TaskGroup[] {
+export function groupByTask(records: EnrichedRecord[], briefings: Map<string, Set<string>> = new Map()): TaskGroup[] {
   const groups = new Map<string, EnrichedRecord[]>();
   for (const record of records) {
     const key = typeof record.taskRef === 'string' && record.taskRef.length > 0 ? record.taskRef : '(no task)';
@@ -1018,7 +1101,7 @@ export function groupByTask(records: EnrichedRecord[]): TaskGroup[] {
     list.push(record);
     groups.set(key, list);
   }
-  return [...groups.entries()].map(([taskRef, list]) => {
+  return [...groups.entries()].reverse().map(([taskRef, list]) => {
     const seen = new Map<string, GroupedLine>();
     const lines: GroupedLine[] = [];
     let groupAgent: string | null = null;
@@ -1072,15 +1155,46 @@ export function groupByTask(records: EnrichedRecord[]): TaskGroup[] {
       seen.set(dupKey, line);
       lines.push(line);
     }
+    // Structural briefing rule: the group's taskRef is a 'briefing' only
+    // when it byte-matches one of the user-row texts of the session the
+    // group's first record belongs to (a child session, per
+    // sessionBriefings) — never by inspecting the taskRef text itself.
+    const firstSession = typeof list[0]?.sessionID === 'string' ? list[0].sessionID : null;
+    const taskRefKind: MessageKind = firstSession !== null && (briefings.get(firstSession)?.has(taskRef) ?? false)
+      ? 'briefing'
+      : classifyMessage(taskRef);
     return {
       taskRef,
-      taskRefKind: classifyMessage(taskRef),
+      taskRefKind,
       taskRefAgent: groupAgent,
       runs: list.length,
       fails: list.filter(record => outcomeOf(record) === 'failure' || outcomeOf(record) === 'error').length,
-      lines,
+      lines: lines.reverse(),
     };
   });
+}
+
+/**
+ * groupByTask with structural briefing attribution resolved from the
+ * database: collects the distinct session ids seen in records, loads their
+ * briefing map (sessionBriefings — child sessions only), and groups with it.
+ * Bounded to maxTreeSessions distinct sessions per call (the largest existing
+ * caller, loadTreeRecords, is already capped at that size).
+ */
+export async function groupByTaskForSessions(
+  dbPath: string | undefined,
+  records: EnrichedRecord[],
+): Promise<TaskGroup[]> {
+  const sessionIDs = [...new Set(
+    records.map(record => (typeof record.sessionID === 'string' ? record.sessionID : null)).filter((id): id is string => id !== null),
+  )].slice(0, maxTreeSessions);
+  const db = await openDb(dbPath ?? defaultDbPath(), []);
+  if (!db) return groupByTask(records);
+  try {
+    return groupByTask(records, sessionBriefings(db, sessionIDs));
+  } finally {
+    db.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,8 +1287,13 @@ const isPathLike = (token: string): boolean =>
 
 const isUrl = (token: string): boolean => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token);
 
-const placeholder = (token: string): string => {
+const placeholder = (token: string, keepQuoted = false): string => {
+  const quoted = /^["'].*["']$/s.test(token);
   const bare = token.replace(/^["']|["']$/g, '');
+  if (keepQuoted && quoted && bare.length > 0) {
+    const clipped = bare.length > 40 ? bare.slice(0, 40) : bare;
+    return `"${clipped}"`;
+  }
   if (/^-?[0-9]+$/.test(bare)) return '<n>';
   if (isUrl(bare)) return '<url>';
   if (/^--[a-zA-Z0-9-]+=.+/.test(bare)) return bare.split('=')[0] + '=<v>';
@@ -1238,12 +1357,23 @@ export function stripHeredoc(text: string): string {
 }
 
 export function signature(command: unknown): string {
+  return sign(command, false);
+}
+
+/** Display twin of signature(): same grouping shape, but quoted search
+ * terms stay visible (clipped) so the hunted text survives. Grouping
+ * MUST keep using signature(); display is vitrine only. */
+export function displaySignature(command: unknown): string {
+  return sign(command, true);
+}
+
+function sign(command: unknown, keepQuoted: boolean): string {
   if (typeof command !== 'string' || command.trim().length === 0) return 'unknown';
   const stripped = stripHeredoc(command);
   const collapsed = stripped.replace(/\s+/g, ' ').trim();
   const heredoc = collapsed.match(/<<-?\s*['"]?([A-Za-z0-9_]+)['"]?/);
   if (collapsed.length > 4000 && !heredoc) return 'huge-command';
-  const chain = splitTop(stripped.replace(/\s+/g, ' ').trim(), ['&&', '||', ';']);
+  const chain = splitTop(stripped, ['&&', '||', ';', '\n']);
   const last = chain[chain.length - 1] ?? collapsed;
   const sides = splitTop(last, ['|']);
   const signed = sides.map(side => {
@@ -1269,12 +1399,12 @@ export function signature(command: unknown): string {
       if (head === 'uv' && SECOND_LEVEL.has(sub) && tail.length > 0 && !tail[0].startsWith('-')) {
         return `${head} ${sub} ${baseName(tail[0]).toLowerCase()}`;
       }
-      const tailSig = tail.map(placeholder);
+      const tailSig = tail.map(token => placeholder(token, keepQuoted));
       return [head, sub, ...tailSig].join(' ');
     }
-    return [head, ...rest.map(placeholder)].join(' ');
+    return [head, ...rest.map(token => placeholder(token, keepQuoted))].join(' ');
   });
-  const core = signed.join(' | ');
+  const core = signed.filter(part => part !== 'empty').join(' | ') || 'empty';
   if (!heredoc) return core;
   if (/python/.test(core)) {
     const mods = familyMods(pyModules(command as string));
@@ -1510,13 +1640,28 @@ export async function sessionMeta(options: { dbPath?: string; sessionID: string 
   }
 }
 
-/** User prompts of a session (the instructions given, oldest first). */
+/**
+ * User prompts of a session (the instructions given, oldest first).
+ * Structural rule: a session with session_v2.parent_id IS NOT NULL is
+ * spawned, and the human never talks to a spawned session directly (only to
+ * plan/build/coordinator/challenger sessions) — so every prompt of a child
+ * session, including later continuation/resumption prompts, is the parent's
+ * briefing regardless of wording; every prompt of a parentless session is a
+ * direct user instruction.
+ */
 export async function sessionPrompts(options: { dbPath?: string; sessionID: string; limit?: number }): Promise<SessionPrompt[]> {
   const warnings: string[] = [];
   const db = await openDb(options.dbPath ?? defaultDbPath(), warnings);
   if (!db) return [];
   try {
-    const rows = db.prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq LIMIT ?").all(options.sessionID, options.limit ?? 20) as { data: unknown }[];
+    const rows = (db.prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT ?").all(options.sessionID, options.limit ?? 20) as { data: unknown }[]).reverse();
+    let isChild = false;
+    try {
+      const parentRow = db.prepare('SELECT parent_id FROM session_v2 WHERE id = ?').get(options.sessionID) as { parent_id: unknown } | null;
+      isChild = !!parentRow && typeof parentRow.parent_id === 'string' && parentRow.parent_id.length > 0;
+    } catch {
+      isChild = false;
+    }
     return rows.flatMap(row => {
       if (typeof row.data !== 'string') return [];
       try {
@@ -1524,7 +1669,8 @@ export async function sessionPrompts(options: { dbPath?: string; sessionID: stri
         const text = data && typeof data.text === 'string' ? data.text.replace(/\s+/g, ' ').trim() : null;
         if (!text) return [];
         const clipped = text.length > 300 ? text.slice(0, 300) : text;
-        return [{ text: clipped, kind: classifyMessage(clipped) === 'briefing' ? 'briefing' as const : 'user' as const }];
+        const kind: 'user' | 'briefing' = isChild ? 'briefing' : 'user';
+        return [{ text: clipped, kind }];
       } catch {
         return [];
       }
@@ -1644,6 +1790,7 @@ export async function globalMistakes(options: {
     warnings.push('task refs capped at 20 sessions; remaining rows show without task context');
   }
   const rowsBySession = new Map<string, MessageRow[]>();
+  let briefings = new Map<string, Set<string>>();
   const dbWarnings: string[] = [];
   const db = await openDb(options.dbPath ?? defaultDbPath(), dbWarnings);
   if (db) {
@@ -1652,6 +1799,7 @@ export async function globalMistakes(options: {
         const rows = loadSessionMessages(db, sessionID);
         if (rows) rowsBySession.set(sessionID, rows);
       }
+      briefings = sessionBriefings(db, sessionIDs);
     } finally {
       db.close();
     }
@@ -1668,11 +1816,16 @@ export async function globalMistakes(options: {
       ? `${record.tool}${typeof record.args === 'string' && record.args.length > 0 ? ` ${record.args}` : ''}`
       : null;
     const full = (command ?? toolCmd ?? 'unknown').replace(/\s+/g, ' ').trim();
+    // Structural rule: 'briefing' only when taskRef byte-matches one of this
+    // session's own user rows and that session has a parent (sessionBriefings).
+    const taskRefKind: MessageKind = (taskRef !== null && briefings.get(sessionID)?.has(taskRef))
+      ? 'briefing'
+      : classifyMessage(taskRef);
     return {
       sessionID,
       at: typeof record.timestamp === 'string' ? record.timestamp : null,
       taskRef,
-      taskRefKind: classifyMessage(taskRef),
+      taskRefKind,
       signature: signature(command ?? full),
       outcome: typeof record.outcome === 'string' ? record.outcome : 'unknown',
       failReason: command ? failReason(command) : null,

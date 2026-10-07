@@ -70,6 +70,7 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 
 ## Validation and UI work
 
+- Observer read-model changes (`src/observer.ts`, its routes, signatures, grouping) follow [.agents/skills/observer-read-model/SKILL.md](.agents/skills/observer-read-model/SKILL.md): windowed loading threaded through every layer, recency order, grouping/display split, multiline shell shapes, live read-only proof.
 - Use repository-native checks for changed behavior. Tests own disposable directories and loopback services; they must not depend on real project credentials, external providers or application runtimes.
 - For onboarding, session, registration or MCP changes, cover denial paths and the actual configured client/companion path, not only an in-memory handler. Source-launch checks include an unrelated Java directory, spaces/apostrophes, opener failure and headless suppression; this is not a Node-free installer test.
 - Use the development skill's actual-interface checks for UI and workspace flows. Verify final code in an owned Chrome session, include denial/cleanup boundaries, and preserve existing registrations. Geometry alone does not prove usability or accessibility.
