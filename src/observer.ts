@@ -601,7 +601,7 @@ export async function sessionRecords(options: {
 // sqlite access (node:sqlite; degrades when the floor lacks it or DB is unreadable)
 // ---------------------------------------------------------------------------
 
-type MessageRow = { id: string; type: string; data: Dict };
+type MessageRow = { id: string; type: string; data: Dict; seq: number };
 type SqliteModule = typeof import('node:sqlite');
 
 let sqliteModule: SqliteModule | null | undefined;
@@ -706,13 +706,16 @@ export function loadSessionMessages(db: Db, sessionID: string, sinceMs?: number 
     if (tables.length === 0) return null;
     const where = sinceMs ? 'WHERE session_id = ? AND time_created >= ?' : 'WHERE session_id = ?';
     const args = sinceMs ? [sessionID, now - sinceMs] : [sessionID];
-    const raw = db.prepare(`SELECT id, type, data FROM session_message ${where} ORDER BY seq LIMIT ?`).all(...args, maxMessageRows) as { id: unknown; type: unknown; data: unknown }[];
+    // Newest-first with cap, then reverse to ascending: a head-cap would
+    // silently drop the newest rows once the table outgrows the cap.
+    const rawDesc = db.prepare(`SELECT id, type, data, seq FROM session_message ${where} ORDER BY seq DESC LIMIT ?`).all(...args, maxMessageRows) as { id: unknown; type: unknown; data: unknown; seq: unknown }[];
+    const raw = [...rawDesc].reverse();
     return raw.flatMap(row => {
-      if (typeof row.id !== 'string' || typeof row.type !== 'string' || typeof row.data !== 'string') return [];
+      if (typeof row.id !== 'string' || typeof row.type !== 'string' || typeof row.data !== 'string' || typeof row.seq !== 'number') return [];
       try {
         const dict = asDict(JSON.parse(row.data) as unknown);
         if (!dict) return [];
-        return [{ id: row.id, type: row.type, data: dict }];
+        return [{ id: row.id, type: row.type, data: dict, seq: row.seq }];
       } catch {
         return [];
       }
@@ -720,6 +723,68 @@ export function loadSessionMessages(db: Db, sessionID: string, sinceMs?: number 
   } catch {
     return null;
   }
+}
+
+/** Rows for explicit message ids (the join's pinned references), chunked so
+ * a large window stays within the SQLite variable limit. Seq-tagged for
+ * merge; never throws (empty on any failure). */
+export function loadMessagesByIds(db: Db, sessionID: string, ids: string[]): MessageRow[] {
+  const distinct = [...new Set(ids.filter(id => id.length > 0))];
+  if (distinct.length === 0) return [];
+  const out: MessageRow[] = [];
+  try {
+    for (let i = 0; i < distinct.length; i += 400) {
+      const batch = distinct.slice(i, i + 400);
+      const placeholders = batch.map(() => '?').join(',');
+      const rows = db.prepare(
+        `SELECT id, type, data, seq FROM session_message WHERE session_id = ? AND id IN (${placeholders})`,
+      ).all(sessionID, ...batch) as { id: unknown; type: unknown; data: unknown; seq: unknown }[];
+      for (const row of rows) {
+        if (typeof row.id !== 'string' || typeof row.type !== 'string' || typeof row.data !== 'string' || typeof row.seq !== 'number') continue;
+        try {
+          const dict = asDict(JSON.parse(row.data) as unknown);
+          if (!dict) continue;
+          out.push({ id: row.id, type: row.type, data: dict, seq: row.seq });
+        } catch {
+          continue;
+        }
+      }
+    }
+  } catch {
+    // pinned rows are best-effort; the window still renders without them
+  }
+  return out;
+}
+
+/** Newest user rows regardless of window: task context (preceding-user
+ * lookup) is usually older than a narrow record window. Bounded, seq-tagged
+ * for merge, never throws. */
+export function loadRecentUserMessages(db: Db, sessionID: string, limit = 500): MessageRow[] {
+  try {
+    const rows = db.prepare(
+      `SELECT id, type, data, seq FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT ?`,
+    ).all(sessionID, limit) as { id: unknown; type: unknown; data: unknown; seq: unknown }[];
+    return rows.flatMap(row => {
+      if (typeof row.id !== 'string' || typeof row.type !== 'string' || typeof row.data !== 'string' || typeof row.seq !== 'number') return [];
+      try {
+        const dict = asDict(JSON.parse(row.data) as unknown);
+        if (!dict) return [];
+        return [{ id: row.id, type: row.type, data: dict, seq: row.seq }];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Merge seq-tagged row lists: dedup by id, ascending seq so index-based
+ * intent lookup keeps working. */
+export function mergeMessageRows(...lists: MessageRow[][]): MessageRow[] {
+  const byId = new Map<string, MessageRow>();
+  for (const list of lists) for (const row of list) byId.set(row.id, row);
+  return [...byId.values()].sort((a, b) => a.seq - b.seq);
 }
 
 /**
@@ -745,22 +810,26 @@ export function sessionBriefings(db: Db, ids: string[]): Map<string, Set<string>
     ).all(...ids) as { id: unknown }[];
     const childIDs = children.map(row => row.id).filter((id): id is string => typeof id === 'string');
     if (childIDs.length === 0) return briefings;
-    const childPlaceholders = childIDs.map(() => '?').join(',');
-    const rows = db.prepare(
-      `SELECT session_id, data FROM session_message WHERE session_id IN (${childPlaceholders}) AND type = 'user' ORDER BY seq LIMIT ?`,
-    ).all(...childIDs, maxMessageRows) as { session_id: unknown; data: unknown }[];
-    for (const row of rows) {
-      if (typeof row.session_id !== 'string' || typeof row.data !== 'string') continue;
-      try {
-        const data = asDict(JSON.parse(row.data) as unknown);
-        if (!data) continue;
-        const text = clip(data.text) ?? textParts(data)[0] ?? null;
-        if (!text) continue;
-        const set = briefings.get(row.session_id) ?? new Set<string>();
-        set.add(text);
-        briefings.set(row.session_id, set);
-      } catch {
-        continue;
+    // Per-child bounded retrieval (newest-first): a single global ascending
+    // cap lets one voluminous child starve the others' later prompts.
+    const perChild = 500;
+    for (const childID of childIDs) {
+      const rows = db.prepare(
+        `SELECT session_id, data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT ?`,
+      ).all(childID, perChild) as { session_id: unknown; data: unknown }[];
+      for (const row of rows) {
+        if (typeof row.session_id !== 'string' || typeof row.data !== 'string') continue;
+        try {
+          const data = asDict(JSON.parse(row.data) as unknown);
+          if (!data) continue;
+          const text = clip(data.text) ?? textParts(data)[0] ?? null;
+          if (!text) continue;
+          const set = briefings.get(row.session_id) ?? new Set<string>();
+          set.add(text);
+          briefings.set(row.session_id, set);
+        } catch {
+          continue;
+        }
       }
     }
   } catch {
@@ -788,12 +857,22 @@ export async function joinSession(options: {
     return { records: records.map(record => ({ ...record, intent: null, taskRef: null, model: null })), warnings };
   }
   try {
-    const rows = loadSessionMessages(db, options.sessionID, options.sinceMs ?? null, options.now ?? Date.now());
+    const sinceMs = options.sinceMs ?? null;
+    const rows = loadSessionMessages(db, options.sessionID, sinceMs, options.now ?? Date.now());
     if (!rows) {
       warnings.push('message table unavailable — records emitted without intent');
       return { records: records.map(record => ({ ...record, intent: null, taskRef: null, model: null })), warnings };
     }
-    return { records: records.map(record => attachIntent(record, rows)), warnings };
+    // Narrow windows drop the messages a record's intent points at (intent
+    // time vs execution time differ by hours on long sessions). Pin the
+    // referenced rows plus recent user context so the join survives any
+    // window; merge stays seq-ordered for index-based lookup.
+    let joined = rows;
+    if (sinceMs !== null) {
+      const referenced = records.map(record => record.messageID).filter((id): id is string => typeof id === 'string');
+      joined = mergeMessageRows(rows, loadMessagesByIds(db, options.sessionID, referenced), loadRecentUserMessages(db, options.sessionID));
+    }
+    return { records: records.map(record => attachIntent(record, joined)), warnings };
   } finally {
     db.close();
   }
@@ -1287,6 +1366,23 @@ const isPathLike = (token: string): boolean =>
 
 const isUrl = (token: string): boolean => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token);
 
+/** A pipe side holding only redirections (2>&1, >&2, 2>file) is not a
+ * command — it must collapse to 'empty' so the pipe filter drops it. */
+const isRedirectOnly = (side: string): boolean => {
+  const s = side.trim();
+  if (s.length === 0) return true;
+  if (!/[><]/.test(s)) return false;
+  const without = s
+    .replace(/\d*\s*>>?\s*&?\d+/g, '')
+    .replace(/\d*\s*>>?\s*\S+/g, '')
+    .replace(/&\s*>>?\s*\S+/g, '')
+    .replace(/<<-?\s*['"]?[A-Za-z0-9_]+['"]?/g, '')
+    .replace(/[<>]/g, '')
+    .replace(/\d+/g, '')
+    .replace(/[&\s;-]+/g, '');
+  return without.length === 0;
+};
+
 const placeholder = (token: string, keepQuoted = false): string => {
   const quoted = /^["'].*["']$/s.test(token);
   const bare = token.replace(/^["']|["']$/g, '');
@@ -1377,13 +1473,14 @@ function sign(command: unknown, keepQuoted: boolean): string {
   const last = chain[chain.length - 1] ?? collapsed;
   const sides = splitTop(last, ['|']);
   const signed = sides.map(side => {
+    if (isRedirectOnly(side)) return 'empty';
     let tokens = tokenize(side);
     while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens = tokens.slice(1);
     while (tokens.length > 1 && WRAPPERS.has(baseName(tokens[0]).toLowerCase())) {
       tokens = tokens.slice(1);
       if ((tokens[0] === '-c' || tokens[0] === '-lc') && tokens.length > 1) {
         const inner = tokens.slice(1).join(' ').replace(/^["']|["']$/g, '');
-        return `sh-c:${signature(inner)}`;
+        return `sh-c:${sign(inner, keepQuoted)}`;
       }
     }
     if (tokens.length === 0) return 'empty';

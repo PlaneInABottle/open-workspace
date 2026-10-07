@@ -11,9 +11,10 @@ The observer joins two growing sources: the append-only shell log and the agent 
 
 ## 1. Window, never head-cap
 
-- No `ORDER BY seq LIMIT N` from the head on a growing table. A head-cap silently drops the newest rows once the table passes N (seen: 4395-row session vs 2000-row cap → all recent intents lost, records fell into `(no task)`).
+- No `ORDER BY seq LIMIT N` from the head on a growing table. A head-cap silently drops the newest rows once the table passes N (seen: 4395-row session vs 2000-row cap → all recent intents lost, records fell into `(no task)`). The cap query itself must also be newest-first: `ORDER BY seq DESC LIMIT N`, reversed in JS to ascending (a windowed `ASC LIMIT` still drops the newest rows *inside* the window past 2000).
 - Every loader takes `sinceMs`/`now` and filters `time_created >= now - sinceMs` (or the log equivalent) **before** applying the row cap. New params default to null (unbounded) so existing callers keep compiling.
-- Thread the window through **every** layer: HTTP handler resolves `since` once and passes `sinceMs` to `joinSession`/`loadTreeRecords`/`sessionPrompts`; `loadTreeRecords` forwards it to each `joinSession`; `joinSession` forwards it to `loadSessionMessages`. An unthreaded layer reintroduces the bug silently.
+- Thread the window through **every** layer: HTTP handler resolves `since` once and passes `sinceMs` to `joinSession`/`loadTreeRecords`; `loadTreeRecords` forwards it to each `joinSession`; `joinSession` forwards it to `loadSessionMessages`. An unthreaded layer reintroduces the bug silently. Exception by design: `sessionPrompts` takes no `sinceMs` — it always returns the latest N (`ORDER BY seq DESC LIMIT n`, reversed chronological).
+- A time window must not break the intent join (intent time vs execution time differ by hours): windowed `joinSession` pins the sidecar-referenced message ids (`loadMessagesByIds`, chunked) plus recent user context (`loadRecentUserMessages`), merged seq-ordered (`mergeMessageRows`). Seen: `since=30m` produced a 20-record `(no task)` bucket without pinning.
 
 ## 2. Recency order for user-facing lists
 
@@ -28,7 +29,8 @@ The observer joins two growing sources: the append-only shell log and the agent 
 ## 4. Shell text is multiline
 
 - Chain separators are `&&`, `||`, `;` **and** `\n`. Agents emit `cd <path>\n<cmd>` shapes; without `\n` the `cd` prefix survives and the real tool hides (seen: `pnpm`/`agent-browser` invisible behind `cd` titles).
-- Drop `empty` pipe sides before joining (numeric-only redirections like `2>&1` tokenize to nothing — seen: `" | tail"` fragment signatures).
+- Drop `empty` pipe sides before joining, and treat redirection-only sides (`2>&1`, `>&2`, `2>file`) as `empty` (seen: `"2 | tail"` and `" | tail"` fragment signatures). A side with a real command plus redirections keeps the command.
+- Briefing lookup is per-child bounded (newest-first), never one global ascending cap across children (seen: one voluminous child starving another's late prompts into `user`).
 - Regression tests use real observed shapes, not idealized one-liners.
 
 ## 5. Prove it on the live database, read-only

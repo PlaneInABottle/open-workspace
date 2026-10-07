@@ -151,6 +151,8 @@ test('observer read model: windows, signatures, grouping, stuck, reads', async t
   assert.equal(signature(''), 'unknown');
   assert.equal(signature('cd /Users/me/proj && pnpm typecheck:backend'), 'pnpm typecheck:backend');
   assert.equal(signature('cd /tmp\nls -la'), 'ls -la');
+  assert.equal(signature('2>&1 | tail -5'), 'tail <n>');
+  assert.equal(signature('FOO=bar | cat'), 'cat');
 
   const { sessions } = await listSessions({ sinceMs: 7 * 86_400_000, now: Date.parse('2026-10-07T00:00:00.000Z') });
   assert.equal(sessions.length, 2);
@@ -325,6 +327,72 @@ test('message headers classify user instructions vs subagent briefings structura
   const briefDetails = await treeDetails({ node: buildTree(PARENT, by), recordsBy: by });
   assert.equal(briefDetails.get(CHILD)?.titleKind, 'briefing');
   assert.equal(briefDetails.get(PARENT)?.titleKind, 'other');
+});
+
+test('narrow window keeps intent: referenced rows and user context are pinned', async t => {
+  const f = await fixture(t);
+  const restore = withObserverEnv(f.logPath, f.dbPath);
+  t.after(restore);
+  const now = Date.parse('2026-10-07T00:00:00.000Z');
+  const oldTs = now - 12 * 3600_000;
+  const db = new DatabaseSync(f.dbPath);
+  const message = db.prepare(`INSERT INTO session_message
+    (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  message.run('msg-old-task', PARENT, 'user', 10, oldTs, oldTs, JSON.stringify({ text: 'Old intent task' }));
+  message.run('msg-new-run', PARENT, 'assistant', 11, now - 600_000, now - 600_000, JSON.stringify({
+    content: [{ type: 'text', text: 'Running now' }],
+  }));
+  db.close();
+  await appendFile(f.logPath, `${record(PARENT, { command: 'pnpm verify', messageID: 'msg-new-run', timestamp: '2026-10-06T23:55:00.000Z' })}\n`);
+  const { records } = await joinSession({ sessionID: PARENT, sinceMs: 30 * 60_000, now });
+  const pinned = records.find(entry => entry.messageID === 'msg-new-run');
+  assert.equal(pinned?.taskRef, 'Old intent task');
+});
+
+test('windowed message load keeps newest rows: cap truncates oldest, order stays ascending', async t => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-window-')));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, 'window.db');
+  const db = new DatabaseSync(dbPath);
+  db.prepare(`CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)`).run();
+  db.prepare(`CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT)`).run();
+  const now = Date.parse('2026-10-07T00:00:00.000Z');
+  const { maxMessageRows, loadSessionMessages } = await import('../src/observer.js');
+  const insert = db.prepare(`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  for (let i = 1; i <= maxMessageRows + 1; i += 1) {
+    insert.run(`m${i}`, 'ses_win', 'user', i, now - 3600_000, 0, JSON.stringify({ text: `task ${i}` }));
+  }
+  db.close();
+  const ro = new DatabaseSync(dbPath, { readOnly: true });
+  t.after(() => ro.close());
+  const rows = loadSessionMessages(ro as unknown as Parameters<typeof sessionBriefings>[0], 'ses_win', 24 * 3600_000, now);
+  assert.equal(rows?.length, maxMessageRows);
+  assert.equal(rows?.[0]?.id, 'm2');
+  assert.equal(rows?.[rows.length - 1]?.id, `m${maxMessageRows + 1}`);
+});
+
+test('briefing lookup is per-child: one voluminous child cannot starve another', async t => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-briefcap-')));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, 'briefcap.db');
+  const db = new DatabaseSync(dbPath);
+  db.prepare(`CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)`).run();
+  db.prepare(`CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT)`).run();
+  const big = 'ses_bigchild000000000000001';
+  const small = 'ses_smallchild0000000000002';
+  db.prepare(`INSERT INTO session_v2 (id, parent_id) VALUES (?, ?)`).run(big, PARENT);
+  db.prepare(`INSERT INTO session_v2 (id, parent_id) VALUES (?, ?)`).run(small, PARENT);
+  const insert = db.prepare(`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  for (let i = 1; i <= 600; i += 1) {
+    insert.run(`big-${i}`, big, 'user', i, 1000 + i, 0, JSON.stringify({ text: `big task ${i}` }));
+  }
+  insert.run('small-1', small, 'user', 1, 1000, 0, JSON.stringify({ text: 'small late task' }));
+  db.close();
+  const ro = new DatabaseSync(dbPath, { readOnly: true });
+  t.after(() => ro.close());
+  const map = sessionBriefings(ro as unknown as Parameters<typeof sessionBriefings>[0], [big, small]);
+  assert.ok(map.get(small)?.has('small late task'), 'small child briefing survives big sibling volume');
+  assert.ok((map.get(big)?.size ?? 0) > 0);
 });
 
 test('sidecar tail read stays bounded: newest bytes win, callers warn on truncation', async t => {
