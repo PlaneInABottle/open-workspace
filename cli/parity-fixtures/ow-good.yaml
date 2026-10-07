@@ -1,0 +1,9 @@
+services:
+  web:
+    cmd: bun run dev
+    cwd: ./app
+    port: 3000
+  api:
+    command: uv run server.py
+    working_dir: ./api
+    ports: [8000, "8001:8001"]

@@ -4,8 +4,12 @@ dist/
 .openworkspace/
 coverage/
 *.log
+# `ow` CLI build outputs (product cli/; see cli/README.md)
+/cli/ow*
 .env
 .env.*
 !.env.example
 # Local-only notes (never ship): ResAI-specific hunks, shelved plans
 docs/*.local.md
+# Migration plan files are transient working docs, never committed
+docs/*.plan.md

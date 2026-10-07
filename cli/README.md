@@ -1,0 +1,147 @@
+# `ow` CLI (product-owned, bun-only)
+
+`ow` is the shell-observer command line: session analysis
+(`sessions/show/stuck/meta/prompts/reads/doctor`) plus dev-service
+supervision (`up/down/ps/logs`) for user-agent-written `ow.yaml` files.
+The observer hooks that feed it live in the opencode plugin directory
+(`~/.config/opencode/opencode-plugins/shell-observer/` — `index.ts` +
+`shell-observer-core.ts` only); every other CLI source lives here.
+
+## Bun-only
+
+`cli/` runs **only** under bun. Sources use `bun:sqlite`, `Bun.spawn`,
+`Bun.file`/`Bun.serve`, and `bun:test` irreducibly — no node/tsc port
+(no dual-runtime abstraction by design). Node-side gates (`pnpm test`,
+`pnpm typecheck`) never match `cli/` (product `tsconfig.json` includes
+only `src/**`, `test/**`, configs).
+
+```sh
+bun test cli/            # CLI suites (unit + contract)
+pnpm ow:build            # compile cli/cli.ts → cli/ow (+ cli/ow.build.json sidecar)
+pnpm ow:test             # same as bun test cli/
+pnpm ow:fresh            # taze/bayat check for the built binary
+pnpm ow:parity           # scripts/check-ow-parity.sh <old> <new> (migration gate)
+```
+
+## Build / symlink / freshness
+
+- Build output `cli/ow` (plus temp `cli/ow.cmp` and sidecar
+  `cli/ow.build.json`) is gitignored (`/cli/ow*`) — never commit the binary.
+- `~/.local/bin/ow` symlinks to `<product>/cli/ow`. Rebuilds are manual
+  (`pnpm ow:build`), matching the previous binary discipline.
+- `pnpm ow:fresh` compares the sidecar `{sha,dirty}` against current `HEAD`
+  + worktree: `taze` (0), `bayat (kaynaklar değişti, yeniden derleyin)` (1),
+  sidecar/binary missing (2).
+- Byte-identical migration gate: `scripts/check-ow-parity.sh` replays
+  `--help`, `up --check` on both committed fixtures, `ps`/`logs --json`
+  on missing state, `sessions --json` on the committed fixture log
+  (byte-compared), and `doctor --json` by envelope keys + exit code only
+  (wall-clock fields vary by construction). Fixtures: `cli/parity-fixtures/`.
+
+## Intent join (session-end pipeline)
+
+The sidecar record carries `messageID` (null for old rows), which keys into OpenCode's local `opencode.db` (`session_message` table, row id == hook messageID). The join script attaches the agent's sentence to each command:
+
+```sh
+# health first: is the log growing, are hooks firing, db readable?
+./ow doctor
+# session inventory: id, counts, time span, workdir — filter by window/dir
+./ow sessions [--since 1d] [--dir /path/to/project]
+# grouped human view (default): one taskRef header, repeats collapsed with xN refs
+./ow show <sessionID> [--since 3h]
+# whole task tree: parent session plus child (subagent) sessions, hierarchical
+./ow show <sessionID> --tree [--since 1d]
+# full text for a window / one line / all failures
+./ow show <sessionID> --since 3h --full
+./ow show <sessionID> --show <ref>
+./ow show <sessionID> --show-fails
+# tool slices: shell, file edits, MCP/code-mode/read/...
+./ow show <sessionID> --kind tool-call --tool mcp
+# stuck signals (retries, re-reads, slow runs, interruptions) / session account / prompts / reads
+./ow stuck <sessionID> [--tree] [--since 1d]
+./ow meta <sessionID>
+./ow prompts <sessionID>
+./ow reads <sessionID> [--since 1d]
+# machine output (stable English keys) for show/stuck/meta/sessions
+./ow show <sessionID> --json
+# exit codes: 0 ok, 1 structural failure, 2 usage error; always non-interactive
+```
+
+No bun fallback needed for reading: `ow` is compiled from `cli/cli.ts`
+(`pnpm ow:build` → `cli/ow`, darwin-arm64; linux-x64 build is a follow-up).
+Direct `bun doctor.ts` / `bun join.ts <session>
+[--tree] [--stuck] ...` invocations remain as fallback and share the same
+tree loader (`tree.ts`); `ow` subcommands map 1:1 to those views.
+
+`join.ts` is fail-soft: unreadable DB or missing message table yields records with `intent: null` plus a stderr warning, never a crash. The DB schema is OpenCode-internal; if a future version moves the table, only intent attachment degrades — shell logging is unaffected.
+
+## Service supervision (`ow up/down/ps/logs`)
+
+A user-agent-written `ow.yaml` at a repo root declares dev services; `ow`
+supervises them as plain child processes — no Docker control, no dashboard,
+no restart/healthchecks (explicit non-goals).
+
+```yaml
+services:
+  web:
+    cmd: bun run dev        # string → sh -c, or argv list (direct, no shell)
+    cwd: ./app              # optional, must be a real directory (symlink-rejected)
+    port: 3000              # optional; conflict warns, never reassigns
+  ext:
+    logs: docker logs -f c  # watch-only tail: sibling child, merged as `log`
+```
+
+Schema notes: top-level `services:` required; per-service keys are
+`cmd|command`, `cwd|working_dir`, `port|ports` (flow list or
+`host:container`), `logs`. Unknown fields warn (`bilinmeyen alan
+yoksayıldı`), never fail; block-sequence lists are rejected with a
+line-naming error; a service needs `cmd` or `logs` (both allowed —
+`logs` then runs as a sibling tail).
+
+```sh
+ow up --check --file ow.yaml   # validate only (exit 0/2)
+ow up -d                       # detach: one supervisor per ow.yaml dir
+ow ps [--json]                 # pid, uptime, cpu%, mem, port, port çakışması notes
+ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
+ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
+ow doctor                      # observer health plus an informational up: line
+```
+
+State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
+`logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.
+Detached runs also append startup warnings/errors to `supervisor.out` —
+bounded to a handful of lines (per-line service output streams to the
+terminal in foreground, and always persists to per-service JSONL).
+Every recorded pid is paired with its `ps lstart` string: any later signal
+path re-reads `lstart` and never signals a mismatch (PID-reuse guard).
+A second `up` while the lock is live exits 2 (`zaten çalışıyor`); stale
+locks are reclaimed only after `lstart`-verified death; an unreadable
+`lstart` refuses reclaim (no `--force` in v1).
+
+Per-service logs keep `{t, stream, line}` rows (`stdout|stderr|log|event`),
+5 MiB / 10,000 lines newest-wins, 8 KiB per-line cap (`…[kesildi]…`).
+Capture batches in memory (bounded) and drops with a visible `…[atıldı: N
+satır]…` event rather than blocking the child. An early-exiting `logs:`
+tail records `logs komutu bitti` + `logsEnded` while siblings keep running.
+
+## Change discipline (evidence before code)
+
+No addition lands on the strength of an idea. Every change must show,
+in order:
+
+1. The problem on real log data (a concrete row, not a scenario).
+2. Precision on the same data (no false positives — e.g. a loose rule
+   flagging 7 healthy families out of 9 gets tightened or dropped).
+3. Live verification in a real session that the code does what it claims.
+
+If it doesn't prove useful, it doesn't ship.
+
+## Validation
+
+From the product repo root:
+
+```sh
+bun test cli/
+```
+
+OpenCode's V2 plugin guide documents `ctx.tool.hook("execute.before" | "execute.after")`; the test harness checks the registered callbacks and serialization without starting or restarting the OpenCode service. Actual service plugin loading requires the user to apply the snippet and reload/restart OpenCode (manual step — this change does not restart any service).

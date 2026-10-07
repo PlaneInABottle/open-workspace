@@ -1,0 +1,4 @@
+version: 1
+services:
+  tail:
+    logs: docker logs -f mydb

@@ -19,7 +19,11 @@
     "test:ui": "vitest run",
     "build-skill-packs": "node scripts/build-skill-packs.mjs",
     "test": "tsx --test test/*.test.ts && pnpm test:ui",
-    "typecheck": "pnpm typecheck:backend && pnpm typecheck:frontend"
+    "typecheck": "pnpm typecheck:backend && pnpm typecheck:frontend",
+    "ow:build": "scripts/build-ow.sh",
+    "ow:test": "bun test cli/",
+    "ow:fresh": "scripts/check-ow-fresh.sh",
+    "ow:parity": "scripts/check-ow-parity.sh"
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",

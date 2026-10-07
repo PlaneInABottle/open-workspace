@@ -7,7 +7,7 @@ description: Rules for changing the dashboard observer read model (src/observer.
 
 The observer joins two growing sources: the append-only shell log and the agent session-message table. Both outgrow any fixed row cap on real long-lived sessions. Every rule below comes from a demonstrated production failure; do not weaken them for convenience.
 
-**Mirror warning:** this read model exists twice — `src/observer.ts` (dashboard, node:test) and `~/.config/opencode/opencode-plugins/shell-observer/{join,tree,signature}.ts` (CLI, bun:test). A fix in one must be mirrored in the other plus its regression tests, and the `ow` binary rebuilt (`bun build --compile ./cli.ts --outfile ow`). Drift between them has caused dashboard-fixed bugs to survive in the CLI.
+**Ownership:** the CLI read model lives once in product `cli/{join,tree,signature}.ts` (`bun:test`); the dashboard read model stays in `src/observer.ts` (`node:test`, `node:sqlite`) — the two runtimes differ irreducibly, so cross-fix discipline remains but is now co-located in one repo/review: a fix on one side must still check the other, and the `ow` binary is rebuilt via `pnpm ow:build`. Drift between them has caused dashboard-fixed bugs to survive in the CLI.
 
 ## 1. Window, never head-cap
 

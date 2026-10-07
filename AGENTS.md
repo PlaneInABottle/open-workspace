@@ -31,6 +31,7 @@ This is the product source directory. Application repositories registered in the
 | Frontend theme and build configuration | `frontend/src/styles.css`, `vite.config.ts`, `components.json`, `tsconfig.frontend.json` |
 | Native, HTTP, static-asset, CLI and actual MCP checks | `test/` |
 | React behavior tests | `frontend/src/test/` |
+| `ow` CLI (bun-only) | `cli/` |
 
 UI and MCP use the same operations. Keep provider-specific code out of the workspace core. Introduce small capability contracts when actual adapters need them; do not build a speculative plugin marketplace, generic workflow DSL or second agent runtime.
 
@@ -53,6 +54,8 @@ pnpm test
 pnpm test:ui
 pnpm audit
 ```
+
+`cli/` is bun-only: `bun test cli/`, build via `pnpm ow:build`; `pnpm test`/`typecheck` exclude it.
 
 `pnpm-workspace.yaml` allows only the selected esbuild build script. Do not globally enable dependency scripts or change a pilot project's Node/package-manager settings to run OpenWorkspace.
 
