@@ -29,6 +29,7 @@ The observer joins two growing sources: the append-only shell log and the agent 
 ## 4. Shell text is multiline
 
 - Chain separators are `&&`, `||`, `;` **and** `\n`. Agents emit `cd <path>\n<cmd>` shapes; without `\n` the `cd` prefix survives and the real tool hides (seen: `pnpm`/`agent-browser` invisible behind `cd` titles).
+- Backslash escapes the next char in splitting and tokenizing (shell-faithful: `\"` and `\|` never split). Without it, `bun -e "...\"...\""` and `python3 -c "...|..."` shapes desync quote tracking and produce garbage stages (seen: 15 garbage signatures in 2733 real commands, zero after the fix).
 - Drop `empty` pipe sides before joining, and treat redirection-only sides (`2>&1`, `>&2`, `2>file`) as `empty` (seen: `"2 | tail"` and `" | tail"` fragment signatures). A side with a real command plus redirections keeps the command.
 - Briefing lookup is per-child bounded (newest-first), never one global ascending cap across children (seen: one voluminous child starving another's late prompts into `user`).
 - Regression tests use real observed shapes, not idealized one-liners.

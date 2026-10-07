@@ -153,6 +153,8 @@ test('observer read model: windows, signatures, grouping, stuck, reads', async t
   assert.equal(signature('cd /tmp\nls -la'), 'ls -la');
   assert.equal(signature('2>&1 | tail -5'), 'tail <n>');
   assert.equal(signature('FOO=bar | cat'), 'cat');
+  assert.equal(signature('grep "a\\" | b" f | head'), 'grep <arg> <arg> | head');
+  assert.equal(signature('echo a\\ b | head'), 'echo <arg> | head');
 
   const { sessions } = await listSessions({ sinceMs: 7 * 86_400_000, now: Date.parse('2026-10-07T00:00:00.000Z') });
   assert.equal(sessions.length, 2);
@@ -349,6 +351,29 @@ test('narrow window keeps intent: referenced rows and user context are pinned', 
   assert.equal(pinned?.taskRef, 'Old intent task');
 });
 
+test('session inventory falls back to stored directory when sidecar rows lack workdir', async t => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-dirfb-')));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const logPath = join(dir, 'shell-events.jsonl');
+  await writeFile(logPath, `${JSON.stringify({
+    timestamp: '2026-10-06T10:00:00.000Z', sessionID: 'ses_noworkdir00000000000001',
+    kind: 'tool-call', tool: 'subagent', outcome: 'completed',
+  })}\n`);
+  const dbPath = join(dir, 'opencode.db');
+  const db = new DatabaseSync(dbPath);
+  db.prepare(`CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT)`).run();
+  db.prepare(`INSERT INTO session_v2 (id, directory) VALUES (?, ?)`).run('ses_noworkdir00000000000001', '/tmp/stored-dir');
+  db.close();
+  const { sessionDirectories } = await import('../src/observer.js');
+  const dirs = await sessionDirectories({ dbPath, sessionIDs: ['ses_noworkdir00000000000001', 'ses_missing'] });
+  assert.deepEqual([...dirs.entries()], [['ses_noworkdir00000000000001', '/tmp/stored-dir']]);
+  const { sessions } = await listSessions({
+    logPath, dbPath, sinceMs: 7 * 86_400_000, now: Date.parse('2026-10-07T00:00:00.000Z'),
+  });
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0]?.workdir, '/tmp/stored-dir');
+});
+
 test('windowed message load keeps newest rows: cap truncates oldest, order stays ascending', async t => {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-window-')));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -464,7 +489,7 @@ test('session list titles fall back to prompt, workdir, short id, with child cou
   // NULL title + opening prompt; empty-string title behaves the same.
   session.run(TITLELESS, 'proj-1', 'no-title', '/tmp/fixture-alpha', null, 'v1', null, 1000, 2000);
   session.run(WORKDIR_ONLY, 'proj-1', 'workdir-only', '/tmp/fixture-gamma', '', 'v1', TITLELESS, 1000, 2000);
-  session.run(ID_ONLY, 'proj-1', 'id-only', '/tmp/fixture-alpha', null, 'v1', null, 1000, 2000);
+  session.run(ID_ONLY, 'proj-1', 'id-only', null, null, 'v1', null, 1000, 2000);
   const message = db.prepare(`INSERT INTO session_message
     (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`);
   message.run('msg-titleless-1', TITLELESS, 'user', 1, 1000, 1000, JSON.stringify({

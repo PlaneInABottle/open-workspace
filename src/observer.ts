@@ -338,6 +338,33 @@ export async function sessionTitles(options: {
   return titles;
 }
 
+/** Stored session directories per id (one batched query, never throws).
+ * Sidecar rows often lack workdir (tool-call rows carry none); the session
+ * table's directory fills those gaps in the inventory. */
+export async function sessionDirectories(options: {
+  dbPath?: string;
+  sessionIDs: string[];
+}): Promise<Map<string, string>> {
+  const dirs = new Map<string, string>();
+  if (options.sessionIDs.length === 0) return dirs;
+  const db = await openDb(options.dbPath ?? defaultDbPath(), []);
+  if (!db) return dirs;
+  try {
+    const placeholders = options.sessionIDs.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT id, directory FROM session_v2 WHERE id IN (${placeholders}) LIMIT ${maxSessions}`).all(...options.sessionIDs) as { id: unknown; directory: unknown }[];
+    for (const row of rows) {
+      if (typeof row.id === 'string' && typeof row.directory === 'string' && row.directory.length > 0) {
+        dirs.set(row.id, row.directory);
+      }
+    }
+  } catch {
+    // directories are best-effort; rows render without them
+  } finally {
+    db.close();
+  }
+  return dirs;
+}
+
 /** First user prompt per session for a bounded id list (one batched GROUP BY
  * query, never throws). SQLite bare-column rule returns the data of the
  * MIN(seq) row per group — the session's opening instruction. */
@@ -549,20 +576,21 @@ export async function listSessions(options: {
   // row badge. All best-effort; rows render without them.
   const prompts = await sessionFirstPrompts({ dbPath: options.dbPath, sessionIDs: cappedIDs });
   const children = await sessionChildCounts({ dbPath: options.dbPath, sessionIDs: cappedIDs });
+  const dirs = await sessionDirectories({ dbPath: options.dbPath, sessionIDs: cappedIDs });
   const capped: SessionInfo[] = sessions.slice(0, maxSessions).map(entry => ({
     sessionID: entry.sessionID,
     title: displayTitle({
       sessionID: entry.sessionID,
       title: titles.get(entry.sessionID) ?? null,
       prompt: prompts.get(entry.sessionID) ?? null,
-      workdir: entry.workdir,
+      workdir: entry.workdir ?? dirs.get(entry.sessionID) ?? null,
     }),
     commands: entry.commands,
     fileEdits: entry.fileEdits,
     fails: entry.fails,
     first: entry.first,
     last: entry.last,
-    workdir: entry.workdir,
+    workdir: entry.workdir ?? dirs.get(entry.sessionID) ?? null,
     childCount: children.get(entry.sessionID) ?? 0,
   }));
   if (sessions.length > maxSessions) warnings.push(`session list capped at ${maxSessions}; narrow the window`);
@@ -1295,6 +1323,13 @@ function splitTop(command: string, separators: string[]): string[] {
   let i = 0;
   while (i < command.length) {
     const ch = command[i];
+    // Backslash escapes the next char (shell-faithful: \" and \| stay
+    // literal, so separators inside \"...\" or after \ never split).
+    if (ch === '\\' && i + 1 < command.length) {
+      current += ch + command[i + 1];
+      i += 2;
+      continue;
+    }
     if (quote) {
       current += ch;
       if (ch === quote) quote = null;
@@ -1335,6 +1370,11 @@ function tokenize(segment: string): string[] {
   };
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      current += ch + text[i + 1];
+      i += 1;
+      continue;
+    }
     if (quote) {
       current += ch;
       if (ch === quote) quote = null;
