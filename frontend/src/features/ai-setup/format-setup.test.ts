@@ -130,9 +130,10 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('Use OpenWorkspace MCP for environment orchestration and memory');
     expect(material!.copyText).toContain('Keep shell-native work in your own shell');
     expect(material!.copyText).not.toContain('prefer them over ad-hoc shell');
-    expect(material!.copyText).toContain('Open task context at task start');
+    expect(material!.copyText).not.toContain('Open task context');
+    expect(material!.copyText).toContain('Track tasks in your own harness');
     expect(material!.copyText).toContain('close with verification receipts');
-    expect(material!.copyText).toContain('/ow-new-task');
+    expect(material!.copyText).not.toContain('/ow-new-task');
     expect(material!.copyText).toContain('Reads run immediately. The dashboard records what ran.');
     expect(material!.copyText).not.toContain('(workspace_list, workspace_inspect, onboarding_plan)');
     expect(material!.copyText).not.toContain('workstream_context');
@@ -152,7 +153,7 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('use the MCP-served skill prompts directly');
     expect(material!.copyText).not.toContain('`skill/browser-qa`');
     expect(material!.copyText).toContain('`skill/learn-from-mistake`');
-    expect(material!.copyText).toContain('`skill/new-task`');
+    expect(material!.copyText).not.toContain('`skill/new-task`');
     expect(material!.copyText).toContain('`skill/onboarding`');
     expect(material!.copyText).toContain('`skill/update`');
     expect(material!.copyText).not.toContain('`skill/scaffold-local-tool`');
@@ -171,10 +172,10 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('install source is this checkout\u2019s `plugins/<client>/` packs');
     expect(material!.copyText).toContain('`bin/openworkspace.mjs`');
     expect(material!.copyText).toContain('`plugins/claude/commands/`');
-    expect(material!.copyText).toContain('Copy all four verbatim');
+    expect(material!.copyText).toContain('Copy all three verbatim');
     expect(material!.copyText).not.toContain('`ow-browser-qa`');
     expect(material!.copyText).toContain('`ow-learn-from-mistake`');
-    expect(material!.copyText).toContain('`ow-new-task`');
+    expect(material!.copyText).not.toContain('`ow-new-task`');
     expect(material!.copyText).toContain('`ow-onboarding`');
     expect(material!.copyText).toContain('`ow-update`');
     expect(material!.copyText).not.toContain('`ow-scaffold-local-tool`');

@@ -1389,8 +1389,8 @@ async function observeRepoGit(
 
 // Receipt-bound E2E: snapshot owned identities + per-service git context,
 // run one repo-native script, persist a single RunSummary carrying the capped
-// environment receipt. Surfaces through the existing recent-runs /
-// workstream_context readers — no new view, no timeline fork.
+// environment receipt. Surfaces through the existing recent-runs
+// reader — no new view, no timeline fork.
 export async function environmentVerify(
   store: Store,
   workspaceName: string,

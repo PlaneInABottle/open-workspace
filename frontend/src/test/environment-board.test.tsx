@@ -1,13 +1,13 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
-import { dashboardSessionStorageKey, type EnvironmentRecord, type EnvironmentStatus } from '../api';
+import { type EnvironmentRecord, type EnvironmentStatus } from '../api';
 import {
   EnvironmentsSection,
   lastPollLabel,
   readinessLabel,
   serviceChainLabel,
-} from '../features/projects/environment-board';
+} from '../features/environments/environment-board';
 
 function topology(): EnvironmentRecord {
   return {
@@ -133,7 +133,6 @@ describe('EnvironmentsSection', () => {
   });
 });
 
-const dashboardToken = 'f'.repeat(64);
 const clientConfig = {
   mcpServers: { openworkspace: { command: '/usr/bin/node', args: ['/opt/openworkspace/mcp.mjs'], env: { OPENWORKSPACE_HOME: '/tmp/fixture-state' } } },
 };
@@ -145,11 +144,6 @@ function json(body: unknown, statusCode = 200) {
 describe('environment read-only wiring', () => {
   it('fetches topology plus per-environment status with GET only and never renders paths', async () => {
     const approved = { id: '77777777-7777-4777-8777-777777777777', name: 'Env fixture', roots: ['/tmp/env-fixture'], createdAt: '2026-01-01T00:00:00.000Z' };
-    const inspection = {
-      workspace: approved,
-      target: { id: 'local' as const, kind: 'local' as const },
-      roots: [{ path: '/tmp/env-fixture', repositories: [], warnings: [], unavailable: false }],
-    };
     const record = {
       ...topology(),
       id: '77777777-7777-4777-8777-777777777778',
@@ -161,28 +155,29 @@ describe('environment read-only wiring', () => {
       seen.push({ url: `${url.pathname}${url.search}`, method: init.method ?? 'GET' });
       const path = decodeURI(url.pathname);
       if (path === '/api/client-config') return json(clientConfig);
-      if (path === '/api/overview') return json({ workspaces: [approved], capabilities: [], milestone: 'M1', limits: [] });
-      if (path === `/api/workspaces/${approved.name}` && (init.method ?? 'GET') === 'GET') return json(inspection);
+      if (path === '/api/overview') return json({ workspaces: [approved], milestone: 'M1', limits: [] });
       if (path === `/api/workspaces/${approved.name}/environments` && (init.method ?? 'GET') === 'GET') return json([record]);
       if (path === `/api/workspaces/${approved.name}/environments/status` && (init.method ?? 'GET') === 'GET') {
         expect(url.searchParams.get('environment')).toBe('dev');
         return json(status());
       }
-      if (path === '/api/workstreams' || path === '/api/leases') return json([]);
+      if (path.startsWith('/api/observer/doctor')) return json({ checks: [], warnings: [] });
+      if (path.startsWith('/api/observer/sessions')) return json({ sessions: [], warnings: [] });
       return json({ error: 'Not found.' }, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
-    sessionStorage.setItem(dashboardSessionStorageKey, dashboardToken);
     render(<App />);
-    const rail = await screen.findByRole('complementary', { name: 'Workspace rail' });
-    fireEvent.click(within(rail).getByRole('button', { name: /Env fixture/ }));
+    await screen.findByRole('heading', { name: 'What your AI did' });
+    fireEvent.click(screen.getAllByRole('link', { name: 'Environments' })[0]);
+    const projectSelect = await screen.findByRole('combobox', { name: 'Project' });
+    fireEvent.change(projectSelect, { target: { value: 'Env fixture' } });
 
     const section = await screen.findByRole('region', { name: 'Environments' });
     expect(within(section).getByText('dev')).toBeInTheDocument();
     expect(within(section).getByText(/port 3000 · depends on api/)).toBeInTheDocument();
     // Absolute repository paths travel on the wire but never reach the document.
     expect(within(section).queryByText(/\/tmp\/secret-repo/)).not.toBeInTheDocument();
-    expect(document.body.querySelector('#project-panel')?.textContent).not.toMatch(/\/tmp\/secret-repo/);
+    expect(document.body.textContent).not.toMatch(/\/tmp\/secret-repo/);
     const envCalls = seen.filter(call => call.url.includes('/environments'));
     expect(envCalls.length).toBeGreaterThan(0);
     expect(envCalls.every(call => call.method === 'GET')).toBe(true);

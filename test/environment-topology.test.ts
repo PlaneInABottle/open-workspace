@@ -353,29 +353,19 @@ test('outer environment-entry cap refuses the 51st entry', async t => {
   );
 });
 
-test('dashboard set requires canonical context; reads need none', async t => {
+test('dashboard set needs no token or canonical context; reads need none either', async t => {
   const f = await twoRepoFixture(t);
   const mcpToken = 'e'.repeat(64);
   const app = createApp(f.service, { mcpToken, assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const connected = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(connected.status, 201);
-  const { dashboardToken } = await connected.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   const setPath = `${origin}/api/workspaces/${f.workspace.name}/environments/set`;
   const setBody = JSON.stringify({ name: 'local', services: [httpService(f.backend, 'backend')] });
 
-  const missingContext = await fetch(setPath, { method: 'POST', headers: bareDashboardHeaders, body: setBody });
-  assert.equal(missingContext.status, 403);
+  // Open loopback: plain tokenless calls succeed.
   const dashboardSet = await fetch(setPath, {
-    method: 'POST', headers: dashboardHeaders, body: setBody,
+    method: 'POST', headers: jsonHeaders, body: setBody,
   });
   assert.equal(dashboardSet.status, 200);
   const created = await dashboardSet.json() as { id: string; name: string };
@@ -389,7 +379,7 @@ test('dashboard set requires canonical context; reads need none', async t => {
   assert.equal(mcpSet.status, 200);
 
   const statusPath = `${origin}/api/workspaces/${f.workspace.name}/environments/status?environment=${created.name}`;
-  const dashboardStatus = await fetch(statusPath, { headers: dashboardHeaders });
+  const dashboardStatus = await fetch(statusPath);
   assert.equal(dashboardStatus.status, 200);
   const mcpStatus = await fetch(statusPath, { headers: mcpHeaders });
   assert.equal(mcpStatus.status, 200);

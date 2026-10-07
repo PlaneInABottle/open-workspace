@@ -124,7 +124,7 @@ test('shelf sorts suspects first then newest with situational and recurrence bad
   assert.deepEqual(shelf.map(entry => entry.recurrenceCount), [1, 0, 1]);
 });
 
-test('shelf caps at the index ceiling and requires authentication', async t => {
+test('shelf caps at the index ceiling and serves the open loopback', async t => {
   const f = await registeredFixture('openworkspace-lesson-shelf-cap-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
@@ -143,6 +143,9 @@ test('shelf caps at the index ceiling and requires authentication', async t => {
   const shelf = await (await fetch(`${origin}/api/lessons`, { headers: headers(app) })).json() as unknown[];
   assert.equal(shelf.length, maxLearningEntries);
 
-  const denied = await fetch(`${origin}/api/lessons`);
-  assert.equal(denied.status, 401);
+  const open = await fetch(`${origin}/api/lessons`);
+  assert.equal(open.status, 200);
+  assert.equal((open.headers.get('content-type') || '').includes('application/json'), true);
+  const unknown = await fetch(`${origin}/api/lessons`, { headers: { Authorization: `Bearer ${'f'.repeat(64)}` } });
+  assert.equal(unknown.status, 401);
 });

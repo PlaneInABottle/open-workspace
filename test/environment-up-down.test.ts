@@ -516,25 +516,18 @@ test('down with PM2 unavailable fails closed: no stops, state and owned untouche
   assert.equal(down.state, 'up', 'stored state stands when nothing could be verified');
 });
 
-test('up route completes boundedly with dashboard canonical context when PM2 is unavailable', async t => {
+test('up route completes boundedly over open loopback when PM2 is unavailable', async t => {
   const r = await rig(t);
   const blindService = new WorkspaceService(r.store, async () => ({ available: false, error: 'missing' as const }));
   const app = createApp(blindService, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
-  const connected = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(connected.status, 201);
-  const { dashboardToken } = await connected.json() as { dashboardToken: string };
   // The up route carries no abort wiring (unlike verify), so the contract is
   // bounded completion: a fast unavailable report, never a hung socket.
   const started = Date.now();
   const response = await fetch(`${origin}/api/workspaces/${r.workspaceName}/environments/up`, {
     method: 'POST',
-    headers: { ...jsonHeaders, Authorization: `Bearer ${dashboardToken}`, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
+    headers: { ...jsonHeaders },
     body: JSON.stringify({ environment: r.recordName }),
   });
   const elapsed = Date.now() - started;
@@ -583,33 +576,20 @@ test('down clears an already-stopped process without a stop call', async t => {
   assert.equal(down.state, 'down');
 });
 
-test('dashboard up/down/verify require canonical context; reads need none', async t => {
+test('dashboard up/down/verify need no token; reads need none either', async t => {
   const r = await rig(t);
   const mcpToken = 'e'.repeat(64);
   const app = createApp(r.service, { mcpToken, assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const connected = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(connected.status, 201);
-  const { dashboardToken } = await connected.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
   const upPath = `${origin}/api/workspaces/${r.workspaceName}/environments/up`;
-  const downPath = `${origin}/api/workspaces/${r.workspaceName}/environments/down`;
-  const verifyPath = `${origin}/api/workspaces/${r.workspaceName}/environment/verify`;
   const upBody = JSON.stringify({ environment: r.recordName });
-  const verifyBody = JSON.stringify({ environment: r.recordName, repositoryPath: r.backend, scriptName: 'dev' });
 
-  assert.equal((await fetch(upPath, { method: 'POST', headers: bareDashboardHeaders, body: upBody })).status, 403);
-  assert.equal((await fetch(downPath, { method: 'POST', headers: bareDashboardHeaders, body: upBody })).status, 403);
-  assert.equal((await fetch(verifyPath, { method: 'POST', headers: bareDashboardHeaders, body: verifyBody })).status, 403);
+  // Open loopback accepts tokenless mutation calls (loopback Host gate still
+  // applies; foreign Origin/fetch-metadata is denied at the outer gate).
   const wrongOrigin = await fetch(upPath, {
-    method: 'POST', headers: { ...dashboardHeaders, Origin: 'http://localhost:4318' }, body: upBody,
+    method: 'POST', headers: { ...jsonHeaders, Origin: 'https://evil.example', 'Sec-Fetch-Site': 'same-origin' }, body: upBody,
   });
   assert.equal(wrongOrigin.status, 403);
 

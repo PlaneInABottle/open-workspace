@@ -9,7 +9,6 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Store, writePrivateJson } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
-import { DashboardSessions } from '../src/dashboard-sessions.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 
 async function fixture() {
@@ -35,11 +34,9 @@ async function fixture() {
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
-test('updateRoots replaces the full list while preserving UUID, name, timestamps, leases, workstreams and activity', async t => {
+test('updateRoots replaces the full list while preserving UUID, name, timestamps and activity', async t => {
   const f = await fixture(); t.after(f.cleanup);
   const workspace = await f.service.register('Project', [f.project]);
-  const workstream = await f.service.createWorkstream({ name: 'Stream', workspace: workspace.name, checkouts: [f.project] });
-  const { lease } = await f.service.acquireLease({ resource: 'port:3000', workspace: workspace.name, workstream: workstream.name });
   await f.service.recordActivity({ actor: 'mcp', operation: 'register', workspaceId: workspace.id, detail: 'Project' });
   const activityBefore = await f.service.recentActivity();
 
@@ -53,9 +50,7 @@ test('updateRoots replaces the full list while preserving UUID, name, timestamps
   const state = await f.store.read();
   assert.equal(state.workspaces.length, 1);
   assert.deepEqual(state.workspaces[0].roots, updated.roots);
-  // Continuity: leases, workstreams and prior activity entries are intact.
-  assert.deepEqual(await f.service.listWorkstreams(), [workstream]);
-  assert.deepEqual(await f.service.listLeases(), [lease]);
+  // Continuity: prior activity entries are intact.
   assert.deepEqual(await f.service.recentActivity(), activityBefore);
 });
 
@@ -95,13 +90,10 @@ test('updateRoots failures commit nothing: the state file stays byte-identical a
   assert.deepEqual((await f.store.read()).workspaces[0].roots, [await realpath(f.project)]);
 });
 
-test('HTTP roots route serves MCP directly and gates the dashboard by canonical context', async t => {
+test('HTTP roots route serves MCP and the open loopback directly', async t => {
   const f = await fixture(); t.after(f.cleanup);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
   const mcpToken = 'd'.repeat(64);
-  const app = createApp(f.service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
+  const app = createApp(f.service, { mcpToken, assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
   const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
@@ -146,27 +138,14 @@ test('HTTP roots route serves MCP directly and gates the dashboard by canonical 
   assert.deepEqual(entry, { at: entry?.at, actor: 'mcp', operation: 'roots-update', workspaceId: registered.id, detail: '1 → 2 roots' });
   assert.ok(!entry.detail.includes(f.project), 'activity must carry counts only, never raw paths');
 
-  // Dashboard without canonical context is refused; with exact canonical context it succeeds.
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST',
-    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  assert.equal((await fetch(path, {
-    method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify({ roots: [f.project] }),
-  })).status, 403);
+  // Open loopback needs no token and no canonical headers.
   const allowed = await fetch(path, {
     method: 'POST',
-    headers: dashboardHeaders,
+    headers: jsonHeaders,
     body: JSON.stringify({ roots: [f.project] }),
   });
   assert.equal(allowed.status, 200);
   assert.equal((await allowed.json() as { id: string }).id, registered.id);
-  void now;
-  void counter;
 });
 
 test('MCP register upserts roots for an existing project end to end', async t => {

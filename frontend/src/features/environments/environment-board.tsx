@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import type { EnvironmentRecord, EnvironmentStatus, EnvironmentServiceTopology, ServiceStatusEntry } from '@/api';
-import { checkpointAgeLabel } from '@/features/projects/workstream-board';
+import { checkpointAgeLabel } from '@/features/environments/time-label';
 
 /** Readiness kind in plain words; process-alive never reports ready (ceiling: starting). */
 export function readinessLabel(service: EnvironmentServiceTopology): string {

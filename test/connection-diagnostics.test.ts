@@ -20,7 +20,7 @@ test('diagnostics matrix renders loaded/disabled/missing states with a remedy ea
 
 test('diagnostics name the exact scope served and the catalog generation source', async () => {
   assert.match(text, /OPENWORKSPACE_HOME/, 'state-directory scope served');
-  assert.match(text, /dashboard tab session is separate/, 'dashboard session scope distinguished');
+  assert.match(text, /dashboard needs no browser session/, 'dashboard scope distinguished: no browser session');
   assert.match(text, /project-local/, 'project-local vs user-wide install scope');
   assert.match(text, /skill\/<name>/, 'live catalog prompts named');
   assert.match(text, /update skill/, 'snapshot refresh path named');

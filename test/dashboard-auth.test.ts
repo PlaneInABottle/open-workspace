@@ -1,25 +1,18 @@
+// Open-loopback dashboard auth: no browser token exists. Requests without a
+// bearer are the local dashboard; the MCP bearer is the bridge; any other
+// bearer is rejected. Loopback Host/Origin/fetch-metadata checks stay intact.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { DashboardSessions, dashboardSessionLifetimeMs } from '../src/dashboard-sessions.js';
 import { createApp } from '../src/http.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
-
-function consentHeaders(origin: string, extra: Record<string, string> = {}) {
-  return {
-    ...jsonHeaders,
-    Origin: origin,
-    'Sec-Fetch-Site': 'same-origin',
-    ...extra,
-  };
-}
 
 async function rawRequest(origin: string, pathname: string, options: {
   method?: string;
@@ -77,135 +70,71 @@ async function fixture(t: { after: (cleanup: () => void | Promise<void>) => void
   return { root, project, store, service: new WorkspaceService(store) };
 }
 
-test('dashboard consent requires exact same-origin browser context and no Authorization header', async t => {
+test('dashboard routes respond loopback without a token; unknown bearers are rejected', async t => {
   const f = await fixture(t);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
   const mcpToken = 'f'.repeat(64);
-  const app = createApp(f.service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
+  const app = createApp(f.service, { mcpToken, assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
-  const url = `${origin}/api/dashboard-session`;
 
-  const connected = await fetch(url, { method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }) });
-  assert.equal(connected.status, 201);
-  assert.equal(connected.headers.get('cache-control'), 'no-store');
-  const session = await connected.json() as { dashboardToken: string; expiresAt: string };
-  assert.equal(/^[a-f0-9]{64}$/.test(session.dashboardToken), true);
-  assert.equal(session.expiresAt, new Date(now + 12 * 60 * 60 * 1000).toISOString());
-  assert.equal(sessions.isActive(session.dashboardToken), true);
-
-  for (const authorization of [
-    `Bearer ${mcpToken}`,
-    `Bearer ${session.dashboardToken}`,
-    `Bearer ${'e'.repeat(64)}`,
-    'malformed authorization',
-    '',
-  ]) {
-    const denied = await rawRequest(origin, '/api/dashboard-session', {
-      method: 'POST',
-      headers: consentHeaders(origin, { Authorization: authorization }),
-      body: JSON.stringify({ consent: true }),
-    });
-    assert.equal(denied.status, 403);
-  }
-
-  const wrongContext = [
-    { Origin: undefined },
-    { Origin: 'null' },
-    { Origin: 'https://evil.example' },
-    { Origin: `http://localhost:${new URL(origin).port}` },
-    { 'Sec-Fetch-Site': undefined },
-    { 'Sec-Fetch-Site': 'same-site' },
-    { 'Sec-Fetch-Site': 'cross-site' },
-    { 'Sec-Fetch-Site': 'none' },
-  ];
-  for (const replacement of wrongContext) {
-    const headers = consentHeaders(origin);
-    for (const [key, value] of Object.entries(replacement)) {
-      if (value === undefined) delete headers[key as keyof typeof headers];
-      else headers[key as keyof typeof headers] = value;
-    }
-    const denied = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ consent: true }) });
-    assert.equal(denied.status, 403);
-  }
-
-  const differentPort = await fetch(url, {
-    method: 'POST',
-    headers: consentHeaders(origin, { Origin: `http://127.0.0.1:${Number(new URL(origin).port) + 1}` }),
-    body: JSON.stringify({ consent: true }),
+  // No token: the open-loopback dashboard reads and writes.
+  assert.equal((await fetch(`${origin}/api/overview`)).status, 200);
+  const registration = await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: jsonHeaders, body: JSON.stringify({ name: 'Dashboard project', roots: [f.project] }),
   });
-  assert.equal(differentPort.status, 403);
-  const differentHost = await rawRequest(origin, '/api/dashboard-session', {
-    method: 'POST',
-    headers: { ...consentHeaders(origin), Host: `127.0.0.1:${Number(new URL(origin).port) + 1}` },
-    body: JSON.stringify({ consent: true }),
+  assert.equal(registration.status, 201);
+  const registered = await registration.json() as { id: string; name: string };
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`)).status, 200);
+  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { method: 'DELETE' })).status, 200);
+
+  // The MCP bearer keeps working for workspace operations.
+  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders };
+  const mcpRegistration = await fetch(`${origin}/api/workspaces`, {
+    method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'MCP project', roots: [f.project] }),
+  });
+  assert.equal(mcpRegistration.status, 201);
+
+  // An unknown bearer is never dashboard access. A malformed Authorization
+  // header carries no valid bearer, so it is ignored like no header.
+  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${'e'.repeat(64)}` } })).status, 401);
+  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: 'malformed authorization' } })).status, 200);
+
+  // The removed session routes are gone: the dashboard falls through to 404
+  // while the MCP credential fails closed at the role gate (403).
+  assert.equal((await fetch(`${origin}/api/dashboard-session`, { method: 'POST', headers: jsonHeaders, body: '{}' })).status, 404);
+  assert.equal((await fetch(`${origin}/api/dashboard-session`, { method: 'POST', headers: mcpHeaders, body: '{}' })).status, 403);
+  assert.equal((await fetch(`${origin}/api/dashboard-session`, { method: 'DELETE', headers: mcpHeaders, body: '{}' })).status, 403);
+  assert.equal((await fetch(`${origin}/api/bootstrap`, { headers: mcpHeaders })).status, 403);
+
+  // Loopback Host/Origin/fetch-metadata checks still deny outsiders.
+  const differentHost = await rawRequest(origin, '/api/overview', {
+    headers: { Host: `127.0.0.1:${Number(new URL(origin).port) + 1}` },
   });
   assert.equal(differentHost.status, 403);
+  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await fetch(`${origin}/api/overview`, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
 
-  for (const invalidBody of [
-    '{}',
-    JSON.stringify({ consent: false }),
-    JSON.stringify({ consent: true, extra: true }),
-  ]) {
-    const denied = await fetch(url, { method: 'POST', headers: consentHeaders(origin), body: invalidBody });
-    assert.equal(denied.status, 400);
-  }
-  const missingContentType = await fetch(url, {
-    method: 'POST',
-    headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(missingContentType.status, 400);
-
+  // No credential is echoed into the served page.
   const page = await fetch(origin);
   const html = await page.text();
   assert.equal(page.headers.get('access-control-allow-origin'), null);
-  assert.ok(!html.includes(session.dashboardToken));
   assert.ok(!html.includes(mcpToken));
-  assert.equal((await fetch(`${origin}/api/bootstrap`, { headers: { Authorization: `Bearer ${mcpToken}` } })).status, 403);
 });
 
-test('dashboard and MCP share workspace operations; only browser session management stays dashboard-only', async t => {
+test('dashboard and MCP share workspace operations; picker and client config stay dashboard-only', async t => {
   const f = await fixture(t);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const firstMcpToken = 'a'.repeat(64);
-  let app = createApp(f.service, { mcpToken: firstMcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
+  const mcpToken = 'a'.repeat(64);
+  let app = createApp(f.service, { mcpToken, assets: fixtureStaticAssets() });
   let origin = await app.listen(0);
   t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken, expiresAt: dashboardExpiresAt } = await issued.json() as { dashboardToken: string; expiresAt: string };
-  const mcpHeaders = { Authorization: `Bearer ${firstMcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
+  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
 
   assert.equal((await fetch(`${origin}/api/overview`, { headers: mcpHeaders })).status, 200);
-  const dashboardConfig = await fetch(`${origin}/api/client-config`, { headers: dashboardHeaders });
-  assert.equal(dashboardConfig.status, 200);
-  const dashboardConfigText = await dashboardConfig.text();
-  assert.equal(dashboardConfigText.includes(firstMcpToken) || dashboardConfigText.includes(dashboardToken), false);
+  const clientConfig = await fetch(`${origin}/api/client-config`);
+  assert.equal(clientConfig.status, 200);
+  assert.equal((await clientConfig.text()).includes(mcpToken), false);
   assert.equal((await fetch(`${origin}/api/client-config`, { headers: mcpHeaders })).status, 403);
   assert.equal((await fetch(`${origin}/api/workspaces/ffffffff-ffff-4fff-8fff-ffffffffffff`, { headers: mcpHeaders })).status, 400);
-
-  const overbroadRegistration = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST',
-    headers: dashboardHeaders,
-    body: JSON.stringify({ name: 'Invalid project', roots: [f.project], approve: true }),
-  });
-  assert.equal(overbroadRegistration.status, 400);
-  assert.equal((await f.store.read()).workspaces.length, 0);
-  const legacyPathRegistration = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST',
-    headers: dashboardHeaders,
-    body: JSON.stringify({ name: 'Legacy project', path: f.project }),
-  });
-  assert.equal(legacyPathRegistration.status, 400);
-  assert.equal((await f.store.read()).workspaces.length, 0);
 
   const registrationResponse = await fetch(`${origin}/api/workspaces`, {
     method: 'POST', headers: mcpHeaders, body: JSON.stringify({ name: 'MCP project', roots: [f.project] }),
@@ -213,100 +142,32 @@ test('dashboard and MCP share workspace operations; only browser session managem
   assert.equal(registrationResponse.status, 201);
   const registered = await registrationResponse.json() as { id: string; name: string };
   assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}/onboarding`, { headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { method: 'DELETE', headers: mcpHeaders })).status, 200);
-  assert.equal((await fetch(`${origin}/api/workspaces/${registered.name}`, { headers: mcpHeaders })).status, 400);
-  assert.equal((await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: { ...mcpHeaders }, body: JSON.stringify({ consent: true }),
-  })).status, 403);
-  assert.equal((await fetch(`${origin}/api/dashboard-session`, {
-    method: 'DELETE', headers: { ...mcpHeaders }, body: '{}',
-  })).status, 403);
 
-  const secondRegistration = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Dashboard project', roots: [f.project] }),
-  });
-  assert.equal(secondRegistration.status, 201);
-  const secondRegistered = await secondRegistration.json() as { id: string; name: string };
-
-  // Shed per-service control surface (pivot): restart/stop/start/logs routes
-  // are gone — the harness shell covers process control now. Removed paths
-  // fail closed at the role gate for the MCP credential (403) and fall
-  // through to 404 for the dashboard, so nothing is served anywhere.
-  const retiredServicePath = `/api/workspaces/${secondRegistered.name}/services/restart`;
+  // Shed per-service control surface (pivot): retired paths fail closed at
+  // the role gate for the MCP credential (403) and fall through to 404 for
+  // the dashboard — nothing is served anywhere.
+  const retiredServicePath = `/api/workspaces/${registered.name}/services/restart`;
   const retiredBody = JSON.stringify({ pmId: 1, name: 'api', namespace: 'default' });
   assert.equal((await fetch(`${origin}${retiredServicePath}`, {
     method: 'POST', headers: mcpHeaders, body: retiredBody,
   })).status, 403);
   assert.equal((await fetch(`${origin}${retiredServicePath}`, {
-    method: 'POST',
-    headers: { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    body: retiredBody,
+    method: 'POST', headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' }, body: retiredBody,
   })).status, 404);
   assert.equal((await fetch(`${origin}/api/project-root-picker`, {
     method: 'POST', headers: mcpHeaders, body: '{}',
   })).status, 403);
-  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.name}`, {
-    method: 'DELETE', headers: dashboardHeaders, body: '{}',
-  })).status, 403);
-  assert.equal((await fetch(`${origin}/api/workspaces/${secondRegistered.name}`, {
-    method: 'DELETE', headers: { ...dashboardHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-  })).status, 200);
 
-  const expiresAt = Date.parse(dashboardExpiresAt);
-  now = expiresAt - 1;
-  assert.equal((await fetch(`${origin}/api/overview`, { headers: dashboardHeaders })).status, 200);
-  // Sliding renewal: the request above extended the idle window, so the
-  // original deadline no longer ends the session ...
-  now = expiresAt;
-  assert.equal((await fetch(`${origin}/api/overview`, { headers: dashboardHeaders })).status, 200);
-  // ... but an idle lifetime past the last activity still lapses into a 401.
-  now = expiresAt + dashboardSessionLifetimeMs;
-  assert.equal((await fetch(`${origin}/api/overview`, { headers: dashboardHeaders })).status, 401);
-
-  const reconnect = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(reconnect.status, 201);
-  const activeSession = await reconnect.json() as { dashboardToken: string };
-  const disconnectHeaders = {
-    Authorization: `Bearer ${activeSession.dashboardToken}`,
-    ...jsonHeaders,
-    Origin: origin,
-    'Sec-Fetch-Site': 'same-origin',
-  };
-  const deleteWithoutOrigin = Object.fromEntries(Object.entries(disconnectHeaders).filter(([name]) => name !== 'Origin')) as Record<string, string>;
-  const deleteWithoutFetchSite = Object.fromEntries(Object.entries(disconnectHeaders).filter(([name]) => name !== 'Sec-Fetch-Site')) as Record<string, string>;
-  for (const invalid of [
-    { headers: deleteWithoutOrigin, body: '{}' },
-    { headers: deleteWithoutFetchSite, body: '{}' },
-    { headers: { ...disconnectHeaders, Origin: 'https://evil.example' }, body: '{}' },
-    { headers: { ...disconnectHeaders, 'Sec-Fetch-Site': 'same-site' }, body: '{}' },
-    { headers: { ...disconnectHeaders, Authorization: `Bearer ${firstMcpToken}` }, body: '{}' },
-    { headers: { ...disconnectHeaders, 'Content-Type': 'text/plain' }, body: '{}' },
-    { headers: disconnectHeaders, body: JSON.stringify({ extra: true }) },
-  ]) {
-    const denied = await fetch(`${origin}/api/dashboard-session`, { method: 'DELETE', ...invalid });
-    assert.ok(denied.status === 400 || denied.status === 403);
-  }
-  const stillActive = await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${activeSession.dashboardToken}` } });
-  assert.equal(stillActive.status, 200);
-  const logout = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'DELETE',
-    headers: disconnectHeaders,
-    body: '{}',
-  });
-  assert.equal(logout.status, 204);
-  assert.equal(await logout.text(), '');
-  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${activeSession.dashboardToken}` } })).status, 401);
-
+  // Restart rotates the MCP credential while dashboard access stays open
+  // loopback. The t.after closure below closes the current server: it is
+  // reassigned here so teardown targets the second instance, not the first.
   await app.close();
   const secondMcpToken = 'b'.repeat(64);
   app = createApp(new WorkspaceService(new Store(f.store.directory)), { mcpToken: secondMcpToken, assets: fixtureStaticAssets() });
   origin = await app.listen(0);
-  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${firstMcpToken}` } })).status, 401);
-  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${activeSession.dashboardToken}` } })).status, 401);
+  assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${mcpToken}` } })).status, 401);
   assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${secondMcpToken}` } })).status, 200);
+  assert.equal((await fetch(`${origin}/api/overview`)).status, 200);
 });
 
 test('retired container link route stays gone on every role', async t => {
@@ -323,21 +184,11 @@ test('retired container link route stays gone on every role', async t => {
   });
   assert.equal(registered.status, 201);
   const workspace = await registered.json() as { id: string; name: string };
-  const connected = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(connected.status, 201);
-  const { dashboardToken } = await connected.json() as { dashboardToken: string };
-  const canonicalDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const path = `${origin}/api/workspaces/${workspace.name}/containers/link`;
   const linkBody = JSON.stringify({ action: 'link', containerId });
 
-  // The link route is removed (pivot): explicit container linking has no
-  // product surface. The removed path fails closed at the role gate for the
-  // MCP credential (403) and falls through to 404 for the dashboard —
-  // nothing served anywhere, nothing recorded.
   assert.equal((await fetch(path, { method: 'POST', headers: mcpHeaders, body: linkBody })).status, 403);
-  assert.equal((await fetch(path, { method: 'POST', headers: canonicalDashboardHeaders, body: linkBody })).status, 404);
+  assert.equal((await fetch(path, { method: 'POST', headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' }, body: linkBody })).status, 404);
 });
 
 test('registration bodies are byte-bounded and decoded once with fatal UTF-8', async t => {
@@ -382,21 +233,18 @@ test('registration bodies are byte-bounded and decoded once with fatal UTF-8', a
   assert.equal(oversizedResponse.status, 400);
   assert.equal((await f.store.read()).workspaces.length, 2);
 
-  const connected = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await connected.json() as { dashboardToken: string };
+  // The open-loopback dashboard shares the same ordinary 8KiB body bound.
   const ordinaryBody = Buffer.from(`{}${' '.repeat(8192)}`);
-  const ordinaryOperation = await fetch(`${origin}/api/workstreams`, {
+  const ordinaryOperation = await fetch(`${origin}/api/workspaces`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
     body: ordinaryBody,
   });
   assert.equal(ordinaryOperation.status, 400);
   assert.equal((await f.store.read()).workspaces.length, 2);
 });
 
-test('native project-root picker requires an exact dashboard session and never grants roots', async t => {
+test('native project-root picker requires canonical dashboard context and never grants roots', async t => {
   const f = await fixture(t);
   const selectedRoots = ['/tmp/Picker 🌿\nroot-a', "/tmp/other user's root-b"];
   let pickerCalls = 0;
@@ -413,16 +261,7 @@ test('native project-root picker requires an exact dashboard session and never g
   const origin = await app.listen(0);
   t.after(() => app.close());
   const mcpHeaders = { Authorization: `Bearer ${app.mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const tokenResponse = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await tokenResponse.json() as { dashboardToken: string };
-  const dashboardHeaders = {
-    Authorization: `Bearer ${dashboardToken}`,
-    ...jsonHeaders,
-    Origin: origin,
-    'Sec-Fetch-Site': 'same-origin',
-  };
+  const dashboardHeaders = { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
   const endpoint = `${origin}/api/project-root-picker`;
 
   assert.equal((await fetch(endpoint, { method: 'POST', headers: mcpHeaders, body: '{}' })).status, 403);
@@ -433,8 +272,8 @@ test('native project-root picker requires an exact dashboard session and never g
   const missingFetchSite = { ...dashboardHeaders };
   delete (missingFetchSite as Record<string, string>)['Sec-Fetch-Site'];
   assert.equal((await fetch(endpoint, { method: 'POST', headers: missingFetchSite, body: '{}' })).status, 403);
-  const { Origin: _droppedOrigin, 'Sec-Fetch-Site': _droppedFetchSite, ...bearerOnlyHeaders } = dashboardHeaders;
-  assert.equal((await fetch(endpoint, { method: 'POST', headers: bearerOnlyHeaders, body: '{}' })).status, 403);
+  const { Origin: _droppedOrigin, 'Sec-Fetch-Site': _droppedFetchSite, ...bareHeaders } = dashboardHeaders;
+  assert.equal((await fetch(endpoint, { method: 'POST', headers: bareHeaders, body: '{}' })).status, 403);
   assert.equal((await fetch(endpoint, { method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ roots: ['/tmp/extra'] }) })).status, 400);
   assert.equal(pickerCalls, 0);
 
@@ -472,18 +311,10 @@ test('closing a dashboard picker request aborts only its pending picker operatio
   });
   const origin = await app.listen(0);
   t.after(() => app.close());
-  const session = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await session.json() as { dashboardToken: string };
-  const request = httpRequest(new URL('/api/project-root-picker', origin), {
+  const { request: httpRequestFn } = await import('node:http');
+  const request = httpRequestFn(new URL('/api/project-root-picker', origin), {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${dashboardToken}`,
-      ...jsonHeaders,
-      Origin: origin,
-      'Sec-Fetch-Site': 'same-origin',
-    },
+    headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
   });
   request.on('error', () => {});
   request.end('{}');
@@ -498,179 +329,4 @@ test('closing a dashboard picker request aborts only its pending picker operatio
   assert.equal(abortedInTime, true);
   assert.equal(passedSignal?.aborted, true);
   assert.equal((await f.store.read()).workspaces.length, 0);
-});
-
-test('workstreams bind registered roots over every surface', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-workstreams-http-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const project = join(root, 'project');
-  await mkdir(project);
-  const store = new Store(join(root, 'state'));
-  await store.initialize();
-  const service = new WorkspaceService(store);
-
-  const mcpToken = 'd'.repeat(64);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const app = createApp(service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-
-  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify({ name: 'Stream project', roots: [project] }),
-  });
-  assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string; name: string };
-
-  const createBody = JSON.stringify({ name: 'First stream', workspace: proposal.name, checkouts: [project] });
-  const fromMcp = await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: mcpHeaders, body: createBody,
-  });
-  assert.equal(fromMcp.status, 201);
-  const firstStream = await fromMcp.json() as { id: string; status: string };
-  assert.equal(firstStream.status, 'active');
-  assert.equal((await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: bareDashboardHeaders, body: createBody,
-  })).status, 403);
-
-  const created = await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: dashboardHeaders,
-    body: JSON.stringify({ name: 'Second stream', workspace: proposal.name, checkouts: [project] }),
-  });
-  assert.equal(created.status, 201);
-  const workstream = await created.json() as { id: string; name: string; status: string; checkouts: Array<{ root: string; revisionState: string }> };
-  assert.equal(workstream.status, 'active');
-  assert.deepEqual(workstream.checkouts.map(checkout => checkout.root), [project]);
-
-  const listed = await fetch(`${origin}/api/workstreams`, { headers: mcpHeaders });
-  assert.equal(listed.status, 200);
-  assert.deepEqual((await listed.json() as Array<{ id: string }>).map(entry => entry.id), [firstStream.id, workstream.id]);
-  assert.equal((await fetch(`${origin}/api/workstreams/${proposal.name}/${workstream.name}`, { headers: mcpHeaders })).status, 200);
-
-  const statusPath = `${origin}/api/workstreams/${proposal.name}/${workstream.name}/status`;
-  const pausedByMcp = await fetch(statusPath, {
-    method: 'POST', headers: mcpHeaders, body: '{"status":"paused"}',
-  });
-  assert.equal(pausedByMcp.status, 200);
-  assert.equal((await pausedByMcp.json() as { status: string }).status, 'paused');
-  const paused = await fetch(statusPath, {
-    method: 'POST', headers: dashboardHeaders, body: '{"status":"paused"}',
-  });
-  assert.equal(paused.status, 200);
-  assert.equal((await paused.json() as { status: string }).status, 'paused');
-
-  const outside = await fetch(`${origin}/api/workstreams`, {
-    method: 'POST', headers: dashboardHeaders,
-    body: JSON.stringify({ name: 'Outside', workspace: proposal.name, checkouts: [root] }),
-  });
-  assert.equal(outside.status, 400);
-});
-
-test('leases serialize shared resources over every surface', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-leases-http-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const first = join(root, 'first');
-  const second = join(root, 'second');
-  await mkdir(first, { recursive: true });
-  await mkdir(second, { recursive: true });
-  const store = new Store(join(root, 'state'));
-  await store.initialize();
-  const service = new WorkspaceService(store);
-
-  const mcpToken = 'e'.repeat(64);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const app = createApp(service, { mcpToken, dashboardSessions: sessions, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-  const mcpHeaders = { Authorization: `Bearer ${mcpToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-
-  const proposalResponse = await fetch(`${origin}/api/workspaces`, {
-    method: 'POST', headers: dashboardHeaders, body: JSON.stringify({ name: 'Lease project', roots: [first, second] }),
-  });
-  assert.equal(proposalResponse.status, 201);
-  const proposal = await proposalResponse.json() as { id: string; name: string };
-
-  const makeStream = async (name: string, checkout: string) => {
-    const response = await fetch(`${origin}/api/workstreams`, {
-      method: 'POST', headers: dashboardHeaders,
-      body: JSON.stringify({ name, workspace: proposal.name, checkouts: [checkout] }),
-    });
-    assert.equal(response.status, 201);
-    return (await response.json()) as { id: string; name: string };
-  };
-  const one = await makeStream('One', first);
-  const two = await makeStream('Two', second);
-
-  const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-  const acquire = (token: Record<string, string>, body: unknown) =>
-    fetch(`${origin}/api/leases/acquire`, {
-      method: 'POST',
-      headers: token,
-      body: JSON.stringify(body),
-    });
-  assert.equal((await acquire(mcpHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' })).status, 200);
-  assert.equal((await acquire(bareDashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' })).status, 403);
-
-  assert.equal((await acquire(dashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' })).status, 200);
-  const queued = await acquire(dashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'Two' });
-  assert.equal(queued.status, 200);
-  const queuedBody = await queued.json() as { lease: { status: string }; position: number };
-  assert.equal(queuedBody.lease.status, 'queued');
-  assert.equal(queuedBody.position, 1);
-  const listed = await fetch(`${origin}/api/leases`, { headers: mcpHeaders });
-  assert.equal(listed.status, 200);
-  assert.deepEqual((await listed.json() as Array<{ resource: string; status: string }>).map(lease => [lease.resource, lease.status]), [['port:3000', 'held'], ['port:3000', 'queued']]);
-
-  const release = (token: Record<string, string>, body: unknown) =>
-    fetch(`${origin}/api/leases/release`, {
-      method: 'POST', headers: token, body: JSON.stringify(body),
-    });
-  assert.equal((await release(dashboardHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'Two' })).status, 400);
-  const released = await release(mcpHeaders, { resource: 'port:3000', workspace: 'Lease project', workstream: 'One' });
-  assert.equal(released.status, 200);
-  assert.deepEqual(await released.json(), { released: true, promoted: two.id });
-});
-
-test('authenticated activity renews the dashboard session while idle sessions still expire', async t => {
-  const f = await fixture(t);
-  let now = 1_800_000_000_000;
-  let counter = 0;
-  const sessions = new DashboardSessions(() => now, () => (++counter).toString(16).padStart(64, '0'));
-  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), dashboardSessions: sessions, assets: fixtureStaticAssets() });
-  const origin = await app.listen(0);
-  t.after(() => app.close());
-
-  const issued = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(issued.status, 201);
-  const { dashboardToken } = await issued.json() as { dashboardToken: string };
-  const headers = { Authorization: `Bearer ${dashboardToken}` };
-
-  // Activity just before the idle deadline renews the session past it.
-  now += dashboardSessionLifetimeMs - 1;
-  assert.equal((await fetch(`${origin}/api/overview`, { headers })).status, 200);
-  now += dashboardSessionLifetimeMs - 1;
-  assert.equal((await fetch(`${origin}/api/overview`, { headers })).status, 200);
-
-  // Without further activity the renewed window still lapses into a 401.
-  now += dashboardSessionLifetimeMs;
-  assert.equal((await fetch(`${origin}/api/overview`, { headers })).status, 401);
 });

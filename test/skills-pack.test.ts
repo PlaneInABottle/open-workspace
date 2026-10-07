@@ -152,6 +152,31 @@ test('generator fails closed on cap breach with a named error', async t => {
   assert.equal(after.get(unrelatedFile), 'Unrelated content.\n', 'unrelated files survive pruning');
 });
 
+test('shipped skills and packs never reference removed views', async () => {
+  // Removed dashboard views (projects/records/lessons/workstreams/connect)
+  // must not be reachable from consumer guidance: agents following a stale
+  // pointer would invent a surface that no longer exists. Denial statements
+  // ("there is no workstream surface") live in canonical prose, not in these
+  // pointer patterns, so a match here is always a stale reference.
+  const staleViewPattern = /records view|recent_runs|activity_list|create new project|choose a project|learned lessons|projectsview|recordsview|connectionview|workstream-board|workstream board|\/api\/lessons|lesson shelf|what happened here/i;
+  const collect = async (root: string): Promise<string[]> => {
+    const out: string[] = [];
+    const walk = async (dir: string) => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full);
+      }
+    };
+    await walk(root);
+    return out.sort();
+  };
+  for (const file of [...(await collect(skillsDir)), ...(await collect(pluginsDir))]) {
+    const text = await readFile(file, 'utf8');
+    assert.doesNotMatch(text, staleViewPattern, `${file}: no pointer to a removed view`);
+  }
+});
+
 test('fixture copy walkthrough: verbatim pinned files, preserved settings, same-path updates', async t => {
   const tmp = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-skill-install-')));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -211,7 +236,7 @@ test('stale→refresh walkthrough: byte-compare reports per-skill current/update
 
   const currentSkill = 'learn-from-mistake';
   const staleSkill = 'update';
-  const missingSkill = 'new-task';
+  const missingSkill = 'onboarding';
   const currentServed = await served(currentSkill);
   await writeFile(dest(currentSkill), installedForm(currentServed, currentSkill));
   // Stale seed: installed copy from an older canonical revision (final line

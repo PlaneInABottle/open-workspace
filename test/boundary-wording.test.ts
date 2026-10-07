@@ -12,15 +12,11 @@ const skill = (name: string) => readFile(join(repoRoot, 'skills', name, 'SKILL.m
 const shellControlClaim = /(?<!never )(?:block(?:s|ing|ed)?|prevent(?:s|ed|ing)?|restrict(?:s|ed|ing)?|disabl(?:e|es|ed|ing))[^.\n]{0,80}?(?:shell|terminal)/i;
 
 test('reconciliation tasks never present side-effect ops as verification', async t => {
-  const handoff = await skill('new-task');
-  assert.match(handoff, /never rerun tests, sends, or other side effects as a substitute for a missing handoff/,
-    'handoff read-back forbids side effects as a substitute');
-  assert.match(handoff, /read-back itself runs nothing/, 'read-back states its own side-effect-freedom');
   const review = await skill('learn-from-mistake');
   assert.match(review, /they do not authorize other actions/, 'evidence review authorizes nothing else');
   const refresh = await skill('update');
-  assert.match(refresh, /runs no service, verify, lease, or install operations/, 'refresh verification is a free read only');
-  for (const [name, body] of [['new-task', handoff], ['learn-from-mistake', review], ['update', refresh]] as const) {
+  assert.match(refresh, /runs no service, verify, or install operations/, 'refresh verification is a free read only');
+  for (const [name, body] of [['learn-from-mistake', review], ['update', refresh]] as const) {
     assert.doesNotMatch(body, shellControlClaim, `${name}: no shell-control claim`);
   }
 });
@@ -29,8 +25,6 @@ test('skills state our tools’ limits without claiming the agent’s shell', as
   const onboarding = await skill('onboarding');
   assert.match(onboarding, /never blocks or limits your own shell/, 'refusals scoped to our own tools');
   assert.doesNotMatch(onboarding, shellControlClaim);
-  const handoff = await skill('new-task');
-  assert.match(handoff, /never block your own shell access/, 'read-back scoped to our own tools');
 });
 
 test('MCP instructions claim no control over the agent’s shell', async () => {

@@ -26,71 +26,6 @@ const registration = z.object({
   }),
   createdAt: z.string().datetime(),
 }).strict();
-const workstreamCheckout = z.object({
-  root: rootPath,
-  revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
-  revisionState: z.enum(['observed', 'unknown']),
-  observedAt: z.string().datetime(),
-}).strict();
-const checkpointNote = z.object({
-  goal: z.string().min(1).max(1000),
-  blocker: z.string().max(1000),
-  next: z.string().min(1).max(1000),
-  owner: z.enum(['agent', 'user']),
-  at: z.string().datetime(),
-  // Additive: notes written before evidence links parse with no links.
-  // Read stays permissive (bounded opaque strings); write-path shape and
-  // existence are enforced by sanitizeCheckpointNote plus the service.
-  evidence: z.array(z.string().min(1).max(128)).max(5).optional().default([]),
-}).strict();
-const completionCheck = z.object({
-  name: z.string().min(1).max(80),
-  result: z.enum(['passed', 'failed', 'error']),
-  environment: z.string().min(1).max(200),
-  evidenceIds: z.array(z.string().min(1).max(128)).max(5).default([]),
-  evidenceSource: z.literal('agent_report'),
-  evidenceLabel: z.literal('Agent-reported — not independently verified here'),
-}).strict();
-const completion = z.object({
-  assignmentId: z.string().min(1).max(128),
-  completionId: z.string().uuid(),
-  outcome: z.enum(['passed', 'blocked', 'failed']),
-  revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
-  dirty: z.boolean().nullable(),
-  dirtyFingerprint: z.object({
-    diffHash: z.string().regex(/^[0-9a-f]{64}$/),
-    files: z.array(z.string().min(1).max(256)).max(50),
-    truncated: z.boolean(),
-  }).strict().nullable(),
-  checks: z.array(completionCheck).min(1).max(20),
-  recordedAt: z.string().datetime(),
-}).strict();
-const workstream = z.object({
-  id: z.string().uuid(),
-  name,
-  workspaceId: z.string().uuid(),
-  checkouts: z.array(workstreamCheckout).min(1).max(20),
-  status: z.enum(['active', 'paused', 'done']),
-  checkpointNote: checkpointNote.nullable().optional().default(null),
-  // Additive: files written before history parse with an empty history and
-  // seed from checkpointNote at read/write time; no migration, no versioned
-  // upgrade. Each entry reuses the same per-entry bounds as a single note.
-  checkpointHistory: z.array(checkpointNote).max(10).optional().default([]),
-  // Separate from the 10-note checkpoint ring: task handoffs have distinct
-  // assignment identity and keep up to 20 results without growing unbounded.
-  completions: z.array(completion).max(20).optional().default([]),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-}).strict();
-const lease = z.object({
-  resource: z.string().min(1).max(80),
-  workstreamId: z.string().uuid(),
-  status: z.enum(['held', 'queued']),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-  // Additive: leases persisted before TTL support remain non-expiring.
-  expiresAt: z.string().datetime().nullable().optional().default(null),
-}).strict();
 const activityEntry = z.object({
   at: z.string().datetime(),
   actor: z.enum(['dashboard', 'mcp']),
@@ -162,8 +97,6 @@ const workspaceEnvironments = z.object({
 }).strict();
 const stateSchema = z.object({
   workspaces: z.array(registration).max(50),
-  workstreams: z.array(workstream).max(50),
-  leases: z.array(lease).max(50).optional().default([]),
   activity: z.array(activityEntry).max(50).optional().default([]),
   environments: z.array(workspaceEnvironments).max(50).optional().default([]),
 }).strict().superRefine((state, context) => {
@@ -179,8 +112,6 @@ const stateSchema = z.object({
   });
 });
 export type Registration = z.infer<typeof registration>;
-export type WorkstreamRecord = z.infer<typeof workstream>;
-export type LeaseRecord = z.infer<typeof lease>;
 export type EnvironmentService = z.infer<typeof environmentService>;
 export type EnvironmentOwned = z.infer<typeof environmentOwned>;
 export type EnvironmentRecord = z.infer<typeof environmentRecord>;
@@ -270,30 +201,6 @@ export function resolveWorkspaceRecord(
   const record = matches[0];
   if (!record) throw new Error(notFoundMessage);
   return record;
-}
-
-/** Exact (trimmed, case-insensitive) workstream resolution within one workspace. */
-export function resolveWorkstreamRecord(
-  state: State,
-  workspaceInput: unknown,
-  workstreamInput: unknown,
-  messages: { workspaceInvalid: string; workspaceNotFound: string; workstreamInvalid: string; workstreamNotFound: string },
-): { workspace: Registration; workstream: WorkstreamRecord } {
-  const workspace = resolveWorkspaceRecord(state, workspaceInput, messages.workspaceInvalid, messages.workspaceNotFound);
-  const name = parseNameInput(workstreamInput, messages.workstreamInvalid);
-  const folded = foldName(name);
-  const matches = state.workstreams.filter(workstream =>
-    workstream.workspaceId === workspace.id && foldName(workstream.name) === folded);
-  if (matches.length > 1) {
-    throw ambiguousName(matches.map(workstream => ({
-      name: workstream.name,
-      rootLabel: workstream.checkouts[0]?.root ?? '',
-      createdAt: workstream.createdAt,
-    })));
-  }
-  const workstream = matches[0];
-  if (!workstream) throw new Error(messages.workstreamNotFound);
-  return { workspace, workstream };
 }
 
 /** Exact (trimmed, case-insensitive) environment resolution within one workspace. */
@@ -392,6 +299,17 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
   }
 }
 
+/** Retired top-level keys from our own pre-pivot state files. */
+const legacyTopLevelKeys = ['workstreams', 'leases'] as const;
+
+/** Drop our own retired keys before the strict parse; foreign shapes still fail closed. */
+function withoutLegacyTopLevelKeys(stored: unknown): unknown {
+  if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return stored;
+  const copy = { ...(stored as Record<string, unknown>) };
+  for (const key of legacyTopLevelKeys) delete copy[key];
+  return copy;
+}
+
 export class Store {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(readonly directory: string) {}
@@ -404,16 +322,20 @@ export class Store {
       stored = await readPrivateJson(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      await writePrivateJson(path, { workspaces: [], workstreams: [] });
+      await writePrivateJson(path, { workspaces: [] });
       return;
     }
 
-    // Hard cutover, no migrations: unknown shapes fail closed and the file is left byte-identical.
-    if (!stateSchema.safeParse(stored).success) throw new Error('Local workspace state is invalid.');
+    // Upgrade-tolerated legacy keys: files written before the pivot shed may
+    // still carry our own retired top-level `workstreams`/`leases` keys.
+    // They are ignored-and-dropped on read (the service starts; the file
+    // migrates forward on the next write). Anything else unknown still fails
+    // closed and the file is left byte-identical.
+    if (!stateSchema.safeParse(withoutLegacyTopLevelKeys(stored)).success) throw new Error('Local workspace state is invalid.');
   }
 
   async read(): Promise<State> {
-    return stateSchema.parse(await readPrivateJson(join(this.directory, 'state.json')));
+    return stateSchema.parse(withoutLegacyTopLevelKeys(await readPrivateJson(join(this.directory, 'state.json'))));
   }
 
   update<T>(change: (state: State) => T | Promise<T>): Promise<T> {

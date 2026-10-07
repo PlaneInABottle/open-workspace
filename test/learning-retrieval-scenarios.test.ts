@@ -20,7 +20,7 @@ import {
 // secret-missing-on-start, docker volume mount, service start order,
 // port collision, mailbox lease, checkpoint hygiene, plus 2 unrelated
 // decoys) crossed with 5 task contexts. Real function calls throughout
-// (recordLearning → workstreamContext/selectSituationalLessons/
+// (recordLearning → selectSituationalLessons/
 // learningLessonLine); no mocks of the ranker. Tags are shapes only.
 
 interface World {
@@ -71,10 +71,6 @@ async function taskLessons(
   task: { name: string; goal: string; blocker: string; next: string },
   environment?: Array<{ id: string; port: number }>,
 ): Promise<string[]> {
-  const workstream = await world.service.createWorkstream({
-    name: task.name, workspace: world.workspaceName, checkouts: [world.project],
-  });
-  await world.service.setWorkstreamStatus(world.workspaceName, workstream.name, 'paused', { ...task, owner: 'agent' });
   if (environment) {
     await world.service.environmentSet(world.workspaceName, {
       name: 'dev',
@@ -83,7 +79,20 @@ async function taskLessons(
       })),
     });
   }
-  return (await world.service.workstreamContext(world.workspaceName, workstream.name)).situationalLessons;
+  // Task context mirrors the former handoff bundle: task name plus
+  // goal/blocker/next and the workspace's environment service names+ports
+  // (names only — never repository paths).
+  const environmentTokens: string[] = [];
+  for (const item of (await world.service.environmentList(world.workspaceName)).slice(0, 5)) {
+    for (const service of item.services.slice(0, 10)) {
+      environmentTokens.push(service.name ?? service.id);
+      if (service.port !== null && service.port !== undefined) {
+        environmentTokens.push(String(service.port));
+      }
+    }
+  }
+  const context = [task.name, task.goal, task.blocker, task.next, ...environmentTokens].join('\n');
+  return selectSituationalLessons(await readLearningIndex(world.store.directory), context);
 }
 
 function titlesOf(lines: string[]): string[] {
@@ -188,7 +197,7 @@ test('760B budget holds with 3 long titles and legacy entries still match', asyn
       workspaceId: workspace.id, scriptName: 'test', outcome: 'failed', durationMs: 40,
       output: 'not ok 1 shared budget failure mode', outputTruncated: false,
     });
-    const ref = (await service.recentRuns(workspace.name, undefined, 1))[0].id;
+    const ref = (await service.recentRuns(workspace.name, 1))[0].id;
     for (const suffix of ['alpha', 'bravo', 'gamma']) {
       await service.recordLearning({
         title: `${'Long budget title words '.repeat(3)}${suffix}`.slice(0, 78),
@@ -271,7 +280,7 @@ test('skill-shortness contract: titles only, one line each, never bodies', async
     assert.ok(!line.includes('\n'), `one-line format: ${line}`);
     assert.match(line, /^[^()]+\([^()]+\)( \[(situational|needs-review)\])?$/, `title-only shape: ${line}`);
   }
-  // The pure selector agrees with the served context field.
+  // The pure selector agrees with the task-context helper.
   const stored = await readLearningIndex(world.store.directory);
   const direct = selectSituationalLessons(stored, 'start all services from scratch missing setting value');
   assert.deepEqual(new Set(titlesOf(direct)), new Set(titlesOf(lessons)));

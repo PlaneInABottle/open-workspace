@@ -87,11 +87,11 @@ export const maxSituationLength = 40;
 export const learningTotalCap = 760;
 const maxLessonTitlesPerLine = 3;
 
-// Mirrors workstreams.ts: opaque run-summary stems only (never slashes,
+// Opaque run-summary stems only (never slashes,
 // whitespace or secret-shaped content). Shape refusal is a bounds error;
 // well-formed but unknown IDs are refused separately against stored runs.
 const evidenceIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-// Mirrors workstreams.ts absolutePathPattern: pattern-only text never carries
+// Pattern-only text never carries
 // filesystem literals (leading / after a boundary, drive prefixes, UNC).
 const absolutePathPattern = /(^|[\s"'=(])(\/[^\s"';)]+|[A-Za-z]:[\\/][^\s]*|\\\\[^\s]+)/i;
 
@@ -546,7 +546,7 @@ export function selectSituationalLessons(
  * truncates 3→2→1→0 titles until the line fits the remaining total budget.
  * Returns undefined when nothing matches, nothing fits, or no index exists.
  * Failure-only by design: situational lessons never inject at startup; they
- * surface through workstream_context's situationalLessons field instead.
+ * surface through the pure situational selector below instead.
  */
 export async function learningLessonLine(
   homeDirectory: string,

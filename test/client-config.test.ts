@@ -3,21 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { DashboardSessions } from '../src/dashboard-sessions.js';
 import { createApp } from '../src/http.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
-
-function consentHeaders(origin: string) {
-  return {
-    ...jsonHeaders,
-    Origin: origin,
-    'Sec-Fetch-Site': 'same-origin',
-  };
-}
 
 async function fixture(t: { after: (cleanup: () => void | Promise<void>) => void }) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-client-config-')));
@@ -33,6 +24,8 @@ async function fixture(t: { after: (cleanup: () => void | Promise<void>) => void
 // Pre-branch pin (SEA plan M1.3): the source-preview client-config response is
 // byte-identical in shape — execPath + companion script + mcp args, no `sea` flag.
 // The SEA branch adds `sea: true` only; source responses must keep omitting it.
+// Client config is dashboard-only over open loopback: no token needed, the MCP
+// bearer is denied.
 test('source client-config shape: companion mcp launch, no sea flag', async t => {
   const f = await fixture(t);
   const mcpToken = 'c'.repeat(64);
@@ -40,14 +33,7 @@ test('source client-config shape: companion mcp launch, no sea flag', async t =>
   const origin = await app.listen(0);
   t.after(() => app.close());
 
-  const connected = await fetch(`${origin}/api/dashboard-session`, {
-    method: 'POST', headers: consentHeaders(origin), body: JSON.stringify({ consent: true }),
-  });
-  assert.equal(connected.status, 201);
-  const { dashboardToken } = await connected.json() as { dashboardToken: string };
-  const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-
-  const response = await fetch(`${origin}/api/client-config`, { headers: dashboardHeaders });
+  const response = await fetch(`${origin}/api/client-config`);
   assert.equal(response.status, 200);
   const body = await response.json() as unknown;
   assert.deepEqual(Object.keys(body as Record<string, unknown>), ['mcpServers']);

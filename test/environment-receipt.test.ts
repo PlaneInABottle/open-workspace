@@ -96,7 +96,7 @@ test('environment_verify pins a capped identity receipt surfaced via recent_runs
   assert.equal(runs[0].environment?.envName, 'local');
   assert.equal(runs[0].environment?.services.length, 2);
   assert.ok(runs[0].excerptPreview.length <= 200);
-  const viaService = await r.service.recentRuns(r.workspaceName, undefined, 5);
+  const viaService = await r.service.recentRuns(r.workspaceName, 5);
   assert.equal(viaService[0].environment?.services[0].revision, revision);
 });
 

@@ -109,6 +109,35 @@ test('state persists and concurrent registrations are not lost', async t => {
   await assert.rejects(f.service.remove(first.name), /Workspace not found/);
 });
 
+test('legacy pre-pivot state with retired workstreams/leases keys parses and migrates forward', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const created = await f.service.register('Project', [f.project]);
+  const raw = JSON.parse(await readFile(join(f.store.directory, 'state.json'), 'utf8')) as Record<string, unknown>;
+  await writePrivateJson(join(f.store.directory, 'state.json'), {
+    ...raw,
+    workstreams: [{ id: 'retired-sentinel' }],
+    leases: { 'retired-sentinel': { owner: 'retired' } },
+  });
+  // Our own retired keys are ignored-and-dropped: the service starts.
+  const reopened = new Store(f.store.directory);
+  await reopened.initialize();
+  const state = await reopened.read();
+  assert.equal(state.workspaces.length, 1);
+  assert.equal(state.workspaces[0].name, created.name);
+  assert.ok(!('workstreams' in (state as unknown as Record<string, unknown>)));
+  assert.ok(!('leases' in (state as unknown as Record<string, unknown>)));
+  // The next write migrates the file forward: retired keys are gone on disk.
+  await reopened.update(() => undefined);
+  const onDisk = JSON.parse(await readFile(join(f.store.directory, 'state.json'), 'utf8')) as Record<string, unknown>;
+  assert.ok(!('workstreams' in onDisk) && !('leases' in onDisk), 'retired keys dropped from the file');
+  assert.equal((onDisk.workspaces as unknown[]).length, 1);
+  // Genuinely foreign shapes still fail closed and leave the file byte-identical.
+  await writePrivateJson(join(f.store.directory, 'state.json'), { ...onDisk, intruder: [1] });
+  const before = await readFile(join(f.store.directory, 'state.json'), 'utf8');
+  await assert.rejects(new Store(f.store.directory).initialize(), /invalid/);
+  assert.equal(await readFile(join(f.store.directory, 'state.json'), 'utf8'), before);
+});
+
 test('private state rejects public permissions and symlinked files', async t => {
   const f = await fixture(); t.after(f.cleanup);
   await chmod(f.store.directory, 0o755);
@@ -169,14 +198,13 @@ test('unknown state shapes fail closed and stay byte-identical', async t => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const valid = {
     workspaces: [],
-    workstreams: [],
   };
   const cases: Buffer[] = [
     Buffer.from('{broken'),
     Buffer.from(JSON.stringify({ ...valid, proposals: [] })),
     Buffer.from(JSON.stringify({ ...valid, extra: true })),
     Buffer.from(JSON.stringify({ ...valid, workspaces: [{ id: '66666666-6666-4666-8666-666666666666', name: 'Unknown field', roots: ['/synthetic/repo'], createdAt: '2026-01-01T00:00:00.000Z', unknown: true }] })),
-    Buffer.from(JSON.stringify({ workspaces: [{ id: '44444444-4444-4444-8444-444444444444', name: 'Mixed', path: '/synthetic/repo', roots: ['/synthetic/other'], createdAt: '2026-01-01T00:00:00.000Z' }], workstreams: [] })),
+    Buffer.from(JSON.stringify({ workspaces: [{ id: '44444444-4444-4444-8444-444444444444', name: 'Mixed', path: '/synthetic/repo', roots: ['/synthetic/other'], createdAt: '2026-01-01T00:00:00.000Z' }] })),
     Buffer.concat([Buffer.from(JSON.stringify(valid)), Buffer.from([0xff])]),
     Buffer.concat([Buffer.from(JSON.stringify(valid)), Buffer.alloc(1024 * 1024, 0x20)]),
   ];
@@ -201,7 +229,6 @@ test('legacy registrations default to no linked containers without rewriting sta
       roots: [f.project],
       createdAt: '2026-01-01T00:00:00.000Z',
     }],
-    workstreams: [],
   }));
   await writeFile(statePath, legacy);
   await f.store.initialize();
@@ -222,7 +249,6 @@ test('oversized serialized state is rejected before replacing the prior bytes', 
       roots,
       createdAt: '2026-01-01T00:00:00.000Z',
     })),
-    workstreams: [],
   };
   const expanded = { ...populated, workspaces: [...populated.workspaces, { id: '77777777-7777-4777-8777-777777777777', name: 'Overflow', roots, createdAt: '2026-01-01T00:00:00.000Z' }] };
   const currentBytes = Buffer.from(JSON.stringify(populated, null, 2));

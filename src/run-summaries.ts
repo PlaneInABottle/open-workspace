@@ -78,7 +78,7 @@ export interface RunListEntry extends Omit<RunSummary, 'failureExcerpt'> {
   source: RunSource;
   /** Distinct human wording for the source; never a verification claim for imports. */
   sourceLabel: string;
-  /** True when a checkpoint note in this scope references this run, exempting it from ring eviction. */
+  /** Reserved note→run link flag; no producer remains, so list reads report false. */
   pinnedByNote: boolean;
 }
 
@@ -120,7 +120,7 @@ export function capEnvironmentReceipt(receipt: EnvironmentReceipt | null): Envir
 }
 /**
  * Hard ceiling on stored summary files per scope. The ring keeps the newest
- * 20; runs referenced by a checkpoint note in scope survive eviction, but
+ * 20; explicitly pinned runs survive eviction, but
  * pins never push a scope past 30 files — older pins evict first once the
  * ceiling is reached. Pins are IDs only, never content.
  */
@@ -138,28 +138,6 @@ const maxFailingNames = 20;
 // Exported for the learning rule index, which reuses the same local-only window.
 export const maxRecentRunsForLearningSignal = 20;
 const failedRunThresholdForLearningSignal = 3;
-
-/** IDs referenced by checkpoint notes or completion checks in scope, exempt from ordinary run-ring eviction. */
-export function pinnedRunIds(
-  workstreams: Array<{
-    workspaceId: string;
-    checkpointNote: { evidence?: string[] } | null;
-    completions?: Array<{ checks: Array<{ evidenceIds?: string[] }> }>;
-  }>,
-  workspaceId: string,
-): Set<string> {
-  const pinned = new Set<string>();
-  for (const workstream of workstreams) {
-    if (workstream.workspaceId !== workspaceId) continue;
-    for (const id of workstream.checkpointNote?.evidence ?? []) pinned.add(id);
-    for (const completion of workstream.completions ?? []) {
-      for (const check of completion.checks) {
-        for (const id of check.evidenceIds ?? []) pinned.add(id);
-      }
-    }
-  }
-  return pinned;
-}
 
 /** Mask secret-shaped text while keeping paths and structure readable. */
 export function maskSecrets(text: string): string {
@@ -286,11 +264,10 @@ async function storeSummaryFile(
   }
   await writeFile(join(directory, `${id}.json`), JSON.stringify(summary), { mode: 0o600 });
   if (store) {
-    // Serialize eviction with completion/checkpoint writes and derive pins from
-    // the queued state: a pre-persist snapshot can miss a ref committed while
-    // this summary was being written.
-    await store.update(async state => {
-      await pruneStoredSummaries(directory, pinnedRunIds(state.workstreams, summary.workspaceId));
+    // Serialize eviction with run writes: a pre-persist snapshot can miss a
+    // summary committed while this one was being written.
+    await store.update(async () => {
+      await pruneStoredSummaries(directory, pinned);
     });
   } else {
     await pruneStoredSummaries(directory, pinned);

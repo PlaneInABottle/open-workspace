@@ -11,50 +11,13 @@ import { httpTransportMessages, safeMessages } from '../src/http.js';
 import { projectRootMessages } from '../src/project-roots.js';
 import { verifyMessages } from '../src/verify.js';
 import { workspaceMessages } from '../src/workspace.js';
-import {
-  checkpointBoundsMessage,
-  checkpointEvidenceMessage,
-  checkpointPatternMessage,
-  completionBoundsMessage,
-  completionEvidenceMessage,
-  completionIdConflictMessage,
-  completionPatternMessage,
-  unknownWorkstreamMessage,
-  unknownWorkstreamStatusMessage,
-  workspaceAccessMessage,
-  workstreamCheckoutCountMessage,
-  workstreamCheckoutRootMessage,
-  workstreamLimitMessage,
-  workstreamMessages,
-  workstreamNameMessage,
-  workstreamReopenMessage,
-} from '../src/workstreams.js';
-import { leaseMessages } from '../src/leases.js';
 import { datastoreMessages } from '../src/datastore.js';
 import { dockerLogMessages, dockerMetadataMessages } from '../src/services-docker.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from '../src/run-summaries.js';
 import { learningMessages } from '../src/rule-index.js';
 import { environmentMessages } from '../src/environment.js';
 import { nameMessages } from '../src/store.js';
-
-const workstreamMessageList: readonly string[] = [
-  unknownWorkstreamMessage,
-  unknownWorkstreamStatusMessage,
-  workstreamReopenMessage,
-  workspaceAccessMessage,
-  workstreamLimitMessage,
-  workstreamNameMessage,
-  workstreamCheckoutCountMessage,
-  workstreamCheckoutRootMessage,
-  checkpointBoundsMessage,
-  checkpointPatternMessage,
-  checkpointEvidenceMessage,
-  completionBoundsMessage,
-  completionPatternMessage,
-  completionEvidenceMessage,
-  completionIdConflictMessage,
-  ...Object.values(workstreamMessages),
-];
+import { observerMessages } from '../src/observer.js';
 
 // Owner export groups mirroring the http.ts composition (order-independent:
 // the assertion below compares sorted sets).
@@ -62,14 +25,13 @@ const ownerGroups: ReadonlyArray<{ file: string; values: readonly string[] }> = 
   { file: 'project-roots.ts', values: Object.values(projectRootMessages) },
   { file: 'workspace.ts', values: Object.values(workspaceMessages) },
   { file: 'verify.ts', values: Object.values(verifyMessages) },
-  { file: 'workstreams.ts', values: workstreamMessageList },
-  { file: 'leases.ts', values: Object.values(leaseMessages) },
   { file: 'datastore.ts', values: Object.values(datastoreMessages) },
   { file: 'services-docker.ts', values: Object.values(dockerMetadataMessages) },
   { file: 'run-summaries.ts', values: [externalImportInvalidMessage, externalImportClaimMessage] },
   { file: 'rule-index.ts', values: Object.values(learningMessages) },
   { file: 'environment.ts', values: Object.values(environmentMessages) },
   { file: 'store.ts', values: Object.values(nameMessages) },
+  { file: 'observer.ts', values: Object.values(observerMessages) },
   { file: 'http.ts', values: Object.values(httpTransportMessages) },
 ];
 
@@ -123,7 +85,6 @@ test('each allowlist message has one definition site and no literal throw site',
 const outOfAllowlist: ReadonlyArray<{ file: string; message: string; reason: string }> = [
   { file: 'connection.ts', message: 'Local connection must target the loopback service.', reason: 'companion-side guard, never thrown into the route catch' },
   { file: 'connection.ts', message: 'Local operation failed.', reason: 'client fallback default (expression throw), never allowlisted' },
-  { file: 'dashboard-sessions.ts', message: 'Invalid dashboard session token source.', reason: 'server-constructed token invariant, surfaces as generic' },
   { file: 'discovery.ts', message: 'Package manifest is not a bounded regular file.', reason: 'manifest probe detail, surfaces as generic' },
   { file: 'http.ts', message: 'Operation could not complete safely. Check the directory and input, then retry.', reason: 'the generic fallback itself, not an allowlist entry' },
   { file: 'main.ts', message: 'Invalid port.', reason: 'CLI startup validation, process exits before serving' },

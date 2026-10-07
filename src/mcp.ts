@@ -14,7 +14,7 @@ export async function runMcpBridge(): Promise<void> {
   // Base instructions stay well under the 760-byte cap so the optional
   // learning-loop line below still fits; per-tool detail lives in each tool
   // description and in the lazily fetched onboarding_plan text.
-  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicit repository roots; workspace_register reads bounded metadata and re-registering replaces roots. The service cannot install tools. The dashboard records what ran. Your harness keeps commands, logs and process control — MCP is only environment orchestration plus memory. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file; micro-steps may stay native. Open workstream_context at task start.';
+  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicit repository roots; workspace_register reads bounded metadata and re-registering replaces roots. The service cannot install tools. The dashboard records what ran. Your harness keeps commands, logs and process control — MCP is only environment orchestration plus memory. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file; micro-steps may stay native.';
   let instructions = baseInstructions;
   try {
     const suffix = await learningInstructionSuffix(stateDirectory());
@@ -49,11 +49,8 @@ export async function runMcpBridge(): Promise<void> {
   // name; stable UUIDs stay server-internal and UUID-shaped inputs are
   // rejected with the use-the-name guidance. Names are URL-encoded per call.
   const workspaceName = z.string().min(1).max(100).describe('Registered project name.');
-  const workstreamName = z.string().min(1).max(100).describe('Workstream name within the project.');
   const environmentName = z.string().min(1).max(100).describe('Environment name within the project.');
   const workspacePath = (name: string, rest = '') => `/api/workspaces/${encodeURIComponent(name)}${rest}`;
-  const workstreamPath = (workspace: string, workstream: string, rest = '') =>
-    `/api/workstreams/${encodeURIComponent(workspace)}/${encodeURIComponent(workstream)}${rest}`;
   server.registerTool('workspace_list', {
     description: 'Lists registered workspaces and tool availability.',
     annotations: readHints,
@@ -66,16 +63,6 @@ export async function runMcpBridge(): Promise<void> {
     }).strict(),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, ({ name, roots }) => request('/api/workspaces', { name, roots }));
-  server.registerTool('workspace_workstreams', {
-    description: 'Lists workstreams with pinned revisions.',
-    inputSchema: z.object({}).strict(),
-    annotations: readHints,
-  }, () => request('/api/workstreams'));
-  server.registerTool('workspace_leases', {
-    description: 'Lists exclusive resource leases.',
-    inputSchema: z.object({}).strict(),
-    annotations: readHints,
-  }, () => request('/api/leases'));
   server.registerTool('workspace_inspect', {
     description: 'Reads bounded manifest metadata per root group.',
     inputSchema: z.object({ workspace: workspaceName }).strict(), annotations: readHints,
@@ -139,113 +126,6 @@ export async function runMcpBridge(): Promise<void> {
     }).strict(),
     annotations: operateHints,
   }, ({ workspace, environment, name }) => request(`${workspacePath(workspace, '/environments')}/${encodeURIComponent(environment)}/rename`, { name }));
-  server.registerTool('lease_acquire', {
-    description: 'Hold a named exclusive resource for a workstream, or join its visible queue when busy.',
-    inputSchema: z.object({
-      resource: z.string().min(1).max(80),
-      workspace: workspaceName,
-      workstream: workstreamName,
-    }).strict(),
-    annotations: operateHints,
-  }, ({ resource, workspace, workstream }) => request('/api/leases/acquire', { resource, workspace, workstream }));
-  server.registerTool('lease_release', {
-    description: 'Release a resource lease held by a workstream; the oldest queued workstream is promoted.',
-    inputSchema: z.object({
-      resource: z.string().min(1).max(80),
-      workspace: workspaceName,
-      workstream: workstreamName,
-    }).strict(),
-    annotations: operateHints,
-  }, ({ resource, workspace, workstream }) => request('/api/leases/release', { resource, workspace, workstream }));
-  server.registerTool('lease_touch', {
-    description: 'Renew a held lease for ten minutes per touch; renewable indefinitely while holder lives. Queue progresses on crash/stop/finish/release. Only the holder may touch.',
-    inputSchema: z.object({
-      resource: z.string().min(1).max(80),
-      workspace: workspaceName,
-      workstream: workstreamName,
-    }).strict(),
-    annotations: operateHints,
-  }, ({ resource, workspace, workstream }) => request('/api/leases/touch', { resource, workspace, workstream }));
-  server.registerTool('workstream_create', {
-    description: 'Create a workstream binding registered roots of one workspace with pinned revisions.',
-    inputSchema: z.object({
-      name: z.string().min(1).max(100),
-      workspace: workspaceName,
-      checkouts: z.array(z.string().min(1).max(4096)).min(1).max(20),
-    }).strict(),
-    annotations: operateHints,
-  }, ({ name, workspace, checkouts }) => request('/api/workstreams', { name, workspace, checkouts }));
-  server.registerTool('workstream_rename', {
-    description: 'Rename a workstream, preserving its ID, checkouts, history and leases. Refused when the name is taken in the project.',
-    inputSchema: z.object({
-      workspace: workspaceName,
-      workstream: workstreamName.describe('Current workstream name.'),
-      name: z.string().min(1).max(100).describe('New workstream name.'),
-    }).strict(),
-    annotations: operateHints,
-  }, ({ workspace, workstream, name }) => request(workstreamPath(workspace, workstream, '/rename'), { name }));
-  const workstreamStatusObjectSchema = z.object({
-      workspace: workspaceName,
-      workstream: workstreamName,
-      status: z.enum(['active', 'paused', 'done']).describe('Status[+note] only; never combine with completion.').optional(),
-      note: z.object({
-        goal: z.string().min(1).max(1000),
-        blocker: z.string().max(1000),
-        next: z.string().min(1).max(1000),
-        owner: z.enum(['agent', 'user']),
-        evidence: z.array(z.string().max(256)).max(50).optional(),
-      }).strict().describe('Optional only with status; never combine with completion.').optional(),
-      completion: z.object({
-        assignmentId: z.string().min(1).max(128).describe('Optional; omission means a solo completion.').optional(),
-        completionId: z.string().uuid().describe('Required with outcome and checks in the completion call shape.'),
-        outcome: z.enum(['passed', 'blocked', 'failed']).describe('Required with completionId and checks.'),
-        revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
-        dirty: z.boolean().nullable(),
-        dirtyFingerprint: z.object({
-          diffHash: z.string().regex(/^[0-9a-f]{64}$/),
-          files: z.array(z.string().min(1).max(256)).max(50),
-          truncated: z.boolean(),
-        }).strict().nullable().describe('Required revision/dirty metadata for a completion.'),
-        checks: z.array(z.object({
-          name: z.string().min(1).max(80),
-          result: z.enum(['passed', 'failed', 'error']),
-          environment: z.string().min(1).max(200),
-          evidenceIds: z.array(z.string().max(128)).max(5).optional(),
-        }).strict()).min(1).max(20).describe('Required with completionId and outcome; include at least one check.'),
-      }).strict().describe('Requires completionId, outcome, checks and revision/dirty data; no status/note.').optional(),
-  }).strict();
-  const workstreamStatusSchema = workstreamStatusObjectSchema.refine(input =>
-    (input.status !== undefined && input.completion === undefined)
-    || (input.status === undefined && input.completion !== undefined && input.note === undefined),
-  );
-  server.registerTool('workstream_status', {
-    description: 'Records status[+note] OR completion, never both.',
-    // Keep the advertised strict object schema separate from the cross-field XOR
-    // refinement; the SDK's ZodEffects JSON Schema conversion drops properties.
-    inputSchema: workstreamStatusObjectSchema,
-    annotations: operateHints,
-  }, args => {
-    const { workspace, workstream, status, note, completion } = workstreamStatusSchema.parse(args);
-    return request(workstreamPath(workspace, workstream, '/status'), completion
-      ? { completion }
-      : note === undefined ? { status } : { status, note });
-  });
-  server.registerTool('workstream_context', {
-    description: 'Lists handoff context: checkpoint, completions, acceptance, runs, situational lessons. A missing main workstream is created from registered roots.',
-    inputSchema: z.object({
-      workspace: workspaceName,
-      workstream: workstreamName,
-      limit: z.number().int().min(1).max(20).optional().describe('Recent runs to include, default 5.'),
-      assignmentId: z.string().min(1).max(128).optional().describe('Coordinator-issued ID to query present/missing completion.'),
-    }).strict(),
-    annotations: readHints,
-  }, ({ workspace, workstream, limit, assignmentId }) => {
-    const params = new URLSearchParams();
-    if (limit !== undefined) params.set('limit', String(limit));
-    if (assignmentId !== undefined) params.set('assignmentId', assignmentId);
-    const query = params.size ? `?${params}` : '';
-    return request(`${workstreamPath(workspace, workstream, '/context')}${query}`);
-  });
   server.registerTool('run_import', {
     description: 'Records a pasted result as external-import.',
     inputSchema: z.object({

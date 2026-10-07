@@ -1,19 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Store, foldName, parseNameInput, resolveEnvironmentRecord, resolveWorkspaceRecord, resolveWorkstreamRecord } from './store.js';
+import { Store, foldName, parseNameInput, resolveWorkspaceRecord } from './store.js';
 import { approvedRoot, discover, toolAvailability } from './discovery.js';
 import { projectRootsError } from './project-roots.js';
 import { listPm2Processes, runPm2Action, runPm2Logs, runPm2Start, serviceInventory, type ServiceInventory } from './services.js';
 import { listDockerContainers, runDockerLogs } from './services-docker.js';
 import { verifyMessages, type CommandRunner } from './verify.js';
-import { appendWorkstreamCompletion, assertCheckpointEvidence, createWorkstream, defaultWorkstreamName, renameWorkstream, setWorkstreamStatus, sanitizeCheckpointNote, pinnedRunIds, checkpointHistoryOf, unknownWorkstreamMessage, unknownWorkstreamStatusMessage, validAssignmentId, maxCheckpointHistory, workspaceAccessMessage, workstreamMessages, workstreamNameMessage, type CheckpointNote, type CompletionCheckResult, type CompletionOutcome, type CompletionRecord, type Workstream, type WorkstreamStatus } from './workstreams.js';
-import { acquireLease, expireLeasesOnRead, finishWorkstreamLeasesInState, listLeases, releaseLease, touchLease, type Lease, type LeaseActor } from './leases.js';
 import { parseExternalRunImport, importExternalRun, externalImportInvalidMessage, listRecentRuns, listRunIds, type RunListEntry, type RunSummary } from './run-summaries.js';
 import { listMilestones } from './milestones.js';
-import { appendLearningRule, collectRecentLocalRuns, countRecurrences, entryMeasured, maxLearningEntries, readLearningIndex, selectSituationalLessons, type LearningRuleEntry } from './rule-index.js';
+import { appendLearningRule, collectRecentLocalRuns, countRecurrences, entryMeasured, maxLearningEntries, readLearningIndex, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
-import { detourFailWindow, evaluateDetourSignal, evaluateGoldenSignal, goldenWindow } from './signals.js';
 import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, renameEnvironment, setEnvironment } from './environment.js';
 import { availableSkills } from './consumer-skills.js';
 
@@ -40,9 +37,9 @@ export interface LearnedLesson {
 }
 
 // Canonical workspace-path messages. Not-found throws reference
-// verifyMessages and unknown-workstream throws reference workstreams.ts (both
-// already imported — zero new edges); docker failures re-raise
-// dockerFailureMessage. http.ts composes its allowlist from workspaceMessages.
+// verifyMessages (already imported — zero new edges); docker failures
+// re-raise dockerFailureMessage. http.ts composes its allowlist from
+// workspaceMessages.
 export const workspaceMessages = {
   projectName: 'Provide a project name with 100 characters or fewer.',
   projectNameTaken: 'A project with this name is already registered.',
@@ -53,74 +50,11 @@ export const workspaceMessages = {
   containerLinkedElsewhere: 'Docker container is already linked to another workspace.',
   containerLinkLimit: 'Project container link limit reached.',
   containerNotLinked: 'That Docker container is not linked to this workspace.',
-  removeBlocked: 'Remove its workstreams first.',
   resultLimit: 'Use a result limit within the allowed range.',
-  assignmentId: 'Assignment ID is not valid.',
 } as const;
 
-export interface WorkstreamContext {
-  workstreamId: string;
-  name: string;
-  status: WorkstreamStatus;
-  checkpoint: { latest: CheckpointNote | null; historyCount: number };
-  completionsByAssignmentId: Record<string, CompletionRecord[]>;
-  latestCompletion: CompletionRecord | null;
-  assignmentCompletion: { assignmentId: string; present: boolean; records: CompletionRecord[] } | null;
-  /**
-   * Additive acceptance split (derived read-only view; stored completions
-   * untouched): assignment-scoped criteria — the check names from that
-   * assignment's completion records with their agent-reported results — shown
-   * separately from the workstream-wide summary (latest outcome, assignment
-   * and counts: standing, not criteria). Assignment is null when no
-   * assignmentId was queried.
-   */
-  acceptance: {
-    assignment: {
-      assignmentId: string;
-      present: boolean;
-      criteria: Array<{ completionId: string; outcome: CompletionOutcome; name: string; result: CompletionCheckResult }>;
-    } | null;
-    general: {
-      latestOutcome: CompletionOutcome | null;
-      latestAssignmentId: string | null;
-      totalCompletions: number;
-      assignmentIds: string[];
-    };
-  };
-  open: { blocker: string; next: string };
-  checkouts: Workstream['checkouts'];
-  recentRuns: Array<RunListEntry & { evidenceSource: 'openworkspace_run' | 'external_import' | 'unknown_source' }>;
-  /** Additive waste-lesson surfacing: up to 3 situation-matched lesson titles for this task (read-only). */
-  situationalLessons: string[];
-  /**
-   * Additive golden reference: the newest passed local run when it was
-   * notably fast (at or below half the priors median, ≥5 priors in a
-   * 20-window). Carries the environment name as a label when the receipt has
-   * one. Absent when there is no such run — never an error.
-   */
-  goldenPath?: {
-    runId: string;
-    scriptName: string;
-    envName: string | null;
-    durationMs: number;
-    medianMs: number;
-    at: string;
-  };
-  /**
-   * Additive advisory nudge (≤200B) from setup/fail/queue metadata only.
-   * At most one line per call, advisory wording, never blocking. Absent when
-   * no trigger fires — never an error.
-   */
-  detourNudge?: string;
-  /**
-   * True when this call minted the stable default workstream. Pure reads
-   * return false and record nothing; a mint is a mutation the caller audits.
-   */
-  mintedDefaultWorkstream: boolean;
-}
-
 export class WorkspaceService {
-  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly revisionRunner?: CommandRunner, readonly datastoreRunner?: CommandRunner, readonly logRunner: typeof runPm2Logs = runPm2Logs, readonly leaseClock: () => number = Date.now, readonly listDocker: typeof listDockerContainers = listDockerContainers, readonly dockerLogRunner: typeof runDockerLogs = runDockerLogs, readonly serviceStarter: typeof runPm2Start = runPm2Start) {
+  constructor(readonly store: Store, readonly listPm2: typeof listPm2Processes = listPm2Processes, readonly serviceRunner?: typeof runPm2Action, readonly verifyRunner?: CommandRunner, readonly datastoreRunner?: CommandRunner, readonly logRunner: typeof runPm2Logs = runPm2Logs, readonly listDocker: typeof listDockerContainers = listDockerContainers, readonly dockerLogRunner: typeof runDockerLogs = runDockerLogs, readonly serviceStarter: typeof runPm2Start = runPm2Start) {
     // Retained seams: datastoreRunner/logRunner/dockerLogRunner stay
     // positional so existing constructions keep compiling; the declared local
     // tool engine and the per-service control/log adapters are shed, so the
@@ -128,8 +62,8 @@ export class WorkspaceService {
     // serviceRunner/serviceStarter/listPm2 instead.
   }
 
-  async overview(actor: LeaseActor = 'mcp') {
-    const state = await expireLeasesOnRead(this.store, actor, this.leaseClock);
+  async overview() {
+    const state = await this.store.read();
     return {
       ...state,
       target: { id: 'local', kind: 'local', remoteConnections: false },
@@ -150,8 +84,8 @@ export class WorkspaceService {
       const existing = state.workspaces.find(workspace => foldName(workspace.name) === foldName(projectName));
       if (existing) {
         // Upsert (harness-first pivot): re-registering a name replaces its
-        // root list in place — ID, casing, timestamps, leases, workstreams,
-        // environments, runs and activity are preserved. This is the agent's
+        // root list in place — ID, casing, timestamps, environments,
+        // runs and activity are preserved. This is the agent's
         // path for fixing roots now that root replacement has no MCP tool.
         existing.roots = canonicalRoots;
         return existing;
@@ -167,8 +101,8 @@ export class WorkspaceService {
 
   /**
    * Explicit rename: the new name validates like registration, conflicts
-   * with a taken name are refused, and the ID plus roots, leases,
-   * workstreams, environments, runs and activity are preserved untouched.
+   * with a taken name are refused, and the ID plus roots,
+   * environments, runs and activity are preserved untouched.
    */
   async renameWorkspace(name: string, newName: string) {
     const trimmed = parseNameInput(newName, workspaceMessages.projectName);
@@ -196,7 +130,7 @@ export class WorkspaceService {
       const workspace = resolveWorkspaceRecord(state, name, workspaceMessages.projectName, verifyMessages.notFoundRegister);
       const previousRoots = workspace.roots.length;
       workspace.roots = canonicalRoots;
-      // UUID, name, timestamps, leases, workstreams and activity are untouched:
+      // UUID, name, timestamps, environments and activity are untouched:
       // only the root list is replaced.
       return { workspace, previousRoots };
     });
@@ -284,270 +218,6 @@ export class WorkspaceService {
     return renameEnvironment(this.store, workspace, environment, newName);
   }
 
-  async createWorkstream(input: { name: string; workspace: string; checkouts: string[] }): Promise<Workstream> {
-    return createWorkstream(this.store, input, this.revisionRunner ?? this.verifyRunner);
-  }
-
-  async renameWorkstream(workspace: string, workstream: string, newName: string): Promise<Workstream> {
-    return renameWorkstream(this.store, workspace, workstream, newName);
-  }
-
-  async listWorkstreams(): Promise<Workstream[]> {
-    return (await this.store.read()).workstreams;
-  }
-
-  async workstream(workspace: string, workstream: string): Promise<Workstream> {
-    return resolveWorkstreamRecord(await this.store.read(), workspace, workstream, {
-      workspaceInvalid: workspaceAccessMessage,
-      workspaceNotFound: workspaceAccessMessage,
-      workstreamInvalid: workstreamNameMessage,
-      workstreamNotFound: unknownWorkstreamMessage,
-    }).workstream;
-  }
-
-  /**
-   * One-call handoff bundle for a narrowly-scoped subagent: the latest
-   * checkpoint plus history depth, open blocker/next from the latest note,
-    * pinned checkouts and scoped recent runs (existing caps).
-   * Reads never record activity, like recentRuns/recentActivity — except the
-   * stable-default mint below, which is a mutation the caller audits via the
-   * returned flag.
-   */
-  async workstreamContext(workspace: string, workstream: string, limit = 5, assignmentId?: string): Promise<WorkstreamContext> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
-      throw new Error(workspaceMessages.resultLimit);
-    }
-    if (assignmentId !== undefined && !validAssignmentId(assignmentId)) throw new Error(workspaceMessages.assignmentId);
-    let record: Workstream;
-    let mintedDefaultWorkstream = false;
-    try {
-      record = await this.workstream(workspace, workstream);
-    } catch (error) {
-      // Default-workstream affordance: the first context call naming the
-      // stable default binds every registered root (with pinned revisions),
-      // so a new task starts with one call. Any other missing name — and any
-      // invalid workspace — stays a refusal. A lost race re-reads the winner
-      // without claiming the mint.
-      if (!(error instanceof Error) || error.message !== unknownWorkstreamMessage
-        || foldName(workstream) !== defaultWorkstreamName) throw error;
-      const roots = resolveWorkspaceRecord(
-        await this.store.read(), workspace, workspaceAccessMessage, workspaceAccessMessage).roots;
-      try {
-        record = await this.createWorkstream({ name: defaultWorkstreamName, workspace, checkouts: [...roots] });
-        mintedDefaultWorkstream = true;
-      } catch (creationError) {
-        if (!(creationError instanceof Error)
-          || creationError.message !== workstreamMessages.workstreamNameTaken) throw creationError;
-        record = await this.workstream(workspace, workstream);
-      }
-    }
-    const state = await this.store.read();
-    const latest: CheckpointNote | null = record.checkpointNote;
-    const completionsByAssignmentId = Object.create(null) as Record<string, CompletionRecord[]>;
-    for (const completion of record.completions ?? []) {
-      (completionsByAssignmentId[completion.assignmentId] ??= []).push(completion);
-    }
-    const completionRecords = assignmentId === undefined ? [] : completionsByAssignmentId[assignmentId] ?? [];
-    const storedCompletions = record.completions ?? [];
-    const latestCompletion = storedCompletions.at(-1) ?? null;
-    // These are countable present/missing states, not a basis for claiming percentage rates.
-    // Single bounded scan: the signal windows ride the same fetch the
-    // response uses, sliced to `limit` at return time. One readdir pass even
-    // at the default limit — no second scan for the signal window.
-    const signalLimit = Math.max(limit, goldenWindow, detourFailWindow);
-    const runs = await listRecentRuns(
-      this.store.directory, record.workspaceId, signalLimit, pinnedRunIds(state.workstreams, record.workspaceId),
-    );
-    // AMENDMENT (waste-lesson milestone, beyond the planner text): the
-    // server builds a TaskContext string so setup-sequence lessons fire at
-    // task start. Sources, all bounded and secret-free (tags/tokens only):
-    // the workstream name, the latest checkpoint goal/blocker/next
-    // (pattern-only by construction), the last-20 activity OPERATION names
-    // scoped to this workspace (global entries included, other workspaces
-    // excluded; never detail text), plus the workspace's environment service names
-    // and ports (names only — never repository paths). Tokenizing this
-    // context against lesson situation tags is what lets a "service started
-    // → missing secret → set it" lesson surface before the next detour.
-    const environmentServices: string[] = [];
-    const environmentRecord = state.environments.find(entry => entry.workspaceId === record.workspaceId);
-    for (const item of (environmentRecord?.items ?? []).slice(0, 5)) {
-      for (const service of item.services.slice(0, 10)) {
-        environmentServices.push(service.name ?? service.id);
-        if (service.port !== null && service.port !== undefined) {
-          environmentServices.push(String(service.port));
-        }
-      }
-    }
-    const taskContext = [
-      record.name,
-      latest?.goal ?? '',
-      latest?.blocker ?? '',
-      latest?.next ?? '',
-      ...state.activity
-        .filter(entry => entry.workspaceId === null || entry.workspaceId === record.workspaceId)
-        .slice(-20)
-        .map(entry => entry.operation),
-      ...environmentServices,
-    ].join('\n');
-    // Pure index read (fail-closed, no writes): situational surfacing never
-    // flips suspect state and never records activity.
-    const situationalLessons = selectSituationalLessons(await readLearningIndex(this.store.directory), taskContext);
-    // Task-start signals (feedback-loops M1): read-only, fail-closed, derived
-    // from the scan above. Golden = newest passed local run at or below half
-    // the priors median (≥5 priors, 20-window), one per workspace with the
-    // receipt env name as label. Detour = OR of chain/fails/lease metadata
-    // triggers, first firing wins, one advisory line. Allowed inputs only:
-    // run durations/timestamps/outcomes/sources, activity operation names,
-    // lease resource/status/createdAt. Absence of either field is never an
-    // error, and a derivation failure yields both fields absent while the
-    // call still succeeds.
-    let goldenPath: WorkstreamContext['goldenPath'];
-    let detourNudge: string | undefined;
-    try {
-      const signalRuns = runs;
-      const byRecency = [...signalRuns]
-        .filter(run => run.source === 'openworkspace-run' && Number.isFinite(Date.parse(run.at)))
-        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-      const passedLocal = byRecency.filter(run => run.outcome === 'passed'
-        && typeof run.durationMs === 'number' && Number.isFinite(run.durationMs));
-      const golden = evaluateGoldenSignal(passedLocal.slice(0, goldenWindow).map(run => run.durationMs));
-      if (golden && passedLocal.length > 0) {
-        const latest = passedLocal[0];
-        goldenPath = {
-          runId: latest.id,
-          scriptName: latest.scriptName.slice(0, 80),
-          // Capped at 64 (below the receipt's own 100) so the field holds
-          // its 300B response budget even at max-length labels.
-          envName: typeof latest.environment?.envName === 'string' && latest.environment.envName
-            ? latest.environment.envName.slice(0, 64)
-            : null,
-          durationMs: golden.durationMs,
-          medianMs: golden.medianMs,
-          at: latest.at,
-        };
-      }
-      // Chain span: latest verify-pass time minus the newest preceding
-      // environment-up activity time in this workspace (operation names only).
-      let chainMs: number | null = null;
-      if (passedLocal.length > 0) {
-        const verifyAt = Date.parse(passedLocal[0].at);
-        const upTimes = state.activity
-          .filter(entry => entry.workspaceId === record.workspaceId && entry.operation === 'environment-up')
-          .map(entry => Date.parse(entry.at))
-          .filter(at => Number.isFinite(at) && at <= verifyAt);
-        if (upTimes.length > 0) chainMs = verifyAt - Math.max(...upTimes);
-      }
-      const recentFails = byRecency
-        .slice(0, detourFailWindow)
-        .filter(run => run.outcome === 'failed' || run.outcome === 'error').length;
-      const queued = state.leases.find(lease => lease.workstreamId === record.id && lease.status === 'queued');
-      let leaseWaitMs: number | null = null;
-      if (queued) {
-        const created = Date.parse(queued.createdAt);
-        if (Number.isFinite(created)) leaseWaitMs = this.leaseClock() - created;
-      }
-      detourNudge = evaluateDetourSignal({ chainMs, recentFails, leaseWaitMs });
-    } catch {
-      goldenPath = undefined;
-      detourNudge = undefined;
-    }
-    return {
-      workstreamId: record.id,
-      name: record.name,
-      status: record.status,
-      checkpoint: { latest, historyCount: checkpointHistoryOf(record).length },
-      completionsByAssignmentId,
-      latestCompletion,
-      assignmentCompletion: assignmentId === undefined ? null : {
-        assignmentId, present: completionRecords.length > 0, records: completionRecords,
-      },
-      acceptance: {
-        assignment: assignmentId === undefined ? null : {
-          assignmentId,
-          present: completionRecords.length > 0,
-          criteria: completionRecords.flatMap(entry => entry.checks.map(check => ({
-            completionId: entry.completionId,
-            outcome: entry.outcome,
-            name: check.name,
-            result: check.result,
-          }))),
-        },
-        general: {
-          latestOutcome: latestCompletion?.outcome ?? null,
-          latestAssignmentId: latestCompletion?.assignmentId ?? null,
-          totalCompletions: storedCompletions.length,
-          assignmentIds: Object.keys(completionsByAssignmentId),
-        },
-      },
-      open: { blocker: latest?.blocker ?? '', next: latest?.next ?? '' },
-      checkouts: record.checkouts,
-      situationalLessons,
-      ...(goldenPath !== undefined ? { goldenPath } : {}),
-      ...(detourNudge !== undefined ? { detourNudge } : {}),
-      mintedDefaultWorkstream,
-      recentRuns: runs.slice(0, limit).map(run => ({
-        ...run,
-        evidenceSource: run.source === 'openworkspace-run' ? 'openworkspace_run'
-          : run.source === 'external-import' ? 'external_import' : 'unknown_source',
-      })),
-    };
-  }
-
-  async appendWorkstreamCompletion(workspace: string, workstream: string, input: unknown): Promise<Workstream> {
-    const record = await this.workstream(workspace, workstream);
-    return appendWorkstreamCompletion(this.store, record.id, input, () =>
-      listRunIds(this.store.directory, record.workspaceId));
-  }
-
-  async setWorkstreamStatus(workspace: string, workstream: string, status: WorkstreamStatus, note?: { goal: unknown; blocker: unknown; next: unknown; owner: unknown; evidence?: unknown }, actor: LeaseActor = 'mcp'): Promise<Workstream> {
-    let sanitizedNote: ReturnType<typeof sanitizeCheckpointNote> | undefined;
-    if (note !== undefined) {
-      // Shape checks are safe before queueing; evidence existence is checked
-      // in the same Store update that commits the note.
-      sanitizedNote = sanitizeCheckpointNote(note);
-    }
-    const readAccessibleRunIds = (workspaceId: string) => listRunIds(this.store.directory, workspaceId);
-    const record = await this.workstream(workspace, workstream);
-    if (status !== 'done') return setWorkstreamStatus(this.store, record.id, status, readAccessibleRunIds, note);
-
-    const now = this.leaseClock();
-    const workstreamId = record.id;
-    return this.store.update(async state => {
-      const entry = state.workstreams.find(candidate => candidate.id === workstreamId);
-      if (!entry) throw new Error(unknownWorkstreamMessage);
-      if (sanitizedNote?.evidence.length) {
-        assertCheckpointEvidence(sanitizedNote.evidence, await readAccessibleRunIds(entry.workspaceId));
-      }
-      entry.status = 'done';
-      if (sanitizedNote) {
-        const noteEntry: CheckpointNote = { ...sanitizedNote, at: new Date(now).toISOString() };
-        entry.checkpointNote = noteEntry;
-        entry.checkpointHistory = [...checkpointHistoryOf(entry), noteEntry].slice(-maxCheckpointHistory);
-      }
-      entry.updatedAt = new Date(now).toISOString();
-      finishWorkstreamLeasesInState(state, workstreamId, actor, now);
-      return entry;
-    });
-  }
-
-  async listLeases(actor: LeaseActor = 'mcp'): Promise<Lease[]> {
-    return listLeases(this.store, actor, this.leaseClock);
-  }
-
-  async acquireLease(input: { resource: string; workspace: string; workstream: string }, actor: LeaseActor = 'mcp') {
-    const record = await this.workstream(input.workspace, input.workstream);
-    return acquireLease(this.store, { resource: input.resource, workstreamId: record.id }, actor, this.leaseClock);
-  }
-
-  async touchLease(input: { resource: string; workspace: string; workstream: string }, actor: LeaseActor = 'mcp') {
-    const record = await this.workstream(input.workspace, input.workstream);
-    return touchLease(this.store, { resource: input.resource, workstreamId: record.id }, actor, this.leaseClock);
-  }
-
-  async releaseLease(input: { resource: string; workspace: string; workstream: string }, actor: LeaseActor = 'mcp') {
-    const record = await this.workstream(input.workspace, input.workstream);
-    return releaseLease(this.store, { resource: input.resource, workstreamId: record.id }, actor, this.leaseClock);
-  }
 
   async recordActivity(entry: { actor: 'dashboard' | 'mcp'; operation: string; workspaceId: string | null; detail: string }): Promise<void> {
     await recordActivity(this.store, entry);
@@ -557,26 +227,17 @@ export class WorkspaceService {
     return recentActivity(this.store);
   }
 
-  async recentRuns(workspace: string, workstream: string | undefined, limit: number): Promise<RunListEntry[]> {
+  async recentRuns(workspace: string, limit: number): Promise<RunListEntry[]> {
     const state = await this.store.read();
     const workspaceRecord = resolveWorkspaceRecord(state, workspace, workspaceMessages.projectName, verifyMessages.notFoundRegister);
-    let workspaceId = workspaceRecord.id;
-    if (workstream !== undefined) {
-      workspaceId = resolveWorkstreamRecord(state, workspace, workstream, {
-        workspaceInvalid: workspaceAccessMessage,
-        workspaceNotFound: workspaceAccessMessage,
-        workstreamInvalid: workstreamNameMessage,
-        workstreamNotFound: unknownWorkstreamMessage,
-      }).workstream.workspaceId;
-    }
-    return listRecentRuns(this.store.directory, workspaceId, limit, pinnedRunIds(state.workstreams, workspaceId));
+    return listRecentRuns(this.store.directory, workspaceRecord.id, limit);
   }
 
   async importExternalRun(raw: unknown): Promise<RunSummary> {
     const parsed = parseExternalRunImport(raw);
     const state = await this.store.read();
     const workspace = resolveWorkspaceRecord(state, parsed.workspace, externalImportInvalidMessage, verifyMessages.notFoundRegister);
-    return importExternalRun(this.store.directory, parsed, workspace.id, pinnedRunIds(state.workstreams, workspace.id), this.store);
+    return importExternalRun(this.store.directory, parsed, workspace.id, undefined, this.store);
   }
 
   async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>> }> {
@@ -615,7 +276,7 @@ export class WorkspaceService {
    * AGENTS.md/skill file; the platform stores the title, file ref, evidence
    * links and failure signature. Evidence IDs must exist in a registered
    * workspace scope (workspace-scoped, else refused); the existence read runs
-   * inside the index write queue (same pattern as completion evidence).
+   * inside the index write queue (same pattern as run-evidence checks).
    */
   async recordLearning(raw: unknown): Promise<LearningRuleEntry> {
     return appendLearningRule(this.store.directory, raw, async () => {
@@ -633,19 +294,14 @@ export class WorkspaceService {
       await this.store.read(), name, workspaceMessages.projectName, verifyMessages.notFoundBare).id;
     const result = await this.store.update(state => {
       if (!state.workspaces.some(workspace => workspace.id === workspaceId)) throw new Error(verifyMessages.notFoundBare);
-      if (state.workstreams.some(workstream => workstream.workspaceId === workspaceId)) {
-        throw new Error(workspaceMessages.removeBlocked);
-      }
       state.workspaces = state.workspaces.filter(workspace => workspace.id !== workspaceId);
       // Environment topologies are workspace-scoped private state (stored
       // repository paths included): dropping the entry reclaims the outer
       // ≤50 cap and leaves no orphan behind. Runs-dir cleanup stays below.
       state.environments = state.environments.filter(entry => entry.workspaceId !== workspaceId);
-      // Leases belong to workstreams, and removal is already refused while any
-      // workstream references this workspace, so no lease can reference it here.
       return { removed: true };
     });
-    // Stale-scope cleanup: the scope dir (including any pinned runs, which
+    // Stale-scope cleanup: the scope dir (including runs, which
     // live under the workspace scope) goes with the registration. Best-effort
     // after the state commit: a cleanup failure is logged by path only and
     // never fails the removal itself.

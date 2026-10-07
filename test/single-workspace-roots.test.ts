@@ -11,7 +11,7 @@ import { fixtureStaticAssets } from './helpers/static-assets.js';
 // Single-workspace-multi-root walkthrough: one workspace named for the whole
 // endeavor holds three repo roots, and every follow-up call addresses it by
 // that single name with zero workspace_list (/api/overview) calls.
-test('one endeavor workspace with three roots serves inspect, onboarding and workstream context by single name', async t => {
+test('one endeavor workspace with three roots serves inspect and onboarding by single name', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-single-workspace-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repos = ['frontend', 'backend', 'db'];
@@ -58,17 +58,6 @@ test('one endeavor workspace with three roots serves inspect, onboarding and wor
   const plan = await call('/api/workspaces/Endeavor/onboarding');
   assert.equal(plan.status, 200);
   assert.equal((plan.body['roots'] as unknown[]).length, 3);
-
-  // Workstream context flows through the single workspace name too.
-  const created = await call('/api/workstreams', {
-    method: 'POST',
-    body: JSON.stringify({ name: 'First slice', workspace: 'Endeavor', checkouts: [paths[0]] }),
-  });
-  assert.equal(created.status, 201);
-  const context = await call('/api/workstreams/Endeavor/First%20slice/context');
-  assert.equal(context.status, 200);
-  assert.equal(context.body['workstreamId'], created.body['id']);
-  assert.equal(context.body['name'], 'First slice');
 
   // The whole flow never needed a workspace list: the caller already knew
   // the one endeavor name.

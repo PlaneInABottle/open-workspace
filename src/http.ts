@@ -4,7 +4,6 @@ import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { isSea } from 'node:sea';
 import { z } from 'zod';
-import { DashboardSessions } from './dashboard-sessions.js';
 import { WorkspaceService } from './workspace.js';
 import { AmbiguousNameError, nameMessages, parseNameInput, resolveWorkspaceRecord } from './store.js';
 import type { StaticAssets } from './static-assets.js';
@@ -13,30 +12,12 @@ import { pickProjectRoots, type ProjectRootPickerResult } from './project-root-p
 import { verifyMessages, verifySocketTimeoutMs } from './verify.js';
 import { datastoreMessages } from './datastore.js';
 import { dockerMetadataMessages } from './services-docker.js';
-import { leaseMessages } from './leases.js';
 import { externalImportClaimMessage, externalImportInvalidMessage } from './run-summaries.js';
 import { learningMessages } from './rule-index.js';
 import { workspaceMessages } from './workspace.js';
 import { coerceProposeDraft, environmentDownInput, environmentMessages, environmentSetInput, environmentUpInput, environmentVerifyInput } from './environment.js';
-import {
-  checkpointBoundsMessage,
-  checkpointEvidenceMessage,
-  checkpointPatternMessage,
-  completionBoundsMessage,
-  completionEvidenceMessage,
-  completionIdConflictMessage,
-  completionPatternMessage,
-  soloDefaultAssignmentId,
-  unknownWorkstreamMessage,
-  unknownWorkstreamStatusMessage,
-  workspaceAccessMessage,
-  workstreamCheckoutCountMessage,
-  workstreamCheckoutRootMessage,
-  workstreamLimitMessage,
-  workstreamMessages,
-  workstreamNameMessage,
-  workstreamReopenMessage,
-} from './workstreams.js';
+import * as observer from './observer.js';
+import { observerMessages } from './observer.js';
 
 const proposalSchema = z.object({
   name: z.string().min(1).max(100),
@@ -45,52 +26,7 @@ const proposalSchema = z.object({
 const rootsUpdateSchema = z.object({
   roots: z.array(z.string().min(1).max(maxProjectRootLength)).min(1).max(maxProjectRoots),
 }).strict();
-const consentSchema = z.object({ consent: z.literal(true) }).strict();
-const disconnectSchema = z.object({}).strict();
 const projectRootPickerSchema = z.object({}).strict();
-const workstreamSchema = z.object({
-  name: z.string().min(1).max(100),
-  workspace: z.string().min(1).max(100),
-  checkouts: z.array(z.string().min(1).max(4096)).min(1).max(20),
-}).strict();
-const workstreamStatusSchema = z.object({
-  status: z.enum(['active', 'paused', 'done']).optional(),
-  note: z.object({
-    goal: z.string(),
-    blocker: z.string(),
-    next: z.string(),
-    owner: z.enum(['agent', 'user']),
-    // Transport-level cap only; the service enforces max 5 plus ID shape and
-    // existence with safe errors.
-    evidence: z.array(z.string().max(256)).max(50).optional(),
-  }).strict().optional(),
-  completion: z.object({
-    assignmentId: z.string().min(1).max(128).optional(),
-    completionId: z.string().uuid(),
-    outcome: z.enum(['passed', 'blocked', 'failed']),
-    revision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
-    dirty: z.boolean().nullable(),
-    dirtyFingerprint: z.object({
-      diffHash: z.string().regex(/^[0-9a-f]{64}$/),
-      files: z.array(z.string().min(1).max(256)).max(50),
-      truncated: z.boolean(),
-    }).strict().nullable(),
-    checks: z.array(z.object({
-      name: z.string().min(1).max(80),
-      result: z.enum(['passed', 'failed', 'error']),
-      environment: z.string().min(1).max(200),
-      evidenceIds: z.array(z.string().max(128)).max(5).optional(),
-    }).strict()).min(1).max(20),
-  }).strict().optional(),
-}).strict().refine(input =>
-  (input.status !== undefined && input.completion === undefined)
-  || (input.status === undefined && input.completion !== undefined && input.note === undefined),
-);
-const leaseSchema = z.object({
-  resource: z.string().min(1).max(80),
-  workspace: z.string().min(1).max(100),
-  workstream: z.string().min(1).max(100),
-}).strict();
 const learningRecordSchema = z.object({
   title: z.string().min(1).max(80),
   file: z.string().min(1).max(256),
@@ -106,7 +42,6 @@ const renameSchema = z.object({
 }).strict();
 const nameSegment = '[^/]+';
 const proposalBodyLimit = 512 * 1024;
-const workstreamStatusBodyLimit = 64 * 1024;
 
 // Transport-owned messages: the only allowlist entries defined in this
 // module (thrown by body() above). Everything else is composed from owner
@@ -139,32 +74,13 @@ export const safeMessages: readonly string[] = [
   workspaceMessages.containerNotLinked,
   workspaceMessages.containerLinkLimit,
   ...Object.values(dockerMetadataMessages),
-  workspaceMessages.removeBlocked,
   verifyMessages.folderInsideRoot,
   verifyMessages.folderRealDirectory,
   verifyMessages.noScript,
   verifyMessages.serviceNotMapped,
-  workstreamNameMessage,
-  workstreamCheckoutCountMessage,
-  workstreamCheckoutRootMessage,
-  unknownWorkstreamMessage,
-  workspaceAccessMessage,
-  unknownWorkstreamStatusMessage,
-  workstreamReopenMessage,
-  ...Object.values(workstreamMessages),
-  checkpointBoundsMessage,
-  checkpointPatternMessage,
-  checkpointEvidenceMessage,
-  completionBoundsMessage,
-  completionPatternMessage,
-  completionEvidenceMessage,
-  completionIdConflictMessage,
-  workspaceMessages.assignmentId,
   externalImportInvalidMessage,
   externalImportClaimMessage,
   ...Object.values(learningMessages),
-  workstreamLimitMessage,
-  ...Object.values(leaseMessages),
   datastoreMessages.identifier,
   datastoreMessages.shape,
   datastoreMessages.superuser,
@@ -176,15 +92,9 @@ export const safeMessages: readonly string[] = [
   ...Object.values(environmentMessages),
   ...Object.values(nameMessages),
   ...Object.values(httpTransportMessages),
+  ...Object.values(observerMessages),
 ];
 type ApiRole = 'dashboard' | 'mcp';
-
-function hasAuthorizationHeader(request: IncomingMessage) {
-  for (let index = 0; index < request.rawHeaders.length; index += 2) {
-    if (request.rawHeaders[index].toLowerCase() === 'authorization') return true;
-  }
-  return false;
-}
 
 function bearerToken(request: IncomingMessage) {
   const authorization = request.headers.authorization;
@@ -199,30 +109,38 @@ function sameToken(supplied: string, expected: string) {
   return suppliedBytes.length === expectedBytes.length && timingSafeEqual(suppliedBytes, expectedBytes);
 }
 
-function apiRole(request: IncomingMessage, mcpToken: string, sessions: DashboardSessions): ApiRole | undefined {
+/**
+ * Role gate (dev-only open loopback): requests without a bearer token are
+ * the local dashboard — any same-machine process that passes the loopback
+ * Host/Origin/fetch-metadata gate above. Requests carrying the MCP token
+ * are the MCP bridge. Any other bearer is rejected (401) so a mistyped or
+ * stale credential never silently becomes dashboard access.
+ */
+function apiRole(request: IncomingMessage, mcpToken: string): ApiRole | undefined {
   const token = bearerToken(request);
-  if (!token) return undefined;
-  if (sameToken(token, mcpToken)) return 'mcp';
-  // Sliding renewal: every authenticated dashboard request extends the idle
-  // window (bounded by the absolute cap); expiry/revocation still fail closed.
-  return sessions.touch(token) ? 'dashboard' : undefined;
+  if (!token) return 'dashboard';
+  return sameToken(token, mcpToken) ? 'mcp' : undefined;
 }
 
 function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   if (role === 'dashboard') return true;
+  // Observer reads are dashboard-only (dev-only surface, raw excerpts).
+  if (pathname === '/api/observer/doctor'
+    || pathname === '/api/observer/sessions'
+    || pathname === '/api/observer/mistakes'
+    || pathname === '/api/observer/stuck'
+    || pathname === '/api/observer/cost') return false;
+  if (new RegExp(`^/api/observer/sessions/${nameSegment}(?:/(meta|records|stuck|prompts|reads))?$`).test(pathname)) return false;
   // The dashboard is not a permission gate, so the MCP client may use every
   // workspace operation; authority lives in the client's permission model.
-  // Browser-session management, the native picker and the client configuration
-  // stay dashboard-only, as do unknown routes.
+  // The native picker and the client configuration stay dashboard-only, as
+  // do unknown routes.
   if (method === 'GET' && (pathname === '/api/overview'
-    || pathname === '/api/leases'
     || pathname === '/api/activity'
     || pathname === '/api/learnings'
     || pathname === '/api/lessons'
     || pathname === '/api/runs/recent'
     || new RegExp(`^/api/workspaces/${nameSegment}(?:/onboarding)?$`).test(pathname)
-    || pathname === '/api/workstreams'
-    || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}(?:/context)?$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environments(?:/status)?$`).test(pathname))) return true;
   if (method === 'POST' && (pathname === '/api/workspaces'
     || pathname === '/api/runs/import'
@@ -232,11 +150,7 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || new RegExp(`^/api/workspaces/${nameSegment}/services$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environments/(propose|set|up|down)$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environments/[^/]+/rename$`).test(pathname)
-    || new RegExp(`^/api/workspaces/${nameSegment}/environment/verify$`).test(pathname)
-    || pathname === '/api/workstreams'
-    || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}/status$`).test(pathname)
-    || new RegExp(`^/api/workstreams/${nameSegment}/${nameSegment}/rename$`).test(pathname)
-    || /^\/api\/leases\/(acquire|touch|release)$/.test(pathname))) return true;
+    || new RegExp(`^/api/workspaces/${nameSegment}/environment/verify$`).test(pathname))) return true;
   if (method === 'DELETE' && new RegExp(`^/api/workspaces/${nameSegment}$`).test(pathname)) return true;
   return false;
 }
@@ -323,12 +237,10 @@ function parseRequestUrl(target: string, origin: string): URL | undefined {
 export function createApp(service: WorkspaceService, options: {
   assets: StaticAssets;
   mcpToken?: string;
-  dashboardSessions?: DashboardSessions;
   projectRootPicker?: (signal: AbortSignal) => Promise<ProjectRootPickerResult>;
 }) {
   const { assets } = options;
   const mcpToken = options.mcpToken ?? randomBytes(32).toString('hex');
-  const sessions = options.dashboardSessions ?? new DashboardSessions();
   const projectRootPicker = options.projectRootPicker ?? (signal => pickProjectRoots(signal));
   let origin = '';
   const server = createServer(async (request, response) => {
@@ -357,44 +269,10 @@ export function createApp(service: WorkspaceService, options: {
         return;
       }
 
-      if (url.pathname === '/api/dashboard-session' && request.method === 'POST') {
-        if (!sameCanonicalDashboardRequest(request, origin)
-          || hasAuthorizationHeader(request)) {
-          json(response, 403, { error: 'Use the local browser consent action to connect this dashboard.' });
-          return;
-        }
-        consentSchema.parse(await body(request));
-        const session = sessions.issue(mcpToken);
-        if (!session) {
-          json(response, 429, { error: 'Too many browser sessions are active. Disconnect one and try again.' });
-          return;
-        }
-        json(response, 201, session);
-        return;
-      }
-
-      if (url.pathname === '/api/dashboard-session' && request.method === 'DELETE') {
-        if (!sameCanonicalDashboardRequest(request, origin)) {
-          json(response, 403, { error: 'Use the local browser to disconnect this dashboard.' });
-          return;
-        }
-        const role = apiRole(request, mcpToken, sessions);
-        const token = bearerToken(request);
-        if (role !== 'dashboard' || !token) {
-          json(response, role === undefined ? 401 : 403, { error: 'This browser session is no longer active.' });
-          return;
-        }
-        disconnectSchema.parse(await body(request));
-        sessions.revoke(token);
-        response.writeHead(204);
-        response.end();
-        return;
-      }
-
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-        const role = apiRole(request, mcpToken, sessions);
+        const role = apiRole(request, mcpToken);
         if (!role) {
-          json(response, 401, { error: 'Connect this browser or use the local MCP client.' });
+          json(response, 401, { error: 'Use the local MCP client.' });
           return;
         }
         if (!mcpMayCall(role, request.method || 'GET', url.pathname)) {
@@ -428,12 +306,12 @@ export function createApp(service: WorkspaceService, options: {
           }
         };
         if (url.pathname === '/api/overview' && request.method === 'GET') {
-          json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview(actor)));
+          json(response, 200, await recordRead('workspace-list', null, 'workspace_list', () => service.overview()));
         } else if (url.pathname === '/api/client-config' && request.method === 'GET') {
           json(response, 200, clientConfig(service.store.directory));
         } else if (url.pathname === '/api/project-root-picker' && request.method === 'POST') {
           if (role !== 'dashboard' || !sameCanonicalDashboardRequest(request, origin)) {
-            json(response, 403, { error: 'Use the connected local dashboard to select project folders.' });
+            json(response, 403, { error: 'Use the local dashboard to select project folders.' });
             return;
           }
           projectRootPickerSchema.parse(await body(request));
@@ -457,100 +335,7 @@ export function createApp(service: WorkspaceService, options: {
             response.removeListener('close', abortIfDisconnected);
           }
         } else {
-          const workstreamContextMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/context$`).exec(url.pathname);
-          if (workstreamContextMatch && request.method === 'GET') {
-            // Reader-only handoff bundle: pure reads never record activity
-            // (no feedback loop). Minting the stable default is the one
-            // mutation this route can perform, and it audits as a
-            // workstream-create like the explicit POST route.
-            const limitRaw = url.searchParams.get('limit');
-            const limit = limitRaw === null ? 5 : Number(limitRaw);
-            if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
-              throw new Error(workspaceMessages.resultLimit);
-            }
-            const assignmentId = url.searchParams.get('assignmentId') ?? undefined;
-            const workspace = decodeNameSegment(workstreamContextMatch[1], workspaceAccessMessage);
-            const workstream = decodeNameSegment(workstreamContextMatch[2], workstreamNameMessage);
-            const bundle = await service.workstreamContext(workspace, workstream, limit, assignmentId);
-            if (bundle.mintedDefaultWorkstream) {
-              await record('workstream-create', await workspaceScopeId(workspace), bundle.name.slice(0, 100));
-            }
-            json(response, 200, bundle);
-            return;
-          }
-          const workstreamDetailMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})$`).exec(url.pathname);
-          if (workstreamDetailMatch && request.method === 'GET') {
-            const workspace = decodeNameSegment(workstreamDetailMatch[1], workspaceAccessMessage);
-            const workstream = decodeNameSegment(workstreamDetailMatch[2], workstreamNameMessage);
-            json(response, 200, await recordRead('workspace-workstreams', null, `workspace_workstreams ${workspace}/${workstream}`.slice(0, 100), () => service.workstream(workspace, workstream)));
-            return;
-          }
-          if (url.pathname === '/api/workstreams' && request.method === 'GET') {
-            json(response, 200, await recordRead('workspace-workstreams', null, 'workspace_workstreams', () => service.listWorkstreams()));
-            return;
-          }
-          if (url.pathname === '/api/workstreams' && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Workstream creation requires the connected dashboard.' });
-              return;
-            }
-            const input = workstreamSchema.parse(await body(request));
-            const created = await service.createWorkstream(input);
-            await record('workstream-create', created.workspaceId, created.name.slice(0, 100));
-            json(response, 201, created);
-            return;
-          }
-          const workstreamRenameMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/rename$`).exec(url.pathname);
-          if (workstreamRenameMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Workstream changes require the connected dashboard.' });
-              return;
-            }
-            const workspace = decodeNameSegment(workstreamRenameMatch[1], workspaceAccessMessage);
-            const workstream = decodeNameSegment(workstreamRenameMatch[2], workstreamNameMessage);
-            const input = renameSchema.parse(await body(request));
-            const renamed = await service.renameWorkstream(workspace, workstream, input.name);
-            await record('workstream-rename', renamed.workspaceId, renamed.name.slice(0, 100));
-            json(response, 200, renamed);
-            return;
-          }
-          const workstreamStatusMatch = new RegExp(`^/api/workstreams/(${nameSegment})/(${nameSegment})/status$`).exec(url.pathname);
-          if (workstreamStatusMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Workstream updates require the connected dashboard.' });
-              return;
-            }
-            const workspace = decodeNameSegment(workstreamStatusMatch[1], workspaceAccessMessage);
-            const workstream = decodeNameSegment(workstreamStatusMatch[2], workstreamNameMessage);
-            const input = workstreamStatusSchema.parse(await body(request, workstreamStatusBodyLimit));
-            const updated = input.completion
-              ? await service.appendWorkstreamCompletion(workspace, workstream, input.completion)
-              : await service.setWorkstreamStatus(workspace, workstream, input.status!, input.note, actor);
-            if (input.completion) {
-              await record('workstream-completion', updated.workspaceId,
-                `${input.completion.assignmentId ?? 'solo'} → ${input.completion.outcome}`);
-            } else {
-              await record('workstream-status', updated.workspaceId, `${updated.name.slice(0, 80)} → ${updated.status}`);
-            }
-            json(response, 200, input.completion
-              ? {
-                ...updated,
-                // Explicit open IDs for the coordinator round-trip: the
-                // emitted completionId (lowercased at response time; the
-                // stored record keeps its bytes) plus the resolved
-                // assignment group, so the coordinator reads back the same
-                // assignment via workstream_context without scanning the ring.
-                completionId: input.completion.completionId.toLowerCase(),
-                assignmentId: input.completion.assignmentId ?? soloDefaultAssignmentId,
-              }
-              : updated);
-            return;
-          }
           if (url.pathname === '/api/runs/import' && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Recording a pasted result requires the connected dashboard.' });
-              return;
-            }
             const imported = await service.importExternalRun(await body(request));
             // Activity records the script name and trust class only; the
             // pasted excerpt itself is never persisted outside the masked file.
@@ -559,35 +344,11 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/learnings/record' && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Recording a learning rule requires the connected dashboard.' });
-              return;
-            }
             const recorded = await service.recordLearning(learningRecordSchema.parse(await body(request)));
             // Activity records counts only: evidence-ref count plus outcome
             // class, never the title, file ref or failure text.
             await record('learning-record', null, `${recorded.evidenceRefs.length} evidence refs → ${recorded.status}`);
             json(response, 201, recorded);
-            return;
-          }
-          if (url.pathname === '/api/leases' && request.method === 'GET') {
-            json(response, 200, await recordRead('workspace-leases', null, 'workspace_leases', () => service.listLeases(actor)));
-            return;
-          }
-          // Dashboard renewal UI wiring is a follow-up; this route requires the connected dashboard.
-          const leaseMatch = /^\/api\/leases\/(acquire|touch|release)$/.exec(url.pathname);
-          if (leaseMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Lease changes require the connected dashboard.' });
-              return;
-            }
-            const input = leaseSchema.parse(await body(request));
-            const result = leaseMatch[1] === 'acquire' ? await service.acquireLease(input, actor)
-              : leaseMatch[1] === 'touch' ? await service.touchLease(input, actor)
-                : await service.releaseLease(input, actor);
-            const owner = await service.workstream(input.workspace, input.workstream).then(record => record.workspaceId).catch(() => null);
-            await record(`lease-${leaseMatch[1]}`, owner, `${input.resource} → ${input.workspace}/${input.workstream}`.slice(0, 100));
-            json(response, 200, result);
             return;
           }
           if (url.pathname === '/api/activity' && request.method === 'GET') {
@@ -618,18 +379,154 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (url.pathname === '/api/runs/recent' && request.method === 'GET') {
-            // Name-addressed scope: a workspace name plus an optional
-            // workstream name within it. IDs are internal and never accepted.
+            // Name-addressed scope: a workspace name. IDs are internal and
+            // never accepted.
             const rawWorkspace = url.searchParams.get('workspace');
             if (rawWorkspace === null || !rawWorkspace.trim()) throw new Error(verifyMessages.notFoundRegister);
-            const rawWorkstream = url.searchParams.get('workstream');
             const limitRaw = url.searchParams.get('limit');
             const limit = limitRaw === null ? 5 : Number(limitRaw);
             if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
               throw new Error(workspaceMessages.resultLimit);
             }
-            json(response, 200, await service.recentRuns(rawWorkspace, rawWorkstream ?? undefined, limit));
+            json(response, 200, await service.recentRuns(rawWorkspace, limit));
             return;
+          }
+          // Observer surface (dev-only, dashboard-role reads only — denied to
+          // MCP in mcpMayCall above). Raw excerpts are served as stored; every
+          // route returns warnings[] so DB/join degradation is visible, never
+          // silent. Viewing never records activity.
+          if (url.pathname === '/api/observer/doctor' && request.method === 'GET') {
+            json(response, 200, { checks: await observer.doctor(), warnings: [] });
+            return;
+          }
+          if (url.pathname === '/api/observer/sessions' && request.method === 'GET') {
+            const since = observer.resolveSince(url.searchParams.get('since'));
+            const kind = url.searchParams.get('kind') ?? undefined;
+            if (kind !== undefined && !observer.validKinds.has(kind)) throw new Error(observerMessages.badKind);
+            const { sessions, warnings } = await observer.listSessions({
+              sinceMs: since,
+              dir: url.searchParams.get('dir') ?? undefined,
+              kind,
+            });
+            json(response, 200, { sessions, warnings });
+            return;
+          }
+          if (url.pathname === '/api/observer/mistakes' && request.method === 'GET') {
+            const since = observer.resolveSince(url.searchParams.get('since'));
+            const limitRaw = url.searchParams.get('limit');
+            const limit = limitRaw === null ? 100 : Number(limitRaw);
+            if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error(observerMessages.badLimit);
+            const session = url.searchParams.get('session');
+            // Full ids pass through; displayed short ids resolve by prefix.
+            // Ambiguous prefixes and dead ends are 400s, never silent empties.
+            let resolvedSession: string | undefined;
+            if (session !== null && session !== '') {
+              // Displayed short ids resolve by prefix against the sidecar;
+              // ambiguous prefixes and dead ends are 400s, never silent
+              // empties. Known ids with no failures stay legitimately empty.
+              resolvedSession = observer.resolveSessionPrefix(session, await observer.knownSessionIDs());
+            }
+            const { rows, warnings } = await observer.globalMistakes({
+              sinceMs: since,
+              session: resolvedSession,
+              agent: url.searchParams.get('agent') ?? undefined,
+              limit,
+            });
+            json(response, 200, { rows, warnings });
+            return;
+          }
+          if (url.pathname === '/api/observer/stuck' && request.method === 'GET') {
+            const since = observer.resolveSince(url.searchParams.get('since'));
+            const { entries, warnings } = await observer.globalStuck({ sinceMs: since });
+            json(response, 200, { entries, warnings });
+            return;
+          }
+          if (url.pathname === '/api/observer/cost' && request.method === 'GET') {
+            const since = observer.resolveSince(url.searchParams.get('since'));
+            const limitRaw = url.searchParams.get('limit');
+            const limit = limitRaw === null ? 50 : Number(limitRaw);
+            if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error(observerMessages.badLimit);
+            const { rows, warnings } = await observer.costTable({ sinceMs: since, limit });
+            json(response, 200, { rows, warnings });
+            return;
+          }
+          const observerSessionMatch = new RegExp(`^/api/observer/sessions/(${nameSegment})/(meta|records|stuck|prompts|reads)$`).exec(url.pathname);
+          if (observerSessionMatch && request.method === 'GET') {
+            const sessionID = observer.parseSessionId(observerSessionMatch[1]);
+            const leaf = observerSessionMatch[2];
+            if (leaf === 'meta') {
+              const { meta, warning } = await observer.sessionMeta({ sessionID });
+              json(response, 200, { meta, warning, warnings: warning ? [warning] : [] });
+              return;
+            }
+            if (leaf === 'prompts') {
+              const prompts = await observer.sessionPrompts({ sessionID });
+              json(response, 200, { session: sessionID, prompts, warnings: [] as string[] });
+              return;
+            }
+            const since = observer.resolveSince(url.searchParams.get('since'));
+            const kind = url.searchParams.get('kind') ?? undefined;
+            if (kind !== undefined && !observer.validKinds.has(kind)) throw new Error(observerMessages.badKind);
+            const tool = url.searchParams.get('tool') ?? undefined;
+            const tree = url.searchParams.get('tree') === '1' || url.searchParams.get('tree') === 'true';
+            const failsOnly = url.searchParams.get('failsOnly') === '1' || url.searchParams.get('failsOnly') === 'true';
+            const failFilter = (groups: observer.TaskGroup[]): observer.TaskGroup[] => {
+              if (!failsOnly) return groups;
+              return groups
+                .map(group => ({
+                  ...group,
+                  lines: group.lines.filter(line => line.outcome === 'failure' || line.outcome === 'error'),
+                }))
+                .filter(group => group.lines.length > 0);
+            };
+            if (leaf === 'records') {
+              if (tree) {
+                const { by, warnings, parentLinked } = await observer.loadTreeRecords({ sessionID });
+                const filtered = new Map<string, observer.EnrichedRecord[]>();
+                for (const [id, recs] of by) filtered.set(id, observer.filterTools(observer.filterSince(recs, since), kind, tool));
+                const merged = [...filtered.values()].flat();
+                const root = observer.buildTree(sessionID, filtered, new Set(parentLinked));
+                json(response, 200, {
+                  session: sessionID,
+                  warnings,
+                  groups: failFilter(observer.groupByTask(merged)),
+                  tree: observer.treeIds(root, await observer.treeDetails({ node: root, recordsBy: filtered })),
+                });
+                return;
+              }
+              const { records, warnings } = await observer.joinSession({ sessionID });
+              const filtered = observer.filterTools(observer.filterSince(records, since), kind, tool);
+              json(response, 200, { session: sessionID, warnings, groups: failFilter(observer.groupByTask(filtered)) });
+              return;
+            }
+            if (leaf === 'reads') {
+              const { records, warnings } = await observer.joinSession({ sessionID });
+              json(response, 200, {
+                session: sessionID,
+                warnings,
+                reads: observer.readDigest(observer.filterSince(records, since)),
+              });
+              return;
+            }
+            if (leaf === 'stuck') {
+              if (tree) {
+                const { by, warnings } = await observer.loadTreeRecords({ sessionID });
+                const merged = [...by.values()].flat();
+                json(response, 200, {
+                  session: sessionID,
+                  warnings,
+                  report: await observer.stuckReport({ records: observer.filterSince(merged, since), sessionID }),
+                });
+                return;
+              }
+              const { records, warnings } = await observer.joinSession({ sessionID });
+              json(response, 200, {
+                session: sessionID,
+                warnings,
+                report: await observer.stuckReport({ records: observer.filterSince(records, since), sessionID }),
+              });
+              return;
+            }
           }
           const workspaceMatch = new RegExp(`^/api/workspaces/(${nameSegment})$`).exec(url.pathname);
           // Full-list root replacement uses POST like the other workspace
@@ -637,10 +534,6 @@ export function createApp(service: WorkspaceService, options: {
           // defaults to POST for bodies and no PUT handling exists.
           const rootsMatch = new RegExp(`^/api/workspaces/(${nameSegment})/roots$`).exec(url.pathname);
           if (rootsMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Updating project roots requires the connected dashboard.' });
-              return;
-            }
             const name = decodeNameSegment(rootsMatch[1], workspaceMessages.projectName);
             const input = rootsUpdateSchema.parse(await body(request, proposalBodyLimit));
             const { workspace, previousRoots } = await service.updateRoots(name, input.roots);
@@ -652,10 +545,6 @@ export function createApp(service: WorkspaceService, options: {
           }
           const workspaceRenameMatch = new RegExp(`^/api/workspaces/(${nameSegment})/rename$`).exec(url.pathname);
           if (workspaceRenameMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Renaming a project requires the connected dashboard.' });
-              return;
-            }
             const name = decodeNameSegment(workspaceRenameMatch[1], workspaceMessages.projectName);
             const input = renameSchema.parse(await body(request));
             const renamed = await service.renameWorkspace(name, input.name);
@@ -663,10 +552,9 @@ export function createApp(service: WorkspaceService, options: {
             json(response, 200, renamed);
             return;
           }
-          // M1 environment topology: propose/status/list are reads (no gate
-          // beyond auth, like other reads); set keeps the standard dashboard
-          // canonical-context check. Dashboard and MCP share the same
-          // operation; auth plus canonical origin are the only gates.
+          // Environment topology and runtime: dashboard and MCP share the same
+          // operations; the role allowlist plus service auth are the only
+          // gates. No dashboard-only confirmation step stands in front.
           const envProposeMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/propose$`).exec(url.pathname);
           if (envProposeMatch && request.method === 'POST') {
             z.object({}).strict().parse(await body(request));
@@ -676,10 +564,6 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envSetMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/set$`).exec(url.pathname);
           if (envSetMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
-              return;
-            }
             const name = decodeNameSegment(envSetMatch[1], workspaceMessages.projectName);
             // Boundary coercion before the strict parse: raw
             // environment_propose output applies directly (dependsOnSuggest
@@ -695,10 +579,6 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envRenameMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/(${nameSegment})/rename$`).exec(url.pathname);
           if (envRenameMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
-              return;
-            }
             const name = decodeNameSegment(envRenameMatch[1], workspaceMessages.projectName);
             const environment = decodeNameSegment(envRenameMatch[2], environmentMessages.badTopology);
             const input = renameSchema.parse(await body(request));
@@ -723,13 +603,9 @@ export function createApp(service: WorkspaceService, options: {
           }
           // M2 runtime: ordered up (readiness-polled), owned-only down, and
           // receipt-bound verify. Dashboard and MCP share the same operation;
-          // auth plus canonical origin are the only gates.
+          // the role allowlist plus service auth are the only gates.
           const envUpMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/up$`).exec(url.pathname);
           if (envUpMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
-              return;
-            }
             request.setTimeout(verifySocketTimeoutMs);
             const name = decodeNameSegment(envUpMatch[1], workspaceMessages.projectName);
             const input = environmentUpInput.parse(await body(request));
@@ -742,10 +618,6 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envDownMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environments/down$`).exec(url.pathname);
           if (envDownMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Environment changes require the connected dashboard.' });
-              return;
-            }
             request.setTimeout(verifySocketTimeoutMs);
             const name = decodeNameSegment(envDownMatch[1], workspaceMessages.projectName);
             const input = environmentDownInput.parse(await body(request));
@@ -758,10 +630,6 @@ export function createApp(service: WorkspaceService, options: {
           }
           const envVerifyMatch = new RegExp(`^/api/workspaces/(${nameSegment})/environment/verify$`).exec(url.pathname);
           if (envVerifyMatch && request.method === 'POST') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Repository verification requires the connected dashboard.' });
-              return;
-            }
             request.setTimeout(verifySocketTimeoutMs);
             const name = decodeNameSegment(envVerifyMatch[1], workspaceMessages.projectName);
             const input = environmentVerifyInput.parse(await body(request));
@@ -794,10 +662,6 @@ export function createApp(service: WorkspaceService, options: {
             return;
           }
           if (workspaceMatch && request.method === 'DELETE') {
-            if (role === 'dashboard' && !sameCanonicalDashboardRequest(request, origin)) {
-              json(response, 403, { error: 'Removing a project requires the connected dashboard.' });
-              return;
-            }
             const name = decodeNameSegment(workspaceMatch[1], workspaceMessages.projectName);
             const scopeId = await workspaceScopeId(name);
             const removed = await service.remove(name);

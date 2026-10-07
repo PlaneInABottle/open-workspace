@@ -10,7 +10,7 @@ Use only when the user explicitly invokes this skill. It never runs automaticall
 ## Review evidence
 
 1. Review the visible session transcript for surprises, retries, denials, and user corrections. Never search for or mine transcript files on disk.
-2. When available, review relevant run evidence for the affected workspace or workstream: the task context bundle's recent runs plus the dashboard timeline (the `activity_list` and `recent_runs` MCP tools are removed — read the same summaries from the context bundle or the dashboard, never from your shell history). These read-only summaries help identify the triggering operation and outcome; they do not authorize other actions.
+2. When available, review relevant run evidence for the affected workspace: the `environment_verify` receipt (cite its `runId`) plus the dashboard activity timeline. These read-only summaries help identify the triggering operation and outcome; they do not authorize other actions. Never mine your shell history for them.
 3. Calibrate every candidate with: **Would this help someone who never saw this failure, on a different task?** If not, skip it. Record reusable patterns, not one-off flukes or incident narratives.
 
 ## Write durable guidance directly
@@ -19,7 +19,7 @@ Use only when the user explicitly invokes this skill. It never runs automaticall
 2. Record the durable rule in the nearest existing `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md` inside the active project. If none applies, add a concise section to the project-root `AGENTS.md`. A shared ancestor outside the project requires explicit user authorization; without it, do not edit there and report that the rule could not be recorded.
 3. In both destinations, keep each entry short: **rule** and **when it applies**, with a source reference when one exists. Cite evidence by `runId`, activity timestamp, or test name only; do not copy evidence content. If a transcript-only correction has no such reference, skip the citation; never invent one or copy evidence content.
 4. Add or change no more than **5 rules per invocation**. Prefer the most reusable patterns; leave one-off or lower-value observations out.
-5. After writing the rule, call the `learning_record` tool with its short title (80 characters or fewer), the repo-relative rule file (for example `AGENTS.md`, never an absolute path), the triggering run IDs (1–5, taken from the task context bundle's recent runs — the `recent_runs` MCP tool is removed, so read them from the context bundle), and the failure signature (failing test names and/or error classes, at least one). The returned id is internal — record it nowhere. This index append is mechanical bookkeeping, outside the 5-rule cap.
+5. After writing the rule, call the `learning_record` tool with its short title (80 characters or fewer), the repo-relative rule file (for example `AGENTS.md`, never an absolute path), the triggering run IDs (1–5, taken from the `environment_verify` receipt `runId`), and the failure signature (failing test names and/or error classes, at least one). The returned id is internal — record it nowhere. This index append is mechanical bookkeeping, outside the 5-rule cap.
 6. If a past lesson is flagged needs-review (a later run repeated its failure), check whether its rule still applies: fix the rule text in the user file, or remove the rule if it was wrong. Flagged entries are reviewed here, never auto-deleted. Fixes count toward the 5-rule cap.
 
 ## Record setup friction, not just test failures
@@ -36,4 +36,4 @@ When a suspect `[needs-review]` measured lesson or a repeated situational detour
 
 Write only patterns. Never record secrets, literal credentials, absolute user paths or path values, customer data, SQL literals, URLs containing credentials, or log/transcript content. Do not create a draft, quarantine file, or separate learning store. Do not modify product code, global configuration, or unrelated instruction files as a side effect.
 
-For task planning — opening context, closing with a verification receipt, milestone notes, handoff checks, and checkpoint-nudge plus shared-resource lease advisories — use the **new-task** skill instead; turning session surprises into durable reusable rules stays here.
+For closing a task with a verification receipt, run the receipt-bound verification once per repo-native script and tie the user-visible result to that receipt; milestone notes stay one pattern-only line each. Task tracking itself lives in your own harness. Turning session surprises into durable reusable rules stays here.

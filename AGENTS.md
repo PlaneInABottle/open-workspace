@@ -20,13 +20,13 @@ This is the product source directory. Application repositories registered in the
 | Root-family validation and dashboard-only native selection | `src/project-roots.ts`, `src/project-root-picker.ts` |
 | Trusted system executable/environment boundary | `src/trusted-system.ts` |
 | Private platform state and single-service lock | `src/store.ts` |
-| HTTP authentication, role authorization and static assets | `src/http.ts`, `src/dashboard-sessions.ts` |
+| HTTP role authorization | `src/http.ts` |
 | Manifest-backed asset allowlist and build preflight | `src/static-assets.ts` |
 | Local service lifecycle and secret-free browser opener | `src/main.ts`, `src/open-dashboard.ts` |
 | Stdio MCP bridge and local connection | `src/mcp.ts`, `src/connection.ts` |
 | Directory-independent source companion | `bin/openworkspace.mjs` |
 | React shell/navigation and typed browser state | `frontend/src/App.tsx`, `frontend/src/use-workbench.ts`, `frontend/src/api.ts` |
-| Dashboard features | `frontend/src/features/{connection,projects,ai-setup,privacy}/` |
+| Dashboard features | `frontend/src/features/{observe,environments,ai-setup,privacy}/` |
 | Source-owned shadcn/Base UI primitives | `frontend/src/components/ui/` |
 | Frontend theme and build configuration | `frontend/src/styles.css`, `vite.config.ts`, `components.json`, `tsconfig.frontend.json` |
 | Native, HTTP, static-asset, CLI and actual MCP checks | `test/` |
@@ -64,9 +64,9 @@ The service defaults to loopback port 4318; `/health` returns the product identi
 
 For controlled long-lived checks, inspect existing listeners/PM2 ownership first and use a task-specific PM2 process. Verify HTTP readiness, not only PM2's online state. Stop/delete only the exact process created for the task; retain a requested preview with ownership in the session handoff. Never stop another service to free a port.
 
-Startup opens the secret-free canonical dashboard URL once after readiness; use `OPENWORKSPACE_NO_OPEN=1` or source companion `start --no-open` for headless checks. The browser connects through one explicit consent click, not a password/key/CLI step. Manual `pair` commands and `/api/bootstrap` are removed. Use canonical `127.0.0.1` for session consent. Do not bypass exact Origin/Host/fetch metadata checks to make a test client pass.
+Startup opens the secret-free canonical dashboard URL once after readiness; use `OPENWORKSPACE_NO_OPEN=1` or source companion `start --no-open` for headless checks. The dashboard needs no browser credential step. Manual `pair` commands, `/api/bootstrap` and `/api/dashboard-session` are removed. Do not bypass exact Origin/Host/fetch metadata checks to make a test client pass.
 
-`connection.json` is strict private `{origin,mcpToken}` state for the bounded project and PM2-inspection MCP capabilities, not a dashboard credential. Dashboard tokens are temporary, tab-scoped and server-revocable; they never enter URLs, HTML, console output or client config. Tests may inspect synthetic/private test credentials but must suppress their values. Reconnect/restart must preserve workspace registrations while clearing expired private UI state.
+`connection.json` is strict private `{origin,mcpToken}` state for the companion/MCP bridge, not a dashboard credential. The MCP credential never enters URLs, HTML, console output or client config. Tests may inspect synthetic/private test credentials but must suppress their values. Restart must preserve workspace registrations.
 
 ## Validation and UI work
 

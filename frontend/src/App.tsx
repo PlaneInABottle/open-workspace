@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  FolderKanban,
+  Activity,
+  Boxes,
   LockKeyhole,
   RefreshCw,
   Settings2,
@@ -9,26 +10,26 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ConnectionView } from '@/features/connection/ConnectionView';
 import { AiSetupView } from '@/features/ai-setup/AiSetupView';
-import { projectRootLabel } from '@/features/projects/root-label';
-import { OverviewView } from '@/features/projects/ProjectsView';
+import { EnvironmentsView } from '@/features/environments/EnvironmentsView';
+import { ObserveView } from '@/features/observe/ObserveView';
 import { PrivacyView } from '@/features/privacy/PrivacyView';
-import { ensureViewHash, viewFromHash, type View } from '@/hash-navigation';
+import { ensureViewHash, hashFor, routeFromHash, type Route, type View } from '@/hash-navigation';
 import { useWorkbench } from '@/use-workbench';
 import type { Notice } from '@/use-workbench';
 
 const viewLabels: Record<View, string> = {
-  overview: 'Projects',
+  observe: 'Activity',
+  environments: 'Environments',
   setup: 'Connect your AI',
   privacy: 'Access & privacy',
 };
 
-function useHashView() {
-  const [view, setView] = useState<View>(() => viewFromHash(window.location.hash));
+function useHashRoute() {
+  const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   useEffect(() => {
-    setView(ensureViewHash());
-    const sync = () => setView(viewFromHash(window.location.hash));
+    setRoute(ensureViewHash());
+    const sync = () => setRoute(routeFromHash(window.location.hash));
     window.addEventListener('hashchange', sync);
     window.addEventListener('popstate', sync);
     return () => {
@@ -37,14 +38,16 @@ function useHashView() {
     };
   }, []);
   const navigate = useCallback((target: View) => {
-    if (window.location.hash === `#${target}`) setView(target);
+    const hash = `#${target}`;
+    if (window.location.hash === hash) setRoute(routeFromHash(hash));
     else window.location.hash = target;
   }, []);
-  const replace = useCallback((target: View) => {
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${target}`);
-    setView(target);
+  const replace = useCallback((next: Route) => {
+    const hash = hashFor(next);
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`);
+    setRoute(next);
   }, []);
-  return { view, navigate, replace };
+  return { route, navigate, replace };
 }
 
 function NoticeBanner({ notice, dismiss }: { notice: Notice; dismiss: () => void }) {
@@ -66,16 +69,17 @@ function NoticeBanner({ notice, dismiss }: { notice: Notice; dismiss: () => void
 
 function Brand() {
   return (
-    <a href="#overview" className="flex w-fit items-center gap-3 text-sm font-semibold tracking-tight text-foreground no-underline">
+    <a href="#observe" className="flex w-fit items-center gap-3 text-sm font-semibold tracking-tight text-foreground no-underline">
       <span aria-hidden="true" className="grid size-8 place-items-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground">OW</span>
       OpenWorkspace
     </a>
   );
 }
 
-function Navigation({ view, onShowAllProjects }: { view: View; onShowAllProjects: () => void }) {
-  const links: { view: View; icon: typeof FolderKanban }[] = [
-    { view: 'overview', icon: FolderKanban },
+function Navigation({ view }: { view: View }) {
+  const links: { view: View; icon: typeof Activity }[] = [
+    { view: 'observe', icon: Activity },
+    { view: 'environments', icon: Boxes },
     { view: 'setup', icon: Settings2 },
     { view: 'privacy', icon: ShieldCheck },
   ];
@@ -87,7 +91,6 @@ function Navigation({ view, onShowAllProjects }: { view: View; onShowAllProjects
           href={`#${target}`}
           aria-current={view === target ? 'page' : undefined}
           className="nav-link"
-          onClick={target === 'overview' ? onShowAllProjects : undefined}
         >
           <Icon aria-hidden="true" className="size-4 shrink-0" />
           <span>{viewLabels[target]}</span>
@@ -97,19 +100,7 @@ function Navigation({ view, onShowAllProjects }: { view: View; onShowAllProjects
   );
 }
 
-function ProjectRail({
-  view,
-  workspaces,
-  selectedName,
-  onSelect,
-  onShowAllProjects,
-}: {
-  view: View;
-  workspaces: ReturnType<typeof useWorkbench>['state']['workspaces'];
-  selectedName: string | null;
-  onSelect: (name: string) => void;
-  onShowAllProjects: () => void;
-}) {
+function ProjectRail({ view }: { view: View }) {
   return (
     <aside className="project-rail" aria-label="Workspace rail">
       <Brand />
@@ -118,60 +109,16 @@ function ProjectRail({
         Local workspace
       </div>
       <div className="mt-6 border-t border-border" />
-      <Navigation view={view} onShowAllProjects={onShowAllProjects} />
-      <section className="mt-8 min-h-0 flex-1" aria-labelledby="rail-projects-heading">
-        <div className="flex items-center justify-between gap-2 px-2">
-          <h2 id="rail-projects-heading" className="eyebrow">CONNECTED PROJECTS</h2>
-          {workspaces.length > 0 && <span className="text-[0.7rem] text-muted-foreground">{workspaces.length}</span>}
-        </div>
-        {workspaces.length === 0 ? (
-          <p className="px-2 py-3 text-xs leading-5 text-muted-foreground">Projects appear here after you register their folders.</p>
-        ) : (
-          <ul className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
-            {workspaces.map(workspace => (
-              <li key={workspace.name} className="min-w-0">
-                <button
-                  type="button"
-                  className={`rail-project ${selectedName === workspace.name ? 'rail-project-selected' : ''}`}
-                  aria-pressed={selectedName === workspace.name}
-                  onClick={() => onSelect(workspace.name)}
-                >
-                  <FolderKanban aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{workspace.name}</span>
-                   <span className="mt-0.5 block truncate font-mono text-[0.65rem] text-muted-foreground" title={workspace.roots.join('\n')}>
-                     {workspace.roots.length} {workspace.roots.length === 1 ? 'root' : 'roots'} · {projectRootLabel(workspace.roots[0])}
-                   </span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <Navigation view={view} />
       <div className="mt-6 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">
-        <p className="font-medium text-foreground">Local workspace</p>
-        <p>Reads metadata; records what ran.</p>
+        <p className="font-medium text-foreground">This page only records.</p>
+        <p>Your assistant runs the commands.</p>
       </div>
     </aside>
   );
 }
 
-function MobileNavigation({
-  view,
-  workspaces,
-  selectedName,
-  onSelect,
-  onShowAllProjects,
-  onClearSelection,
-}: {
-  view: View;
-  workspaces: ReturnType<typeof useWorkbench>['state']['workspaces'];
-  selectedName: string | null;
-  onSelect: (name: string) => void;
-  onShowAllProjects: () => void;
-  onClearSelection: () => void;
-}) {
+function MobileNavigation({ view }: { view: View }) {
   return (
     <div className="mobile-navigation">
       <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
@@ -181,26 +128,7 @@ function MobileNavigation({
           Local only
         </Badge>
       </div>
-      {workspaces.length > 0 && (
-        <div className="px-4 pb-3 sm:px-6">
-          <label htmlFor="mobile-project-selector" className="sr-only">Select a connected project</label>
-          <select
-            id="mobile-project-selector"
-            className="project-select"
-            value={selectedName || ''}
-            onChange={event => {
-              if (event.currentTarget.value) onSelect(event.currentTarget.value);
-              else onClearSelection();
-            }}
-          >
-            <option value="">Select a project…</option>
-            {workspaces.map(workspace => <option key={workspace.name} value={workspace.name}>
-              {workspace.name} · {workspace.roots.length} {workspace.roots.length === 1 ? 'folder' : 'folders'} · {projectRootLabel(workspace.roots[0])}
-            </option>)}
-          </select>
-        </div>
-      )}
-      <Navigation view={view} onShowAllProjects={onShowAllProjects} />
+      <Navigation view={view} />
     </div>
   );
 }
@@ -208,81 +136,37 @@ function MobileNavigation({
 export function App() {
   const workbench = useWorkbench();
   const { state } = workbench;
-  const { view, navigate, replace } = useHashView();
-  const wasConnected = useRef(state.phase === 'connected');
-
-  useEffect(() => {
-    if (wasConnected.current && state.phase === 'disconnected') replace('overview');
-    wasConnected.current = state.phase === 'connected';
-  }, [replace, state.phase]);
+  const { route } = useHashRoute();
+  const [refreshToken, setRefreshToken] = useState(0);
 
   const loadActivity = workbench.loadActivity;
   useEffect(() => {
-    if (view === 'setup' && state.phase === 'connected') void loadActivity();
-  }, [view, state.phase, loadActivity]);
-
-  function selectProject(name: string) {
-    navigate('overview');
-    void workbench.inspectProject(name);
-  }
-
-  function showAllProjects() {
-    workbench.clearSelection();
-    navigate('overview');
-  }
+    if (route.view === 'setup' && state.phase === 'connected') void loadActivity();
+  }, [route.view, state.phase, loadActivity]);
 
   async function refreshWorkspace() {
     if (state.refreshing) return;
-    if (await workbench.refreshSelected()) workbench.setNotice({ kind: 'success', message: 'Workspace refreshed.' });
-  }
-
-  if (state.phase === 'loading') {
-    return (
-      <main className="grid min-h-screen place-items-center bg-background px-6 text-center">
-        <div className="max-w-md text-center">
-          <div role="status" aria-live="polite">
-            <span aria-hidden="true" className="loading-mark" />
-            <h1 className="mt-4 text-lg font-semibold">Opening your local workspace</h1>
-            {!state.notice && <p className="mt-1 text-sm text-muted-foreground">Checking this browser tab’s connection…</p>}
-          </div>
-          {state.notice && <div className="mt-5 text-left"><NoticeBanner notice={state.notice} dismiss={() => workbench.setNotice(null)} /></div>}
-          {state.notice && (
-            <Button type="button" variant="outline" className="mt-2" disabled={state.refreshing} onClick={() => void workbench.refresh()}>
-              {state.refreshing ? 'Checking…' : 'Retry connection'}
-            </Button>
-          )}
-        </div>
-      </main>
-    );
+    if (await workbench.refresh()) {
+      setRefreshToken(current => current + 1);
+      workbench.setNotice({ kind: 'success', message: 'Workspace refreshed.' });
+    }
   }
 
   if (state.phase !== 'connected') {
-    return (
-      <>
-        {state.notice && <div className="connection-notice"><NoticeBanner notice={state.notice} dismiss={() => workbench.setNotice(null)} /></div>}
-        <ConnectionView state={state} onConnect={() => void workbench.connectDashboard()} />
-      </>
-    );
+    return null;
   }
 
   return (
     <div className="workbench-shell">
       <a className="skip-link" href="#main-content">Skip to workspace</a>
-      <ProjectRail view={view} workspaces={state.workspaces} selectedName={state.selectedName} onSelect={selectProject} onShowAllProjects={showAllProjects} />
+      <ProjectRail view={route.view} />
       <header className="mobile-workspace">
-        <MobileNavigation
-          view={view}
-          workspaces={state.workspaces}
-          selectedName={state.selectedName}
-          onSelect={selectProject}
-          onShowAllProjects={showAllProjects}
-          onClearSelection={showAllProjects}
-        />
+        <MobileNavigation view={route.view} />
       </header>
       <main id="main-content" className="workbench-main" tabIndex={-1}>
         <header className="workbench-topbar">
           <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-            <span>Workspace</span><span aria-hidden="true">/</span><span className="truncate font-medium text-foreground">{viewLabels[view]}</span>
+            <span>Workspace</span><span aria-hidden="true">/</span><span className="truncate font-medium text-foreground">{viewLabels[route.view]}</span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Badge variant="outline" className="hidden gap-1.5 font-normal sm:inline-flex">
@@ -305,22 +189,12 @@ export function App() {
         </header>
         <div className="workbench-content">
           {state.notice && <NoticeBanner notice={state.notice} dismiss={() => workbench.setNotice(null)} />}
-          {view === 'overview' && (
-            <OverviewView
-              state={state}
-              onProjectRequest={workbench.requestProject}
-              onPickRoots={workbench.pickProjectRoots}
-              onSelectProject={selectProject}
-              onRetryInspection={name => { void workbench.inspectProject(name, true); }}
-              onInspectServices={name => { void workbench.inspectServices(name); }}
-              onGoToAi={() => navigate('setup')}
-              onLoadRecords={workbench.loadRecords}
-            />
-          )}
-          {view === 'setup' && <AiSetupView state={state} selectedName={state.selectedName} onCopyText={workbench.copyText} />}
-          {view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRemove={name => void workbench.removeWorkspace(name)} onDisconnect={() => { replace('overview'); workbench.disconnect(); }} />}
+          {route.view === 'observe' && <ObserveView api={workbench.api} route={route.observe} onCopyText={workbench.copyText} refreshToken={refreshToken} />}
+          {route.view === 'environments' && <EnvironmentsView api={workbench.api} workspaces={state.workspaces} refreshToken={refreshToken} />}
+          {route.view === 'setup' && <AiSetupView state={state} selectedName={null} onCopyText={workbench.copyText} />}
+          {route.view === 'privacy' && <PrivacyView workspaces={state.workspaces} busyIds={state.busyIds} onRemove={name => void workbench.removeWorkspace(name)} />}
         </div>
-        <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Local service · register and observe here; agents operate through MCP</footer>
+        <footer className="workbench-footer"><LockKeyhole aria-hidden="true" className="size-3.5" />Runs locally · records only, never operates</footer>
       </main>
     </div>
   );

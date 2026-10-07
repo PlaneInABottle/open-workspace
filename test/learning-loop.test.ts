@@ -35,7 +35,7 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   assert.match(skill, /name: learn-from-mistake/);
   assert.ok(skill.split('\n').length < 300, 'skill must stay under 300 lines');
   for (const required of [
-    'visible session transcript', 'activity_list', 'recent_runs', 'different task',
+    'visible session transcript', 'environment_verify', 'different task',
     'one-off flukes', 'runId', 'activity timestamp', 'test name', 'do not copy evidence content',
     'no more than **5 rules per invocation**',
     'active project', 'project-root `AGENTS.md`', 'shared ancestor outside the project requires explicit user authorization',
@@ -45,28 +45,15 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   ]) {
     assert.ok(skill.includes(required), `skill must cover ${required}`);
   }
-  assert.ok(!skill.includes('workstream_context') && !skill.includes('environment_verify'), 'start/finish loop moved to new-task');
-  assert.ok(skill.includes('new-task'), 'learn-from-mistake points to new-task');
-  assert.ok(skill.includes('nudge') && skill.includes('lease'), 'pointer names the nudge/lease advisories');
-  const newTask = await readFile(new URL('../skills/new-task/SKILL.md', import.meta.url), 'utf8');
-  assert.match(newTask, /name: new-task/);
-  assert.ok(newTask.split('\n').length < 300, 'new-task skill must stay under 300 lines');
-  assert.ok(Buffer.byteLength(newTask, 'utf8') <= 8 * 1024, 'new-task skill stays within the size cap');
-  for (const required of [
-    'workstream_context', 'environment_verify', 'assignmentId', 'present/missing',
-    'agent_report', '500 characters or fewer', 'last 10', 'Advisory only',
-  ]) {
-    assert.ok(newTask.includes(required), `new-task must cover ${required}`);
-  }
-  assert.ok(!/topology/.test(newTask), 'new-task promises no topology it does not cover');
-  assert.ok(!/sk-|Bearer |@example\.com|\/Users\/|password\s*[:=]/.test(newTask), 'new-task carries no literal secrets or path values');
-  assert.ok(!/coordinator|subagent/i.test(newTask) && !/coordinator|subagent/i.test(skill), 'skills stay role-agnostic');
+  assert.ok(!skill.includes('workstream_context'), 'task tracking stays in the harness, not the skill');
+  assert.ok(!skill.includes('new-task'), 'the shed task skill is not referenced');
+  assert.ok(!skill.includes('checkpoint') && !skill.includes('lease'), 'checkpoint/lease advisories are gone with the shed surfaces');
+  assert.ok(!/coordinator|subagent/i.test(skill), 'skills stay role-agnostic');
   assert.ok(!/sk-|Bearer |@example\.com|\/Users\/|password\s*[:=]/.test(skill), 'skill carries no literal secrets or path values');
   assert.ok(!skill.includes('learnings/_drafts') && !skill.includes('Status: draft'), 'learning guidance writes directly without a draft pipeline');
   const onboarding = await readFile(new URL('../skills/onboarding/SKILL.md', import.meta.url), 'utf8');
   assert.ok(onboarding.includes('learn-from-mistake'), 'onboarding skill references learn-from-mistake');
   assert.ok(onboarding.includes('never runs automatically') && onboarding.includes('creates no drafts'));
-  assert.ok(onboarding.includes('grouping ID supplied when the work was set up'), 'onboarding stays role-agnostic');
   assert.ok(!/coordinator/i.test(onboarding), 'onboarding carries no role markers');
   assert.ok(onboarding.includes('Script names are candidates'), 'onboarding treats script names as candidates');
   assert.ok(!onboarding.includes('Run the listed script names as listed'), 'onboarding drops run-as-listed wording');
@@ -101,8 +88,6 @@ test('reads record sanitized descriptors and failures never leak literals', asyn
   await fetch(`${origin}/api/workspaces/${f.workspace.name}`, { headers });
   await fetch(`${origin}/api/workspaces/${f.workspace.name}/onboarding`, { headers });
   await fetch(`${origin}/api/workspaces/${f.workspace.name}/services`, { method: 'POST', headers, body: '{}' });
-  await fetch(`${origin}/api/workstreams`, { headers });
-  await fetch(`${origin}/api/leases`, { headers });
   const learnings = await fetch(`${origin}/api/learnings`, { headers });
   assert.deepEqual(await learnings.json(), { milestones: [] }, 'the read API returns narrative notes only');
   const denied = await fetch(`${origin}/api/workspaces/Missing%20project`, { headers });
@@ -125,8 +110,6 @@ test('reads record sanitized descriptors and failures never leak literals', asyn
   assert.ok(details.some(detail => detail === `workspace_inspect ${f.workspace.name} → ok`));
   assert.ok(details.some(detail => detail === `onboarding_plan ${f.workspace.name} → ok`));
   assert.ok(details.some(detail => detail === `workspace_services ${f.workspace.name} → ok`));
-  assert.ok(details.some(detail => detail === 'workspace_workstreams → ok'));
-  assert.ok(details.some(detail => detail === 'workspace_leases → ok'));
   assert.ok(details.some(detail => detail === 'workspace_inspect Missing project → denied'));
   const serialized = JSON.stringify(activity);
   for (const leaked of [secretSql, 'sk-test-secret-marker', 'someone@example.com', '127.0.0.1:9']) {
@@ -192,22 +175,12 @@ test('run summaries persist bounded excerpts and recent_runs resolves scopes wit
       workspaceId: workspace.id, scriptName: 'test', outcome: 'failed', durationMs: 321,
       output: 'not ok 1 login flow', outputTruncated: false,
     });
-    const listed = await service.recentRuns(workspace.name, undefined, 5);
+    const listed = await service.recentRuns(workspace.name, 5);
     assert.equal(listed.length, 1);
     assert.equal(listed[0].scriptName, 'test');
     assert.equal(listed[0].durationMs, 321);
     assert.deepEqual(listed[0].failingNames, ['login flow']);
-    // Workstream scopes resolve to their workspace runs.
-    const workstreamId = '11111111-1111-4111-8111-111111111111';
-    await store.update(state => {
-      state.workstreams.push({
-        id: workstreamId, name: 'Stream', workspaceId: workspace.id,
-        checkouts: [{ root: project, revision: null, revisionState: 'unknown', observedAt: new Date().toISOString() }],
-        status: 'active', checkpointNote: null, checkpointHistory: [], completions: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      });
-    });
-    assert.equal((await service.recentRuns('Learning project', 'Stream', 5)).length, 1);
-    await assert.rejects(service.recentRuns('Missing project', undefined, 5), /Workspace not found/);
+    await assert.rejects(service.recentRuns('Missing project', 5), /Workspace not found/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -308,11 +281,4 @@ test('waste-lesson skill clauses: setup friction first, unmeasured never auto-fl
   ]) {
     assert.ok(skill.includes(required), `learn-from-mistake must cover ${required}`);
   }
-  const newTask = await readFile(new URL('../skills/new-task/SKILL.md', import.meta.url), 'utf8');
-  assert.ok(newTask.split('\n').length < 300, 'new-task stays under the 300-line cap');
-  assert.ok(Buffer.byteLength(newTask, 'utf8') <= 8 * 1024, 'new-task stays within 8KiB');
-  assert.ok(newTask.includes('situationalLessons'), 'new-task names the context field');
-  assert.ok(newTask.includes('[situational]'), 'new-task names the marker');
-  assert.ok(newTask.includes('below failure-matched'), 'new-task weighs situational below failure-matched');
-  assert.ok(newTask.includes('ignore them on mismatch'), 'new-task says to ignore on mismatch');
 });

@@ -36,10 +36,7 @@ async function ownedProject(prefix: string) {
   await store.initialize();
   const service = new WorkspaceService(store);
   const workspace = await service.register('Probe project', [project]);
-  const workstream = await service.createWorkstream({
-    name: 'Stream', workspace: workspace.name, checkouts: [project],
-  });
-  return { root, project, store, service, workspace, workstream };
+  return { root, project, store, service, workspace };
 }
 
 // ---- Offer wording (consent review contract) ----
@@ -69,9 +66,9 @@ test('probe offer names the regression-note path and closes with the consent sen
 test('decline and no-reply write nothing: zero pending/proposals files, zero repo writes', async t => {
   const f = await ownedProject('openworkspace-probe-decline-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
-  // A review pass with no explicit `yes`: read context, then stop. The offer
+  // A review pass with no explicit `yes`: read inspection, then stop. The offer
   // is text-only, so declining issues no write call at all.
-  await f.service.workstreamContext(f.workspace.name, f.workstream.name);
+  await f.service.inspect(f.workspace.name);
   assert.deepEqual(await filesUnder(f.project), ['package.json'], 'no repo writes without acceptance');
 });
 

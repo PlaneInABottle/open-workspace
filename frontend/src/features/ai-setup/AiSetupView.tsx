@@ -64,6 +64,7 @@ export function AiSetupView({ state, selectedName, onCopyText }: {
         <p className="eyebrow">01 / SETUP PROMPT</p>
         <h2 id="setup-prompt-heading" className="text-base font-semibold">Let your agent install the connection</h2>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">One prompt carries the generated local stdio entry, the registered-workspace context, and the install/verify instructions. Your agent adapts it to the client you use while preserving existing settings. Already connected? Paste the new prompt — your agent re-merges the entry, adds the AGENTS.md note, and re-verifies with workspace_list.</p>
+        <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Two separate things get connected: (1) your assistant talks to OpenWorkspace through MCP, and (2) an activity recorder captures what it runs so the Activity page fills in. The prompt below covers the first part — paste it and your agent does the work. The recorder is a separate step: until the shell-observer plugin is enabled, the Activity page stays empty.</p>
         {material ? (
           <pre role="region" aria-label="Setup prompt preview" tabIndex={0} className="code-panel mt-4">{material.copyText}</pre>
         ) : (

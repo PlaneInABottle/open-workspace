@@ -9,7 +9,6 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Store, writePrivateJson } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
-import { soloDefaultAssignmentId } from '../src/workstreams.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
 import { consumerSkills, initConsumerSkills } from '../src/consumer-skills.js';
 
@@ -37,13 +36,15 @@ test('real stdio MCP registers and operates without dashboard approval and survi
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['environment_down','environment_propose','environment_rename','environment_set','environment_status','environment_up','environment_verify','learning_record','lease_acquire','lease_release','lease_touch','onboarding_plan','run_import','workspace_inspect','workspace_leases','workspace_list','workspace_register','workspace_workstreams','workstream_context','workstream_create','workstream_rename','workstream_status']);
+    assert.deepEqual(tools.tools.map(tool => tool.name).sort(), ['environment_down','environment_propose','environment_rename','environment_set','environment_status','environment_up','environment_verify','learning_record','onboarding_plan','run_import','workspace_inspect','workspace_list','workspace_register']);
     assert.ok(!tools.tools.some(tool => /approve|shell|secret|install|start/.test(tool.name)));
     // Shed harness-fighting surface (pivot): per-service control/logs,
     // container linking, declared local tools, rename/roots/remove,
     // activity/run reads and the PM2-wide inventory have no MCP tool. The
     // dashboard keeps its HTTP routes; the harness shell covers the rest.
-    for (const shed of ['service_control','service_logs','workspace_container_link','local_tool_status','workspace_rename','workspace_update_roots','workspace_remove','activity_list','recent_runs','workspace_services']) {
+    // Workstreams and leases are shed with the same no-fight rule: the
+    // harness tracks tasks natively and needs no lock ceremony.
+    for (const shed of ['service_control','service_logs','workspace_container_link','local_tool_status','workspace_rename','workspace_update_roots','workspace_remove','activity_list','recent_runs','workspace_services','workspace_workstreams','workspace_leases','lease_acquire','lease_touch','lease_release','workstream_create','workstream_rename','workstream_status','workstream_context']) {
       assert.ok(!tools.tools.some(tool => tool.name === shed), `${shed} is not served over MCP`);
     }
     const registerTool = tools.tools.find(tool => tool.name === 'workspace_register');
@@ -57,28 +58,13 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     assert.ok(!inspected.isError);
     assert.match((inspected.content as Array<{ text: string }>)[0].text, /not_checked/);
     assert.match((inspected.content as Array<{ text: string }>)[0].text, /"roots"/);
-    const workstreamStatusTool = tools.tools.find(tool => tool.name === 'workstream_status');
-    assert.ok(Buffer.byteLength(workstreamStatusTool?.description ?? '', 'utf8') <= 200);
-    assert.match(workstreamStatusTool?.description ?? '', /status\[\+note\].*OR completion, never both/i);
-    const statusProperties = (workstreamStatusTool?.inputSchema.properties ?? {}) as Record<string, { description?: string; properties?: Record<string, { description?: string }> }>;
-    assert.deepEqual(Object.keys(statusProperties).sort(), ['completion', 'note', 'status', 'workspace', 'workstream']);
-    assert.match(statusProperties.status?.description ?? '', /status\[\+note\].*never combine with completion/i);
-    assert.match(statusProperties.note?.description ?? '', /only with status.*never combine with completion/i);
-    assert.match(statusProperties.completion?.description ?? '', /completionId.*outcome.*checks.*revision\/dirty.*no status\/note/i);
-    assert.match(statusProperties.completion?.properties?.assignmentId?.description ?? '', /optional.*solo/i);
-    assert.match(statusProperties.completion?.properties?.completionId?.description ?? '', /required.*outcome.*checks/i);
-    assert.match(statusProperties.completion?.properties?.outcome?.description ?? '', /required.*completionId.*checks/i);
-    assert.match(statusProperties.completion?.properties?.checks?.description ?? '', /required.*completionId.*outcome/i);
     for (const name of ['workspace_inspect', 'onboarding_plan', 'environment_verify']) {
       const description = tools.tools.find(tool => tool.name === name)?.description ?? '';
       assert.ok(Buffer.byteLength(description, 'utf8') <= 200, `${name} description is within 200 bytes`);
     }
-    const propertyBudgets = [
-      ...Object.values(statusProperties),
-      ...Object.values(statusProperties.completion?.properties ?? {}),
-    ];
-    assert.ok(propertyBudgets.every(property => !property.description || Buffer.byteLength(property.description, 'utf8') <= 80));
-    const mcpSessionDenied = await fetch(`${origin}/api/dashboard-session`, {
+    // Dashboard-only routes stay denied to the MCP credential over open
+    // loopback; the removed session route fails closed at the role gate.
+    const mcpSessionGone = await fetch(`${origin}/api/dashboard-session`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${app.mcpToken}`,
@@ -88,7 +74,7 @@ test('real stdio MCP registers and operates without dashboard approval and survi
       },
       body: '{}',
     });
-    assert.equal(mcpSessionDenied.status, 403);
+    assert.equal(mcpSessionGone.status, 403);
     assert.equal((await fetch(`${origin}/api/client-config`, { headers: { Authorization: `Bearer ${app.mcpToken}` } })).status, 403);
     assert.equal((await fetch(`${origin}/api/project-root-picker`, {
       method: 'POST',
@@ -101,18 +87,12 @@ test('real stdio MCP registers and operates without dashboard approval and survi
       body: '{}',
     })).status, 403);
 
-    const connected = await fetch(`${origin}/api/dashboard-session`, {
-      method: 'POST',
-      headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ consent: true }),
-    });
-    assert.equal(connected.status, 201);
-    const dashboardSession = await connected.json() as { dashboardToken: string };
+    // The open-loopback dashboard removes registrations without any token;
+    // removal stays on HTTP while the MCP tool stays shed.
     const removedResponse = await fetch(`${origin}/api/workspaces/${workspace.name}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${app.mcpToken}` },
     });
-    assert.equal(removedResponse.status, 200, 'removal stays on HTTP (dashboard or MCP credential); the MCP tool is shed');
+    assert.equal(removedResponse.status, 200, 'removal stays on HTTP (open loopback); the MCP tool is shed');
     const gone = await client.callTool({ name: 'workspace_inspect', arguments: { workspace: workspace.name } });
     assert.equal(gone.isError, true);
     const reregistered = await client.callTool({ name: 'workspace_register', arguments: { name: 'Fixture', roots: [project] } });
@@ -145,80 +125,6 @@ test('real stdio MCP registers and operates without dashboard approval and survi
       assert.ok(skill.whenToUse.length > 0 && skill.whenToUse.length <= 200 && !/[\r\n]/.test(skill.whenToUse));
       assert.equal(skill.fetch.prompt, `skill/${skill.name}`);
     }
-    const leases = await client.callTool({ name: 'workspace_leases', arguments: {} });
-    assert.ok(!leases.isError);
-    assert.deepEqual(JSON.parse((leases.content as Array<{ text: string }>)[0].text), []);
-    const workstream = async (name: string) => {
-      const created = await client.callTool({ name: 'workstream_create', arguments: { name, workspace: workspaceName, checkouts: [project] } });
-      assert.ok(!created.isError);
-      return (JSON.parse((created.content as Array<{ text: string }>)[0].text) as { id: string; name: string }).name;
-    };
-    const holderId = await workstream('Lease holder');
-    const queuedId = await workstream('Lease waiter');
-    const assigned = await client.callTool({
-      name: 'workstream_context', arguments: { workspace: workspaceName, workstream: holderId, assignmentId: 'mcp-assignment-1' },
-    });
-    assert.ok(!assigned.isError);
-    assert.match((assigned.content as Array<{ text: string }>)[0].text, /"present": false/);
-    const completionBody = {
-      assignmentId: 'mcp-assignment-1', completionId: '88888888-8888-4888-8888-888888888888',
-      outcome: 'passed', revision: 'f'.repeat(40), dirty: false, dirtyFingerprint: null,
-      checks: [{ name: 'backend-tests', result: 'passed', environment: 'node22-macos-local', evidenceIds: [] }],
-    };
-    const combinedTransition = await client.callTool({
-      name: 'workstream_status', arguments: { workspace: workspaceName, workstream: holderId, status: 'done', completion: completionBody },
-    });
-    assert.equal(combinedTransition.isError, true, 'an agent completion cannot be combined with a status transition');
-    const unknownStatusField = await client.callTool({
-      name: 'workstream_status', arguments: { workspace: workspaceName, workstream: holderId, status: 'paused', unrecognized: true },
-    });
-    assert.equal(unknownStatusField.isError, true, 'the advertised MCP schema remains strict');
-    const completed = await client.callTool({ name: 'workstream_status', arguments: { workspace: workspaceName, workstream: holderId, completion: completionBody } });
-    assert.ok(!completed.isError);
-    const replay = await client.callTool({ name: 'workstream_status', arguments: { workspace: workspaceName, workstream: holderId, completion: completionBody } });
-    assert.ok(!replay.isError);
-    const completionRecord = JSON.parse((completed.content as Array<{ text: string }>)[0].text) as {
-      status: string; completions: Array<{ checks: Array<{ evidenceSource: string; evidenceLabel: string }> }>;
-    };
-    assert.equal(completionRecord.status, 'active', 'completion is not a status transition');
-    assert.equal(completionRecord.completions.length, 1, 'same MCP retry creates no duplicate');
-    assert.equal(completionRecord.completions[0].checks[0].evidenceSource, 'agent_report');
-    assert.match(completionRecord.completions[0].checks[0].evidenceLabel, /not independently verified/);
-    const { assignmentId: _namedAssignment, ...soloCompletionBody } = completionBody;
-    soloCompletionBody.completionId = '99999999-9999-4999-8999-999999999999';
-    const soloCompleted = await client.callTool({
-      name: 'workstream_status', arguments: { workspace: workspaceName, workstream: holderId, completion: soloCompletionBody },
-    });
-    assert.ok(!soloCompleted.isError, 'MCP accepts an omitted assignmentId for a solo completion');
-    const soloRecord = JSON.parse((soloCompleted.content as Array<{ text: string }>)[0].text) as {
-      completions: Array<{ assignmentId: string }>;
-    };
-    assert.equal(soloRecord.completions.at(-1)?.assignmentId, soloDefaultAssignmentId);
-    assert.equal(soloRecord.completions.length, 2, 'solo and named completions are separate appends');
-    const allCompletionGroups = await client.callTool({
-      name: 'workstream_context', arguments: { workspace: workspaceName, workstream: holderId },
-    });
-    const groupedContext = JSON.parse((allCompletionGroups.content as Array<{ text: string }>)[0].text) as {
-      completionsByAssignmentId: Record<string, unknown[]>;
-    };
-    assert.equal(groupedContext.completionsByAssignmentId['mcp-assignment-1'].length, 1);
-    assert.equal(groupedContext.completionsByAssignmentId[soloDefaultAssignmentId].length, 1);
-    const assignmentDone = await client.callTool({
-      name: 'workstream_context', arguments: { workspace: workspaceName, workstream: holderId, assignmentId: 'mcp-assignment-1' },
-    });
-    assert.ok(!assignmentDone.isError);
-    assert.match((assignmentDone.content as Array<{ text: string }>)[0].text, /"present": true/);
-    const acquired = await client.callTool({ name: 'lease_acquire', arguments: { resource: 'mcp:lease', workspace: workspaceName, workstream: holderId } });
-    assert.ok(!acquired.isError);
-    const queued = await client.callTool({ name: 'lease_acquire', arguments: { resource: 'mcp:lease', workspace: workspaceName, workstream: queuedId } });
-    assert.ok(!queued.isError);
-    assert.equal((JSON.parse((queued.content as Array<{ text: string }>)[0].text) as { lease: { status: string } }).lease.status, 'queued');
-    const refusedTouch = await client.callTool({ name: 'lease_touch', arguments: { resource: 'mcp:lease', workspace: workspaceName, workstream: queuedId } });
-    assert.equal(refusedTouch.isError, true);
-    assert.match((refusedTouch.content as Array<{ text: string }>)[0].text, /Only the holding workstream can touch a lease/);
-    const renewed = await client.callTool({ name: 'lease_touch', arguments: { resource: 'mcp:lease', workspace: workspaceName, workstream: holderId } });
-    assert.ok(!renewed.isError);
-    assert.equal((JSON.parse((renewed.content as Array<{ text: string }>)[0].text) as { resource: string; status: string }).status, 'held');
     // Shed tools stay shed at call time, not just in the listing: the
     // bridge answers an unknown tool with an error result, never a handler.
     const shedCall = await client.callTool({
@@ -247,7 +153,9 @@ test('real stdio MCP registers and operates without dashboard approval and survi
     app = createApp(workspaceService(), { mcpToken: 'c'.repeat(64), assets: fixtureStaticAssets() });
     origin = await app.listen(0);
     await writePrivateJson(join(store.directory, 'connection.json'), { origin, mcpToken: app.mcpToken });
-    assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${dashboardSession.dashboardToken}` } })).status, 401);
+    // Restart rotates the MCP credential; the stale token is rejected while
+    // the open loopback keeps serving without one.
+    assert.equal((await fetch(`${origin}/api/overview`, { headers: { Authorization: `Bearer ${'d'.repeat(64)}` } })).status, 401);
     const resumed = await client.callTool({ name: 'workspace_inspect', arguments: { workspace: workspaceName } });
     assert.ok(!resumed.isError);
     assert.ok(!stderr.includes('b'.repeat(64)));

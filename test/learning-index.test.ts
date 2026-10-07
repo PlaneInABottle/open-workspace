@@ -209,7 +209,7 @@ test('injection ranks exact test-name hits above error-class hits and caps at th
   const f = await registeredFixture('openworkspace-learning-match-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 login flow\nError TimeoutExpired boom');
-  const runs = await f.service.recentRuns(f.workspace.name, undefined, 5);
+  const runs = await f.service.recentRuns(f.workspace.name, 5);
   const ref = runs[0].id;
   const bodies = [
     { title: 'Login rule one', file: 'AGENTS.md', evidenceRefs: [ref], failureSignature: { tests: ['login flow'], errorClasses: [] } },
@@ -241,7 +241,7 @@ test('injection truncates titles to fit the remaining budget and yields on zero 
   const f = await registeredFixture('openworkspace-learning-budget-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 shared failure mode');
-  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, 1))[0].id;
   for (const suffix of ['a', 'b', 'c']) {
     await f.service.recordLearning({
       title: `${'Long title words '.repeat(4)}${suffix}`,
@@ -272,7 +272,7 @@ test('recurrence signal: holding at zero, suspect on first repeat, flagged in th
   const f = await registeredFixture('openworkspace-learning-signal-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 checkout flow');
-  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, 1))[0].id;
   await f.service.recordLearning({
     title: 'Checkout flow guard',
     file: 'AGENTS.md',
@@ -320,7 +320,7 @@ test('legacy homes without an index inject nothing and never crash', async t => 
   }
 });
 
-test('HTTP record round-trip gates dashboard context and keeps activity counts-only', async t => {
+test('HTTP record round-trip serves MCP and open loopback, keeps activity counts-only', async t => {
   const f = await registeredFixture('openworkspace-learning-http-');
   const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
@@ -338,21 +338,10 @@ test('HTTP record round-trip gates dashboard context and keeps activity counts-o
     const entry = await created.json() as LearningRuleEntry;
     assert.equal(entry.status, 'active');
     assert.match(entry.id, /^[0-9a-f-]{36}$/);
-    // Dashboard callers need the canonical context.
-    const connected = await fetch(`${origin}/api/dashboard-session`, {
-      method: 'POST',
-      headers: { ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-      body: JSON.stringify({ consent: true }),
-    });
-    assert.equal(connected.status, 201);
-    const { dashboardToken } = await connected.json() as { dashboardToken: string };
-    const dashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders, Origin: origin, 'Sec-Fetch-Site': 'same-origin' };
-    const bareDashboardHeaders = { Authorization: `Bearer ${dashboardToken}`, ...jsonHeaders };
-    const missingContext = await fetch(`${origin}/api/learnings/record`, { method: 'POST', headers: bareDashboardHeaders, body: JSON.stringify(body) });
-    assert.equal(missingContext.status, 403);
+    // Open-loopback dashboard callers need no token.
     const dashboardCreated = await fetch(`${origin}/api/learnings/record`, {
       method: 'POST',
-      headers: dashboardHeaders,
+      headers: jsonHeaders,
       body: JSON.stringify({ ...body, title: 'Dashboard gated rule' }),
     });
     assert.equal(dashboardCreated.status, 201);
@@ -505,11 +494,11 @@ test('tokenizeContext is pure: lowercase, bounded and stop-word free', () => {
   }], undefined), [], 'no context selects nothing');
 });
 
-test('startup line stays failure-only; situational surfacing lives in workstream context', async t => {
+test('startup line stays failure-only; situational surfacing lives in the situational selector', async t => {
   const f = await registeredFixture('openworkspace-learning-situation-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 login flow');
-  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, 1))[0].id;
   await f.service.recordLearning({
     title: 'Login guard', file: 'AGENTS.md', evidenceRefs: [ref],
     failureSignature: { tests: ['login flow'], errorClasses: [] },
@@ -536,7 +525,7 @@ test('unmeasured entries never recur, never flag and evict after measured-active
   const f = await registeredFixture('openworkspace-learning-lifecycle-');
   t.after(() => rm(f.root, { recursive: true, force: true }));
   await failedRun(f.store.directory, f.workspace.id, 'not ok 1 setup detour case');
-  const ref = (await f.service.recentRuns(f.workspace.name, undefined, 1))[0].id;
+  const ref = (await f.service.recentRuns(f.workspace.name, 1))[0].id;
   const waste = await f.service.recordLearning({
     title: 'Setup detour guard', file: 'AGENTS.md', evidenceRefs: [ref],
     failureSignature: { tests: [], errorClasses: [] },

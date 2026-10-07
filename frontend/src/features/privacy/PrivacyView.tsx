@@ -1,11 +1,10 @@
 import { Button } from '@/components/ui/button';
 import type { Workspace } from '@/api';
 
-export function PrivacyView({ workspaces, onRemove, busyIds, onDisconnect }: {
+export function PrivacyView({ workspaces, onRemove, busyIds }: {
   workspaces: Workspace[];
   onRemove: (id: string) => void;
   busyIds: ReadonlySet<string>;
-  onDisconnect: () => void;
 }) {
   return (
     <div className="max-w-5xl space-y-9">
@@ -30,7 +29,7 @@ export function PrivacyView({ workspaces, onRemove, busyIds, onDisconnect }: {
           <ul className="mt-3 grid gap-2 text-sm leading-6 text-muted-foreground">
             <li>No <code>.env</code> files or secret contents are read.</li>
             <li>No installers or project-file changes by the service itself.</li>
-            <li>Only bounded read-only database queries over a local socket; superuser roles and write statements are refused.</li>
+            <li>No database connections: registration never opens a datastore or queries application data.</li>
             <li>No external API or application runtime connections, and no silent widening: roots are exactly the folders you chose.</li>
           </ul>
         </section>
@@ -42,7 +41,7 @@ export function PrivacyView({ workspaces, onRemove, busyIds, onDisconnect }: {
            <span className="text-xs text-muted-foreground">Each listed root · discovery and bounded read-only queries only</span>
         </div>
         {workspaces.length === 0 ? (
-          <p className="py-4 text-sm text-muted-foreground">No projects are registered in this browser session.</p>
+          <p className="py-4 text-sm text-muted-foreground">No projects registered yet.</p>
         ) : (
           <ul className="divide-y divide-border">
             {workspaces.map(workspace => {
@@ -69,7 +68,6 @@ export function PrivacyView({ workspaces, onRemove, busyIds, onDisconnect }: {
         <h2 id="assistant-boundary-heading" className="text-sm font-semibold">Your assistant remains independent</h2>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">OpenWorkspace records what ran; it does not gate what your assistant may do through its shell or IDE. Repository metadata may itself be sensitive, and an external assistant may send results to its model provider. Register only directories you intend to review with that assistant.</p>
       </section>
-      <Button type="button" variant="outline" onClick={onDisconnect}>Disconnect this browser tab</Button>
     </div>
   );
 }

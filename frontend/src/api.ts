@@ -5,122 +5,10 @@ export interface Workspace {
   createdAt: string;
 }
 
-export interface Capability {
-  id: string;
-  name: string;
-  purpose: string;
-  required: boolean;
-  status: 'found' | 'missing';
-  verified: false;
-}
-
 export interface Overview {
   workspaces: Workspace[];
-  capabilities: Capability[];
   milestone: string;
   limits: string[];
-}
-
-export interface Repository {
-  name: string;
-  path: string;
-  git: boolean;
-  stack: string[];
-  manifests: string[];
-  instructions: string[];
-  scriptNames: string[];
-  composeFiles: string[];
-  processState: 'not_connected';
-  readiness: 'not_checked';
-}
-
-export interface Inspection {
-  workspace: Workspace;
-  target: { id: 'local'; kind: 'local' };
-  roots: RootInspection[];
-}
-
-export interface RootInspection {
-  path: string;
-  repositories: Repository[];
-  warnings: string[];
-  unavailable: boolean;
-  error?: string;
-}
-
-export interface ServiceRecord {
-  name: string;
-  pmId: number | null;
-  namespace: string | null;
-  status: string;
-  cwd: string;
-  restartCount: number;
-  matchedRoots: string[];
-  exactRootPath: string | null;
-}
-
-export interface ServiceInventory {
-  inspectedAt: string;
-  runner: 'pm2';
-  available: boolean;
-  error?: 'missing' | 'failed' | 'timeout' | 'invalid';
-  processCount: number;
-  matchedProcessCount: number;
-  unmatchedProcessCount: number;
-  services: ServiceRecord[];
-  ambiguousServices: ServiceRecord[];
-}
-
-export interface WorkstreamCheckout {
-  root: string;
-  revision: string | null;
-  revisionState: 'observed' | 'unknown';
-  observedAt: string;
-}
-
-export interface CheckpointNote {
-  goal: string;
-  blocker: string;
-  next: string;
-  owner: 'agent' | 'user';
-  at: string;
-  evidence: string[];
-}
-
-export interface WorkstreamCompletionCheck {
-  name: string;
-  result: 'passed' | 'failed' | 'error';
-  environment: string;
-  evidenceIds: string[];
-  evidenceSource: string;
-  evidenceLabel: string;
-}
-
-export interface WorkstreamCompletion {
-  assignmentId: string;
-  completionId: string;
-  outcome: 'passed' | 'blocked' | 'failed';
-  revision: string | null;
-  dirty: boolean | null;
-  dirtyFingerprint: { diffHash: string; files: string[]; truncated: boolean } | null;
-  checks: WorkstreamCompletionCheck[];
-  recordedAt: string;
-}
-
-export interface Workstream {
-  id: string;
-  name: string;
-  workspaceId: string;
-  checkouts: WorkstreamCheckout[];
-  status: 'active' | 'paused' | 'done';
-  /** Latest checkpoint entry; absent on older server responses. */
-  checkpointNote?: CheckpointNote | null;
-  /** Append-only bounded history (oldest-first); absent on older server responses. */
-  checkpointHistory?: CheckpointNote[];
-  /** Independent bounded completion ring; absent on older server responses. */
-  completions?: WorkstreamCompletion[];
-  createdAt: string;
-  updatedAt: string;
 }
 
 /**
@@ -176,16 +64,6 @@ export interface EnvironmentStatus {
   services: ServiceStatusEntry[];
 }
 
-export interface Lease {
-  resource: string;
-  workstreamId: string;
-  status: 'held' | 'queued';
-  /** Renewal deadline for held leases; absent on older server responses. */
-  expiresAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface ActivityEntry {
   at: string;
   actor: 'dashboard' | 'mcp';
@@ -194,63 +72,148 @@ export interface ActivityEntry {
   detail: string;
 }
 
-export interface MilestoneNote {
-  at: string;
-  text: string;
-  source: string;
+// ---------------------------------------------------------------------------
+// Observer surface (GET /api/observer/*). Contracts mirror the ow --json
+// envelopes (stable English keys). Excerpts are served raw as stored:
+// dev-only loopback surface, personal use.
+// ---------------------------------------------------------------------------
+
+export interface ObserverSessionInfo {
+  sessionID: string;
+  title: string | null;
+  commands: number;
+  fileEdits: number;
+  fails: number;
+  first: string | null;
+  last: string | null;
+  workdir: string | null;
+  childCount: number;
 }
 
-export interface Learnings {
-  milestones: MilestoneNote[];
+export interface ObserverGroupedLine {
+  ref: number;
+  signature: string;
+  outcome: string;
+  runs: number;
+  agents: string[];
+  sessions: string[];
+  models: string[];
+  failReason: string | null;
+  variants: string[];
+  excerpts: string[];
+  results: string[];
+  intents: string[];
+  messageIDs: string[];
 }
 
-/**
- * Read-only projection of GET /api/lessons: lesson titles plus source file
- * refs only, never rule bodies. File refs are relative names (AGENTS.md,
- * skills/...) enforced server-side — never absolute paths.
- */
-export interface LearnedLesson {
+export interface ObserverTaskGroup {
+  taskRef: string;
+  taskRefKind: 'user' | 'briefing' | 'none';
+  taskRefAgent: string | null;
+  runs: number;
+  fails: number;
+  lines: ObserverGroupedLine[];
+}
+
+export interface ObserverSpawnLink {
+  childSessionID: string;
+  agent: string | null;
+  description: string | null;
+  time: number;
+}
+
+export interface ObserverTreeNodeDetail {
   title: string;
-  file: string;
-  measured: boolean;
-  status: 'active' | 'suspect';
-  recurrenceCount: number;
+  titleKind: 'user' | 'briefing' | 'other';
+  agent: string | null;
+  records: number;
+  /** True when the session has message rows but zero window records
+   * (pre-recording-era work). Absent on degraded/older payloads. */
+  hasMessages?: boolean;
+  orphan: boolean;
 }
 
-export interface RunListEntry {
-  /** Stable opaque summary ID within its scope. Older servers omit it. */
-  id?: string;
-  workspaceId: string;
-  scriptName: string;
-  outcome: 'passed' | 'failed' | 'error';
-  durationMs: number;
-  at: string;
-  failingNames: string[];
-  failingTruncated: boolean;
-  excerptPreview: string;
-  excerptTruncated: boolean;
-  outputTruncated: boolean;
-  /** True when a checkpoint note in this scope references this run. Older servers omit it. */
-  pinnedByNote?: boolean;
-  /** Evidence source: executed here vs pasted on trust. Older fixtures may omit it. */
-  source?: 'openworkspace-run' | 'external-import' | 'unknown-source';
-  /** Distinct human wording for the source; never a verification claim for imports. */
-  sourceLabel?: string;
-  /** HEAD revision the run verified against, when observed. Older entries omit it. */
-  revision?: string | null;
-  /** Dirty-state fingerprint (content hash plus path names only); null/absent when clean or degraded. */
-  dirty?: { diffHash: string; files: string[]; truncated: boolean } | null;
+export interface ObserverTreeNode {
+  sessionID: string;
+  link: ObserverSpawnLink | null;
+  children: ObserverTreeNode[];
+  /** Enriched row metadata; absent on degraded payloads (falls back to id). */
+  detail?: ObserverTreeNodeDetail;
 }
 
-export type ProjectRootPickerResult =
-  | { status: 'selected'; roots: string[] }
-  // 'aborted' mirrors the server picker's disconnect/abort outcome
-  // (project-root-picker.ts); the form treats it like a cancellation.
-  | { status: 'cancelled' | 'unavailable' | 'timeout' | 'error' | 'aborted' };
+export interface ObserverStuckReport {
+  retries: { signature: string; runs: number; fails: number }[];
+  rereads: { path: string; agent: string; reads: number; depth: number }[];
+  slow: { ms: number; command: string }[];
+  interruptions: number;
+  compactions: number;
+  afterInterrupt: string[];
+}
 
-export interface ProjectRootRequest {
+export interface ObserverSessionMeta {
+  sessionID: string;
+  title: string | null;
+  directory: string | null;
+  cost: number | null;
+  tokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number } | null;
+  additions: number | null;
+  deletions: number | null;
+  files: number | null;
+  userTurns: number;
+  assistantTurns: number;
+  compactions: number;
+  lastWord: string | null;
+  models: string[];
+}
+
+export interface ObserverReadStat {
+  path: string;
+  reads: number;
+  agents: string[];
+  ranges: string[];
+}
+
+export interface ObserverDoctorLine {
   name: string;
-  roots: string[];
+  ok: boolean;
+  detail: string;
+}
+
+export interface ObserverMistakeRow {
+  sessionID: string;
+  at: string | null;
+  taskRef: string | null;
+  taskRefKind: 'user' | 'briefing' | 'none';
+  signature: string;
+  outcome: string;
+  failReason: string | null;
+  excerpt: string | null;
+  agent: string | null;
+}
+
+export interface ObserverPrompt {
+  text: string;
+  kind: 'user' | 'briefing';
+}
+
+export interface ObserverCostRow {
+  sessionID: string;
+  title: string | null;
+  directory: string | null;
+  cost: number | null;
+  tokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number } | null;
+  additions: number | null;
+  deletions: number | null;
+  files: number | null;
+  userTurns: number;
+  assistantTurns: number;
+  compactions: number;
+  last: string | null;
+}
+
+export interface ObserverStuckEntry {
+  session: string;
+  report: ObserverStuckReport;
 }
 
 export interface ClientConfig {
@@ -259,9 +222,8 @@ export interface ClientConfig {
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-export const dashboardSessionStorageKey = 'openworkspace.dashboard-session';
 const legacyPairingStorageKey = 'openworkspace.pairing';
-const dashboardTokenPattern = /^[a-f0-9]{64}$/;
+const legacyDashboardSessionStorageKey = 'openworkspace.dashboard-session';
 
 function safeName(name: string) {
   if (typeof name !== 'string') throw new ApiError('The workspace name is invalid.');
@@ -272,6 +234,15 @@ function safeName(name: string) {
   return encodeURIComponent(name);
 }
 
+function observerParams(params: Record<string, string | number | boolean | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue;
+    search.set(key, typeof value === 'boolean' ? (value ? '1' : '0') : String(value));
+  }
+  return search.toString();
+}
+
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);
@@ -279,149 +250,20 @@ export class ApiError extends Error {
   }
 }
 
-export class SessionExpiredError extends ApiError {
-  constructor(readonly invalidatedCurrentSession: boolean, readonly generationAfter: number) {
-    super('Reconnect this browser to the local workspace.', 401);
-    this.name = 'SessionExpiredError';
-  }
-}
-
 export class ApiClient {
-  private token: string;
-  private generation = 0;
-  private confirmed: boolean;
-
   constructor(private readonly storage: StorageLike = window.sessionStorage) {
+    // Past connect-flow state is inert: clear any stored legacy credentials so
+    // a stale tab token can never be sent again.
     storage.removeItem(legacyPairingStorageKey);
-    const stored = storage.getItem(dashboardSessionStorageKey) || '';
-    this.token = dashboardTokenPattern.test(stored) ? stored : '';
-    if (!this.token && stored) storage.removeItem(dashboardSessionStorageKey);
-    this.confirmed = Boolean(this.token);
-  }
-
-  get sessionGeneration() { return this.generation; }
-  get hasSession() { return Boolean(this.token); }
-  get isConfirmed() { return this.confirmed; }
-
-  isCurrent(generation: number) {
-    return this.generation === generation;
-  }
-
-  beginConnection() {
-    return this.clearSession();
-  }
-
-  async createDashboardSession(generation: number) {
-    if (!this.isCurrent(generation)) return false;
-    const response = await fetch('/api/dashboard-session', {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ consent: true }),
-      signal: AbortSignal.timeout(12_000),
-    });
-    const result: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = typeof result === 'object' && result !== null && 'error' in result && typeof result.error === 'string'
-        ? result.error : 'The browser session could not be created. Retry when the local service is available.';
-      throw new ApiError(message, response.status);
-    }
-    const value = typeof result === 'object' && result !== null ? result as Record<string, unknown> : {};
-    const dashboardToken = value.dashboardToken;
-    const expiresAt = value.expiresAt;
-    if (typeof dashboardToken !== 'string' || !dashboardTokenPattern.test(dashboardToken)
-      || typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
-      throw new ApiError('The local service returned an invalid browser session.');
-    }
-    if (!this.isCurrent(generation)) {
-      void this.revokeDashboardSession(dashboardToken);
-      return false;
-    }
-    try {
-      this.storage.setItem(dashboardSessionStorageKey, dashboardToken);
-    } catch (error) {
-      void this.revokeDashboardSession(dashboardToken);
-      throw error;
-    }
-    this.token = dashboardToken;
-    this.confirmed = true;
-    return true;
-  }
-
-  clearIfCurrent(generation: number) {
-    if (!this.isCurrent(generation)) return false;
-    this.clearSession();
-    return true;
-  }
-
-  clearSession() {
-    this.storage.removeItem(dashboardSessionStorageKey);
-    this.storage.removeItem(legacyPairingStorageKey);
-    this.token = '';
-    this.confirmed = false;
-    this.generation++;
-    return this.generation;
-  }
-
-  disconnectDashboard(): Promise<void> {
-    const token = this.token;
-    this.clearSession();
-    return token ? this.revokeDashboardSession(token) : Promise.resolve();
+    storage.removeItem(legacyDashboardSessionStorageKey);
   }
 
   overview() { return this.request<Overview>('/api/overview'); }
   clientConfig() { return this.request<ClientConfig>('/api/client-config'); }
-  inspect(workspace: string) { return this.request<Inspection>(`/api/workspaces/${safeName(workspace)}`); }
-  register(name: string, roots: string[]) { return this.request<Workspace>('/api/workspaces', { name, roots }); }
-  updateRoots(workspace: string, roots: string[]) {
-    return this.request<Workspace>(`/api/workspaces/${safeName(workspace)}/roots`, { roots });
-  }
   remove(workspace: string) {
     return this.request<{ removed: true }>(`/api/workspaces/${safeName(workspace)}`, undefined, { method: 'DELETE' });
   }
-  async projectRootPicker(signal: AbortSignal): Promise<ProjectRootPickerResult> {
-    const result = await this.request<ProjectRootPickerResult>('/api/project-root-picker', {}, {
-      timeoutMs: 305_000,
-      signal,
-    });
-    if (typeof result !== 'object' || result === null || !['selected', 'cancelled', 'unavailable', 'timeout', 'error', 'aborted'].includes(result.status)) {
-      throw new ApiError('The local folder picker returned an invalid response.');
-    }
-    if (result.status === 'selected' && (!Array.isArray(result.roots) || result.roots.some(root => typeof root !== 'string'))) {
-      throw new ApiError('The local folder picker returned invalid folder paths.');
-    }
-    return result;
-  }
-  services(workspace: string) { return this.request<ServiceInventory>(`/api/workspaces/${safeName(workspace)}/services`, {}); }
-  workstreams() { return this.request<Workstream[]>('/api/workstreams'); }
-  workstream(workspace: string, workstream: string) {
-    return this.request<Workstream>(`/api/workstreams/${safeName(workspace)}/${safeName(workstream)}`);
-  }
-  createWorkstream(input: { name: string; workspace: string; checkouts: string[] }) {
-    return this.request<Workstream>('/api/workstreams', input);
-  }
-  setWorkstreamStatus(workspace: string, workstream: string, status: Workstream['status']) {
-    return this.request<Workstream>(`/api/workstreams/${safeName(workspace)}/${safeName(workstream)}/status`, { status });
-  }
-  leases() { return this.request<Lease[]>('/api/leases'); }
-  acquireLease(resource: string, workspace: string, workstream: string) {
-    return this.request<{ lease: Lease; position: number }>('/api/leases/acquire', { resource, workspace, workstream });
-  }
-  releaseLease(resource: string, workspace: string, workstream: string) {
-    return this.request<{ released: boolean; promoted: string | null }>('/api/leases/release', { resource, workspace, workstream });
-  }
   activity() { return this.request<ActivityEntry[]>('/api/activity'); }
-  learnings() { return this.request<Learnings>('/api/learnings'); }
-  lessons() { return this.request<LearnedLesson[]>('/api/lessons'); }
-  recentRuns(workspace: string, workstream: string | undefined, limit = 20) {
-    const bounded = Number.isInteger(limit) ? Math.min(20, Math.max(1, limit)) : 20;
-    const params = new URLSearchParams({ workspace, limit: String(bounded) });
-    if (workstream !== undefined) params.set('workstream', workstream);
-    return this.request<RunListEntry[]>(`/api/runs/recent?${params}`);
-  }
   /** Read-only environment topology for one project (M1 topology + store). */
   environments(workspace: string) {
     return this.request<EnvironmentRecord[]>(`/api/workspaces/${safeName(workspace)}/environments`);
@@ -432,22 +274,40 @@ export class ApiClient {
     return this.request<EnvironmentStatus>(`/api/workspaces/${safeName(workspace)}/environments/status?${params}`);
   }
 
-  private async revokeDashboardSession(token: string): Promise<void> {
-    try {
-      await fetch('/api/dashboard-session', {
-        method: 'DELETE',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({}),
-        signal: AbortSignal.timeout(5_000),
-      });
-    } catch {
-      // Local state is cleared immediately; the server session also has a fixed expiry.
-    }
+  // Observer reads (GET /api/observer/*, dashboard role only).
+  observerDoctor() { return this.request<{ checks: ObserverDoctorLine[]; warnings: string[] }>('/api/observer/doctor'); }
+  observerSessions(params: { since?: string; dir?: string; kind?: string } = {}) {
+    return this.request<{ sessions: ObserverSessionInfo[]; warnings: string[] }>(`/api/observer/sessions?${observerParams(params)}`);
+  }
+  observerMeta(sessionID: string) {
+    return this.request<{ meta: ObserverSessionMeta | null; warning: string | null; warnings: string[] }>(`/api/observer/sessions/${encodeURIComponent(sessionID)}/meta`);
+  }
+  observerRecords(sessionID: string, params: { since?: string; kind?: string; tool?: string; tree?: boolean; failsOnly?: boolean } = {}) {
+    return this.request<{ session: string; warnings: string[]; groups: ObserverTaskGroup[]; tree?: ObserverTreeNode }>(
+      `/api/observer/sessions/${encodeURIComponent(sessionID)}/records?${observerParams(params)}`,
+    );
+  }
+  observerStuck(sessionID: string, params: { since?: string; tree?: boolean } = {}) {
+    return this.request<{ session: string; warnings: string[]; report: ObserverStuckReport }>(
+      `/api/observer/sessions/${encodeURIComponent(sessionID)}/stuck?${observerParams(params)}`,
+    );
+  }
+  observerStuckGlobal(params: { since?: string } = {}) {
+    return this.request<{ entries: ObserverStuckEntry[]; warnings: string[] }>(`/api/observer/stuck?${observerParams(params)}`);
+  }
+  observerMistakes(params: { since?: string; session?: string; agent?: string; limit?: number } = {}) {
+    return this.request<{ rows: ObserverMistakeRow[]; warnings: string[] }>(`/api/observer/mistakes?${observerParams(params)}`);
+  }
+  observerPrompts(sessionID: string) {
+    return this.request<{ session: string; prompts: ObserverPrompt[]; warnings: string[] }>(`/api/observer/sessions/${encodeURIComponent(sessionID)}/prompts`);
+  }
+  observerReads(sessionID: string, params: { since?: string } = {}) {
+    return this.request<{ session: string; reads: ObserverReadStat[]; warnings: string[] }>(
+      `/api/observer/sessions/${encodeURIComponent(sessionID)}/reads?${observerParams(params)}`,
+    );
+  }
+  observerCost(params: { since?: string; limit?: number } = {}) {
+    return this.request<{ rows: ObserverCostRow[]; warnings: string[] }>(`/api/observer/cost?${observerParams(params)}`);
   }
 
   private async request<T>(path: string, data?: unknown, options: {
@@ -455,14 +315,15 @@ export class ApiClient {
     signal?: AbortSignal;
     method?: string;
   } = {}): Promise<T> {
-    const generation = this.generation;
-    const token = this.token;
+    // Dev-only open loopback: no browser credential is stored or sent. The
+    // server's loopback Host/Origin/fetch-metadata gate is the boundary; a
+    // 401 here means a stale bearer was supplied (e.g. an MCP token on a
+    // dashboard-only route), never an expired browser session.
     const response = await fetch(path, {
       method: options.method ?? (data === undefined ? 'GET' : 'POST'),
       credentials: 'same-origin',
       cache: 'no-store',
       headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(data === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(data === undefined ? {} : { body: JSON.stringify(data) }),
@@ -471,11 +332,6 @@ export class ApiClient {
         : AbortSignal.timeout(options.timeoutMs ?? 12_000),
     });
     const result: unknown = await response.json().catch(() => null);
-    if (response.status === 401) {
-      const invalidatedCurrentSession = generation === this.generation && token === this.token;
-      if (invalidatedCurrentSession) this.clearSession();
-      throw new SessionExpiredError(invalidatedCurrentSession, this.generation);
-    }
     if (!response.ok) {
       const message = typeof result === 'object' && result !== null && 'error' in result && typeof result.error === 'string'
         ? result.error : 'The request could not be completed.';

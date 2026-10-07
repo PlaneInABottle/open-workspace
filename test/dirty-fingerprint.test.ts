@@ -165,7 +165,7 @@ test('run summaries persist revision plus fingerprint and recent_runs carries th
     workspaceId: workspace.id, scriptName: 'check', outcome: result.outcome, durationMs: result.durationMs,
     output: result.output, outputTruncated: result.truncated, revision: result.git.revision, dirty: result.git.dirty,
   });
-  const listed = await service.recentRuns(workspace.name, undefined, 5);
+  const listed = await service.recentRuns(workspace.name, 5);
   assert.equal(listed.length, 1);
   assert.equal(listed[0].revision, SHA);
   assert.deepEqual(listed[0].dirty, result.git.dirty, 'recent_runs entries carry the fingerprint for timeline data');
