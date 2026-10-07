@@ -11,21 +11,19 @@ export function GroupedLineRow({ line, defaultExpanded }: { line: ObserverGroupe
   const failed = isFailureOutcome(line.outcome);
   const visibleVariants = showAllVariants ? line.variants : line.variants.slice(0, 10);
   return (
-    <li className="py-2.5">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <li className="py-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className="font-mono text-xs text-muted-foreground">[{line.ref}]</span>
-        <p className="min-w-0 flex-1 break-words font-mono text-xs leading-5 sm:text-[0.8rem]">{line.signature}</p>
+        <p className="min-w-0 flex-1 truncate font-mono text-xs leading-5 sm:text-[0.8rem]" title={line.signature}>{line.signature}</p>
         <Badge variant={outcomeVariant(line.outcome)}>{line.outcome}{line.runs > 1 ? ` ×${line.runs}` : ''}</Badge>
+        {line.agents.length > 0 && <span className="text-xs text-muted-foreground">{line.agents.join(', ')}</span>}
+        {failed && line.failReason && <span className="truncate text-xs font-medium text-destructive">· {line.failReason}</span>}
+        {line.sessions.length > 0 && <span className="truncate text-xs text-muted-foreground">· {line.sessions.map(shortId).join(', ')}</span>}
+        <button type="button" aria-expanded={expanded} onClick={() => setExpanded(current => !current)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          {expanded ? 'hide' : 'detail'}
+        </button>
       </div>
-      <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-        {line.agents.length > 0 && <span>agents: {line.agents.join(', ')}</span>}
-        {line.sessions.length > 0 && <span>sessions: {line.sessions.map(shortId).join(', ')}</span>}
-        {failed && line.failReason && <span className="font-medium text-destructive">reason: {line.failReason}</span>}
-      </p>
       <div className="mt-1">
-        <Button type="button" variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(current => !current)}>
-          {expanded ? 'Hide detail' : 'Show detail'}
-        </Button>
         {expanded && (
           <div className="mt-2 space-y-2">
             {visibleVariants.map((variant, index) => (
@@ -64,8 +62,8 @@ export function TaskGroupSection({ group, failsOnly }: { group: ObserverTaskGrou
   // prepended inside it) so the speaker survives truncation.
   const eyebrow = messageEyebrow(group.taskRefKind, group.taskRefAgent);
   return (
-    <section aria-label={`Task: ${group.taskRef}`} className="py-4 first:pt-0">
-      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-2">
+    <section aria-label={`Task: ${group.taskRef}`} className="py-2 first:pt-0">
+      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-1">
         <div className="min-w-0 flex-1">
           {eyebrow && <p className={messageEyebrowClass}>{eyebrow}</p>}
           <h3 className="min-w-0 flex-1 break-words text-sm font-semibold line-clamp-1">{group.taskRef}</h3>
@@ -105,32 +103,29 @@ export function MistakeRowItem({ row }: {
   const [expanded, setExpanded] = useState(false);
   const eyebrow = row.taskRef ? messageEyebrow(row.taskRefKind, row.agent) : null;
   return (
-    <li className="py-2.5">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <li className="py-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0 self-center text-destructive" />
-        <p className="min-w-0 flex-1 break-words font-mono text-xs leading-5 sm:text-[0.8rem]">{row.signature}</p>
+        <p className="min-w-0 flex-1 truncate font-mono text-xs leading-5 sm:text-[0.8rem]" title={row.signature}>{row.signature}</p>
         <Badge variant={outcomeVariant(row.outcome)}>{row.outcome}</Badge>
+        {row.excerpt && (
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded(current => !current)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+            {expanded ? 'hide' : 'output'}
+          </button>
+        )}
       </div>
-      <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      <p className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
         <a className="font-mono underline-offset-4 hover:underline" href={`#observe/${row.sessionID}`}>{shortId(row.sessionID)}</a>
         {row.at && <span>{formatTime(row.at)}</span>}
         {row.agent && <span>{row.agent}</span>}
-        {row.failReason && <span className="font-medium text-destructive">reason: {row.failReason}</span>}
+        {row.failReason && <span className="truncate font-medium text-destructive">· {row.failReason}</span>}
       </p>
       {row.taskRef && (
-        <div className="mt-1 min-w-0">
-          {eyebrow && <p className={messageEyebrowClass}>{eyebrow}</p>}
-          <p className="break-words text-xs text-muted-foreground line-clamp-1">{row.taskRef}</p>
-        </div>
+        <p className="mt-0.5 min-w-0 truncate text-xs text-muted-foreground" title={row.taskRef}>
+          {eyebrow ? `${eyebrow} ` : ''}{row.taskRef}
+        </p>
       )}
-      {row.excerpt && (
-        <div className="mt-1">
-          <Button type="button" variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(current => !current)}>
-            {expanded ? 'Hide output' : 'Show output'}
-          </Button>
-          {expanded && <pre className="mt-2 max-h-40 overflow-auto rounded border border-destructive/40 p-2 font-mono text-xs leading-5">{row.excerpt}</pre>}
-        </div>
-      )}
+      {expanded && row.excerpt && <pre className="mt-1 max-h-40 overflow-auto rounded border border-destructive/40 p-2 font-mono text-xs leading-5">{row.excerpt}</pre>}
     </li>
   );
 }

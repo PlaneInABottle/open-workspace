@@ -179,14 +179,14 @@ describe('observe views', () => {
     expect(await screen.findByText('pnpm test')).toBeInTheDocument();
     expect(screen.getByText('Fix the failing check')).toBeInTheDocument();
     // The user-message group header carries an attribution eyebrow.
-    expect(screen.getByText('You asked:')).toBeInTheDocument();
+    expect(screen.getByText(/You asked:/)).toBeInTheDocument();
     fireEvent.click(detailTabs.getByRole('tab', { name: 'Failures' }));
     expect((await screen.findAllByText('pnpm test')).length).toBeGreaterThan(0);
     fireEvent.click(detailTabs.getByRole('tab', { name: 'Needs attention' }));
     expect(await screen.findByText('Repeated commands')).toBeInTheDocument();
     fireEvent.click(detailTabs.getByRole('tab', { name: 'Your messages' }));
     expect(await screen.findByText('Fix the failing check')).toBeInTheDocument();
-    expect(screen.getByText('You asked:')).toBeInTheDocument();
+    expect(screen.getByText(/You asked:/)).toBeInTheDocument();
     fireEvent.click(detailTabs.getByRole('tab', { name: 'Files read' }));
     expect(await screen.findByText('/tmp/fixture-alpha/a.ts')).toBeInTheDocument();
   });
@@ -298,7 +298,7 @@ describe('observe views', () => {
     expect(await screen.findByText('1 failure · newest first.')).toBeInTheDocument();
     expect(screen.getByText('pnpm test')).toBeInTheDocument();
     // Failure-feed task refs carry the same attribution as group headers.
-    expect(screen.getByText('You asked:')).toBeInTheDocument();
+    expect(screen.getByText(/You asked:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Needs attention' }));
     expect(await screen.findByText('1 session with signals.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Cost' }));
@@ -428,7 +428,7 @@ describe('observe views', () => {
     await screen.findByRole('heading', { name: 'What your AI did' });
     fireEvent.click(await screen.findByText('ses_aaaaaaaaa'));
     expect(await screen.findByText('the final answer here')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show detail' }));
+    fireEvent.click(screen.getByRole('button', { name: 'detail' }));
     expect(await screen.findByText(/Showing 10 of 12 stored variants/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show all 12 variants' }));
     expect(screen.getByRole('button', { name: 'Show fewer variants' })).toBeInTheDocument();
