@@ -276,15 +276,18 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
   if (!enabled) return { ok: false, detail: "kapalı (ow.yaml içinde trace: yok)" }
   let count = 0
   let lastEnd: bigint | null = null
+  let unnamed = false
   try {
     for (const span of selectValidSpans((await readSpansFile(tracePaths(rootDir).spansFile)).spans)) {
       count += 1
+      if (span.service === "bilinmeyen") unnamed = true
       const end = BigInt(span.endNano)
       if (lastEnd === null || end > lastEnd) lastEnd = end
     }
   } catch {
     count = 0
     lastEnd = null
+    unnamed = false
   }
   // The jar note is a silence diagnostic for Java setups only: spans flowing
   // means the pipeline works, so an open report never carries the jar note.
@@ -300,7 +303,13 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
     return { ok: true, detail: `açık (port ${port}, 0 span). ipucu: span yok — servis ayakta mı? ow ps` }
   }
   const agoMs = Math.max(0, Date.now() - Number(lastEnd / 1_000_000n))
-  return { ok: true, detail: `açık (port ${port}, ${count} span, son span ${formatAgo(agoMs)})` }
+  const open = `açık (port ${port}, ${count} span, son span ${formatAgo(agoMs)})`
+  // Sibling of the 0-span hint: a stored `bilinmeyen` service means the
+  // exporter never sent `service.name`. Static text only, same pattern.
+  // The two hints never co-fire (unnamed needs ≥1 span by construction).
+  return unnamed
+    ? { ok: true, detail: `${open}. ipucu: isimsiz span var — OTEL_SERVICE_NAME ayarlanmamış olabilir` }
+    : { ok: true, detail: open }
 }
 
 /** True when a service launches through the Java agent (recipe `env:`). */

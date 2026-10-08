@@ -216,6 +216,16 @@ route words) is kept verbatim because traces stay local. Trace output is
 still semi-sensitive (it carries resource IDs) — review before pasting into
 public issues.
 
+Local vs second pipeline: local export ALWAYS targets the ow receiver
+(`http://127.0.0.1:4319`, `http/protobuf`) — never repurpose that endpoint
+for a second backend. Langfuse (or any remote) is a SEPARATE exporter with
+its own endpoint/headers (e.g. its OTLP/HTTP URL plus auth headers).
+Fail-fast the remote leg so a dead host cannot stall startup:
+`OTEL_EXPORTER_OTLP_TIMEOUT` low (export RPC deadline, ms) with a tight
+`OTEL_BSP_SCHEDULE_DELAY` (batch export cadence, ms). If startup logs
+connection-error spam, it comes from the app's own exporter, not the ow
+receiver — check which endpoint the errors name.
+
 ### İzleme tarifleri (tarayıcı)
 
 No zero-code option exists for browsers: `ow.yaml` can pass the endpoint

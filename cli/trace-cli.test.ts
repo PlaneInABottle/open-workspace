@@ -915,6 +915,76 @@ describe("trace doctor line", () => {
     }
   })
 
+  test("bilinmeyen service appends the OTEL_SERVICE_NAME hint; named spans stay clean", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("GET /gizli-kanarya-bilinmeyen")),
+          ...tag(6, 0),
+          ...encVarint(2),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("host.name", "testbox"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const hinted = await checkTraceDoctor(root)
+      expect(hinted.ok).toBe(true)
+      expect(hinted.detail).toContain("isimsiz span var")
+      expect(hinted.detail).toContain("OTEL_SERVICE_NAME")
+      expect(hinted.detail).not.toContain("span yok")
+      expect(hinted.detail).not.toContain("gizli-kanarya")
+      const named = await tempRoot()
+      try {
+        await mkdir(join(named, ".ow", "traces"), { recursive: true, mode: 0o700 })
+        await writeFile(join(named, "ow.yaml"), TRACE_YAML)
+        await seedRows(named, [
+          makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), service: "api" }),
+        ])
+        // seedRows rewrites ow.yaml identically; spans carry service api.
+        const clean = await checkTraceDoctor(named)
+        expect(clean.ok).toBe(true)
+        expect(clean.detail).not.toContain("ipucu")
+      } finally {
+        await rm(named, { recursive: true, force: true })
+      }
+      const empty = await tempRoot()
+      try {
+        await writeFile(join(empty, "ow.yaml"), TRACE_YAML)
+        const silent = await checkTraceDoctor(empty)
+        expect(silent.detail).toContain("span yok")
+        expect(silent.detail).not.toContain("isimsiz")
+      } finally {
+        await rm(empty, { recursive: true, force: true })
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("trace line is present in doctor output and excluded from the exit rule", async () => {
     const root = await tempRoot()
     try {
