@@ -7,7 +7,8 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { decodeTraceRequest, TraceDecodeError } from "./trace-otlp"
+import { decodeTraceRequest, TraceDecodeError, type TraceSpan } from "./trace-otlp"
+import { selectValidSpans } from "./trace-query"
 import { createTraceStore, readSpansFile } from "./trace-store"
 
 // --- Minimal protobuf encoder for fixtures (V8 field numbers) ---
@@ -58,7 +59,13 @@ type SpanOpts = {
   end?: bigint
   attrs?: [string, number[]][]
   status?: number
+  events?: { name: string; attrs: [string, number[]][] }[]
 }
+
+const eventBytes = (name: string, attrs: [string, number[]][]): number[] => [
+  ...lenField(2, utf8(name)),
+  ...attrs.flatMap(([k, v]) => lenField(3, kv(k, v))),
+]
 
 const spanBytes = (o: SpanOpts): number[] => [
   ...(o.traceId === null ? [] : lenField(1, rawHex(o.traceId ?? TRACE_ID))),
@@ -73,6 +80,7 @@ const spanBytes = (o: SpanOpts): number[] => [
   ...fixed64(o.end ?? 1_012_400_000n),
   ...(o.attrs ?? []).flatMap(([k, v]) => lenField(9, kv(k, v))),
   ...(o.status === undefined ? [] : lenField(15, [...tag(3, 0), ...encVarint(o.status)])),
+  ...(o.events ?? []).map((event) => lenField(11, eventBytes(event.name, event.attrs))).flat(),
 ]
 
 const scopeSpans = (service: string | null, spans: number[][]): number[] => [
@@ -367,6 +375,28 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     expect(text).not.toContain("abc")
   })
 
+  test("HIGH: dotted credential pairs mask; filename-line shapes survive", async () => {
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            attrs: [
+              ["cfg1", anyString("secret.value=hunter2")],
+              ["cfg2", anyString("password.value=hunter2")],
+              ["cfg3", anyString("auth.realm:hunter2")],
+              ["src", anyString("Auth.java:7")],
+            ],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].attrs["cfg1"]).toBe("***")
+    expect(spans[0].attrs["cfg2"]).toBe("***")
+    expect(spans[0].attrs["cfg3"]).toBe("***")
+    expect(spans[0].attrs["src"]).toBe("Auth.java:7")
+    expect(text).not.toContain("hunter2")
+  })
+
   test("S2/S3 sentinel: credential shapes never reach disk; short-ID structure is kept", async () => {
     const sentinel = "ZZSENTINELZZ"
     const { text, spans } = await storeAndRead(
@@ -434,6 +464,20 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     ])
   })
 
+  test("MEDIUM: hostile errorType masks; dotted class names verbatim", async () => {
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({ events: [{ name: "exception", attrs: [["exception.type", anyString("password=hunter2")]] }] }),
+          spanBytes({ spanId: "dd".repeat(8), events: [{ name: "exception", attrs: [["exception.type", anyString("com.example.Auth")]] }] }),
+        ]),
+      ),
+    )
+    expect(spans[0].errorType).toBe("***")
+    expect(spans[1].errorType).toBe("com.example.Auth")
+    expect(text).not.toContain("hunter2")
+  })
+
   test("H2: double-encoded separators mask to fixpoint; lone-% never throws", async () => {
     const { text, spans } = await storeAndRead(
       requestBytes(
@@ -492,6 +536,108 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     expect(spans[0].attrs).not.toHaveProperty("card_number")
     expect(spans[0].attrs["count"]).toBe("12345")
     expect(spans[0].attrs["card_exp_month"]).toBe("12")
+  })
+
+  test("exception event decodes type/message/frames sanitized; other events dropped", async () => {
+    const stack = [
+      "java.lang.NullPointerException: boom",
+      "\tat com.example.Orders.get(Orders.java:42)",
+      "\tat com.example.Auth.login(Auth.java:7) // Bearer tok-abc",
+      "\tat com.example.Main.main(Main.java:3)",
+    ].join("\n")
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            status: 2,
+            events: [
+              { name: "click", attrs: [["foo", anyString("bar")]] },
+              {
+                name: "exception",
+                attrs: [
+                  ["exception.type", anyString("java.lang.NullPointerException")],
+                  ["exception.message", anyString("login failed for password=hunter2")],
+                  ["exception.stacktrace", anyString(stack)],
+                ],
+              },
+            ],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].status).toBe("error")
+    expect(spans[0].errorType).toBe("java.lang.NullPointerException")
+    expect(spans[0].errorMessage).toBe("***")
+    expect(spans[0].errorFrames).toEqual([
+      "Orders.java:42 in com.example.Orders.get",
+      "Auth.java:7 in com.example.Auth.login",
+      "Main.java:3 in com.example.Main.main",
+    ])
+    expect(text).not.toContain("hunter2")
+    expect(text).not.toContain("tok-abc")
+    expect(text).not.toContain("boom")
+  })
+
+  test("python stacktrace reduces to file:line in function; only first 4 events kept", async () => {
+    const stack = (n: number): string =>
+      `Traceback (most recent call last):\n${Array.from({ length: n }, (_, i) => `  File "/app/svc.py", line ${10 + i}, in handle\n    do_${i}()`).join("\n")}`
+    const events = Array.from({ length: 6 }, (_, i) => ({
+      name: "exception",
+      attrs: [
+        ["exception.type", anyString(i === 0 ? "ValueError" : "Other")],
+        ["exception.stacktrace", anyString(stack(4))],
+      ] as [string, number[]][],
+    }))
+    const { spans } = await storeAndRead(requestBytes(scopeSpans("api", [spanBytes({ events })])))
+    expect(spans[0].errorType).toBe("ValueError")
+    expect(spans[0].errorFrames?.slice(0, 5)).toEqual([
+      "/app/svc.py:10 in handle",
+      "/app/svc.py:11 in handle",
+      "/app/svc.py:12 in handle",
+      "/app/svc.py:13 in handle",
+      "/app/svc.py:10 in handle",
+    ])
+    // 6 events × 4 frames, first 4 events kept (16 parsed): whole events past
+    // the cap never parse, matching the silent 16-attr-cap precedent.
+    expect(spans[0].errorFrames?.at(-1)).toBe("+11")
+  })
+
+  test("hostile message shapes mask: Bearer, long token", async () => {
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            events: [{ name: "exception", attrs: [["exception.message", anyString("auth failed: Bearer tok-abc")]] }],
+          }),
+          spanBytes({
+            spanId: "dd".repeat(8),
+            events: [
+              {
+                name: "exception",
+                attrs: [["exception.message", anyString("seed 9f3c1a7b2e4d8c6f1a2b3c4d5e6f708199aabbcc end")]],
+              },
+            ],
+          }),
+        ]),
+      ),
+    )
+    // First-nonempty message wins per span; both hostile values mask.
+    expect(spans[0].errorMessage).toBe("auth failed: Bearer ***")
+    expect(spans[1].errorMessage).toBe("seed :id end")
+    expect(text).not.toContain("tok-abc")
+    expect(text).not.toContain("9f3c1a7b2e4d8c6f1a2b3c4d5e6f708199aabbcc")
+  })
+
+  test("rows without exception fields parse exactly as before (additive-optional)", async () => {
+    const spans = decodeTraceRequest(requestBytes(scopeSpans("api", [spanBytes({})])))
+    expect(spans.length).toBe(1)
+    expect("errorType" in spans[0]).toBe(false)
+    expect("errorMessage" in spans[0]).toBe(false)
+    expect("errorFrames" in spans[0]).toBe(false)
+    const frozen = JSON.parse(
+      '{"t":"2026-10-08T00:00:01.000Z","traceId":"abababababababababababababababab","spanId":"cdcdcdcdcdcdcdcd","parentSpanId":null,"service":"api","name":"GET /api/x","kind":"server","startNano":"1000000000","endNano":"1012400000","durMs":12.4,"status":"unset","attrs":{}}',
+    ) as TraceSpan
+    expect(selectValidSpans([frozen])).toEqual([frozen])
   })
 
   test("lone or malformed % never throws and is stored verbatim", async () => {

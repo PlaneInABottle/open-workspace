@@ -23,6 +23,13 @@ export type TraceSpan = {
   durMs: number
   status: TraceSpanStatus
   attrs: Record<string, string>
+  /** Decoded `exception` event detail (additive-optional; absent when the
+   * span carries no exception event). Merged across the first 4 exception
+   * events: type/message are first-nonempty wins, frames pool the first 5
+   * reduced frames with a `+N` overflow marker. */
+  errorType?: string
+  errorMessage?: string
+  errorFrames?: string[]
 }
 
 /** Bounded decode failure: reason code + field-number path + offset/length.
@@ -269,7 +276,7 @@ const maskPathSegments = (value: string): string =>
  * cuts at `?`/`#`, the `=` segment is not identifier-shaped, and the
  * whole-value pattern is anchored). The secret-key pattern therefore also
  * runs per `/`-separated segment; a matching segment is masked wholesale. */
-const SECRET_PAIR_SEGMENT = /[A-Za-z0-9_.-]*(?:password|passwd|\bpass\b|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+/i
+const SECRET_PAIR_SEGMENT = /[A-Za-z0-9_.-]*(?:password|passwd|\bpass\b|secret|token|api[_-]?key|access[_-]?key|auth|credential)(?!\.[A-Za-z0-9]+:\d+)[A-Za-z0-9_.-]*\s*[:=]\s*\S+/i
 
 /** Best-effort percent-decoding for the credential scan only, to fixpoint
  * (bounded 3 rounds): `%3D`/`%3A` single spellings plus double-encoded
@@ -320,7 +327,7 @@ const maskCredentialSegments = (value: string): string => {
  * authorities become `***`. */
 const maskCredentials = (value: string): string => {
   if (/^\s*Bearer\s+\S/.test(value)) return "Bearer ***"
-  if (/^[A-Za-z0-9_.-]*(?:password|passwd|\bpass\b|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+\s*$/i.test(value)) {
+  if (/^[A-Za-z0-9_.-]*(?:password|passwd|\bpass\b|secret|token|api[_-]?key|access[_-]?key|auth|credential)(?!\.[A-Za-z0-9]+:\d+)[A-Za-z0-9_.-]*\s*[:=]\s*\S+\s*$/i.test(value)) {
     return "***"
   }
   if (/\/\/[^/\s]*:[^@/\s]+@[^\s/]+/.test(value) || /^\S+:\S+@\S+$/.test(value)) return "***"
@@ -425,6 +432,86 @@ const decodeStatus = (reader: Reader, bytes: Uint8Array): TraceSpanStatus => {
   return "unset"
 }
 
+/** OTLP `Span.event` (field 11) frame reduction: each stack line becomes
+ * `file:line in function`, dropping argument values, locals and code text.
+ * Java (`at f.Func(File.java:42)` (+ trailing content ignored),
+ * `Native Method` → file unknown), Python (`File "p", line N, in f`),
+ * JS/V8 (`at f (p:42:10)`, anonymous frames named). Non-frame lines
+ * (messages, `Caused by:`, `... N more`, source snippets) are skipped —
+ * they are prose, not locations. Pure function over one line. */
+const reduceFrame = (line: string): string | null => {
+  const java = line.match(/^\s*at\s+(\S+)\(([^()]*?)(?::(\d+))?\)/)
+  if (java) {
+    const file = java[2].length > 0 && java[2] !== "Native Method" ? java[2] : "?"
+    return `${file}:${java[3] ?? "?"} in ${java[1]}`
+  }
+  const python = line.match(/^\s*File "([^"]+)", line (\d+), in (\S+)/)
+  if (python) return `${python[1]}:${python[2]} in ${python[3]}`
+  const js = line.match(/^\s*at\s+(?:(\S+) )?\(?([^()\s]+):(\d+)(?::\d+)?\)?/)
+  if (js) return `${js[2]}:${js[3]} in ${js[1] ?? "<anonymous>"}`
+  return null
+}
+
+const MAX_EXCEPTION_EVENTS = 4
+const MAX_ERROR_FRAMES = 5
+/** Defensive per-event collection ceiling (frames are transient; the global
+ * pool below is what actually ships). Stacktraces are KBs in practice. */
+const MAX_EVENT_FRAMES = 1024
+
+type DecodedException = { type: string; message: string; frames: string[]; frameTotal: number }
+
+/** Decode one `exception`-named event (Span field 11 → Event name field 2,
+ * attributes field 3 — the same V8 numeric/wire pattern as spans). Any
+ * other event name is dropped (YAGNI). Returns null on malformed bytes or a
+ * non-exception name; never throws outward (callers skip per event). */
+const decodeExceptionEvent = (
+  reader: Reader,
+  bytes: Uint8Array,
+  path: string,
+  valueMaxBytes: number,
+): DecodedException | null => {
+  let fields: Field[]
+  try {
+    fields = readFields(reader.child(bytes, path))
+  } catch {
+    return null
+  }
+  const nameBytes = firstLen(fields, 2)
+  if (nameBytes === null || textOf(nameBytes) !== "exception") return null
+  let type = ""
+  let message = ""
+  const frames: string[] = []
+  let frameTotal = 0
+  for (const entry of fields) {
+    if (entry.field !== 3 || entry.wire !== 2 || entry.bytes === null) continue
+    let pair: { key: string; value: string } | null
+    try {
+      pair = decodeKeyValue(reader, entry.bytes)
+    } catch {
+      continue
+    }
+    if (pair === null) continue
+    if (pair.key === "exception.type" && type === "") {
+      // Same shared mask as every value: hostile `key=value` shapes mask,
+      // while dotted class names (`com.example.Auth`) carry no `[:=]` or
+      // Bearer/JWT/hex shapes and pass verbatim (locked by test).
+      type = truncateBytes(sanitizeValueCore(pair.value), valueMaxBytes)
+    } else if (pair.key === "exception.message" && message === "") {
+      message = truncateBytes(sanitizeValueCore(pair.value), valueMaxBytes)
+    } else if (pair.key === "exception.stacktrace") {
+      for (const line of pair.value.split("\n")) {
+        const frame = reduceFrame(line)
+        if (frame === null) continue
+        frameTotal += 1
+        if (frames.length < MAX_EVENT_FRAMES) {
+          frames.push(truncateBytes(sanitizeValueCore(frame), valueMaxBytes))
+        }
+      }
+    }
+  }
+  return { type, message, frames, frameTotal }
+}
+
 const KIND_NAMES = ["unspecified", "internal", "server", "client", "producer", "consumer"] as const
 
 const decodeSpan = (
@@ -469,6 +556,28 @@ const decodeSpan = (
       status = "unset"
     }
   }
+  // Exception events (Span field 11): first 4 kept; type/message are
+  // first-nonempty wins, frames pool the first 5 reduced frames across all
+  // kept events with a `+N` remainder marker. Non-exception names drop.
+  let errorType = ""
+  let errorMessage = ""
+  const errorFrames: string[] = []
+  let parsedFrames = 0
+  let keptEvents = 0
+  for (const entry of fields) {
+    if (entry.field !== 11 || entry.wire !== 2 || entry.bytes === null || keptEvents >= MAX_EXCEPTION_EVENTS) continue
+    const decoded = decodeExceptionEvent(reader, entry.bytes, `${path}.events[${keptEvents}]`, attrValueMaxBytes)
+    if (decoded === null) continue
+    keptEvents += 1
+    if (errorType === "" && decoded.type !== "") errorType = decoded.type
+    if (errorMessage === "" && decoded.message !== "") errorMessage = decoded.message
+    parsedFrames += decoded.frameTotal
+    for (const frame of decoded.frames) {
+      if (errorFrames.length >= MAX_ERROR_FRAMES) break
+      errorFrames.push(frame)
+    }
+  }
+  if (parsedFrames > errorFrames.length) errorFrames.push(`+${parsedFrames - errorFrames.length}`)
   const kindIndex = kind === null ? 0 : Number(kind)
   const startNano = start.toString()
   const endNano = end.toString()
@@ -485,6 +594,9 @@ const decodeSpan = (
     durMs: end >= start ? Number(end - start) / 1e6 : 0,
     status,
     attrs,
+    ...(errorType !== "" ? { errorType } : {}),
+    ...(errorMessage !== "" ? { errorMessage } : {}),
+    ...(errorFrames.length > 0 ? { errorFrames } : {}),
   }
 }
 

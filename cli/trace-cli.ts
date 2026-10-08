@@ -103,8 +103,20 @@ const formatTreeView = (summary: TraceSummary, spans: TraceSpan[]): string => {
     const attrs = Object.entries(span.attrs)
       .map(([key, value]) => ` ${key}=${value}`)
       .join("")
+    // Error detail: the stored errorType joins the status word ONLY when no
+    // error.type attr already says it (never two competing presentations —
+    // attr-backed display wins as the established shape); a message snippet
+    // (80 chars) appends whenever present; full frames live in --json only.
+    const errorBits: string[] = []
+    if (span.status === "error") {
+      errorBits.push(span.errorType !== undefined && !("error.type" in span.attrs) ? `error ${span.errorType}` : "error")
+      if (span.errorMessage !== undefined && span.errorMessage.length > 0) {
+        errorBits.push(`"${span.errorMessage.length > 80 ? `${span.errorMessage.slice(0, 80)}…` : span.errorMessage}"`)
+      }
+    }
+    const statusText = errorBits.length > 0 ? errorBits.join(" ") : span.status
     lines.push(
-      `${"  ".repeat(node.depth)}[${span.service}] ${span.name} ${offsetMs}ms +${formatDur(span.durMs)} ${span.status}${attrs}${node.orphan ? " (kök yok)" : ""}`,
+      `${"  ".repeat(node.depth)}[${span.service}] ${span.name} ${offsetMs}ms +${formatDur(span.durMs)} ${statusText}${attrs}${node.orphan ? " (kök yok)" : ""}`,
     )
   }
   if (tree.truncated) lines.push(`…[kesildi: ${tree.dropped} span]…`)

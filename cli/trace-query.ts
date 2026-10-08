@@ -21,13 +21,18 @@ const isStringRecord = (value: unknown): value is Record<string, string> => {
   return Object.values(value).every((entry) => typeof entry === "string")
 }
 
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string")
+
 /** Rows the writer contract guarantees. Anything else (hand-edited,
  * foreign, or truncated rows) is skipped so one bad line can never crash
  * a query with a stack dump. Repeated exporter retransmits can store one
  * `spanId` twice within a trace: first occurrence per `traceId:spanId`
  * wins, so row counts and the emitted set below always agree and the cap
  * marker stays honest — while a spanId reused by a DIFFERENT trace still
- * renders fully (M1). */
+ * renders fully (M1). The additive-optional exception fields (`errorType`,
+ * `errorMessage`, `errorFrames`) pass through untouched when absent, and
+ * are shape-checked when present, so old rows parse exactly as before. */
 export const selectValidSpans = (spans: TraceSpan[]): TraceSpan[] => {
   const seen = new Set<string>()
   return spans.filter((span) => {
@@ -46,7 +51,10 @@ export const selectValidSpans = (spans: TraceSpan[]): TraceSpan[] => {
       Number.isFinite(span.durMs) &&
       (span.status === "unset" || span.status === "ok" || span.status === "error") &&
       typeof span.t === "string" &&
-      isStringRecord(span.attrs)
+      isStringRecord(span.attrs) &&
+      (span.errorType === undefined || typeof span.errorType === "string") &&
+      (span.errorMessage === undefined || typeof span.errorMessage === "string") &&
+      (span.errorFrames === undefined || isStringArray(span.errorFrames))
     const identity = `${span.traceId}:${span.spanId}`
     if (!valid || seen.has(identity)) return false
     seen.add(identity)

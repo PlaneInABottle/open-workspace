@@ -598,6 +598,52 @@ describe("trace --json envelopes", () => {
 })
 
 describe("trace secret safety on the read path", () => {
+  test("error tree line shows type plus message snippet; json carries full frames", async () => {
+    const root = await tempRoot()
+    try {
+      await seedRows(root, [
+        makeSpan({
+          traceId: TRACE_A,
+          spanId: "e1".padEnd(16, "0"),
+          service: "api",
+          name: "POST /pay",
+          status: "error",
+          startNano: ns(Date.now() - 60_000),
+          endNano: ns(Date.now() - 59_000),
+          errorType: "PaymentFailed",
+          errorMessage: "card declined",
+          errorFrames: ["/app/pay.py:9 in charge", "+2"],
+        }),
+        makeSpan({
+          traceId: TRACE_A,
+          spanId: "e2".padEnd(16, "0"),
+          parentSpanId: "e1".padEnd(16, "0"),
+          service: "api",
+          name: "POST /pay",
+          status: "error",
+          startNano: ns(Date.now() - 59_000),
+          endNano: ns(Date.now() - 58_000),
+          errorType: "Timeout",
+          attrs: { "error.type": "Timeout" },
+        }),
+      ])
+      const human = await runTrace(opts(root, { traceId: TRACE_A }))
+      expect(human.code).toBe(0)
+      expect(human.stdout).toContain("error PaymentFailed")
+      expect(human.stdout).toContain("card declined")
+      // Attr-backed type keeps the existing shape alone: no competing duplicate.
+      const dupLine = human.stdout.split("\n").find((line) => line.includes("error.type=Timeout")) ?? ""
+      expect(dupLine.split("Timeout").length - 1).toBe(1)
+      const asJson = await runTrace(opts(root, { traceId: TRACE_A, json: true }))
+      const parsed = JSON.parse(asJson.stdout) as { spans: Record<string, unknown>[] }
+      expect(parsed.spans[0]["errorType"]).toBe("PaymentFailed")
+      expect(parsed.spans[0]["errorMessage"]).toBe("card declined")
+      expect(parsed.spans[0]["errorFrames"]).toEqual(["/app/pay.py:9 in charge", "+2"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("writer-masked credential shapes stay masked; short-ID structure is kept verbatim", async () => {
     const root = await tempRoot()
     const sentinel = "ZZSENTINELZZ"
@@ -713,6 +759,194 @@ describe("trace secret safety on the read path", () => {
       }
       expect(outputs[2]).toContain("POST /do/***")
       expect(outputs[2]).toContain("[reset/***]")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile exception content masked on disk and in all four shapes", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const ev = (name: string, pairs: string[][]): number[] => [
+          ...lenField(2, utf8(name)),
+          ...pairs.flatMap(([k, v]) => lenField(3, kv(k, v))),
+        ]
+        const stack = [
+          "Traceback (most recent call last):",
+          '  File "/app/pay.py", line 9, in charge',
+          '    tok = "Bearer tok-abc"',
+          '  File "/app/db.py", line 3, in save',
+        ].join("\n")
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("POST /pay")),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("http.route", "/pay/{id}")),
+          ...lenField(15, [...tag(3, 0), ...encVarint(2)]),
+          ...lenField(11, ev("exception", [
+            ["exception.type", "PaymentFailed"],
+            ["exception.message", "card declined for password=hunter2"],
+            ["exception.stacktrace", stack],
+          ])),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).not.toContain("hunter2")
+      expect(onDisk).not.toContain("tok-abc")
+      expect(onDisk).toContain("PaymentFailed")
+      const outputs = [
+        (await runTrace(opts(root))).stdout,
+        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      expect(outputs[0]).toContain("POST /pay")
+      expect(outputs[2]).toContain("error PaymentFailed")
+      expect(outputs[2]).not.toContain("/app/pay.py")
+      for (const output of outputs) {
+        expect(output).not.toContain("hunter2")
+        expect(output).not.toContain("tok-abc")
+      }
+      const treeJson = JSON.parse(outputs[3]) as { spans: { errorFrames: string[] }[] }
+      expect(treeJson.spans[0].errorFrames).toEqual(["/app/pay.py:9 in charge", "/app/db.py:3 in save"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("HIGH: dotted credential pairs masked in disk, human and JSON shapes", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("POST /cfg")),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("cfg1", "secret.value=hunter2")),
+          ...lenField(9, kv("cfg2", "password.value=hunter2")),
+          ...lenField(9, kv("cfg3", "auth.realm:hunter2")),
+          ...lenField(9, kv("url.path", "/src/Auth.java:7")),
+          ...lenField(15, [...tag(3, 0), ...encVarint(2)]),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).not.toContain("hunter2")
+      expect(onDisk).toContain("/src/Auth.java:7")
+      const human = (await runTrace(opts(root, { traceId: TRACE_A }))).stdout
+      expect(human).toContain("/src/Auth.java:7")
+      expect(human).not.toContain("hunter2")
+      const asJson = await runTrace(opts(root, { traceId: TRACE_A, json: true }))
+      const parsed = JSON.parse(asJson.stdout) as { spans: { attrs: Record<string, string> }[] }
+      expect(parsed.spans[0].attrs["cfg1"]).toBe("***")
+      expect(parsed.spans[0].attrs["cfg2"]).toBe("***")
+      expect(parsed.spans[0].attrs["cfg3"]).toBe("***")
+      expect(parsed.spans[0].attrs["url.path"]).toBe("/src/Auth.java:7")
+      expect(asJson.stdout).not.toContain("hunter2")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("MEDIUM: hostile errorType masked in disk, human and JSON shapes", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const ev = (name: string, pairs: string[][]): number[] => [
+          ...lenField(2, utf8(name)),
+          ...pairs.flatMap(([k, v]) => lenField(3, kv(k, v))),
+        ]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("POST /login")),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(15, [...tag(3, 0), ...encVarint(2)]),
+          ...lenField(11, ev("exception", [["exception.type", "password=hunter2"]])),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      expect(await readFile(spansFile, "utf8")).not.toContain("hunter2")
+      const human = (await runTrace(opts(root, { traceId: TRACE_A }))).stdout
+      expect(human).not.toContain("hunter2")
+      const asJson = await runTrace(opts(root, { traceId: TRACE_A, json: true }))
+      expect(asJson.stdout).not.toContain("hunter2")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -233,7 +233,10 @@ secret-shaped keys (`password`, `secret`, `api_key`, `private_key`,
 `token_count` metadata key is exempt) and raw-payload keys (`url.full`,
 `db.query.text`, headers, `exception.message`). Credential-shaped values
 still mask (`Bearer`/JWT/provider tokens/`key=value`/≥32-hex), everything
-else stores verbatim.
+else stores verbatim. A `File.ext:line` shape after a secret word reads as a
+stack location, not a credential, and survives. Exception events decode to type/message/reduced
+frames (first 4 events, 5 frames + count); anything else event-shaped is
+dropped.
 
 Local vs second pipeline: local export ALWAYS targets the ow receiver
 (`http://127.0.0.1:4319`, `http/protobuf`) — never repurpose that endpoint
