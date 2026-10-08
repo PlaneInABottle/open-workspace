@@ -207,6 +207,18 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).not.toContain('re-copy the same paths');
   });
 
+  it('uses one shared client-marker table with install-dir precedence and a reconciled Codex path', () => {
+    const material = formatSetupRequest(config, selectedName);
+    expect(material).not.toBeNull();
+    expect(material!.copyText).toContain('shared marker table');
+    expect(material!.copyText).toContain('install-dir hit wins');
+    expect(material!.copyText).toContain('fallback signal');
+    for (const marker of ['`.claude/`', '`~/.claude.json`', '`.opencode/`', '`opencode.jsonc`', '`.agents/skills/`', '`.codex/config.toml`', '`.github/`', '`.mcp.json`']) {
+      expect(material!.copyText).toContain(marker);
+    }
+    expect(material!.copyText).toContain('Codex — detect `.agents/skills/` or fallback `.codex/config.toml`, install to `.agents/skills/`');
+  });
+
   it('points refresh at the installed update command without claiming live-client surfacing', () => {
     const material = formatSetupRequest(config, selectedName);
     expect(material).not.toBeNull();

@@ -5,12 +5,12 @@ description: Operate the ow CLI: past session analysis plus dev-service supervis
 
 # ow — session observer operator manual
 
-`ow` shows what agents actually did: shell commands, file edits, tool calls,
+`ow` shows what agents did: shell commands, file edits, tool calls,
 grouped by task with the agent's own words attached. Read-only; it never
 changes sessions, files, or the database.
 
 Run it as `ow` from anywhere (via `/setup-ow` install, or `ow` on PATH).
-Never memorize log paths or database schemas — `ow` handles all of that.
+Never memorize log paths or schemas — `ow` handles that.
 
 ## Scope (honest)
 
@@ -34,13 +34,13 @@ ow meta <session>                     # cost, tokens, models, line changes, turn
 ow prompts <session>                  # latest 20 user instructions, chronological
 ow reads <session> [--since 1d]       # which files were read most, by whom, which lines
 ow stuck <session> [--since 1d] [--tree]  # retries, overlap depth, slow commands
-ow timeline [oturum] [--trace <id>] [--since 1d]  # agent rows + spans merged; kesin/exact vs tahmini/estimated links
+ow timeline [session] [--trace <id>] [--since 1d]  # agent rows + spans merged; kesin/exact vs tahmini/estimated links
 ow show <session> --json              # stable machine output (all commands, English keys)
 ow show                               # no session → latest session
 ```
 
 No ID known: use the `sessionID` of the last sidecar line, or run bare for the
-latest session. Exits: 0 ok, 1 structural failure, 2 usage error; non-interactive.
+latest session. Exits: 0 ok, 1 failure, 2 usage error; non-interactive.
 
 ## Service supervision (`up`/`down`/`ps`/`logs`)
 
@@ -93,7 +93,7 @@ ow doctor                                          # trace open/closed + span co
 - Per-stack recipes (Java `-javaagent`, Python `opentelemetry-instrument`,
   browser `-otlp-proto` + CORS): product `cli/README.md` ("İzleme tarifleri").
   App code lives in the app repo; `ow.yaml` carries only `env:` + endpoint.
-- Proving a flow: generate the trace ID BEFORE the action, deliver via `set
+- Proving a flow: generate the trace ID BEFORE the action, deliver in the browser-automation session (not `ow`) via `set
   headers` (rotates, clears with `'{}'`); never `open --headers` (per-origin
   sticky binding keeps the old ID).
 - `doctor` hints, in order: 0 spans → liveness (`ow ps`); `bilinmeyen`
@@ -145,5 +145,5 @@ ow doctor                                          # trace open/closed + span co
 
 1. `--since 1d` summary first (add `--tree` for subagent work): volume, failures?
 2. Failures → `--show-fails` for those bodies only.
-3. Report: task, repeats, failures (with reason), one lesson for next time.
+3. Report: task, repeats, failures (with reason), one lesson.
 4. Close the loop: propose a script or rule easing the repeat.

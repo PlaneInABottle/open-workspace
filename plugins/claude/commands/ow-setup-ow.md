@@ -12,10 +12,7 @@ distributed separately from the platform's development skills.
 
 ## A-path (scoped setup)
 
-1. **Detect client from project files.** Check for client markers in this
-   project only: `.claude/` (Claude Code), `.opencode/` (OpenCode),
-   `.agents/skills/` (Codex), `.github/` (VS Code/Copilot). Use the markers
-   found; when several clients genuinely coexist, ask which one before writing.
+1. **Detect client from project files (shared marker table — install-dir hit wins; a config-file hit is only a fallback signal).** Check for client markers in this project only: Claude Code — install dir `.claude/`, fallback `~/.claude.json`; OpenCode — install dir `.opencode/`, fallback `opencode.jsonc`; Codex — detect `.agents/skills/` or fallback `.codex/config.toml`, install to `.agents/skills/`; VS Code/Copilot — install dir `.github/`, fallback `.mcp.json`. Use the markers found; when several clients genuinely coexist, ask which one before writing.
 2. **Fetch authoritative texts via MCP.** Re-fetch every `skill/<name>` via
    MCP (`skill/learn-from-mistake`, `skill/onboarding`, `skill/ow`,
    `skill/setup-ow`, `skill/setup-tracing`, `skill/update`). The served text

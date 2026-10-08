@@ -14,6 +14,15 @@
 // (the same downloaded binary). Artifacts live in gitignored `dist/`.
 //
 // Usage: `node scripts/build-sea.mjs` from this source directory.
+//
+// Rebuild discipline: the blob bakes three source trees — `skills/`
+// (all SKILL.md), `src/` (esbuild bundle) and `web-dist/` (fresh
+// `vite build` in step 1). After touching any of them, rerun this
+// script, then verify via the `--help` smoke plus an isolated-cwd
+// boot (never a repo-cwd boot). No version/hash freshness gate
+// covers skills/ or web-dist/ — existing digests pin cli/ only
+// (check-ow-fresh.sh) — so this comment is the discipline: rebuild
+// on every baked-tree change, never ship a stale binary.
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
