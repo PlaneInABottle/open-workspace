@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -375,6 +375,63 @@ describe("trace-receiver HTTP contract", () => {
       const ids = new Set(spans.map((s) => s.spanId))
       expect(ids.has("0000000000000063")).toBe(true)
       expect(ids.has("0000000000000000")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("concurrent behind-the-back writes are never compacted away", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      const row = (i: number) => ({
+        t: "2026-10-08T00:00:00.000Z",
+        traceId: "ab".repeat(16),
+        spanId: i.toString(16).padStart(16, "0"),
+        parentSpanId: null,
+        service: "api",
+        name: `span ${i}`,
+        kind: "server",
+        startNano: "1000",
+        endNano: "2000",
+        durMs: 0.001,
+        status: "unset" as const,
+        attrs: {},
+      })
+      const store = createTraceStore(spansFile, { maxSpans: 50 })
+      for (let i = 0; i < 10; i += 1) store.append(row(i))
+      await store.flush()
+      // Another writer appends behind this store's back (simulates a second
+      // store instance on the same file — no cross-process lock exists).
+      for (let i = 100; i < 105; i += 1) await appendFile(spansFile, `${JSON.stringify(row(i))}\n`)
+      for (let i = 10; i < 55; i += 1) store.append(row(i))
+      await store.flush()
+      const { spans, corrupt } = await readSpansFile(spansFile)
+      expect(corrupt).toBe(0)
+      expect(spans.length).toBe(60)
+      const ids = new Set(spans.map((s) => s.spanId))
+      for (const i of [0, 9, 54, 104]) expect(ids.has(i.toString(16).padStart(16, "0"))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("content-type must match exactly modulo ;-parameters", async () => {
+    const root = await tempRoot()
+    try {
+      const { receiver } = await startTestReceiver(root)
+      try {
+        const evil = await postTraces(receiver.port, validBody(), { "content-type": "application/x-protobuf-malicious" })
+        expect(evil.status).toBe(415)
+        expect(receiver.rejected["decode-failed"]).toBe(1)
+        expect(existsSync(join(root, ".ow", "traces", "spans.jsonl"))).toBe(false)
+        const params = await postTraces(receiver.port, validBody(), { "content-type": "application/x-protobuf; charset=utf-8" })
+        expect(params.status).toBe(200)
+        const { spans } = await readSpansFile(join(root, ".ow", "traces", "spans.jsonl"))
+        expect(spans.length).toBe(1)
+      } finally {
+        await receiver.stop()
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -401,3 +401,32 @@ describe("trace-timeline LIVE PROOF (scripted end-to-end)", () => {
     }
   })
 })
+
+describe("trace-timeline cross-trace depths (L2)", () => {
+  test("shared spanId gets per-trace depths, not first-wins", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      // Trace A: shared id is the root (depth 0). Trace B: same id is a child (depth 1).
+      await seedSpans(root, requestBytes("api", [
+        { traceId: TRACE_A, spanId: "aa".repeat(8), name: "GET /a-root", service: "api", startMs: now - 9000, endMs: now - 8900 },
+        { traceId: TRACE_A, spanId: "ab".repeat(8), parent: "aa".repeat(8), name: "GET /a-child", service: "api", startMs: now - 8900, endMs: now - 8800 },
+      ]))
+      await seedSpans(root, requestBytes("api", [
+        { traceId: TRACE_B, spanId: "bb".repeat(8), name: "GET /b-root", service: "api", startMs: now - 9000, endMs: now - 8900 },
+        { traceId: TRACE_B, spanId: "aa".repeat(8), parent: "bb".repeat(8), name: "GET /b-child", service: "api", startMs: now - 8900, endMs: now - 8800 },
+      ]))
+      const result = await runTimeline(tlOpts(root, join(root, "nope.jsonl"), { json: true }))
+      expect(result.code).toBe(0)
+      const parsed = JSON.parse(result.stdout) as {
+        events: { kind: string; traceId?: string; spanId?: string; depth?: number; text: string }[]
+      }
+      const depthOf = (traceId: string, name: string): number | undefined =>
+        parsed.events.find((e) => e.kind === "trace" && e.traceId === traceId && e.text.includes(name))?.depth
+      expect(depthOf(TRACE_A, "/a-root")).toBe(0)
+      expect(depthOf(TRACE_B, "/b-child")).toBe(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

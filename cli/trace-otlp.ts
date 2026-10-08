@@ -208,6 +208,16 @@ const TECHNICAL_DROP_PREFIXES = ["http.request.header.", "http.response.header."
 const isDeniedKey = (key: string): boolean => {
   const lowered = key.toLowerCase()
   if (SECRET_KEY_PATTERN.test(lowered)) return true
+  // Bare `pass`/`auth` match as whole key segments only: `password`/`passwd`
+  // are covered above, while `passage`, `author`, `bypass`, `compass` and
+  // `authenticated-user` must keep working.
+  const segments = lowered.split(/[._-]/)
+  if (segments.includes("pass") || segments.includes("auth")) return true
+  // H4: card-number keys carry PANs by construction. Exact names plus dotted
+  // forms (`db.card_number`, `user_pan`); `card_exp_month` stays stored by
+  // minimal scope, but its digit runs are still masked below when card-ish.
+  if (lowered.includes("card_number") || lowered.includes("cardnumber")) return true
+  if (lowered === "pan" || lowered.split(/[._-]/).includes("pan")) return true
   // Token-family keys carry opaque secrets no value shape can catch; the
   // exact `token_count` metadata key is exempt (locked by test).
   if (lowered !== "token_count" && lowered.includes("token")) return true
@@ -259,31 +269,58 @@ const maskPathSegments = (value: string): string =>
  * cuts at `?`/`#`, the `=` segment is not identifier-shaped, and the
  * whole-value pattern is anchored). The secret-key pattern therefore also
  * runs per `/`-separated segment; a matching segment is masked wholesale. */
-const SECRET_PAIR_SEGMENT = /[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+/i
+const SECRET_PAIR_SEGMENT = /[A-Za-z0-9_.-]*(?:password|passwd|\bpass\b|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+/i
 
-/** Best-effort percent-decoding for the credential scan only: `%3D`/`%3A`
- * spellings of separators must not bypass masking. Undecodable input
- * (lone `%`, truncated `%2`) falls back to the raw segment — never throws. */
-const decodeSegment = (segment: string): string => {
-  try {
-    return decodeURIComponent(segment)
-  } catch {
-    return segment
+/** Best-effort percent-decoding for the credential scan only, to fixpoint
+ * (bounded 3 rounds): `%3D`/`%3A` single spellings plus double-encoded
+ * `%253D`/`%252F` forms must not bypass masking. Each round either throws
+ * (return the last good form), converges (return it), or decodes once more.
+ * Undecodable input (lone `%`, truncated `%2`) falls back to the raw
+ * segment — never throws. */
+const decodeFully = (segment: string): string => {
+  let current = segment
+  for (let i = 0; i < 3; i += 1) {
+    let next: string
+    try {
+      next = decodeURIComponent(current)
+    } catch {
+      return current
+    }
+    if (next === current) return next
+    current = next
   }
+  return current
 }
 
-const maskCredentialSegments = (value: string): string =>
-  value
-    .split("/")
-    .map((segment) => (SECRET_PAIR_SEGMENT.test(segment) || SECRET_PAIR_SEGMENT.test(decodeSegment(segment)) ? "***" : segment))
-    .join("/")
+/** H3: credential name split from its value across adjacent path segments
+ * (`password/s3cr3t-…`). The name word is boundary-anchored so protocol
+ * words like `oauth` (contains `auth`) survive; the value side is any
+ * non-space run. Tested on the joined neighbor pair, raw and
+ * fixpoint-decoded. Reversed order (`<secret>/<keyname>`) is a known
+ * residual — key names come first by convention. */
+const SPLIT_PAIR = /(?:^|[^A-Za-z0-9_])(?:password|passwd|pwd|passphrase|pass|secret|token|api[_-]?key|access[_-]?key|auth|credential)\/[^\s/]+/i
+
+const maskCredentialSegments = (value: string): string => {
+  const segments = value.split("/")
+  const mapped = segments.map((segment) =>
+    SECRET_PAIR_SEGMENT.test(segment) || SECRET_PAIR_SEGMENT.test(decodeFully(segment)) ? "***" : segment,
+  )
+  for (let i = 0; i + 1 < mapped.length; i += 1) {
+    const pair = `${mapped[i]}/${mapped[i + 1]}`
+    if (SPLIT_PAIR.test(pair) || SPLIT_PAIR.test(decodeFully(pair))) {
+      mapped[i] = "***"
+      mapped[i + 1] = "***"
+    }
+  }
+  return mapped.join("/")
+}
 
 /** S3 — credential-bearing forms masked wholesale: `Bearer <token>` keeps
  * only the scheme word, `key=secret`-shaped values and `user:pass@host`
  * authorities become `***`. */
 const maskCredentials = (value: string): string => {
   if (/^\s*Bearer\s+\S/.test(value)) return "Bearer ***"
-  if (/^[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+\s*$/i.test(value)) {
+  if (/^[A-Za-z0-9_.-]*(?:password|passwd|\bpass\b|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+\s*$/i.test(value)) {
     return "***"
   }
   if (/\/\/[^/\s]*:[^@/\s]+@[^\s/]+/.test(value) || /^\S+:\S+@\S+$/.test(value)) return "***"
@@ -335,10 +372,17 @@ const truncateBytes = (value: string, maxBytes: number): string => {
 const sanitizeName = (name: string, maxBytes: number): string =>
   truncateBytes(sanitizeValueCore(maskPathSegments(stripQuery(name))), maxBytes)
 
-const sanitizeAttrValue = (value: string, maxBytes: number): string => {
+/** H4: PAN-length digit runs (13+ consecutive digits) mask to `***`, but
+ * ONLY for card-ish keys (`card` substring) — plain counters like
+ * `count: 12345` pass through. Formatted PANs with spaces/dashes split runs
+ * below the floor and are a known residual. */
+const PAN_RUN_PATTERN = /\d{13,}/g
+
+const sanitizeAttrValue = (key: string, value: string, maxBytes: number): string => {
   const stripped = stripQuery(value)
   const shaped = stripped.includes("/") ? maskPathSegments(stripped) : stripped
-  return truncateBytes(sanitizeValueCore(shaped), maxBytes)
+  const carded = key.toLowerCase().includes("card") ? shaped.replace(PAN_RUN_PATTERN, "***") : shaped
+  return truncateBytes(sanitizeValueCore(carded), maxBytes)
 }
 
 /** AnyValue → scalar string, or null for composite (array/kvlist) values,
@@ -413,7 +457,7 @@ const decodeSpan = (
       continue
     }
     if (pair === null || pair.key in attrs || isDeniedKey(pair.key)) continue
-    attrs[pair.key] = sanitizeAttrValue(pair.value, attrValueMaxBytes)
+    attrs[pair.key] = sanitizeAttrValue(pair.key, pair.value, attrValueMaxBytes)
     kept += 1
   }
   let status: TraceSpanStatus = "unset"

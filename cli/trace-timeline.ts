@@ -159,7 +159,7 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
   const valid: TraceSpan[] = []
   for (const [, spans] of groups) {
     const tree = buildTraceTree(spans)
-    for (const node of tree.nodes) depths.set(node.span.spanId, node.depth)
+    for (const node of tree.nodes) depths.set(`${node.span.traceId}:${node.span.spanId}`, node.depth)
     // Depths are best-effort past the render cap; spans themselves are never
     // dropped here (the cap only bounds one tree view, not this listing).
     valid.push(...spans)
@@ -233,7 +233,7 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
       kind: "trace",
       text: spanBody(entry.span),
       traceId: entry.span.traceId,
-      depth: depths.get(entry.span.spanId) ?? 0,
+      depth: depths.get(`${entry.span.traceId}:${entry.span.spanId}`) ?? 0,
     }
     if (entry.confidence !== null) event.confidence = entry.confidence
     events.push(event)

@@ -143,8 +143,11 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
           if (url.pathname !== "/v1/traces" || req.method !== "POST") {
             return reject("bad-path", 404, "404")
           }
-          const contentType = req.headers.get("content-type") ?? ""
-          if (!contentType.startsWith("application/x-protobuf")) {
+          const rawType = req.headers.get("content-type") ?? ""
+          // Exact match modulo `;`-parameters: a prefix check would accept
+          // `application/x-protobuf-malicious`.
+          const contentType = rawType.split(";")[0].trim()
+          if (contentType !== "application/x-protobuf") {
             return reject("decode-failed", 415, "415")
           }
           const body = await readBoundedBody(req, maxBodyBytes)

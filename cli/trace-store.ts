@@ -108,7 +108,13 @@ export type TraceStoreLimits = { maxBytes?: number; maxSpans?: number }
 
 /** Non-blocking span writer: appends accumulate into an in-memory batch and
  * flush as one write step; over-cap batches compact newest-wins. Never
- * throws out of `append` — the receiver hot path must not break. */
+ * throws out of `append` — the receiver hot path must not break.
+ *
+ * SINGLETON REQUIREMENT: one store instance owns one spans file. Two
+ * instances read-modify-write the same file blindly — the loser's
+ * compaction rewrites the winner's rows away. The re-stat guard below turns
+ * that race into transient oversize instead of loss, but shared files are
+ * still a bug: one supervisor, one receiver, one store. */
 export const createTraceStore = (spansFile: string, limits: TraceStoreLimits = {}) => {
   const state = {
     chain: Promise.resolve(),
@@ -138,18 +144,7 @@ export const createTraceStore = (spansFile: string, limits: TraceStoreLimits = {
     state.initialized = true
   }
 
-  const writeBatch = async (rows: string[]): Promise<void> => {
-    await initialize()
-    const text = rows.join("")
-    const textBytes = byteLength(text)
-    if (state.bytes + textBytes > state.maxBytes || state.lines + rows.length > state.maxSpans) {
-      const current = await readTail(spansFile, state.maxBytes)
-      const compacted = fitRecentLines(`${current.text}${text}`, state.maxBytes, state.maxSpans)
-      await replaceSpans(spansFile, compacted)
-      state.bytes = byteLength(compacted)
-      state.lines = lineCount(compacted)
-      return
-    }
+  const appendText = async (text: string, textBytes: number, rowCount: number): Promise<void> => {
     const file = await open(spansFile, "a", 0o600)
     try {
       await file.writeFile(text, "utf8")
@@ -158,7 +153,33 @@ export const createTraceStore = (spansFile: string, limits: TraceStoreLimits = {
     }
     await chmod(spansFile, 0o600).catch(() => undefined)
     state.bytes += textBytes
-    state.lines += rows.length
+    state.lines += rowCount
+  }
+
+  const writeBatch = async (rows: string[]): Promise<void> => {
+    await initialize()
+    const text = rows.join("")
+    const textBytes = byteLength(text)
+    if (state.bytes + textBytes > state.maxBytes || state.lines + rows.length > state.maxSpans) {
+      const current = await readTail(spansFile, state.maxBytes)
+      // Defensive re-stat: another writer may have appended concurrently
+      // (see singleton requirement above). Compacting from a stale view
+      // would rewrite its rows away, so on any size drift skip compaction
+      // this round — append-only oversize beats data loss — and resync the
+      // byte counter (line accounting stays approximate until the next
+      // clean compact recounts the actual file).
+      if (current.size !== state.bytes) {
+        await appendText(text, textBytes, rows.length)
+        state.bytes = current.size + textBytes
+        return
+      }
+      const compacted = fitRecentLines(`${current.text}${text}`, state.maxBytes, state.maxSpans)
+      await replaceSpans(spansFile, compacted)
+      state.bytes = byteLength(compacted)
+      state.lines = lineCount(compacted)
+      return
+    }
+    await appendText(text, textBytes, rows.length)
   }
 
   const flushScheduled = async (): Promise<void> => {

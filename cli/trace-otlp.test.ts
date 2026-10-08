@@ -298,7 +298,9 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
         ]),
       ),
     )
-    expect(spans[0].attrs["auth_header"]).toBe("Bearer ***")
+    // H1: `auth` as a key segment denies outright (drop ⊃ mask — strictly
+    // stronger, documented here like the earlier id_token migration).
+    expect(spans[0].attrs).not.toHaveProperty("auth_header")
     // H1: token-family keys are denied outright (drop ⊃ mask — strictly stronger,
     // documented here, not silently weakened).
     expect(spans[0].attrs).not.toHaveProperty("id_token")
@@ -430,6 +432,66 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
       "GET /blog/hello-world-2024",
       "GET /api/v2/status",
     ])
+  })
+
+  test("H2: double-encoded separators mask to fixpoint; lone-% never throws", async () => {
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            name: "GET /login",
+            attrs: [
+              ["url.path", anyString("/reset/token%253Dabc123")],
+              ["note", anyString("auth%253Dsekret")],
+            ],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].attrs["url.path"]).toBe("/reset/***")
+    expect(spans[0].attrs["note"]).toBe("***")
+    expect(text).not.toContain("%253D")
+    expect(text).not.toContain("abc123")
+  })
+
+  test("H3: credential split across adjacent segments masks; normal paths verbatim", async () => {
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            name: "GET /reset/password/s3cr3t-hunter-ABC",
+            attrs: [["url.path", anyString("/reset/password/s3cr3t-hunter-ABC")]],
+          }),
+          spanBytes({ name: "GET /api/v1/stations/query" }),
+          spanBytes({ name: "GET /oauth/token" }),
+        ]),
+      ),
+    )
+    expect(spans[0].name).toBe("GET /reset/***/***")
+    expect(spans[0].attrs["url.path"]).toBe("/reset/***/***")
+    expect(spans[1].name).toBe("GET /api/v1/stations/query")
+    // oauth contains "auth" but never as a bounded word: protocol words survive.
+    expect(spans[2].name).toBe("GET /oauth/token")
+    expect(text).not.toContain("s3cr3t-hunter-ABC")
+  })
+
+  test("H4: card-number int dropped; plain counter and short expiry verbatim", async () => {
+    const { spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            attrs: [
+              ["card_number", anyInt(4111111111111111)],
+              ["count", anyInt(12345)],
+              ["card_exp_month", anyString("12")],
+            ],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].attrs).not.toHaveProperty("card_number")
+    expect(spans[0].attrs["count"]).toBe("12345")
+    expect(spans[0].attrs["card_exp_month"]).toBe("12")
   })
 
   test("lone or malformed % never throws and is stored verbatim", async () => {
