@@ -500,6 +500,30 @@ describe("trace supervisor wire-in", () => {
     }
   })
 
+  test("bind failure names host+port with directive; services still spawn", async () => {
+    const root = await tempRoot()
+    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("meşgul") })
+    const warnings: string[] = []
+    try {
+      const receiver = await startTraceReceiver({
+        tracesDir: join(root, ".ow", "traces"),
+        spansFile: join(root, ".ow", "traces", "spans.jsonl"),
+        port: blocker.port,
+        warnThrottleMs: 0,
+        onWarn: (line: string): void => {
+          warnings.push(line)
+        },
+      })
+      expect(receiver).toBeNull()
+      expect(warnings.length).toBe(1)
+      expect(warnings[0]).toContain(`127.0.0.1:${blocker.port}`)
+      expect(warnings[0]).toContain("lsof -i")
+    } finally {
+      blocker.stop()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("bind failure → one warning, services still spawn on the normal rule", async () => {
     const root = await tempRoot()
     const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("meşgul") })
@@ -513,7 +537,7 @@ describe("trace supervisor wire-in", () => {
       })
       expect(code).toBe(0)
       expect(lines).toContain("[a|stdout] hi")
-      expect(spy.lines.some((line) => line.includes("trace"))).toBe(true)
+      expect(spy.lines.some((line) => line.includes(`127.0.0.1:${blocker.port}`))).toBe(true)
       expect(existsSync(join(root, ".ow", "traces", "spans.jsonl"))).toBe(false)
     } finally {
       spy.restore()

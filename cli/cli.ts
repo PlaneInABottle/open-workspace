@@ -28,12 +28,12 @@ import { formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs", "trace", "timeline"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs", "trace", "timeline", "init"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
 const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--trace"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -63,6 +63,7 @@ export const helpText = (): string =>
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
   "  trace [iz] [--file] [--tail] [--since] [--service] [--wait]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
+  "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti",
     "",
     "genel: --db <yol> --log <yol> --json --help",
     "  --since  pencere: 30m|3h|1d|1w (varsayılan 1d; sessions/show/stuck/reads)",
@@ -116,7 +117,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     return fail(`beklenmeyen argüman: ${arg}`)
   }
   if (flags["--help"]) return { command, sessionID, flags, error: null }
-  if (!command) return fail("komut bekleniyor: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline (--help)")
+  if (!command) return fail("komut bekleniyor: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline|init (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
   if (typeof flags["--since"] === "string" && since === null) return fail(`geçersiz --since: ${flags["--since"]} (30m|3h|1d|1w)`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
@@ -229,6 +230,22 @@ export const run = async (argv: string[]): Promise<number> => {
       console.log(sessions.length > 0 ? formatSessions(sessions) : "oturum yok")
     }
     return 0
+  }
+
+  if (command === "init") {
+    if (positional !== undefined) {
+      console.error("ow: init konumsal argüman almaz")
+      return 2
+    }
+    const { runInit } = await import("./up-init")
+    const result = await runInit({
+      rootDir: typeof flags["--file"] === "string" ? dirname(resolve(flags["--file"] as string)) : process.cwd(),
+      force: flags["--force"] === true,
+      tracing: flags["--tracing"] === true,
+    })
+    if (result.stdout.length > 0) console.log(result.stdout)
+    if (result.stderr.length > 0) console.error(result.stderr)
+    return result.code
   }
 
   if (command === "up" || command === "down" || command === "ps" || command === "logs" || command === "trace") {

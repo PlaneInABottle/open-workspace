@@ -916,20 +916,65 @@ describe("trace secret safety on the read path", () => {
 })
 
 describe("trace doctor line", () => {
-  const JAVA_YAML =
-    "trace:\n  port: 4319\nservices:\n  api:\n    cmd: java -jar app.jar\n    env: {JAVA_TOOL_OPTIONS: \"-javaagent:.ow/otel/opentelemetry-javaagent.jar\"}\n"
+  const yamlWithPort = (port: number): string => `trace:\n  port: ${port}\nservices:\n  a:\n    cmd: x\n`
+  const javaYamlWithPort = (port: number): string =>
+    `trace:\n  port: ${port}\nservices:\n  api:\n    cmd: java -jar app.jar\n    env: {JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar"}\n`
 
-  test("spans report açık regardless of jar; jar note is Java-only and silence-scoped", async () => {
+  /** A port nothing listens on (bind-then-close; the usual tiny race applies). */
+  const closedPort = async (): Promise<number> => {
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) })
+    const port = probe.port
+    probe.stop()
+    return port
+  }
+
+  test("listening receiver keeps the healthy line byte-identical", async () => {
+    const listener = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) })
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 5_000), endNano: ns(now) }),
+      ], [], yamlWithPort(listener.port))
+      const open = await checkTraceDoctor(root)
+      expect(open.ok).toBe(true)
+      expect(open.detail).toBe(`açık (port ${listener.port}, 1 span, son span 0s önce)`)
+    } finally {
+      listener.stop()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("silent port appends the not-listening directive, exit rule untouched", async () => {
+    const port = await closedPort()
     const root = await tempRoot()
     try {
       const now = Date.now()
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
-      ])
+      ], [], yamlWithPort(port))
+      const open = await checkTraceDoctor(root)
+      expect(open.ok).toBe(true)
+      expect(open.detail).toContain(`açık (port ${port}, 1 span,`)
+      expect(open.detail).toContain(`ipucu: alıcı :${port} dinlemiyor`)
+      expect(doctorFails([{ name: "trace", ok: false }])).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("spans report açık regardless of jar; jar note is Java-only and silence-scoped", async () => {
+    const port = await closedPort()
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
+      ], [], yamlWithPort(port))
       // Python-only setup (no java markers), spans present, jar absent → açık, no jar note
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toMatch(/açık \(port 4319, 1 span, son span .* önce\)/)
+      expect(open.detail).toMatch(new RegExp(`açık \\(port ${port}, 1 span, son span .* önce\\)`))
       expect(open.detail).not.toContain("jar")
       const bare = await tempRoot()
       try {
@@ -946,9 +991,10 @@ describe("trace doctor line", () => {
   })
 
   test("Java service with zero spans and no jar names the jar; jar present stays açık", async () => {
+    const port = await closedPort()
     const root = await tempRoot()
     try {
-      await seedRows(root, [], [], JAVA_YAML)
+      await seedRows(root, [], [], javaYamlWithPort(port))
       const missing = await checkTraceDoctor(root)
       expect(missing.ok).toBe(false)
       expect(missing.detail).toContain("javaagent jar yok")
@@ -956,26 +1002,27 @@ describe("trace doctor line", () => {
       await writeFile(join(root, ".ow", "otel", "opentelemetry-javaagent.jar"), "")
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toContain("açık (port 4319, 0 span)")
+      expect(open.detail).toContain(`açık (port ${port}, 0 span)`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
   test("zero spans carry a bounded liveness hint; flowing spans carry none", async () => {
+    const port = await closedPort()
     const root = await tempRoot()
     try {
-      await seedRows(root, [], [], TRACE_YAML)
+      await seedRows(root, [], [], yamlWithPort(port))
       const silent = await checkTraceDoctor(root)
       expect(silent.ok).toBe(true)
-      expect(silent.detail).toBe("açık (port 4319, 0 span). ipucu: span yok — servis ayakta mı? ow ps")
+      expect(silent.detail).toBe(`açık (port ${port}, 0 span). ipucu: span yok — servis ayakta mı? ow ps. ipucu: alıcı :${port} dinlemiyor — portu başka süreç tutuyor olabilir ya da alıcı başlayamadı`)
       const now = Date.now()
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /gizli-hint-kanarya", startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
-      ])
+      ], [], yamlWithPort(port))
       const flowing = await checkTraceDoctor(root)
       expect(flowing.ok).toBe(true)
-      expect(flowing.detail).not.toContain("ipucu")
+      expect(flowing.detail).not.toContain("span yok")
       expect(flowing.detail).not.toContain("gizli-hint-kanarya")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -983,11 +1030,12 @@ describe("trace doctor line", () => {
   })
 
   test("inherited JAVA_TOOL_OPTIONS with javaagent triggers the jar note", async () => {
+    const port = await closedPort()
     const root = await tempRoot()
     const saved = process.env.JAVA_TOOL_OPTIONS
     process.env.JAVA_TOOL_OPTIONS = "-javaagent:/tmp/fake-agent.jar"
     try {
-      await seedRows(root, [])
+      await seedRows(root, [], [], yamlWithPort(port))
       const missing = await checkTraceDoctor(root)
       expect(missing.ok).toBe(false)
       expect(missing.detail).toContain("javaagent jar yok")

@@ -5,6 +5,7 @@
  * stack dump. `--service` filters the list only; it never prunes a tree. */
 
 import { existsSync, readFileSync } from "node:fs"
+import { connect } from "node:net"
 import { join } from "node:path"
 
 import type { TraceSpan } from "./trace-otlp"
@@ -258,6 +259,41 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
 
 export type TraceDoctorCheck = { ok: boolean; detail: string }
 
+/** Short bounded liveness probe for the doctor line: one TCP connect to the
+ * configured port with an explicit timeout, socket destroyed on settle, no
+ * retries — doctor must never hang on this. Any error (refused, timeout,
+ * unreachable) resolves false; the function never throws. */
+/* The probe target is ALWAYS loopback: the receiver only ever binds
+ * TRACE_BIND_HOST (127.0.0.1), so a remote host is never probed here. */
+export const TRACE_PROBE_TIMEOUT_MS = 500
+
+export const isTracePortListening = (port: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    let done = false
+    let socket: ReturnType<typeof connect> | null = null
+    const finish = (value: boolean): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      try {
+        socket?.destroy()
+      } catch {
+        // already closed
+      }
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(false), TRACE_PROBE_TIMEOUT_MS)
+    try {
+      socket = connect({ host: "127.0.0.1", port })
+    } catch {
+      finish(false)
+      return
+    }
+    socket.once("connect", () => finish(true))
+    socket.once("error", () => finish(false))
+    socket.once("close", () => finish(false))
+  })
+
 /** Informational only: excluded from the `ow doctor` exit rule like `up`. */
 export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorCheck> => {
   let enabled = false
@@ -274,6 +310,13 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
     enabled = false
   }
   if (!enabled) return { ok: false, detail: "kapalı (ow.yaml içinde trace: yok)" }
+  const listening = await isTracePortListening(port)
+  // Static directive only; the port number is operator-configured. Appended
+  // to whichever enabled-state line was computed — a listening receiver
+  // keeps its exact historical wording (locked by test).
+  const silentSuffix = listening
+    ? ""
+    : `. ipucu: alıcı :${port} dinlemiyor — portu başka süreç tutuyor olabilir ya da alıcı başlayamadı`
   let count = 0
   let lastEnd: bigint | null = null
   let unnamed = false
@@ -297,13 +340,13 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
   const jarMissing = !existsSync(join(rootDir, ".ow", "otel", "opentelemetry-javaagent.jar"))
   const javaInvolved = services.some(usesJavaAgent) || (process.env.JAVA_TOOL_OPTIONS?.includes("javaagent") ?? false)
   if (count === 0 && jarMissing && javaInvolved) {
-    return { ok: false, detail: "javaagent jar yok (.ow/otel/opentelemetry-javaagent.jar)" }
+    return { ok: false, detail: `javaagent jar yok (.ow/otel/opentelemetry-javaagent.jar)${silentSuffix}` }
   }
   if (count === 0 || lastEnd === null) {
-    return { ok: true, detail: `açık (port ${port}, 0 span). ipucu: span yok — servis ayakta mı? ow ps` }
+    return { ok: true, detail: `açık (port ${port}, 0 span). ipucu: span yok — servis ayakta mı? ow ps${silentSuffix}` }
   }
   const agoMs = Math.max(0, Date.now() - Number(lastEnd / 1_000_000n))
-  const open = `açık (port ${port}, ${count} span, son span ${formatAgo(agoMs)})`
+  const open = `açık (port ${port}, ${count} span, son span ${formatAgo(agoMs)})${silentSuffix}`
   // Sibling of the 0-span hint: a stored `bilinmeyen` service means the
   // exporter never sent `service.name`. Static text only, same pattern.
   // The two hints never co-fire (unnamed needs ≥1 span by construction).

@@ -189,8 +189,12 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
         }
       },
     })
-  } catch (error) {
-    warn(`uyarı: trace alıcısı başlatılamadı (port ${options.port ?? TRACE_DEFAULT_PORT}: ${error instanceof Error ? error.message : String(error)})`)
+  } catch {
+    // Warn-only (D7): supervision continues, exit 0. Names the exact
+    // host+port plus one directive clause — static text plus
+    // operator-configured values only, never span/log/env content.
+    const port = options.port ?? TRACE_DEFAULT_PORT
+    warn(`uyarı: izleme alıcısı ${TRACE_BIND_HOST}:${port} açılamadı — portu başka süreç tutuyor olabilir (lsof -i :${port})`)
     return null
   }
   return {

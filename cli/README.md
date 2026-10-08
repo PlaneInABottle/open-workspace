@@ -127,7 +127,15 @@ ow ps [--json]                 # pid, uptime, cpu%, mem, port, port çakışmas�
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
 ow doctor                      # observer health plus an informational up: line
+ow init [--force] [--tracing]  # scaffold ow.yaml from repo detection (never overwrites without --force)
 ```
+
+`ow init` scans the current directory (read-only, capped) for build files
+and writes a starter `ow.yaml`: commands only from strong signals (wrappers,
+Spring markers, declared scripts), ports and `required-env` names where
+provable, weak signals as `#` comments plus a printed checklist. `--tracing`
+adds the `trace:` block and per-service OTel `env:` (single-line flow maps);
+the generated file is re-validated in-process before reporting.
 
 State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.
@@ -160,7 +168,7 @@ never injects OTEL variables into services (D4). Spans land redacted and
 capped in `<root>/.ow/traces/spans.jsonl`; read them with `ow trace`
 (recent list) and `ow trace <id>` (one parent/child tree).
 `ow trace --wait 15s` polls up to 5 minutes for a newly arriving span
-(batch exporters land late) and then renders once.
+(batch exporters land late) and then renders once. If the receiver port is taken, `up` warns loudly with host+port and `ow doctor` appends an `alıcı dinlemiyor` hint to the trace line.
 
 ```yaml
 trace:
