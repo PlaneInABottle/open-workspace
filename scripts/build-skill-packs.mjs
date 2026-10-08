@@ -17,7 +17,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillsDir = process.env.OPENWORKSPACE_SKILLS_DIR ?? join(repoRoot, 'skills');
 const pluginsDir = process.env.OPENWORKSPACE_PLUGINS_DIR ?? join(repoRoot, 'plugins');
 
-const maxSkillBytes = 8 * 1024;
+const maxSkillBytes = 12 * 1024;
 const maxDescriptionChars = 200;
 
 // Fixed per-client layout: Claude command files live under commands/;
@@ -77,7 +77,7 @@ async function main() {
     if (description.length > maxDescriptionChars) {
       fail('DESCRIPTION_TOO_LONG', `skill "${name}": description is ${description.length} chars (cap ${maxDescriptionChars})`);
     }
-    // Whole-file gate (matches the loader's 8 KiB drop limit): frontmatter
+    // Whole-file gate (matches the loader's 12 KiB drop limit): frontmatter
     // counts, so a skill can never sit 11 B from silent-drop with tests green.
     const fileBytes = Buffer.byteLength(text, 'utf8');
     if (fileBytes > maxSkillBytes) {

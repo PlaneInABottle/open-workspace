@@ -14,7 +14,7 @@ test('malformed and oversized consumer skills are logged and skipped without blo
     await mkdir(join(directory, 'bad-frontmatter'));
     await writeFile(join(directory, 'bad-frontmatter', 'SKILL.md'), '---\nname: bad-frontmatter\n---\nNo description.\n');
     await mkdir(join(directory, 'too-large'));
-    await writeFile(join(directory, 'too-large', 'SKILL.md'), `---\nname: too-large\ndescription: Oversized skill.\n---\n${'x'.repeat(9 * 1024)}`);
+    await writeFile(join(directory, 'too-large', 'SKILL.md'), `---\nname: too-large\ndescription: Oversized skill.\n---\n${'x'.repeat(13 * 1024)}`);
 
     const loaded = await loadConsumerSkills(directory, message => messages.push(message));
     assert.deepEqual(loaded.map(skill => skill.name), ['valid']);

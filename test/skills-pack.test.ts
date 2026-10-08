@@ -43,8 +43,8 @@ test('generated packs byte-match canonical skills with inherited frontmatter', a
     const canonical = await readFile(join(skillsDir, skill, 'SKILL.md'), 'utf8');
     const { description, body } = splitSkill(canonical);
     assert.ok(description.length <= 200, `${skill}: description within 200 chars`);
-    assert.ok(Buffer.byteLength(body, 'utf8') <= 8 * 1024, `${skill}: body within 8 KiB`);
-    assert.ok(Buffer.byteLength(canonical, 'utf8') <= 8 * 1024, `${skill}: whole file within 8 KiB (loader drop limit)`);
+    assert.ok(Buffer.byteLength(body, 'utf8') <= 12 * 1024, `${skill}: body within 12 KiB`);
+    assert.ok(Buffer.byteLength(canonical, 'utf8') <= 12 * 1024, `${skill}: whole file within 12 KiB (loader drop limit)`);
     for (const client of clients) {
       const generated = await readFile(packPath(pluginsDir, client, skill), 'utf8');
       const expected = `---\nname: ow-${skill}\ndescription: ${description}\n---\n${body}`;
@@ -140,9 +140,9 @@ test('generator fails closed on cap breach with a named error', async t => {
   assert.match(tooLong.output, /DESCRIPTION_TOO_LONG/, 'named cap error');
   assert.deepEqual(await snapshotDir(fixturePlugins), before, 'failing run writes nothing and prunes nothing');
   await rm(join(fixtureSkills, 'verbose'), { recursive: true, force: true });
-  await writeSkill('huge', 'A huge skill.', `${'x'.repeat(9 * 1024)}\n`);
+  await writeSkill('huge', 'A huge skill.', `${'x'.repeat(13 * 1024)}\n`);
   const tooLarge = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins });
-  assert.notEqual(tooLarge.code, 0, 'file over 8 KiB fails');
+  assert.notEqual(tooLarge.code, 0, 'file over 12 KiB fails');
   assert.match(tooLarge.output, /SKILL_TOO_LARGE/, 'named cap error');
   assert.match(tooLarge.output, /huge/, 'names the offending skill');
   assert.deepEqual(await snapshotDir(fixturePlugins), before, 'second failing run still writes nothing');

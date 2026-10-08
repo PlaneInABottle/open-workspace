@@ -8,7 +8,7 @@ function defaultSkillsDirectory(): string {
   // import.meta.url, so evaluating this at load time crashes the bundle.
   return fileURLToPath(new URL('../skills/', import.meta.url));
 }
-const maxSkillBytes = 8 * 1024;
+const maxSkillBytes = 12 * 1024;
 const shortDescriptions: Record<string, string> = {
   'learn-from-mistake': 'Use on demand to write reusable skill and AGENTS.md guidance from session evidence.',
   'onboarding': 'Use to connect an existing assistant to OpenWorkspace and onboard selected projects.',
