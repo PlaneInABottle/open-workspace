@@ -24,8 +24,10 @@ const isStringRecord = (value: unknown): value is Record<string, string> => {
 /** Rows the writer contract guarantees. Anything else (hand-edited,
  * foreign, or truncated rows) is skipped so one bad line can never crash
  * a query with a stack dump. Repeated exporter retransmits can store one
- * `spanId` twice: first occurrence wins, so row counts and the emitted set
- * below always agree and the cap marker stays honest. */
+ * `spanId` twice within a trace: first occurrence per `traceId:spanId`
+ * wins, so row counts and the emitted set below always agree and the cap
+ * marker stays honest — while a spanId reused by a DIFFERENT trace still
+ * renders fully (M1). */
 export const selectValidSpans = (spans: TraceSpan[]): TraceSpan[] => {
   const seen = new Set<string>()
   return spans.filter((span) => {
@@ -45,8 +47,9 @@ export const selectValidSpans = (spans: TraceSpan[]): TraceSpan[] => {
       (span.status === "unset" || span.status === "ok" || span.status === "error") &&
       typeof span.t === "string" &&
       isStringRecord(span.attrs)
-    if (!valid || seen.has(span.spanId)) return false
-    seen.add(span.spanId)
+    const identity = `${span.traceId}:${span.spanId}`
+    if (!valid || seen.has(identity)) return false
+    seen.add(identity)
     return true
   })
 }

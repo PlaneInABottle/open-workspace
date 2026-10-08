@@ -10,8 +10,8 @@ import type { TraceConfig, UpService } from "./up-schema"
 import { appendLogLine, flushUpLogs } from "./up-logs"
 import { startTraceReceiver } from "./trace-receiver"
 import { tracePaths } from "./trace-store"
-import { clearLock, ensureUpStateDir, isLivePid, readLock, readLstart, readSupervisorState, upPaths, writeSupervisorState } from "./up-state"
-import type { UpServiceState } from "./up-state"
+import { clearLock, classifySupervisorFile, ensureUpStateDir, isLivePid, readLock, readLstart, readOwnBuildSidecar, readSupervisorState, upPaths, writeSupervisorState } from "./up-state"
+import type { UpBuildInfo, UpServiceState } from "./up-state"
 
 export type UpLineStream = "stdout" | "stderr" | "log"
 export type UpLineHandler = (service: string, stream: UpLineStream, line: string) => void
@@ -146,6 +146,10 @@ export type UpRunOptions = {
   stateFile?: string
   /** When set, every pumped line is also captured to `<logsDir>/<ad>.jsonl`. */
   logsDir?: string
+  /** Build identity recorded into supervisor state. Explicit value wins
+   * (lets embedders/tests pin it); `undefined` reads the running binary's
+   * sidecar, `null`/missing sidecar records nothing. */
+  build?: UpBuildInfo | null
   /** When present and enabled, an OTLP/HTTP receiver runs for the
    * supervisor's lifetime. Absent → tracing is a no-op (no listener,
    * no `.ow/traces/`, no warnings). Failures are warn-only (D7). */
@@ -179,6 +183,10 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     const paths = tracePaths(options.rootDir)
     traceReceiver = await startTraceReceiver({ tracesDir: paths.tracesDir, spansFile: paths.spansFile, port: options.trace.port })
   }
+  // Build identity for supervisor state: explicit option wins, otherwise
+  // the running binary's sidecar (absent under dev/test runners → nothing
+  // recorded, never a failure). Resolved once; every persist carries it.
+  const build = options.build !== undefined ? options.build : await readOwnBuildSidecar()
   const children: SpawnedChild[] = []
   const tails: LogTail[] = []
   const portConflicts = new Map<string, boolean>()
@@ -194,8 +202,11 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
       version: 1,
       startedAt: first?.startedAt ?? now(),
       services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true)),
+      ...(build === null ? {} : { build }),
     }
-    await writeSupervisorState(options.stateFile, state).catch(() => undefined)
+    // Merge-on-write (M3): an exit handler may have persisted behind our
+    // back; never clobber its settled fields with our older snapshot.
+    await persistMerged(options.stateFile, state).catch(() => undefined)
   }
   const units: { svc: UpService; main: SpawnedChild | undefined; tail: LogTail | undefined }[] = services.map(
     (svc) => ({ svc, main: undefined, tail: undefined }),
@@ -340,6 +351,48 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   return spontaneous.length > 0 ? 1 : 0
 };
 
+/** Merge-on-write: `persist` (spawn/exit path) and `down` (final mark path)
+ * both rewrite the whole file, so each re-reads first and preserves settled
+ * fields the in-memory copy never saw (`exitCode`/`exitedAt`,
+ * `logsEnded`). Defined-wins per service: a recorded settlement is never
+ * clobbered by a stale in-memory absence. No new lock files — the supervisor
+ * is the sole writer while live, `down` only marks the dead. */
+export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServiceState[]): UpServiceState[] => {
+  const diskByName = new Map(onDisk.map((svc) => [svc.name, svc]))
+  return fresh.map((svc) => {
+    const prior = diskByName.get(svc.name)
+    if (!prior) return svc
+    return {
+      ...svc,
+      ...(svc.exitCode === undefined && prior.exitCode !== undefined
+        ? { exitCode: prior.exitCode, ...(prior.exitedAt === undefined ? {} : { exitedAt: prior.exitedAt }) }
+        : {}),
+      ...(svc.logsEnded === undefined && prior.logsEnded !== undefined ? { logsEnded: prior.logsEnded } : {}),
+    }
+  })
+}
+
+/** Read-modify-write with settlement preservation; missing/corrupt on-disk
+ * state falls back to a plain write (callers own the fail-closed decision).
+ * A recorded build block survives from either side (fresh wins, else kept). */
+export const persistMerged = async (supervisorFile: string, state: { version: 1; startedAt: string; services: UpServiceState[]; build?: UpBuildInfo }): Promise<void> => {
+  const onDisk = await readSupervisorState(supervisorFile)
+  if (!onDisk) {
+    await writeSupervisorState(supervisorFile, state)
+    return
+  }
+  const build = state.build ?? onDisk.build
+  await writeSupervisorState(supervisorFile, {
+    ...state,
+    startedAt: onDisk.startedAt,
+    services: mergePreservingSettled(onDisk.services, state.services),
+    ...(build === undefined ? {} : { build }),
+  })
+}
+
+/** Spawn-time record: an empty `lstart` means `readLstart` failed at spawn,
+ * so the pid guard is blind for this unit — recorded as `lstartUnknown` so
+ * `down` refuses (never reports success) and `ps` shows unknown. */
 const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false): UpServiceState => {
   const primary = main ?? tail
   if (!primary) throw new Error(`${svc.name}: izlenecek süreç yok`)
@@ -356,10 +409,37 @@ const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTa
     ...(tail?.exit ? { logsEnded: { code: tail.exit.code, at: new Date().toISOString() } } : {}),
     ...(portConflict ? { portConflict: true as const } : {}),
     ...(main?.exit ? { exitCode: main.exit.code ?? -1, exitedAt: new Date().toISOString() } : {}),
+    ...(primary.lstart === "" ? { lstartUnknown: true as const } : {}),
   }
 }
 
 export const toServiceState = (child: SpawnedChild): UpServiceState => toUnitState(child.service, child, undefined)
+
+/** Live children of a dead supervisor. Refuse-with-message is chosen over
+ * adoption: attaching to foreign pids without the original supervisor's
+ * shutdown wiring risks double-signaling and pid confusion — `ow down`
+ * (lstart-verified) is the explicit, safe path. Entries with an empty
+ * `lstart` or a recorded `exitCode` are skipped: the former is unverifiable
+ * (H5 unknown), the latter is already settled. */
+export const findLiveOrphans = async (rootDir: string): Promise<UpServiceState[]> => {
+  const paths = upPaths(rootDir)
+  const state = await readSupervisorState(paths.supervisorFile)
+  if (!state) return []
+  const orphans: UpServiceState[] = []
+  for (const svc of state.services) {
+    if (svc.exitCode !== undefined || svc.lstart === "") continue
+    if (await isLivePid(svc.pid, svc.lstart)) orphans.push(svc)
+  }
+  return orphans
+}
+
+/** Throw a Turkish usage error naming live orphans, or resolve silently. */
+export const assertNoLiveOrphans = async (rootDir: string): Promise<void> => {
+  const orphans = await findLiveOrphans(rootDir)
+  if (orphans.length === 0) return
+  const names = orphans.map((svc) => `${svc.name} (pid ${svc.pid})`).join(", ")
+  throw new Error(`yetim süreçler çalışıyor: ${names} — önce \`ow down\` ile durdurun (eski supervisor ölü)`)
+}
 
 export type DownResult = { name: string; stopped: boolean; note: string }
 
@@ -371,6 +451,14 @@ export type DownOutcome = { results: DownResult[]; warnings: string[]; clearedLo
 export const downAll = async (rootDir: string, rm = false): Promise<DownOutcome> => {
   const warnings: string[] = []
   const paths = upPaths(rootDir)
+  // Classify first (M1): a present-but-unparseable file must fail closed
+  // here too, not read as empty with a cleared lock. `--rm` bypasses: it is
+  // the explicit cleanup path for exactly this situation.
+  if (!rm) {
+    const fileStatus = await classifySupervisorFile(paths.supervisorFile)
+    if (fileStatus === "corrupt") throw new Error("supervisor.json bozuk — `down --rm` ile temizleyin")
+    if (fileStatus === "bad-version") throw new Error("supervisor.json sürüm uyuşmazlığı — `down --rm` ile temizleyin")
+  }
   const state = await readSupervisorState(paths.supervisorFile)
   const lock = await readLock(paths.lockFile)
   const results: DownResult[] = []
@@ -399,13 +487,16 @@ export const downAll = async (rootDir: string, rm = false): Promise<DownOutcome>
     const now = new Date().toISOString()
     let dirty = false
     for (const svc of state.services) {
-      if (svc.exitCode === undefined && !(await isLivePid(svc.pid, svc.lstart))) {
+      if (svc.exitCode === undefined && svc.lstart !== "" && !(await isLivePid(svc.pid, svc.lstart))) {
         svc.exitCode = -1
         svc.exitedAt = now
         dirty = true
       }
     }
-    if (dirty) await writeSupervisorState(paths.supervisorFile, state).catch(() => undefined)
+    // Merge-on-write (M3): the supervisor may have persisted behind our
+    // back; re-read and preserve its newer settlements. Unknown-lstart
+    // units are never marked dead here: the guard is blind for them.
+    if (dirty) await persistMerged(paths.supervisorFile, state).catch(() => undefined)
   }
   await clearLock(paths.lockFile)
   let removedState = false
@@ -425,8 +516,11 @@ type StopStatus = "already" | "stopped" | "refused"
 
 /** SIGTERM → 5 s grace → SIGKILL on one lstart-verified pid. `already` means
  * it was dead before we acted (or vanished mid-sequence); `refused` means it
- * survived SIGKILL. Never signals a mismatched/unreadable lstart. */
+ * survived SIGKILL — or its `lstart` is empty (unknown): an unverifiable pid
+ * is never signaled and never reported as stopped (H5). Never signals a
+ * mismatched/unreadable lstart. */
 const stopPid = async (pid: number, lstart: string): Promise<StopStatus> => {
+  if (lstart === "") return "refused"
   if (!(await isLivePid(pid, lstart))) return "already"
   try {
     process.kill(pid, "SIGTERM")
@@ -449,11 +543,20 @@ const stopPid = async (pid: number, lstart: string): Promise<StopStatus> => {
 };
 
 const stopOne = async (svc: UpServiceState): Promise<DownResult> => {
+  // Empty `lstart` (spawn-time `readLstart` failure) means the pid guard is
+  // blind: refusing loudly beats the old false `stopped: true` on a process
+  // that may still be live. The process is deliberately left untouched.
+  if (svc.lstart === "") {
+    return { name: svc.name, stopped: false, note: "lstart bilinmiyor — güvenli durdurma yok (pid doğrulanamaz)" }
+  }
   // `logs:` sibling dies with the parent first (same lstart guard; a recorded
   // `logsEnded` means our tail already exited, so its pid is never signaled —
   // it may be recycled by now). A logs-only service records the tail pid as
   // the main pid too; the `logsPid !== pid` guard avoids double-signaling it.
   if (svc.logsPid !== undefined && svc.logsEnded === undefined && svc.logsPid !== svc.pid) {
+    if ((svc.logsLstart ?? "") === "") {
+      return { name: svc.name, stopped: false, note: "logs lstart bilinmiyor — güvenli durdurma yok" }
+    }
     const tail = await stopPid(svc.logsPid, svc.logsLstart ?? "")
     if (tail === "refused") return { name: svc.name, stopped: false, note: "logs kuyruğu durmuyor" }
     if (tail === "stopped") {

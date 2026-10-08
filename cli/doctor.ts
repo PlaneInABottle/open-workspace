@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
-import { classifyLock, readSupervisorState, upPaths } from "./up-state"
+import { classifyLock, readOwnBuildSidecar, readSupervisorState, upPaths, type UpBuildInfo } from "./up-state"
 import { checkTraceDoctor } from "./trace-cli"
 
 const DEFAULT_LOG_PATH = join(homedir(), ".local", "share", "opencode-shell-log", "shell-events.jsonl")
@@ -13,6 +13,19 @@ export const RING_MAX_BYTES = 100 * 1024 * 1024
 export const RING_MAX_LINES = 50_000
 
 export type DoctorLine = { name: string; ok: boolean; detail: string }
+
+/** Stale-supervisor compare, pure for testability: names both build times
+ * when a recorded digest differs from the current binary's, else silent.
+ * Empty digests and either side missing mean "cannot tell" → silent. */
+export const staleSupervisorHint = (
+  recorded: UpBuildInfo | null | undefined,
+  current: UpBuildInfo | null,
+): string => {
+  if (!recorded || !current) return ""
+  if (recorded.digest.length === 0 || current.digest.length === 0) return ""
+  if (recorded.digest === current.digest) return ""
+  return `. ipucu: çalışan supervisor bayat (çalışan ${recorded.time}, kurulu ${current.time}) — ow down && ow up -d ile yenile`
+}
 
 export const doctor = async (options: { logPath?: string; dbPath?: string; upRoot?: string } = {}): Promise<DoctorLine[]> => {
   const lines: DoctorLine[] = []
@@ -58,6 +71,8 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
   }
   // Informational only: never feeds the `ow doctor` exit rule (cli.ts filters
   // `up` and `trace` out). ok:true solely for a lock-verified live supervisor.
+  // A build mismatch appends a bounded refresh hint; any compare failure
+  // stays silent (missing sidecars must not fail or reword doctor).
   try {
     const paths = upPaths(options.upRoot ?? process.cwd())
     const status = await classifyLock(paths.lockFile)
@@ -65,11 +80,13 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
       const state = await readSupervisorState(paths.supervisorFile)
       const total = state?.services.length ?? 0
       const done = state?.services.filter((svc) => svc.exitCode !== undefined).length ?? 0
-      lines.push({
-        name: "up",
-        ok: true,
-        detail: total > 0 ? `çalışıyor (${total} servis${done > 0 ? `, ${done} bitti` : ""})` : "çalışıyor (durum yok)",
-      })
+      let detail = total > 0 ? `çalışıyor (${total} servis${done > 0 ? `, ${done} bitti` : ""})` : "çalışıyor (durum yok)"
+      try {
+        detail += staleSupervisorHint(state?.build, await readOwnBuildSidecar())
+      } catch {
+        // compare must never throw; silence on any failure
+      }
+      lines.push({ name: "up", ok: true, detail })
     } else if (status.kind === "absent") {
       lines.push({ name: "up", ok: false, detail: "durgun (çalışan supervisor yok)" })
     } else if (status.kind === "stale") {

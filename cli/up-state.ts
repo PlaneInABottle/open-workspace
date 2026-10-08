@@ -4,7 +4,8 @@
  * Small local copies of the observer-core dir/file discipline (attribution:
  * `shell-observer-core.ts` privateDirectory/replaceLog shape). */
 
-import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
+import { closeSync, openSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
 export const UP_STATE_VERSION = 1
@@ -24,13 +25,45 @@ export type UpServiceState = {
   portConflict?: boolean
   exitCode?: number
   exitedAt?: string
+  /** Spawn-time `readLstart` failure marker: the pid guard is blind for this
+   * unit, so `down`/`ps` must treat it as unknown, never as stoppable/dead. */
+  lstartUnknown?: boolean
 }
 
 export type UpSupervisorState = {
   version: number
   startedAt: string
   services: UpServiceState[]
+  /** Build identity of the binary that started this supervisor, copied from
+   * its `ow.build.json` sidecar. Absent when the sidecar was unreadable
+   * (dev runs, missing file) — never a failure. */
+  build?: UpBuildInfo
 }
+
+/** Build identity stamped into the binary at `pnpm ow:build` time. */
+export type UpBuildInfo = { sha: string; digest: string; time: string }
+
+/** Read an `ow.build.json` sidecar sitting next to the given binary path,
+ * resolving symlinks first (covers a `~/.local/bin/ow` shim). Returns the
+ * identity triple, or null when missing/unreadable/invalid — never throws. */
+export const readBuildSidecar = async (execPath: string): Promise<UpBuildInfo | null> => {
+  try {
+    const dir = dirname(await realpath(execPath))
+    const parsed = JSON.parse(await readFile(join(dir, "ow.build.json"), "utf8")) as unknown
+    if (typeof parsed !== "object" || parsed === null) return null
+    const record = parsed as Record<string, unknown>
+    const { sha, digest, time } = record
+    if (typeof sha !== "string" || typeof digest !== "string" || typeof time !== "string") return null
+    if (sha.length === 0 || digest.length === 0 || time.length === 0) return null
+    return { sha, digest, time }
+  } catch {
+    return null
+  }
+}
+
+/** Sidecar of the currently running binary (what a same-version `doctor`
+ * compares its recorded state against). */
+export const readOwnBuildSidecar = async (): Promise<UpBuildInfo | null> => readBuildSidecar(process.execPath)
 
 export type UpLock = { pid: number; lstart: string; startedAt: string }
 
@@ -214,7 +247,31 @@ export type LockStatus =
   | { kind: "absent" }
   | { kind: "live"; lock: UpLock }
   | { kind: "stale"; lock: UpLock; reason: string }
+  | { kind: "corrupt"; reason: string }
   | { kind: "unknown"; lock: UpLock; reason: string }
+
+export type LockFileShape = "absent" | "corrupt" | "ok"
+
+/** Shape check without liveness: `ENOENT` → absent, present-but-unparseable
+ * (or wrong shape) → corrupt. Lets callers reclaim corrupt locks with a
+ * warning instead of silently overwriting them as "absent". */
+export const lockFileShape = async (lockFile: string): Promise<LockFileShape> => {
+  let text: string
+  try {
+    text = await readFile(lockFile, "utf8")
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "corrupt"
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (typeof parsed !== "object" || parsed === null) return "corrupt"
+    const dict = parsed as Record<string, unknown>
+    if (typeof dict["pid"] !== "number" || typeof dict["lstart"] !== "string") return "corrupt"
+    return "ok"
+  } catch {
+    return "corrupt"
+  }
+}
 
 export const readLock = async (lockFile: string): Promise<UpLock | null> => {
   try {
@@ -229,12 +286,15 @@ export const readLock = async (lockFile: string): Promise<UpLock | null> => {
   }
 };
 
-/** Classify an existing lock. When even our own `lstart` is unreadable the
- * guard itself is blind (no `ps`/no `lstart` support): treat live and refuse,
- * never reclaim blindly. */
+/** Classify an existing lock. Present-but-unparseable files are `corrupt`
+ * (reclaimed with a warning, never silently treated as absent). When even
+ * our own `lstart` is unreadable the guard itself is blind (no `ps`/no
+ * `lstart` support): treat live and refuse, never reclaim blindly. */
 export const classifyLock = async (lockFile: string): Promise<LockStatus> => {
-  const lock = await readLock(lockFile)
-  if (!lock) return { kind: "absent" }
+  const shape = await lockFileShape(lockFile)
+  if (shape === "absent") return { kind: "absent" }
+  if (shape === "corrupt") return { kind: "corrupt", reason: "kilit dosyası bozuk" }
+  const lock = (await readLock(lockFile)) as UpLock
   const selfCheck = await readLstart(process.pid)
   if (selfCheck === null) return { kind: "unknown", lock, reason: "lstart okunamıyor, doğrulanamaz" }
   const current = await readLstart(lock.pid)
@@ -243,14 +303,51 @@ export const classifyLock = async (lockFile: string): Promise<LockStatus> => {
   return { kind: "stale", lock, reason: "lstart uyuşmazlığı (pid geri dönüşümü)" }
 };
 
-/** Acquire the single-supervisor lock or throw a Turkish usage error. Stale locks are reclaimed with a warning. */
+/** Exclusive (`O_CREAT|O_EXCL`) lock write: the double-`up` check-then-act
+ * window is closed here, not at the caller. Returns true when created. */
+const writeLockExclusive = (lockFile: string, lock: UpLock): boolean => {
+  try {
+    const fd = openSync(lockFile, "wx", 0o600)
+    try {
+      writeFileSync(fd, JSON.stringify(lock), "utf8")
+    } finally {
+      closeSync(fd)
+    }
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+    throw error
+  }
+};
+
+/** Acquire the single-supervisor lock or throw a Turkish usage error. Stale
+ * AND corrupt locks are reclaimed with a warning (warn-only spirit kept:
+ * the supervisor is dead, only its marker is broken). Creation is
+ * exclusive: a lost creation race re-classifies — a now-live/unknown lock
+ * refuses, only a still-stale/corrupt one is reclaimed. Residual risk: two
+ * racers that both see stale can still both reclaim (documented, same as
+ * before); the common live/absent double-`up` race is closed. */
 export const acquireLock = async (lockFile: string, warnings: string[]): Promise<UpLock> => {
   const status = await classifyLock(lockFile)
   if (status.kind === "live") throw new Error("zaten çalışıyor (ow ps)")
   if (status.kind === "unknown") throw new Error("kilit doğrulanamadı, çalışıyor sayılıyor — önce ow down")
-  if (status.kind === "stale") warnings.push(`uyarı: bayat kilit devralındı (${status.reason})`)
+  const reclaimNote =
+    status.kind === "stale"
+      ? `uyarı: bayat kilit devralındı (${status.reason})`
+      : status.kind === "corrupt"
+        ? `uyarı: bozuk kilit devralındı (${status.reason})`
+        : null
   const self = await readLstart(process.pid)
   const lock: UpLock = { pid: process.pid, lstart: self ?? "", startedAt: new Date().toISOString() }
+  if (writeLockExclusive(lockFile, lock)) {
+    if (reclaimNote) warnings.push(reclaimNote)
+    return lock
+  }
+  const again = await classifyLock(lockFile)
+  if (again.kind === "live") throw new Error("zaten çalışıyor (ow ps)")
+  if (again.kind === "unknown") throw new Error("kilit doğrulanamadı, çalışıyor sayılıyor — önce ow down")
+  if (again.kind === "corrupt") warnings.push(`uyarı: bozuk kilit devralındı (yarış sonrası, ${again.reason})`)
+  else if (again.kind === "stale") warnings.push(`uyarı: bayat kilit devralındı (yarış sonrası, ${again.reason})`)
   await atomicWriteJson(lockFile, lock)
   return lock
 };

@@ -60,14 +60,16 @@ describe("trace list view", () => {
         makeSpan({ traceId: TRACE_B, spanId: "b1".padEnd(16, "0"), startNano: ns(now - 200_000), endNano: ns(now - 199_000) }),
         makeSpan({ traceId: TRACE_C, spanId: "c1".padEnd(16, "0"), startNano: ns(now - 100_000), endNano: ns(now - 99_000) }),
       ])
-      const all = await runTrace(opts(root))
+      // Ordering mechanics (singletons need minSpans: 1 now that the default
+      // list hides ok singletons; hiding itself is covered separately).
+      const all = await runTrace(opts(root, { minSpans: 1 }))
       expect(all.code).toBe(0)
       const lines = all.stdout.split("\n")
       expect(lines.length).toBe(3)
       expect(lines[0].startsWith("c1b2c3d4")).toBe(true)
       expect(lines[1].startsWith("b1b2c3d4")).toBe(true)
       expect(lines[2].startsWith("a1b2c3d4")).toBe(true)
-      const tailed = await runTrace(opts(root, { tail: 2 }))
+      const tailed = await runTrace(opts(root, { tail: 2, minSpans: 1 }))
       expect(tailed.code).toBe(0)
       expect(tailed.stdout.split("\n").length).toBe(2)
     } finally {
@@ -127,11 +129,11 @@ describe("trace list view", () => {
           endNano: ns(Date.parse("2020-01-01T00:00:01.000Z")),
         }),
       ])
-      const byService = await runTrace(opts(root, { service: "api" }))
+      const byService = await runTrace(opts(root, { service: "api", minSpans: 1 }))
       expect(byService.code).toBe(0)
       expect(byService.stdout.startsWith("a1b2c3d4")).toBe(true)
       expect(byService.stdout).not.toContain("b1b2c3d4")
-      const bySince = await runTrace(opts(root, { sinceMs: 3_600_000 }))
+      const bySince = await runTrace(opts(root, { sinceMs: 3_600_000, minSpans: 1 }))
       expect(bySince.code).toBe(0)
       expect(bySince.stdout.startsWith("a1b2c3d4")).toBe(true)
       expect(bySince.stdout).not.toContain("b1b2c3d4")
@@ -148,7 +150,7 @@ describe("trace list view", () => {
         makeSpan({ traceId: TRACE_B, spanId: "b1".padEnd(16, "0") }),
         makeSpan({ traceId: TRACE_C, spanId: "c1".padEnd(16, "0") }),
       ])
-      const result = await runTrace(opts(root, { tail: NaN }))
+      const result = await runTrace(opts(root, { tail: NaN, minSpans: 1 }))
       expect(result.code).toBe(0)
       expect(result.stdout.split("\n").length).toBe(3)
     } finally {
@@ -398,6 +400,115 @@ describe("trace tree view", () => {
   })
 })
 
+describe("trace cross-trace spanId reuse (M1)", () => {
+  test("two traces sharing a spanId both render fully", async () => {
+    const root = await tempRoot()
+    try {
+      // Same spanId "aa..aa" reused as a root in trace A and a child in trace B.
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "aa".repeat(8), service: "api", name: "GET /a-root", startNano: "1000000000", endNano: "1001000000", durMs: 1 }),
+        makeSpan({ traceId: TRACE_A, spanId: "ab".repeat(8), parentSpanId: "aa".repeat(8), service: "api", name: "GET /a-child", startNano: "1000001000", endNano: "1002000000", durMs: 1 }),
+        makeSpan({ traceId: TRACE_B, spanId: "bb".repeat(8), service: "api", name: "GET /b-root", startNano: "2000000000", endNano: "2001000000", durMs: 1 }),
+        makeSpan({ traceId: TRACE_B, spanId: "aa".repeat(8), parentSpanId: "bb".repeat(8), service: "api", name: "GET /b-child", startNano: "2000001000", endNano: "2002000000", durMs: 1 }),
+      ])
+      for (const [id, names] of [[TRACE_A, ["GET /a-root", "GET /a-child"]], [TRACE_B, ["GET /b-root", "GET /b-child"]]] as const) {
+        const tree = await runTrace(opts(root, { traceId: id, json: true }))
+        expect(tree.code).toBe(0)
+        const parsed = JSON.parse(tree.stdout) as { spans: { name: string }[] }
+        expect(parsed.spans.length).toBe(2)
+        expect(parsed.spans.map((s) => s.name)).toEqual([...names])
+      }
+      const list = await runTrace(opts(root, { json: true }))
+      const traces = (JSON.parse(list.stdout) as { traces: { traceId: string; spans: number }[] }).traces
+      expect(traces.find((t) => t.traceId === TRACE_A)?.spans).toBe(2)
+      expect(traces.find((t) => t.traceId === TRACE_B)?.spans).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("trace list interest filter", () => {
+  const seedMixed = async (root: string, now: number): Promise<void> => {
+    await seedRows(root, [
+      makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /solo-ok", startNano: ns(now - 60_000), endNano: ns(now - 59_000) }),
+      makeSpan({ traceId: TRACE_B, spanId: "b1".padEnd(16, "0"), name: "GET /solo-err", status: "error", startNano: ns(now - 50_000), endNano: ns(now - 49_000) }),
+      makeSpan({ traceId: TRACE_C, spanId: "c1".padEnd(16, "0"), name: "GET /trio", startNano: ns(now - 40_000), endNano: ns(now - 39_000) }),
+      makeSpan({ traceId: TRACE_C, spanId: "c2".padEnd(16, "0"), parentSpanId: "c1".padEnd(16, "0"), name: "SELECT t", startNano: ns(now - 39_500), endNano: ns(now - 39_000) }),
+      makeSpan({ traceId: TRACE_C, spanId: "c3".padEnd(16, "0"), parentSpanId: "c1".padEnd(16, "0"), name: "GET /trio-end", startNano: ns(now - 39_000), endNano: ns(now - 38_000) }),
+    ])
+  }
+
+  test("orphan ok singletons hidden by default; error singletons always render", async () => {
+    const root = await tempRoot()
+    try {
+      await seedMixed(root, Date.now())
+      const result = await runTrace(opts(root))
+      expect(result.code).toBe(0)
+      expect(result.stdout).not.toContain("GET /solo-ok")
+      expect(result.stdout).toContain("GET /solo-err")
+      expect(result.stdout).toContain("GET /trio")
+      const asJson = await runTrace(opts(root, { json: true }))
+      const ids = (JSON.parse(asJson.stdout) as { traces: { traceId: string }[] }).traces.map((t) => t.traceId)
+      expect(ids).not.toContain(TRACE_A)
+      expect(ids).toContain(TRACE_B)
+      expect(ids).toContain(TRACE_C)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("dangling-parent singleton still renders by default", async () => {
+    const root = await tempRoot()
+    try {
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), parentSpanId: "ff".repeat(8), name: "GET /dangling", startNano: ns(Date.now() - 60_000), endNano: ns(Date.now() - 59_000) }),
+      ])
+      const result = await runTrace(opts(root))
+      expect(result.stdout).toContain("GET /dangling")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--min-spans 1 shows all; --min-spans 3 keeps ≥3 plus errors", async () => {
+    const root = await tempRoot()
+    try {
+      await seedMixed(root, Date.now())
+      const all = await runTrace(opts(root, { minSpans: 1 }))
+      expect(all.stdout).toContain("GET /solo-ok")
+      const three = await runTrace(opts(root, { minSpans: 3 }))
+      expect(three.stdout).not.toContain("GET /solo-ok")
+      expect(three.stdout).toContain("GET /solo-err")
+      expect(three.stdout).toContain("GET /trio")
+      const threeJson = await runTrace(opts(root, { minSpans: 3, json: true }))
+      const ids = (JSON.parse(threeJson.stdout) as { traces: { traceId: string }[] }).traces.map((t) => t.traceId)
+      expect(ids).toEqual(expect.arrayContaining([TRACE_B, TRACE_C]))
+      expect(ids).not.toContain(TRACE_A)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("exact-ID lookup renders hidden singletons untouched", async () => {
+    const root = await tempRoot()
+    try {
+      await seedMixed(root, Date.now())
+      const tree = await runTrace(opts(root, { traceId: TRACE_A }))
+      expect(tree.code).toBe(0)
+      expect(tree.stdout).toContain("GET /solo-ok")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("invalid --min-spans is a usage error", () => {
+    expect(parseArgs(["trace", "--min-spans", "0"]).error).toContain("geçersiz --min-spans")
+    expect(parseArgs(["trace", "--min-spans", "bogus"]).error).toContain("geçersiz --min-spans")
+    expect(parseArgs(["trace", "--min-spans", "3"]).error).toBeNull()
+  })
+})
+
 describe("trace quiet paths", () => {
   test("no .ow → honest empty naming the searched start, exit 0", async () => {
     const root = await tempRoot()
@@ -462,7 +573,7 @@ describe("trace --json envelopes", () => {
           endNano: ns(now - 59_000),
         }),
       ])
-      const list = JSON.parse((await runTrace(opts(root, { json: true }))).stdout) as {
+      const list = JSON.parse((await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout) as {
         traces: Record<string, unknown>[]
       }
       expect(Object.keys(list).sort()).toEqual(["traces"])
@@ -530,8 +641,8 @@ describe("trace secret safety on the read path", () => {
       // the Bearer credential value stays masked — it is the only sentinel-free guarantee here.
       expect(await readFile(spansFile, "utf8")).toContain(`/reset/${sentinel}9f3c1a7b`)
       const outputs = [
-        (await runTrace(opts(root))).stdout,
-        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
@@ -540,6 +651,68 @@ describe("trace secret safety on the read path", () => {
         expect(output).not.toContain(`Bearer ${sentinel}`)
       }
       expect(outputs[2]).toContain("Bearer ***")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("H1: bare pass/auth denied as keys, pass= pairs masked in name/service, all four shapes", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("POST /do/pass=hunter2abc")),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("pass", "x")),
+          ...lenField(9, kv("auth", "tok")),
+          ...lenField(9, kv("url.path", "/do/pass=hunter2abc")),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "reset/pass=hunter2"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).toContain("POST /do/***")
+      expect(onDisk).toContain('"service":"reset/***"')
+      expect(onDisk).not.toContain("hunter2abc")
+      expect(onDisk).not.toContain("hunter2\"")
+      const outputs = [
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      for (const output of outputs) {
+        expect(output).not.toContain("hunter2abc")
+        expect(output).not.toContain('"pass"')
+        expect(output).not.toContain('"auth"')
+      }
+      expect(outputs[2]).toContain("POST /do/***")
+      expect(outputs[2]).toContain("[reset/***]")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -588,8 +761,8 @@ describe("trace secret safety on the read path", () => {
       expect(onDisk).not.toContain(sentinel)
       expect(onDisk).toContain("/reset/***")
       const outputs = [
-        (await runTrace(opts(root))).stdout,
-        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
@@ -644,8 +817,8 @@ describe("trace secret safety on the read path", () => {
       expect(onDisk).toContain("/reset/***")
       expect(onDisk).toContain("/login/***")
       const outputs = [
-        (await runTrace(opts(root))).stdout,
-        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
@@ -709,8 +882,8 @@ describe("trace secret safety on the read path", () => {
         expect(onDisk).not.toContain(needle)
       }
       const outputs = [
-        (await runTrace(opts(root))).stdout,
-        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
@@ -780,8 +953,8 @@ describe("trace secret safety on the read path", () => {
       expect(onDisk).toContain("POST /api/v1/stations/query")
       expect(onDisk).toContain("/<path:path>")
       const outputs = [
-        (await runTrace(opts(root))).stdout,
-        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
@@ -900,8 +1073,8 @@ describe("trace secret safety on the read path", () => {
       expect(onDisk).toContain("GET /o/:id/end")
       expect(onDisk).not.toContain(uuid)
       const outputs = [
-        (await runTrace(opts(root))).stdout,
-        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { minSpans: 1 }))).stdout,
+        (await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
@@ -1194,7 +1367,7 @@ describe("trace --wait", () => {
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 60_000), endNano: ns(now - 59_000) }),
       ])
-      const result = await runTrace(opts(root, { waitMs: 600 }))
+      const result = await runTrace(opts(root, { waitMs: 600, minSpans: 1 }))
       expect(result.code).toBe(0)
       expect(result.stdout).toContain("1 span")
       expect(result.stderr).toContain("bekleme süresi doldu")

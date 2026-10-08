@@ -52,6 +52,11 @@ export type TraceRunOptions = {
    * rendering once. Programmatic milliseconds; the CLI bounds `--wait` to
    * (0, 5m] and clamps anything else here. */
   waitMs?: number
+  /** List-view interest floor: traces with fewer spans are hidden, except
+   * error traces which always render. `undefined` (CLI default) hides only
+   * parentless ok/unset singletons; `1` shows everything. Tree lookups and
+   * exact-ID queries ignore it entirely. */
+  minSpans?: number
   /** Directory the upward `.ow/` search started from (defaults to rootDir).
    * Names the searched reality in the honest-empty message only. */
   searchStart?: string
@@ -246,6 +251,23 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   }
   if (options.service !== undefined && options.service !== "") {
     listed = listed.filter((summary) => summary.services.includes(options.service as string))
+  }
+  // LIST NOISE: the list is "interesting first", not "everything". By
+  // default only parentless ok/unset singletons hide (SQL-orphan noise);
+  // `--min-spans 1` restores show-all, `--min-spans N` keeps ≥N-span
+  // traces. Error traces always render regardless. Exact-ID tree lookups
+  // above never filter. A lone span whose parent is set-but-absent
+  // (dangling continuity) still renders — only true roots hide.
+  const minSpans =
+    typeof options.minSpans === "number" && Number.isInteger(options.minSpans) ? Math.max(1, options.minSpans) : undefined
+  if (minSpans === undefined) {
+    listed = listed.filter((summary) => {
+      if (summary.spans !== 1 || summary.status === "error") return true
+      const spans = groups.get(summary.traceId) ?? []
+      return spans.length !== 1 || spans[0].parentSpanId !== null
+    })
+  } else if (minSpans > 1) {
+    listed = listed.filter((summary) => summary.spans >= minSpans || summary.status === "error")
   }
   // Defense-in-depth for programmatic callers (CLI parsing already bounds
   // --tail to 1-5000): a non-integer tail falls back to the default instead
