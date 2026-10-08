@@ -263,15 +263,27 @@ const rawCommandOf = (record: EnrichedRecord): string | null => {
 const stripEnvPrefix = (command: string): string =>
   command.replace(/^([A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, "")
 
-/** Parse --since windows like 30m, 3h, 2d into milliseconds. */
-export const parseSince = (value: string | undefined): number | null => {
+/** Shared `<amount><unit>` core for the duration/size parsers below. Each
+ * parser passes its own anchored pattern and unit map, so unit sets never
+ * merge: `--since` has no seconds, `--bytes` has no time units, `--wait`
+ * keeps its own range rule on top. Matching quirks (trimming, case,
+ * optional unit) live in each caller's pattern, exactly as before. */
+export const parseAmountUnit = (
+  value: string | undefined,
+  pattern: RegExp,
+  mults: Record<string, number>,
+): number | null => {
   if (!value) return null
-  const m = value.trim().match(/^(\d+)\s*([mhdw])$/i)
+  const m = value.trim().match(pattern)
   if (!m) return null
-  const n = Number(m[1])
-  const unit = m[2].toLowerCase() === "m" ? 60_000 : m[2].toLowerCase() === "h" ? 3_600_000 : m[2].toLowerCase() === "d" ? 86_400_000 : 604_800_000
-  return n * unit
+  const mult = mults[(m[2] ?? "").toLowerCase()]
+  if (mult === undefined) return null
+  return Number(m[1]) * mult
 }
+
+/** Parse --since windows like 30m, 3h, 2d into milliseconds. */
+export const parseSince = (value: string | undefined): number | null =>
+  parseAmountUnit(value, /^(\d+)\s*([mhdw])$/i, { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 })
 
 export const filterSince = (records: EnrichedRecord[], windowMs: number | null, now = Date.now()): EnrichedRecord[] => {
   if (!windowMs) return [...records].sort((a, b) => timeOf(a) - timeOf(b))
@@ -905,14 +917,8 @@ export const formatGrouped = (groups: TaskGroup[], full = false, withSession = f
 }
 
 /** Parse byte budgets like 512, 1k, 4k, 1m. */
-export const parseBytes = (value: string | undefined): number | null => {
-  if (!value) return null
-  const m = value.trim().match(/^(\d+)\s*([km]?)$/i)
-  if (!m) return null
-  const n = Number(m[1])
-  const mult = m[2].toLowerCase() === "k" ? 1024 : m[2].toLowerCase() === "m" ? 1024 * 1024 : 1
-  return n * mult
-}
+export const parseBytes = (value: string | undefined): number | null =>
+  parseAmountUnit(value, /^(\d+)\s*([km]?)$/i, { "": 1, k: 1024, m: 1024 * 1024 })
 
 /** Full drill-down for one collapsed line: every stored variant, unclipped unless budgeted. */
 export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: number): string => {
@@ -955,119 +961,3 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
   return `satır bulunamadı: ${ref}`
 }
 
-if (import.meta.main) {
-  const flag = (name: string): string | undefined => {
-    const i = process.argv.indexOf(name)
-    return i >= 0 ? process.argv[i + 1] : undefined
-  }
-  const logPath = flag("--log") ?? DEFAULT_LOG_PATH
-  let sessionID = process.argv[2]?.startsWith("--") ? undefined : process.argv[2]
-  if (process.argv.includes("--list")) {
-    console.log(formatSessions(await listSessions({ logPath, dbPath: flag("--db"), sinceMs: parseSince(flag("--since")), dir: flag("--dir") })))
-    process.exit(0)
-  }
-  if (process.argv.includes("--stuck")) {
-    const sid = sessionID ?? await latestSession(logPath) ?? undefined
-    if (!sid) {
-      console.error("oturum bulunamadı")
-      process.exit(2)
-    }
-    let stuckRecords: EnrichedRecord[]
-    if (process.argv.includes("--tree")) {
-      const { loadTreeRecords } = await import("./tree")
-      const tree = await loadTreeRecords({ dbPath: flag("--db"), logPath, sessionID: sid, sinceMs: parseSince(flag("--since")) })
-      if (tree.childCount > 0) console.error(`ağaç: ${tree.childCount + 1} oturum (${tree.childCount} çocuk)`)
-      stuckRecords = [...tree.by.values()].flat()
-    } else {
-      const r = await joinSession({ sessionID: sid, dbPath: flag("--db"), logPath, sinceMs: parseSince(flag("--since")) })
-      stuckRecords = r.records
-    }
-    const windowed2 = filterSince(stuckRecords, parseSince(flag("--since")))
-    console.log(formatStuck(await stuckReport({ records: windowed2, dbPath: flag("--db"), sessionID: sid })))
-    process.exit(0)
-  }
-  const metaOnly = process.argv.includes("--meta")
-  const promptsOnly = process.argv.includes("--prompts")
-  if (metaOnly || promptsOnly) {
-    const sid = sessionID ?? await latestSession(logPath) ?? undefined
-    if (!sid) {
-      console.error("oturum bulunamadı")
-      process.exit(2)
-    }
-    if (metaOnly) {
-      const { meta, warning } = await sessionMeta({ dbPath: flag("--db"), sessionID: sid })
-      if (warning) console.error(`warn: ${warning}`)
-      if (meta) console.log(formatMeta(meta))
-      else process.exit(1)
-    } else {
-      const prompts = await sessionPrompts({ dbPath: flag("--db"), sessionID: sid })
-      prompts.forEach((p, i) => console.log(`[${i + 1}] ${p}`))
-    }
-    process.exit(0)
-  }
-  if (!sessionID) {
-    sessionID = await latestSession(logPath) ?? undefined
-    if (!sessionID) {
-      console.error("usage: bun join.ts <sessionID> [--db <path>] [--log <path>] [--flat] [--since 3h] [--show <ref>] [--show-fails] [--full] [--kind shell|file-edit|tool-call] [--tool <ad>] [--bytes 1k]")
-      process.exit(2)
-    }
-    console.error(`oturum: ${sessionID} (son oturum)`)
-  }
-  const flat = process.argv.includes("--flat")
-  const treeMode = process.argv.includes("--tree")
-  const detailMode = flag("--show") !== undefined || process.argv.includes("--show-fails") || process.argv.includes("--reads") || flat
-  let allRecords: EnrichedRecord[]
-  let warnings: string[]
-  let recordsBy: Map<string, EnrichedRecord[]> | null = null
-  if (treeMode && sessionID) {
-    const { loadTreeRecords } = await import("./tree")
-    const tree = await loadTreeRecords({ dbPath: flag("--db"), logPath: flag("--log"), sessionID, sinceMs: parseSince(flag("--since")) })
-    const ids = [...tree.by.keys()]
-    if (tree.childCount > 0) console.error(`ağaç: ${ids.length} oturum (${tree.childCount} çocuk)`)
-    allRecords = [...tree.by.values()].flat()
-    warnings = tree.warnings
-    recordsBy = tree.by
-  } else {
-    const r = await joinSession({ sessionID: sessionID!, dbPath: flag("--db"), logPath: flag("--log"), sinceMs: parseSince(flag("--since")) })
-    allRecords = r.records
-    warnings = r.warnings
-  }
-  const { records, warnings: joinWarnings } = { records: allRecords, warnings }
-  for (const warning of joinWarnings) console.error(`warn: ${warning}`)
-  const windowed = filterSince(records, parseSince(flag("--since")))
-  const tooled = filterTools(windowed, flag("--kind"), flag("--tool"))
-  const showRef = flag("--show")
-  const showFails = process.argv.includes("--show-fails")
-  const full = process.argv.includes("--full")
-  const sectionBudget = parseBytes(flag("--bytes")) ?? undefined
-  const groups = groupByTask(tooled)
-  if (showRef) {
-    console.log(showLine(groups, Number(showRef), sectionBudget))
-  } else if (showFails) {
-    const out: string[] = []
-    for (const group of groups) {
-      for (const line of group.lines) {
-        if (line.outcome !== "failure" && line.outcome !== "error") continue
-        out.push(showLine([group], line.ref, sectionBudget))
-      }
-    }
-    if (out.length > 0) console.log(out.join("\n"))
-    else console.error("patlak satır yok")
-  } else if (process.argv.includes("--reads")) {
-    const text = formatReads(readDigest(windowed))
-    console.log(text.length > 0 ? text : "okuma kaydı yok")
-  } else if (flat) {
-    for (const record of tooled) console.log(JSON.stringify(record))
-  } else if (treeMode && recordsBy && !detailMode) {
-    const { buildTree, formatTree } = await import("./tree")
-    const filteredBy = new Map<string, EnrichedRecord[]>()
-    for (const [id, recs] of recordsBy) filteredBy.set(id, filterTools(filterSince(recs, parseSince(flag("--since"))), flag("--kind"), flag("--tool")))
-    const text = formatTree(buildTree(sessionID!, filteredBy), filteredBy, { full, sectionBudget })
-    if (text.length > 0) console.log(text)
-    if (full) console.error(`(tam metin: ${text.length} karakter)`)
-  } else {
-    const text = formatGrouped(groups, full, treeMode, sectionBudget)
-    if (text.length > 0) console.log(text)
-    if (full) console.error(`(tam metin: ${text.length} karakter)`)
-  }
-}

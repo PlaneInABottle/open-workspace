@@ -1,13 +1,12 @@
 import { stat } from "node:fs/promises"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
 import { classifyLock, readOwnBuildSidecar, readSupervisorState, upPaths, type UpBuildInfo } from "./up-state"
 import { checkTraceDoctor } from "./trace-cli"
+import { DEFAULT_DB_PATH, DEFAULT_LOG_PATH } from "./join"
 
-const DEFAULT_LOG_PATH = join(homedir(), ".local", "share", "opencode-shell-log", "shell-events.jsonl")
-const DEFAULT_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db")
+export { DEFAULT_DB_PATH, DEFAULT_LOG_PATH }
 
 export const RING_MAX_BYTES = 100 * 1024 * 1024
 export const RING_MAX_LINES = 50_000

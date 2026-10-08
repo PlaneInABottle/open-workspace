@@ -12,6 +12,8 @@ import type { TraceSpan } from "./trace-otlp"
 
 export const TRACE_DEFAULT_PORT = 4319
 export const TRACE_BIND_HOST = "127.0.0.1"
+/** Loopback OTLP/HTTP endpoint built from the canonical pieces above. */
+export const OTEL_ENDPOINT = `http://${TRACE_BIND_HOST}:${TRACE_DEFAULT_PORT}`
 export const TRACE_MAX_BODY_BYTES = 4 * 1024 * 1024
 export const TRACE_MAX_INFLATED_BYTES = 8 * 1024 * 1024
 export const TRACE_MAX_BYTES = 5 * 1024 * 1024

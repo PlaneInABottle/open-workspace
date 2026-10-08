@@ -154,11 +154,6 @@ export const toStuckJson = (sessionID: string, report: Awaited<ReturnType<typeof
   session: sessionID,
   report,
 })
-export const toMetaJson = (result: Awaited<ReturnType<typeof sessionMeta>>) => ({ meta: result.meta, warning: result.warning })
-export const toPromptsJson = (sessionID: string, prompts: string[]) => ({ session: sessionID, prompts })
-export const toReadsJson = (sessionID: string, reads: ReturnType<typeof readDigest>) => ({ session: sessionID, reads })
-export const toPsJson = (services: unknown[]) => ({ services })
-export const toLogsJson = (service: string | null, lines: unknown[]) => ({ service, lines })
 
 /** `doctor` exit rule: `up` and `trace` lines are informational only. */
 export const doctorFails = (lines: { name: string; ok: boolean }[]): boolean =>
@@ -396,12 +391,12 @@ export const run = async (argv: string[]): Promise<number> => {
         return 2
       }
       if (command === "ps") {
-        if (json) console.log(JSON.stringify(toPsJson([])))
+        if (json) console.log(JSON.stringify({ services: [] }))
         else console.log(`durum yok (${noStateNote(searchStart)})`)
         return 0
       }
       const service = positional ?? null
-      if (json) console.log(JSON.stringify(toLogsJson(service, [])))
+      if (json) console.log(JSON.stringify({ service, lines: [] }))
       else console.log(`log yok (${noStateNote(searchStart)})`)
       return 0
     }
@@ -457,7 +452,7 @@ export const run = async (argv: string[]): Promise<number> => {
       if (!json) {
         console.log(services.length > 0 ? services.map(formatPsLine).join("\n") : "durum yok")
       } else {
-        console.log(JSON.stringify(toPsJson(services.map(toPsServiceJson))))
+        console.log(JSON.stringify({ services: services.map(toPsServiceJson) }))
       }
       return 0
     }
@@ -498,7 +493,7 @@ export const run = async (argv: string[]): Promise<number> => {
           for (const row of rows) console.log(`[${row.service}|${row.stream}] ${row.line}`)
         }
       } else {
-        console.log(JSON.stringify(toLogsJson(positional ?? null, rows)))
+        console.log(JSON.stringify({ service: positional ?? null, lines: rows }))
       }
       return 0
     }
@@ -514,14 +509,14 @@ export const run = async (argv: string[]): Promise<number> => {
     const result = await sessionMeta({ dbPath, sessionID: sid })
     if (result.warning) warn(`warn: ${result.warning}`)
     if (!result.meta) return 1
-    console.log(json ? JSON.stringify(toMetaJson(result)) : formatMeta(result.meta))
+    console.log(json ? JSON.stringify({ meta: result.meta, warning: result.warning }) : formatMeta(result.meta))
     return 0
   }
 
   if (command === "prompts") {
     const prompts = await sessionPrompts({ dbPath, sessionID: sid })
     if (json) {
-      console.log(JSON.stringify(toPromptsJson(sid, prompts)))
+      console.log(JSON.stringify({ session: sid, prompts }))
     } else if (prompts.length > 0) {
       prompts.forEach((p, i) => console.log(`[${i + 1}] ${p}`))
     } else {
@@ -574,7 +569,7 @@ export const run = async (argv: string[]): Promise<number> => {
   if (command === "reads") {
     const stats = readDigest(merged)
     if (json) {
-      console.log(JSON.stringify(toReadsJson(sid, stats)))
+      console.log(JSON.stringify({ session: sid, reads: stats }))
     } else {
       const text = formatReads(stats)
       console.log(text.length > 0 ? text : "okuma kaydı yok")

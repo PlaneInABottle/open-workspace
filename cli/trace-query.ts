@@ -16,6 +16,9 @@ const HEX32 = /^[0-9a-f]{32}$/
 const HEX16 = /^[0-9a-f]{16}$/
 const NANO = /^[0-9]+$/
 
+/** Loose hex run for CLI id/prefix validation (shared by trace + timeline). */
+export const HEX_ID = /^[0-9a-fA-F]+$/
+
 const isStringRecord = (value: unknown): value is Record<string, string> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false
   return Object.values(value).every((entry) => typeof entry === "string")

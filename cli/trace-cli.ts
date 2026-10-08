@@ -9,16 +9,18 @@ import { connect } from "node:net"
 import { join } from "node:path"
 
 import type { TraceSpan } from "./trace-otlp"
-import { readSpansFile, tracePaths } from "./trace-store"
+import { readSpansFile, TRACE_DEFAULT_PORT, tracePaths } from "./trace-store"
 import {
   buildTraceTree,
   formatAgo,
   formatDur,
   groupSpansByTrace,
+  HEX_ID,
   selectValidSpans,
   summarizeTrace,
   type TraceSummary,
 } from "./trace-query"
+import { parseAmountUnit } from "./join"
 import { parseUpFile } from "./up-schema"
 import { noStateNote } from "./up-state"
 
@@ -30,15 +32,10 @@ export const TRACE_WAIT_MAX_MS = 300_000
 
 /** `--wait` durations: `<amount>s|m|h|d|w` within (0, 5m]. Null when unusable. */
 export const parseWaitDuration = (raw: string): number | null => {
-  const match = /^(\d+)(s|m|h|d|w)$/.exec(raw.trim())
-  if (!match) return null
-  const unitMs = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[match[2] as "s" | "m" | "h" | "d" | "w"]
-  const ms = Number(match[1]) * unitMs
-  if (!Number.isSafeInteger(ms) || ms <= 0 || ms > TRACE_WAIT_MAX_MS) return null
+  const ms = parseAmountUnit(raw, /^(\d+)(s|m|h|d|w)$/, { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 })
+  if (ms === null || !Number.isSafeInteger(ms) || ms <= 0 || ms > TRACE_WAIT_MAX_MS) return null
   return ms
 }
-
-const HEX_ID = /^[0-9a-fA-F]+$/
 
 export type TraceRunOptions = {
   rootDir: string
@@ -65,6 +62,24 @@ export type TraceRunOptions = {
 export type TraceRunResult = { code: number; stdout: string; stderr: string }
 
 const quietJson = (): string => JSON.stringify({ traces: [] })
+
+/** Newest activity first, traceId ascending as the deterministic tiebreak. */
+const byRecency = (a: TraceSummary, b: TraceSummary): number =>
+  a.lastEnd > b.lastEnd ? -1 : a.lastEnd < b.lastEnd ? 1 : a.traceId < b.traceId ? -1 : 1
+
+/** Programmatic-number guard core: non-number or out-of-rule input yields the
+ * caller's fallback (0 / undefined / list default — each preserved exactly).
+ * Integer sites stay `isInteger`; `--wait` stays finite-only so fractional
+ * milliseconds behave exactly as before. Unbounded sites pass +Infinity. */
+const clampNumber = <F extends number | undefined>(
+  value: unknown,
+  rule: { integer: boolean; min: number; max: number },
+  fallback: F,
+): number | F => {
+  if (typeof value !== "number") return fallback
+  if (rule.integer ? !Number.isInteger(value) : !Number.isFinite(value)) return fallback
+  return Math.min(Math.max(value, rule.min), rule.max)
+}
 
 const toListJson = (summaries: TraceSummary[]): string =>
   JSON.stringify({
@@ -169,16 +184,11 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   // renders current state with an honest stderr line (exit 0 — waiting is
   // not failure). The since cutoff freezes at entry so aging traces cannot
   // spuriously trip the "new arrival" signature mid-wait.
-  const waitMs =
-    typeof options.waitMs === "number" && Number.isFinite(options.waitMs) && options.waitMs > 0
-      ? Math.min(options.waitMs, TRACE_WAIT_MAX_MS)
-      : 0
+  const waitMs = clampNumber(options.waitMs, { integer: false, min: 0, max: TRACE_WAIT_MAX_MS }, 0)
   const sinceCutoff = options.sinceMs != null ? Date.now() - options.sinceMs : null
   const matchingSignature = (rows: TraceSpan[]): string => {
     const summaries = [...groupSpansByTrace(rows)].map(([traceId, spans]) => summarizeTrace(traceId, spans))
-    summaries.sort((a, b) =>
-      a.lastEnd > b.lastEnd ? -1 : a.lastEnd < b.lastEnd ? 1 : a.traceId < b.traceId ? -1 : 1,
-    )
+    summaries.sort(byRecency)
     let relevant = summaries
     if (idFilter !== null) {
       relevant = relevant.filter((summary) => summary.traceId.startsWith(idFilter as string))
@@ -231,9 +241,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   const groups = groupSpansByTrace(stored)
   const now = Date.now()
   const all = [...groups].map(([traceId, spans]) => summarizeTrace(traceId, spans))
-  all.sort((a, b) =>
-    a.lastEnd > b.lastEnd ? -1 : a.lastEnd < b.lastEnd ? 1 : a.traceId < b.traceId ? -1 : 1,
-  )
+  all.sort(byRecency)
 
   if (idFilter !== null) {
     const matches = all.filter((summary) => summary.traceId.startsWith(idFilter as string))
@@ -270,8 +278,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   // traces. Error traces always render regardless. Exact-ID tree lookups
   // above never filter. A lone span whose parent is set-but-absent
   // (dangling continuity) still renders — only true roots hide.
-  const minSpans =
-    typeof options.minSpans === "number" && Number.isInteger(options.minSpans) ? Math.max(1, options.minSpans) : undefined
+  const minSpans = clampNumber(options.minSpans, { integer: true, min: 1, max: Number.POSITIVE_INFINITY }, undefined)
   if (minSpans === undefined) {
     listed = listed.filter((summary) => {
       if (summary.spans !== 1 || summary.status === "error") return true
@@ -284,7 +291,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   // Defense-in-depth for programmatic callers (CLI parsing already bounds
   // --tail to 1-5000): a non-integer tail falls back to the default instead
   // of slicing to an empty page.
-  const tail = typeof options.tail === "number" && Number.isInteger(options.tail) ? Math.max(1, options.tail) : TRACE_LIST_DEFAULT_TAIL
+  const tail = clampNumber(options.tail, { integer: true, min: 1, max: Number.POSITIVE_INFINITY }, TRACE_LIST_DEFAULT_TAIL)
   const page = listed.slice(0, tail)
   if (json) return done(toListJson(page))
   if (page.length === 0) return done("izleme yok (henüz span gelmedi)")
@@ -331,7 +338,7 @@ export const isTracePortListening = (port: number): Promise<boolean> =>
 /** Informational only: excluded from the `ow doctor` exit rule like `up`. */
 export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorCheck> => {
   let enabled = false
-  let port = 4319
+  let port = TRACE_DEFAULT_PORT
   let services: { cmd?: string | string[]; env?: Readonly<Record<string, string>> }[] = []
   try {
     const parsed = parseUpFile(readFileSync(join(rootDir, "ow.yaml"), "utf8"))

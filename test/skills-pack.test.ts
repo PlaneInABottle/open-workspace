@@ -285,3 +285,17 @@ test('stale→refresh walkthrough: byte-compare reports per-skill current/update
   assert.equal((await stat(dest(currentSkill))).mtimeMs, currentMtime, 'current snapshot not rewritten (no-op)');
   assert.equal(await readFile(personalFile, 'utf8'), personalBefore, 'personal files stay byte-identical');
 });
+
+test('skill size cap is one number in consumer runtime and pack builder', async t => {
+  const capOf = async (file: string): Promise<number> => {
+    const text = await readFile(join(repoRoot, file), 'utf8');
+    const match = /maxSkillBytes\s*=\s*(\d+)\s*\*\s*1024/.exec(text);
+    assert.ok(match, `${file} declares maxSkillBytes as N * 1024`);
+    return Number(match[1]) * 1024;
+  };
+  assert.equal(
+    await capOf('src/consumer-skills.ts'),
+    await capOf('scripts/build-skill-packs.mjs'),
+    'consumer cap equals builder cap (single source of truth by test)',
+  );
+});

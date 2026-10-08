@@ -12,6 +12,11 @@ import { lstat, open, readFile, readdir, rename, stat, unlink, writeFile } from 
 import { join } from "node:path"
 
 import { formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
+import { OTEL_ENDPOINT, TRACE_DEFAULT_PORT } from "./trace-store"
+
+/** Shared OTLP env body; java/python differ by one leading fragment only. */
+const OTEL_BASE_ENV = (service: string): string =>
+  `OTEL_SERVICE_NAME: ${service}, OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT}", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none`
 
 const FILE_CAP = 64 * 1024
 const MAX_PY_FILES = 200
@@ -405,10 +410,9 @@ export const detectRepo = async (rootDir: string): Promise<InitDetection> => {
 }
 
 const JAVA_OTEL_ENV = (service: string): string =>
-  `{JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar", OTEL_SERVICE_NAME: ${service}, OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}`
+  `{JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar", ${OTEL_BASE_ENV(service)}}`
 
-const PYTHON_OTEL_ENV = (service: string): string =>
-  `{OTEL_SERVICE_NAME: ${service}, OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}`
+const PYTHON_OTEL_ENV = (service: string): string => `{${OTEL_BASE_ENV(service)}}`
 
 const tracedCmd = (service: InitService): string => {
   if (service.kind === "python") {
@@ -425,7 +429,7 @@ export const renderInitYaml = (detection: InitDetection, opts: { tracing: boolea
     lines.push("# ow init notları (dosyaya yazılmayan zayıf sinyaller):")
     for (const note of detection.skipped) lines.push(`# - ${note}`)
   }
-  if (opts.tracing) lines.push("trace:\n  port: 4319")
+  if (opts.tracing) lines.push(`trace:\n  port: ${TRACE_DEFAULT_PORT}`)
   lines.push("services:")
   for (const service of detection.services) {
     lines.push(`  ${service.name}:`)

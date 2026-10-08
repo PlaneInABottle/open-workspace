@@ -17,7 +17,7 @@
 import { joinSession, latestSession, type EnrichedRecord } from "./join"
 import { signature } from "./signature"
 import { readSpansFile, tracePaths } from "./trace-store"
-import { buildTraceTree, formatDur, groupSpansByTrace } from "./trace-query"
+import { buildTraceTree, formatDur, groupSpansByTrace, HEX_ID } from "./trace-query"
 import type { TraceSpan } from "./trace-otlp"
 import { truncateLogLine } from "./up-logs"
 
@@ -26,8 +26,6 @@ export const TIMELINE_FALLBACK_MS = 10_000
 export const TIMELINE_DEFAULT_TAIL = 100
 export const TIMELINE_MAX_TAIL = 5000
 const ID_SCAN_MAX_CHARS = 20_000
-
-const HEX_ID = /^[0-9a-fA-F]+$/
 
 /** Candidate trace IDs from sidecar row text (command + intent + output
  * excerpts): W3C `traceparent` middle field plus bare 32-hex. Lowercased

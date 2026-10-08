@@ -51,6 +51,7 @@ describe("cli routing", () => {
     expect(parseArgs(["frobnicate"]).error).not.toBeNull()
     expect(parseArgs(["show", "--bogus"]).error).toContain("bilinmeyen seçenek")
     expect(parseArgs(["show", "--since", "bogus"]).error).toContain("geçersiz --since")
+    expect(parseArgs(["show", "--since", "30s"]).error).toContain("geçersiz --since")
     expect(parseArgs(["show", "--bytes", "bogus"]).error).toContain("geçersiz --bytes")
     expect(parseArgs([]).error).toContain("komut bekleniyor")
   })
