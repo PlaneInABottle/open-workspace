@@ -19,6 +19,7 @@ import {
   type TraceSummary,
 } from "./trace-query"
 import { parseUpFile } from "./up-schema"
+import { noStateNote } from "./up-state"
 
 export const TRACE_LIST_DEFAULT_TAIL = 20
 
@@ -50,6 +51,9 @@ export type TraceRunOptions = {
    * rendering once. Programmatic milliseconds; the CLI bounds `--wait` to
    * (0, 5m] and clamps anything else here. */
   waitMs?: number
+  /** Directory the upward `.ow/` search started from (defaults to rootDir).
+   * Names the searched reality in the honest-empty message only. */
+  searchStart?: string
 }
 
 export type TraceRunResult = { code: number; stdout: string; stderr: string }
@@ -117,7 +121,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   }
 
   if (!existsSync(join(options.rootDir, ".ow"))) {
-    return ok(json ? quietJson() : "izleme yok (.ow/ bulunamadı)")
+    return ok(json ? quietJson() : `izleme yok (${noStateNote(options.searchStart ?? options.rootDir)})`)
   }
 
   try {

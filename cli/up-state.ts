@@ -5,7 +5,7 @@
  * `shell-observer-core.ts` privateDirectory/replaceLog shape). */
 
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 
 export const UP_STATE_VERSION = 1
 
@@ -40,6 +40,39 @@ export const upPaths = (rootDir: string) => ({
   lockFile: join(rootDir, ".ow", "supervisor.lock"),
   logsDir: join(rootDir, ".ow", "logs"),
 })
+
+/** Upward-walk budget: filesystem root or 32 levels, whichever first. */
+const WORKSPACE_WALK_MAX_LEVELS = 32
+
+/** Resolve the enclosing workspace for READING commands: walk up from
+ * `startDir`, nearest real `.ow/` directory wins (nested workspaces resolve
+ * to the inner one, git-style). A `.ow` that is a file, a symlink, or
+ * otherwise not a real directory is skipped, never followed. Unreadable
+ * levels are skipped, never fatal. Falls back to `startDir` when nothing
+ * is found — callers keep their honest-empty messages, now naming the
+ * searched start. Creation paths (`ow up`) must NOT use this. */
+export const resolveWorkspaceRoot = async (startDir: string): Promise<string> => {
+  let dir = resolve(startDir)
+  const start = dir
+  for (let level = 0; level <= WORKSPACE_WALK_MAX_LEVELS; level += 1) {
+    try {
+      const info = await lstat(join(dir, ".ow"))
+      if (info.isDirectory() && !info.isSymbolicLink()) return dir
+    } catch {
+      // missing or unreadable here: keep walking outward
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return start
+    dir = parent
+  }
+  return start
+}
+
+/** Honest-empty suffix naming the searched reality: the start dir plus one
+ * directive clause. Paths are operator-known (same as `dizin:` lines);
+ * never env values or span/log bodies. */
+export const noStateNote = (startDir: string): string =>
+  `.ow/ bulunamadı — aranan: ${startDir}; workspace kökünden çalıştırın ya da --file verin`
 
 /** `0700` real directory, symlink-rejected (observer-core discipline). */
 export const ensureUpStateDir = async (stateDir: string): Promise<void> => {

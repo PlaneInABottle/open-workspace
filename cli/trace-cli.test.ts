@@ -399,12 +399,12 @@ describe("trace tree view", () => {
 })
 
 describe("trace quiet paths", () => {
-  test("no .ow → honest empty, exit 0", async () => {
+  test("no .ow → honest empty naming the searched start, exit 0", async () => {
     const root = await tempRoot()
     try {
       const human = await runTrace(opts(root))
       expect(human.code).toBe(0)
-      expect(human.stdout).toBe("izleme yok (.ow/ bulunamadı)")
+      expect(human.stdout).toBe(`izleme yok (.ow/ bulunamadı — aranan: ${root}; workspace kökünden çalıştırın ya da --file verin)`)
       const asJson = await runTrace(opts(root, { json: true }))
       expect(asJson.code).toBe(0)
       expect(asJson.stdout).toBe('{"traces":[]}')

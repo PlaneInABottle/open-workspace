@@ -207,7 +207,10 @@ export const run = async (argv: string[]): Promise<number> => {
   }
 
   if (command === "doctor") {
-    const lines = await doctor({ logPath, dbPath, upRoot: upRootDir(flags) })
+    const { resolveWorkspaceRoot } = await import("./up-state")
+    const upRoot =
+      flag(flags, "--file") !== undefined ? upRootDir(flags) : await resolveWorkspaceRoot(process.cwd())
+    const lines = await doctor({ logPath, dbPath, upRoot })
     console.log(json ? JSON.stringify({ checks: lines }) : formatDoctor(lines))
     return doctorFails(lines) ? 1 : 0
   }
@@ -228,8 +231,21 @@ export const run = async (argv: string[]): Promise<number> => {
   }
 
   if (command === "up" || command === "down" || command === "ps" || command === "logs" || command === "trace") {
-    const rootDir = upRootDir(flags)
+    // Readers walk upward to the enclosing workspace; `up` (which CREATES
+    // state) and any explicit --file stay exactly where pointed. `--check`
+    // rides the `up` (creation-anchored) path: it never walks.
+    const explicitFile = flag(flags, "--file") !== undefined
+    let rootDir = upRootDir(flags)
+    if (command !== "up" && !explicitFile) {
+      const { resolveWorkspaceRoot } = await import("./up-state")
+      rootDir = await resolveWorkspaceRoot(process.cwd())
+    }
     const stateDir = upStateDir(rootDir)
+    const searchStart = process.cwd()
+    const { noStateNote } = await import("./up-state")
+    // Config reads follow the same rule: explicit --file or `up` read the
+    // pointed/cwd file; readers without --file read the walked root's file.
+    const yamlForRead = explicitFile || command === "up" ? upFilePath(flags) : join(rootDir, "ow.yaml")
     if (command === "trace") {
       const { runTrace } = await import("./trace-cli")
       const tailFlag = flag(flags, "--tail")
@@ -237,13 +253,14 @@ export const run = async (argv: string[]): Promise<number> => {
       const waitFlag = flag(flags, "--wait")
       const result = await runTrace({
         rootDir,
-        owYamlPath: upFilePath(flags),
+        owYamlPath: yamlForRead,
         traceId: positional,
         tail: tailFlag === undefined ? undefined : Number(tailFlag),
         sinceMs: parseSince(flag(flags, "--since")),
         service: serviceFlag,
         json,
         waitMs: waitFlag === undefined ? undefined : (parseWaitDuration(waitFlag) ?? undefined),
+        searchStart,
       })
       if (result.stdout.length > 0) console.log(result.stdout)
       if (result.stderr.length > 0) console.error(result.stderr)
@@ -315,17 +332,17 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     if (!existsSync(stateDir)) {
       if (command === "down") {
-        console.error("ow: durdurulacak süreç yok (.ow/ bulunamadı)")
+        console.error(`ow: durdurulacak süreç yok (${noStateNote(searchStart)})`)
         return 2
       }
       if (command === "ps") {
         if (json) console.log(JSON.stringify(toPsJson([])))
-        else console.log("durum yok (.ow/ bulunamadı)")
+        else console.log(`durum yok (${noStateNote(searchStart)})`)
         return 0
       }
       const service = positional ?? null
       if (json) console.log(JSON.stringify(toLogsJson(service, [])))
-      else console.log("log yok (.ow/ bulunamadı)")
+      else console.log(`log yok (${noStateNote(searchStart)})`)
       return 0
     }
     if (command === "down") {
@@ -396,7 +413,7 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       let names: string[] = []
       try {
-        names = parseUpFile(readFileSync(upFilePath(flags), "utf8")).services.map((svc) => svc.name)
+        names = parseUpFile(readFileSync(yamlForRead, "utf8")).services.map((svc) => svc.name)
       } catch {
         const { readSupervisorState } = await import("./up-state")
         const state = await readSupervisorState(upPaths(rootDir).supervisorFile)

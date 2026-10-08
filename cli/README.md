@@ -133,6 +133,9 @@ State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.
 `ow up` also ensures the repo-root `.gitignore` covers `.ow/`
 (create-or-append, warn-only) so tooling state never gets committed.
+Readers (`ps`/`logs`/`trace`/`down`/`doctor`) resolve the root upward to the
+nearest real `.ow/` (explicit `--file` always wins); writers stay put — `ow up`
+creates state in the cwd only, never in a parent repo.
 Detached runs also append startup warnings/errors to `supervisor.out` —
 bounded to a handful of lines (per-line service output streams to the
 terminal in foreground, and always persists to per-service JSONL).
