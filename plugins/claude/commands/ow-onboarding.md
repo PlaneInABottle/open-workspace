@@ -20,7 +20,7 @@ When a tool call fails before the service answers, diagnose the child session wi
    - `loaded`: the entry is enabled. Run the free read `workspace_list`; success means the connection is healthy and any later failure is that operation's own denial, not the connection.
    - `disabled`: the client lists the entry as disabled. Enable it in the client's own settings and reload, then re-run `workspace_list`. No service call can re-enable it.
    - `missing`: no entry exists. Re-paste the setup prompt for that client; never hand-write server commands and never paste tokens or `connection.json` contents.
-3. Skills catalog: three live `skill/<name>` prompts served by the bridge are authoritative; installed `ow-*` copies are snapshots (refresh with the update skill's byte-compare). A prompt missing from the catalog means reload the client or restart the bridge; the served text, not the snapshot, decides.
+3. Skills catalog: six live `skill/<name>` prompts served by the bridge are authoritative; installed `ow-*` copies are snapshots (refresh with the update skill's byte-compare). A prompt missing from the catalog means reload the client or restart the bridge; the served text, not the snapshot, decides.
 
 ## Discovery
 

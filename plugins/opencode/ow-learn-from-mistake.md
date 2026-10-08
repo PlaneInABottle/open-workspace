@@ -13,6 +13,20 @@ Use only when the user explicitly invokes this skill. It never runs automaticall
 2. When available, review relevant run evidence for the affected workspace: the `environment_verify` receipt (cite its `runId`) plus the dashboard activity timeline. These read-only summaries help identify the triggering operation and outcome; they do not authorize other actions. Never mine your shell history for them.
 3. Calibrate every candidate with: **Would this help someone who never saw this failure, on a different task?** If not, skip it. Record reusable patterns, not one-off flukes or incident narratives.
 
+## ow evidence (alongside receipts)
+
+When the repo is `ow`-observed, add this read-only source next to the receipt
+and timeline in step 2 above:
+
+1. `ow sessions --dir <project-root>` to scope which sessions actually worked here.
+2. `ow stuck --tree` for repeats/overlaps/slows (retry counts, overlap depth).
+3. `ow timeline` for action→effect joins across agent rows and spans.
+4. Link confidence is cited, never upgraded: `kesin` means the ID matched ≥1
+   sidecar row exactly; `tahmini` means nearest-row proximity within ±10s.
+
+Findings from `ow` evidence obey the same 5-rule cap and citation rule below
+(session IDs/timestamps/test names, never content).
+
 ## Write durable guidance directly
 
 1. Treat the repository/project currently being worked in as the active project; sibling roots are separate. If its root is unclear, ask before editing. Keep all skill and instruction edits inside it. Update its applicable skill, or create `skills/<skill-name>/SKILL.md` using the existing layout and frontmatter conventions. Never edit a shared skill outside the active project without explicit user authorization; if that is the only suitable skill, refuse that edit and report the boundary.

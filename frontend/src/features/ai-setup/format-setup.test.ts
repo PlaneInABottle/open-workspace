@@ -155,6 +155,9 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('`skill/learn-from-mistake`');
     expect(material!.copyText).not.toContain('`skill/new-task`');
     expect(material!.copyText).toContain('`skill/onboarding`');
+    expect(material!.copyText).toContain('`skill/ow`');
+    expect(material!.copyText).toContain('`skill/setup-ow`');
+    expect(material!.copyText).toContain('`skill/setup-tracing`');
     expect(material!.copyText).toContain('`skill/update`');
     expect(material!.copyText).not.toContain('`skill/scaffold-local-tool`');
     expect(material!.copyText).toContain('fetch only what the task needs');
@@ -172,11 +175,14 @@ describe('formatSetupRequest', () => {
     expect(material!.copyText).toContain('install source is this checkout\u2019s `plugins/<client>/` packs');
     expect(material!.copyText).toContain('`bin/openworkspace.mjs`');
     expect(material!.copyText).toContain('`plugins/claude/commands/`');
-    expect(material!.copyText).toContain('Copy all three verbatim');
+    expect(material!.copyText).toContain('Copy all six verbatim');
     expect(material!.copyText).not.toContain('`ow-browser-qa`');
     expect(material!.copyText).toContain('`ow-learn-from-mistake`');
     expect(material!.copyText).not.toContain('`ow-new-task`');
     expect(material!.copyText).toContain('`ow-onboarding`');
+    expect(material!.copyText).toContain('`ow-ow`');
+    expect(material!.copyText).toContain('`ow-setup-ow`');
+    expect(material!.copyText).toContain('`ow-setup-tracing`');
     expect(material!.copyText).toContain('`ow-update`');
     expect(material!.copyText).not.toContain('`ow-scaffold-local-tool`');
     expect(material!.copyText).toContain('frontmatter already namespace-normalized');
