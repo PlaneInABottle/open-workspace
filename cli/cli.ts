@@ -23,7 +23,8 @@ import {
 } from "./join"
 import { doctor, formatDoctor } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
-import { formatUpWarnings, parseUpFile } from "./up-schema"
+import { parseWaitDuration } from "./trace-cli"
+import { formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
@@ -31,7 +32,7 @@ const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "rea
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm"])
 
 export type ParsedArgs = {
@@ -60,7 +61,7 @@ export const helpText = (): string =>
     "  down [--file] [--rm]          servisleri durdur (--rm durum dosyasını da siler)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
-  "  trace [iz] [--file] [--tail] [--since] [--service]  izlemeler; iz ile tek ağaç",
+  "  trace [iz] [--file] [--tail] [--since] [--service] [--wait]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
     "",
     "genel: --db <yol> --log <yol> --json --help",
     "  --since  pencere: 30m|3h|1d|1w (varsayılan 1d; sessions/show/stuck/reads)",
@@ -125,6 +126,9 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   if (typeof flags["--tail"] === "string") {
     const tail = Number(flags["--tail"])
     if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`geçersiz --tail: ${flags["--tail"]} (1-5000 bekleniyor)`)
+  }
+  if (typeof flags["--wait"] === "string" && parseWaitDuration(flags["--wait"]) === null) {
+    return fail(`geçersiz --wait: ${flags["--wait"]} (ör. 15s, en fazla 5m)`)
   }
   if (typeof flags["--grep"] === "string" && flags["--grep"].length > 256) {
     return fail("geçersiz --grep: en fazla 256 karakter")
@@ -230,6 +234,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runTrace } = await import("./trace-cli")
       const tailFlag = flag(flags, "--tail")
       const serviceFlag = flag(flags, "--service")
+      const waitFlag = flag(flags, "--wait")
       const result = await runTrace({
         rootDir,
         owYamlPath: upFilePath(flags),
@@ -238,6 +243,7 @@ export const run = async (argv: string[]): Promise<number> => {
         sinceMs: parseSince(flag(flags, "--since")),
         service: serviceFlag,
         json,
+        waitMs: waitFlag === undefined ? undefined : (parseWaitDuration(waitFlag) ?? undefined),
       })
       if (result.stdout.length > 0) console.log(result.stdout)
       if (result.stderr.length > 0) console.error(result.stderr)
@@ -261,12 +267,26 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       if (flags["--check"] === true) {
         for (const line of formatUpWarnings(parsed.warnings)) warn(line)
+        const missing = missingRequiredEnv(parsed.services)
+        if (missing.length > 0) {
+          for (const entry of missing) {
+            console.error(`ow: ${entry.service} gerekli ortam değişkenleri eksik: ${entry.vars.join(", ")}`)
+          }
+          return 2
+        }
         if (!json) {
           console.log(`ow.yaml geçerli: ${parsed.services.length} servis (${parsed.services.map((s) => s.name).join(", ")})`)
         } else {
           console.log(JSON.stringify({ file, services: parsed.services, warnings: parsed.warnings }))
         }
         return 0
+      }
+      const missing = missingRequiredEnv(parsed.services)
+      if (missing.length > 0) {
+        for (const entry of missing) {
+          console.error(`ow: ${entry.service} gerekli ortam değişkenleri eksik: ${entry.vars.join(", ")}`)
+        }
+        return 2
       }
       const { classifyLock, ensureUpStateDir, upPaths } = await import("./up-state")
       const paths = upPaths(rootDir)
