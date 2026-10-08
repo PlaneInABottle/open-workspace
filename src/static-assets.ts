@@ -123,13 +123,10 @@ function seaAssetBytes(key: string): Buffer {
   throw new DashboardBuildError();
 }
 
-async function loadSeaStaticAssets(): Promise<StaticAssets> {
-  // Inside the read-only blob the symlink/O_NOFOLLOW filesystem proofs are
-  // vacuous and unreproducible; the manifest hash allowlist and the HTML
-  // cross-check below remain the enforcement. Validation mirrors the
-  // filesystem loader exactly (same helpers, same rejection order).
+type AssetReader = (relativePath: string) => Promise<Buffer>;
+
+async function loadValidatedAssets(read: AssetReader): Promise<StaticAssets> {
   try {
-    const read = (relativePath: string) => Promise.resolve(seaAssetBytes(`web-dist/${relativePath}`));
     const manifestText = (await read('manifest.json')).toString('utf8');
     const manifest: unknown = JSON.parse(manifestText);
     if (!record(manifest) || !record(manifest['index.html'])) throw new DashboardBuildError();
@@ -187,6 +184,19 @@ async function loadSeaStaticAssets(): Promise<StaticAssets> {
   }
 }
 
+export async function loadSeaStaticAssets(
+  read: AssetReader = (relativePath: string) => Promise.resolve(seaAssetBytes(`web-dist/${relativePath}`)),
+): Promise<StaticAssets> {
+  // Inside the read-only blob the symlink/O_NOFOLLOW filesystem proofs are
+  // vacuous and unreproducible; the manifest hash allowlist and the HTML
+  // cross-check below remain the enforcement. This loader shares the single
+  // loadValidatedAssets validator with the filesystem loader, so a rule fix
+  // cannot diverge the shipped SEA binary's preflight. The reader defaults to
+  // the SEA blob and is injectable so tests can exercise this branch outside
+  // a SEA binary (node:sea has no blob to read there).
+  return loadValidatedAssets(read);
+}
+
 export async function loadStaticAssets(assetRoot?: string): Promise<StaticAssets> {
   // The SEA branch comes first: under a CJS bundle the default-root
   // evaluation below must never run inside SEA (import.meta.url is empty).
@@ -197,58 +207,7 @@ export async function loadStaticAssets(assetRoot?: string): Promise<StaticAssets
     const rootStat = await lstat(rootPath);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new DashboardBuildError();
     const root = await realpath(rootPath);
-    const manifestText = (await readRegularFile(root, 'manifest.json')).toString('utf8');
-    const manifest: unknown = JSON.parse(manifestText);
-    if (!record(manifest) || !record(manifest['index.html'])) throw new DashboardBuildError();
-
-    const htmlEntry = manifest['index.html'] as ManifestEntry;
-    if (!hashedAssetPath(htmlEntry.file) || !htmlEntry.file.endsWith('.js') || htmlEntry.isEntry !== true) throw new DashboardBuildError();
-
-    const keys = new Set(Object.keys(manifest));
-    const paths = new Set<string>();
-    let javascriptEntries = 0;
-    for (const [key, value] of Object.entries(manifest)) {
-      if (!record(value)) throw new DashboardBuildError();
-      const entry = value as ManifestEntry;
-      if (typeof entry.file !== 'string') throw new DashboardBuildError();
-      if (!hashedAssetPath(entry.file)) {
-        throw new DashboardBuildError();
-      } else {
-        paths.add(entry.file);
-        if (entry.isEntry === true && entry.file.endsWith('.js')) javascriptEntries++;
-      }
-      for (const keyReference of [...stringList(entry.imports), ...stringList(entry.dynamicImports)]) {
-        if (!keys.has(keyReference)) throw new DashboardBuildError();
-      }
-      for (const fileReference of [...stringList(entry.css), ...stringList(entry.assets)]) {
-        if (!hashedAssetPath(fileReference)) throw new DashboardBuildError();
-        paths.add(fileReference);
-      }
-    }
-    if (javascriptEntries !== 1) throw new DashboardBuildError();
-
-    const indexHtml = await readRegularFile(root, 'index.html');
-    const html = indexHtml.toString('utf8');
-    if (!/<div\b[^>]*\bid=["']root["']/i.test(html)) throw new DashboardBuildError();
-
-    const files = new Map<string, StaticAsset>();
-    for (const path of paths) {
-      const contentType = mimeTypes[extname(path).toLowerCase()];
-      if (!contentType) throw new DashboardBuildError();
-      files.set(`/${path}`, { body: await readRegularFile(root, path), contentType });
-    }
-
-    const htmlPaths = referencedAssetPaths(html);
-    const entryScript = Object.entries(manifest).find(([, value]) =>
-      record(value) && value.isEntry === true && typeof value.file === 'string' && value.file.endsWith('.js'))?.[1] as ManifestEntry | undefined;
-    if (!entryScript || !htmlPaths.includes(`/` + entryScript.file)) throw new DashboardBuildError();
-    for (const path of htmlPaths) {
-      if (!path.startsWith('/assets/') || path.includes('?') || path.includes('#') || !files.has(path)) {
-        throw new DashboardBuildError();
-      }
-    }
-
-    return { indexHtml, files };
+    return loadValidatedAssets((relativePath) => readRegularFile(root, relativePath));
   } catch {
     throw new DashboardBuildError();
   }

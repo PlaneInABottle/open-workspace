@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createApp } from '../src/http.js';
-import { DashboardBuildError, loadStaticAssets } from '../src/static-assets.js';
+import { DashboardBuildError, loadSeaStaticAssets, loadStaticAssets } from '../src/static-assets.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
 
@@ -170,4 +170,51 @@ test('asset preflight rejects manifest traversal and inline HTML styling/scripts
   await buildFixture(dist);
   await writeFile(join(dist, 'index.html'), '<!doctype html><html><head><style>body{color:red}</style></head><body><div id="root"></div><script>window.injected=true</script></body></html>');
   await assert.rejects(loadStaticAssets(dist), DashboardBuildError);
+});
+
+test('SEA asset preflight accepts a valid manifest through an injected reader', async () => {
+  const files = new Map<string, Buffer>([
+    ['index.html', Buffer.from(`<!doctype html><html><head><link rel="stylesheet" href="/${cssPath}"><script type="module" src="/${jsPath}"></script></head><body><div id="root"></div></body></html>`, 'utf8')],
+    ['manifest.json', Buffer.from(JSON.stringify({
+      'index.html': { file: jsPath, src: 'index.html', isEntry: true, css: [cssPath] },
+    }), 'utf8')],
+    [jsPath, Buffer.from('document.body.dataset.ready="yes";', 'utf8')],
+    [cssPath, Buffer.from('body{color:#222}', 'utf8')],
+  ]);
+  const readSea = (relativePath: string) => {
+    const body = files.get(relativePath);
+    if (!body) throw new Error(`missing SEA asset: ${relativePath}`);
+    return Promise.resolve(body);
+  };
+
+  const assets = await loadSeaStaticAssets(readSea);
+  assert.ok(assets.indexHtml.toString('utf8').includes('id="root"'));
+  assert.equal(assets.files.get(`/${jsPath}`)?.contentType, 'text/javascript; charset=utf-8');
+  assert.equal(assets.files.get(`/${cssPath}`)?.contentType, 'text/css; charset=utf-8');
+});
+
+test('SEA asset preflight rejects invalid hashes and missing bytes through an injected reader', async () => {
+  const files = new Map<string, Buffer>([
+    ['index.html', Buffer.from(`<!doctype html><html><head><script type="module" src="/${jsPath}"></script></head><body><div id="root"></div></body></html>`, 'utf8')],
+    ['manifest.json', Buffer.from(JSON.stringify({
+      'index.html': { file: jsPath, src: 'index.html', isEntry: true },
+    }), 'utf8')],
+    [jsPath, Buffer.from('document.body.dataset.ready="yes";', 'utf8')],
+  ]);
+  const readSea = (relativePath: string) => {
+    const body = files.get(relativePath);
+    if (!body) throw new Error(`missing SEA asset: ${relativePath}`);
+    return Promise.resolve(body);
+  };
+
+  files.set('manifest.json', Buffer.from(JSON.stringify({
+    'index.html': { file: 'assets/index-short12.js', src: 'index.html', isEntry: true },
+  }), 'utf8'));
+  await assert.rejects(loadSeaStaticAssets(readSea), DashboardBuildError);
+
+  files.set('manifest.json', Buffer.from(JSON.stringify({
+    'index.html': { file: jsPath, src: 'index.html', isEntry: true },
+  }), 'utf8'));
+  files.delete(jsPath);
+  await assert.rejects(loadSeaStaticAssets(readSea), DashboardBuildError);
 });
