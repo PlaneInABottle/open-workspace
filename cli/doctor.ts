@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
 import { classifyLock, readSupervisorState, upPaths } from "./up-state"
+import { checkTraceDoctor } from "./trace-cli"
 
 const DEFAULT_LOG_PATH = join(homedir(), ".local", "share", "opencode-shell-log", "shell-events.jsonl")
 const DEFAULT_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db")
@@ -56,7 +57,7 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
     lines.push({ name: "db", ok: false, detail: `açılamıyor: ${String(error).slice(0, 120)}` })
   }
   // Informational only: never feeds the `ow doctor` exit rule (cli.ts filters
-  // `up` out). ok:true solely for a lock-verified live supervisor.
+  // `up` and `trace` out). ok:true solely for a lock-verified live supervisor.
   try {
     const paths = upPaths(options.upRoot ?? process.cwd())
     const status = await classifyLock(paths.lockFile)
@@ -79,6 +80,12 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
   } catch (error) {
     lines.push({ name: "up", ok: false, detail: `okunamıyor: ${String(error).slice(0, 80)}` })
   }
+  try {
+    const check = await checkTraceDoctor(options.upRoot ?? process.cwd())
+    lines.push({ name: "trace", ok: check.ok, detail: check.detail })
+  } catch (error) {
+    lines.push({ name: "trace", ok: false, detail: `okunamıyor: ${String(error).slice(0, 80)}` })
+  }
   return lines
 }
 
@@ -88,5 +95,5 @@ export const formatDoctor = (lines: DoctorLine[]): string =>
 if (import.meta.main) {
   const results = await doctor()
   console.log(formatDoctor(results))
-  if (results.filter((l) => l.name !== "up").some((l) => !l.ok)) process.exit(1)
+  if (results.filter((l) => l.name !== "up" && l.name !== "trace").some((l) => !l.ok)) process.exit(1)
 }

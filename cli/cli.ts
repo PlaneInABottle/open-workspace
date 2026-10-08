@@ -27,11 +27,11 @@ import { formatUpWarnings, parseUpFile } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs", "trace"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm"])
 
 export type ParsedArgs = {
@@ -60,10 +60,11 @@ export const helpText = (): string =>
     "  down [--file] [--rm]          servisleri durdur (--rm durum dosyasını da siler)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
+  "  trace [iz] [--file] [--tail] [--since] [--service]  izlemeler; iz ile tek ağaç",
     "",
     "genel: --db <yol> --log <yol> --json --help",
     "  --since  pencere: 30m|3h|1d|1w (varsayılan 1d; sessions/show/stuck/reads)",
-    "  --json  makine çıktısı (İngilizce anahtarlar): show/stuck/meta/sessions/reads/prompts/ps/logs/down",
+    "  --json  makine çıktısı (İngilizce anahtarlar): show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace",
     "çıkış: 0 ok, 1 yapısal hata, 2 kullanım hatası",
     "",
     "örnek: ow show <oturum> --tree --since 1d",
@@ -113,7 +114,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     return fail(`beklenmeyen argüman: ${arg}`)
   }
   if (flags["--help"]) return { command, sessionID, flags, error: null }
-  if (!command) return fail("komut bekleniyor: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs (--help)")
+  if (!command) return fail("komut bekleniyor: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
   if (typeof flags["--since"] === "string" && since === null) return fail(`geçersiz --since: ${flags["--since"]} (30m|3h|1d|1w)`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
@@ -148,6 +149,10 @@ export const toPromptsJson = (sessionID: string, prompts: string[]) => ({ sessio
 export const toReadsJson = (sessionID: string, reads: ReturnType<typeof readDigest>) => ({ session: sessionID, reads })
 export const toPsJson = (services: unknown[]) => ({ services })
 export const toLogsJson = (service: string | null, lines: unknown[]) => ({ service, lines })
+
+/** `doctor` exit rule: `up` and `trace` lines are informational only. */
+export const doctorFails = (lines: { name: string; ok: boolean }[]): boolean =>
+  lines.filter((l) => l.name !== "up" && l.name !== "trace").some((l) => !l.ok)
 
 /** Supervisor root: --file dizini ya da cwd; state/logs <root>/.ow altında. */
 export const upRootDir = (flags: Record<string, string | boolean>): string => {
@@ -200,7 +205,7 @@ export const run = async (argv: string[]): Promise<number> => {
   if (command === "doctor") {
     const lines = await doctor({ logPath, dbPath, upRoot: upRootDir(flags) })
     console.log(json ? JSON.stringify({ checks: lines }) : formatDoctor(lines))
-    return lines.filter((l) => l.name !== "up").some((l) => !l.ok) ? 1 : 0
+    return doctorFails(lines) ? 1 : 0
   }
 
   if (command === "sessions") {
@@ -218,9 +223,26 @@ export const run = async (argv: string[]): Promise<number> => {
     return 0
   }
 
-  if (command === "up" || command === "down" || command === "ps" || command === "logs") {
+  if (command === "up" || command === "down" || command === "ps" || command === "logs" || command === "trace") {
     const rootDir = upRootDir(flags)
     const stateDir = upStateDir(rootDir)
+    if (command === "trace") {
+      const { runTrace } = await import("./trace-cli")
+      const tailFlag = flag(flags, "--tail")
+      const serviceFlag = flag(flags, "--service")
+      const result = await runTrace({
+        rootDir,
+        owYamlPath: upFilePath(flags),
+        traceId: positional,
+        tail: tailFlag === undefined ? undefined : Number(tailFlag),
+        sinceMs: parseSince(flag(flags, "--since")),
+        service: serviceFlag,
+        json,
+      })
+      if (result.stdout.length > 0) console.log(result.stdout)
+      if (result.stderr.length > 0) console.error(result.stderr)
+      return result.code
+    }
     if (command === "up") {
       const file = upFilePath(flags)
       let text: string
