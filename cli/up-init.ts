@@ -178,6 +178,55 @@ const requiredFromPython = async (rootDir: string): Promise<string[]> => {
   return names
 }
 
+/** Strip line comments and C-style block comments before the Spring-marker
+ * test, so a comment like `// TODO: migrate to spring-boot later` never
+ * emits `bootRun`. String literals are KEPT verbatim: the real marker lives
+ * inside a quoted plugin id (`id 'org.springframework.boot'`), so stripping
+ * literals would erase the strong signal itself. Comment markers inside
+ * strings are not treated as comments.
+ * (escapes: backslash inside a literal quotes the next char; Groovy doubled
+ * quotes are not honored — a rare false comment inside one only weakens a
+ * marker test toward checklist-only, never invents a command.) */
+const stripBuildComments = (text: string): string => {
+  let out = ""
+  let i = 0
+  let quote: string | null = null
+  while (i < text.length) {
+    const ch = text[i]
+    const next = text[i + 1]
+    if (quote) {
+      out += ch
+      if (ch === "\\") {
+        if (next !== undefined) out += next
+        i += 2
+        continue
+      }
+      if (ch === quote) quote = null
+      i += 1
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      out += ch
+      i += 1
+      continue
+    }
+    if (ch === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1
+      continue
+    }
+    if (ch === "/" && next === "*") {
+      i += 2
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1
+      i += 2
+      continue
+    }
+    out += ch
+    i += 1
+  }
+  return out
+}
+
 const detectJava = async (
   rootDir: string,
   entries: string[],
@@ -189,7 +238,7 @@ const detectJava = async (
   if (buildFile === undefined) return null
   if (gradle !== undefined && entries.includes("pom.xml")) notes.push("pom.xml atlandı (build.gradle kullanıldı)")
   const buildText = (await readCapped(join(rootDir, buildFile))) ?? ""
-  const spring = SPRING_MARKER.test(buildText)
+  const spring = SPRING_MARKER.test(stripBuildComments(buildText))
   const isGradle = buildFile.startsWith("build.gradle")
   const wrapper = isGradle ? "gradlew" : "mvnw"
   const wrapperCmd = `./${wrapper}`
@@ -297,15 +346,24 @@ const detectNode = async (
     notes.push("package.json bulundu ama çalıştırma scripti (dev/start) yok — servis eklenmedi")
     return null
   }
+  // Vite ports attach ONLY to vite-driven scripts: an unrelated `vite.config.*`
+  // next to an `echo` dev script must not harvest its port. Mismatch is a
+  // checklist note, not silence.
+  const pickedBody = String(scripts[picked])
+  const viteConfigs = entries.filter((entry) => /^vite\.config\.(js|ts|mjs|cjs|mts|cts)$/.test(entry)).sort()
   let port: number | undefined
-  for (const name of entries.filter((entry) => /^vite\.config\.(js|ts|mjs|cjs|mts|cts)$/.test(entry)).sort()) {
-    const vite = (await readCapped(join(rootDir, name))) ?? ""
-    const block = VITE_SERVER_BLOCK.exec(vite)?.[1]
-    const candidate = validPort(block === undefined ? null : VITE_PORT.exec(block)?.[1])
-    if (candidate !== undefined) {
-      port = candidate
-      break
+  if (pickedBody.includes("vite")) {
+    for (const name of viteConfigs) {
+      const vite = (await readCapped(join(rootDir, name))) ?? ""
+      const block = VITE_SERVER_BLOCK.exec(vite)?.[1]
+      const candidate = validPort(block === undefined ? null : VITE_PORT.exec(block)?.[1])
+      if (candidate !== undefined) {
+        port = candidate
+        break
+      }
     }
+  } else if (viteConfigs.length > 0) {
+    notes.push(`vite.config.* bulundu ama ${picked} scripti vite kullanmıyor — port eklenmedi`)
   }
   return {
     name: uniqueServiceName("web", taken),
@@ -380,7 +438,12 @@ export const renderInitYaml = (detection: InitDetection, opts: { tracing: boolea
   return `${lines.join("\n")}\n`
 }
 
-export const runInit = async (options: InitOptions): Promise<InitResult> => {
+/** Test seam for the L4 validate-before-write order proof: production passes
+ * nothing and gets `renderInitYaml`; tests may inject a faulty renderer to
+ * force a validation failure and assert the disk was untouched. */
+export type InitRenderInject = { renderYaml?: (detection: InitDetection, opts: { tracing: boolean }) => string }
+
+export const runInit = async (options: InitOptions, inject?: InitRenderInject): Promise<InitResult> => {
   const rootDir = options.rootDir
   const yamlPath = join(rootDir, "ow.yaml")
   let rootOk = false
@@ -415,22 +478,25 @@ export const runInit = async (options: InitOptions): Promise<InitResult> => {
   if (existed && options.force !== true) {
     return { code: 2, stdout: "", stderr: "ow: ow.yaml zaten var — üzerine yazmak için --force kullanın" }
   }
-  if (existed) {
-    const backup = join(rootDir, "ow.yaml.bak")
-    await unlink(backup).catch(() => undefined)
-    await rename(yamlPath, backup)
-  }
-  const text = renderInitYaml(detection, { tracing: options.tracing === true })
-  try {
-    await writeFile(yamlPath, text, { encoding: "utf8" })
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: `ow: ow.yaml yazılamıyor: ${error instanceof Error ? error.message : String(error)}` }
-  }
+  // Validate BEFORE touching disk (L4): render → parse → only then backup +
+  // write. A validation failure leaves the original file and creates no .bak.
+  const renderYaml = inject?.renderYaml ?? renderInitYaml
+  const text = renderYaml(detection, { tracing: options.tracing === true })
   let parsed: ReturnType<typeof parseUpFile>
   try {
     parsed = parseUpFile(text)
   } catch (error) {
     return { code: 2, stdout: "", stderr: `ow: geçersiz iskelet: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  if (existed) {
+    const backup = join(rootDir, "ow.yaml.bak")
+    await unlink(backup).catch(() => undefined)
+    await rename(yamlPath, backup)
+  }
+  try {
+    await writeFile(yamlPath, text, { encoding: "utf8" })
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: `ow: ow.yaml yazılamıyor: ${error instanceof Error ? error.message : String(error)}` }
   }
   const missing = missingRequiredEnv(parsed.services)
   const missingNames = [...new Set(missing.flatMap((entry) => entry.vars))]

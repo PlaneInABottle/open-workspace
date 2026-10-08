@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { run } from "./cli"
-import { ensureOwGitignore, resolveWorkspaceRoot } from "./up-state"
+import { ensureOwGitignore, readBuildSidecar, resolveWorkspaceRoot } from "./up-state"
 import { runSuperviseFile } from "./up-supervisor-cli"
 
 const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-up-state-"))
@@ -213,7 +213,7 @@ describe("subdir reads resolve upward", () => {
       await mkdir(sub, { recursive: true })
       await writeFile(join(root, "ow.yaml"), TRACE_YAML)
       await writeFile(join(root, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /orders")}\n`, { mode: 0o600 })
-      const { code, out } = await captureLog(() => withCwd(sub, () => run(["trace"])))
+      const { code, out } = await captureLog(() => withCwd(sub, () => run(["trace", "--min-spans", "1"])))
       expect(code).toBe(0)
       expect(out).toContain("GET /orders")
     } finally {
@@ -250,7 +250,7 @@ describe("subdir reads resolve upward", () => {
       await writeFile(join(other, "ow.yaml"), TRACE_YAML)
       await writeFile(join(root, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /from-root")}\n`, { mode: 0o600 })
       await writeFile(join(other, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /from-other")}\n`, { mode: 0o600 })
-      const { out } = await captureLog(() => withCwd(sub, () => run(["trace", "--file", join(other, "ow.yaml")])))
+      const { out } = await captureLog(() => withCwd(sub, () => run(["trace", "--min-spans", "1", "--file", join(other, "ow.yaml")])))
       expect(out).toContain("GET /from-other")
       expect(out).not.toContain("GET /from-root")
     } finally {
@@ -290,6 +290,40 @@ describe("subdir reads resolve upward", () => {
       expect(await withCwd(sub, () => run(["up"]))).toBe(0)
       expect(existsSync(join(sub, ".ow"))).toBe(true)
       expect(existsSync(join(root, ".ow"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("readBuildSidecar", () => {
+  const sidecar = (dir: string): string => join(dir, "ow.build.json")
+
+  test("reads sha/digest/time next to the binary; resolves symlinked dirs", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(join(root, "ow"), "#!/bin/sh\n")
+      await writeFile(sidecar(root), JSON.stringify({ sha: "abc", digest: "d1|d2", time: "2026-10-08T07:00:00Z", extra: 1 }))
+      const direct = await readBuildSidecar(join(root, "ow"))
+      expect(direct).toEqual({ sha: "abc", digest: "d1|d2", time: "2026-10-08T07:00:00Z" })
+      const { symlink } = await import("node:fs/promises")
+      await symlink(join(root, "ow"), join(root, "link-ow"))
+      expect(await readBuildSidecar(join(root, "link-ow"))).toEqual(direct)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("missing/corrupt/incomplete sidecar resolves to null, never throws", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(join(root, "ow"), "#!/bin/sh\n")
+      expect(await readBuildSidecar(join(root, "ow"))).toBeNull()
+      expect(await readBuildSidecar(join(root, "yok"))).toBeNull()
+      await writeFile(sidecar(root), "not-json{{{")
+      expect(await readBuildSidecar(join(root, "ow"))).toBeNull()
+      await writeFile(sidecar(root), JSON.stringify({ sha: "abc", digest: "", time: "t" }))
+      expect(await readBuildSidecar(join(root, "ow"))).toBeNull()
     } finally {
       await rm(root, { recursive: true, force: true })
     }

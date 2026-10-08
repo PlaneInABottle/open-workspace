@@ -9,9 +9,9 @@ import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { formatUpWarnings, parseUpFile } from "./up-schema"
+import { decodeUtf8Fatal, formatUpWarnings, parseUpFile } from "./up-schema"
 import { acquireLock, clearLock, ensureOwGitignore, ensureUpStateDir, readSupervisorState, upPaths } from "./up-state"
-import { runSupervised } from "./up-supervisor"
+import { assertNoLiveOrphans, runSupervised } from "./up-supervisor"
 
 const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 
@@ -23,9 +23,15 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   const abs = resolve(file)
   let text: string
   try {
-    text = readFileSync(abs, "utf8")
-  } catch {
-    console.error(`ow: ow.yaml bulunamadı: ${abs}`)
+    // Raw bytes + fatal decode: undecodable config fails here (exit 2),
+    // never silently parsed with replacement characters.
+    text = decodeUtf8Fatal(readFileSync(abs))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`ow: ow.yaml bulunamadı: ${abs}`)
+    } else {
+      console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    }
     return 2
   }
   let parsed: ReturnType<typeof parseUpFile>
@@ -53,6 +59,15 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   const gitignoreWarning = await ensureOwGitignore(rootDir)
   if (gitignoreWarning) warnings.push(gitignoreWarning)
   for (const line of [...warnings, ...formatUpWarnings(parsed.warnings)]) console.error(line)
+  // Orphan probe (H6): the lock said free but recorded children may still be
+  // live from a crashed supervisor — refuse instead of duplicating them.
+  try {
+    await assertNoLiveOrphans(rootDir)
+  } catch (error) {
+    console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+    await clearLock(paths.lockFile)
+    return 2
+  }
   let code = 0
   try {
     code = await runSupervised(parsed.services, {
@@ -101,11 +116,35 @@ export const superviseShell = (execPath: string, cliPath: string | null, file: s
   return `nohup ${inner} > ${shQuote(outFile)} 2>&1 & echo $!`
 }
 
-/** Detached supervision: spawn hidden `__supervise`, wait for state, exit 0/1. */
+/** Detached supervision: pre-acquire-or-fail, spawn hidden `__supervise`, wait
+ * for state, exit 0/1. The parent reserves the lock BEFORE spawning (no
+ * spawn-then-poll race: two racing `up --detach` serialize on the exclusive
+ * create, the loser never spawns) and releases it immediately after the
+ * spawn handshake — the child performs the real exclusive acquire before
+ * spawning any service. The handoff window is one synchronous unlink;
+ * a child that still sees the parent lock refuses loudly (exit 2 in
+ * supervisor.out), never duplicating services. */
 export const detachSupervised = async (file: string, rootDir: string): Promise<number> => {
   const abs = resolve(file)
   const paths = upPaths(rootDir)
   await ensureUpStateDir(paths.stateDir)
+  const preWarnings: string[] = []
+  try {
+    await acquireLock(paths.lockFile, preWarnings)
+  } catch (error) {
+    console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+    return 2
+  }
+  // Fast-path orphan probe before spawning: the exclusive child acquire is
+  // the real mutex, this only saves a doomed spawn round-trip.
+  try {
+    await assertNoLiveOrphans(rootDir)
+  } catch (error) {
+    console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+    await clearLock(paths.lockFile)
+    return 2
+  }
+  for (const line of preWarnings) console.error(line)
   const outFile = join(paths.stateDir, "supervisor.out")
   const underBun = process.execPath.includes("bun")
   const shell = superviseShell(
@@ -117,6 +156,9 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
   const proc = Bun.spawn(["sh", "-c", shell], { stdout: "pipe", stderr: "ignore" })
   const pidText = (await new Response(proc.stdout).text()).trim()
   await proc.exited
+  // Reservation handoff: release before polling so the child can perform its
+  // own exclusive acquire. From here the child's acquire is the mutex.
+  await clearLock(paths.lockFile)
   const pid = Number(pidText)
   if (!Number.isInteger(pid) || pid <= 0) {
     console.error("ow: supervisor başlatılamadı")
@@ -139,7 +181,7 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
   }
   let names: string[] = []
   try {
-    names = parseUpFile(readFileSync(abs, "utf8")).services.map((svc) => svc.name)
+    names = parseUpFile(decodeUtf8Fatal(readFileSync(abs))).services.map((svc) => svc.name)
   } catch {
     names = []
   }

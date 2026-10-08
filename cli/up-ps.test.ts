@@ -171,6 +171,50 @@ describe("queryPs", () => {
     }
   })
 
+  test("H5: empty lstart is unknown with a named note, never running/stopped", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const sleeper = spawnSleep()
+      const real = (await readLstart(sleeper.pid))!
+      const startedAt = new Date().toISOString()
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt,
+        services: [{ name: "kor", pid: sleeper.pid, lstart: "", startedAt, lstartUnknown: true }],
+      })
+      const [svc] = await queryPs(root)
+      expect(svc.status).toBe("unknown")
+      expect(svc.cpuPct).toBeNull()
+      expect(svc.memBytes).toBeNull()
+      expect(svc.note).toContain("lstart bilinmiyor")
+      expect(formatPsLine(svc)).toContain("bilinmiyor")
+      expect(await isLivePid(sleeper.pid, real)).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("H5: unknown lstart + dead pid + no exit stays unknown (never stopped)", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const startedAt = new Date().toISOString()
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt,
+        services: [{ name: "hayalet", pid: 987654321, lstart: "", startedAt }],
+      })
+      const [svc] = await queryPs(root)
+      expect(svc.status).toBe("unknown")
+      expect(svc.note).toContain("lstart bilinmiyor")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("ow ps with missing .ow/ exits 0 with empty envelope", async () => {
     const root = await tempRoot()
     try {

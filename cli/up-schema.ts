@@ -70,10 +70,24 @@ const unquote = (raw: string): string => {
   return t
 }
 
+/** Fatal UTF-8 decode for `ow.yaml` reads: `Buffer.toString("utf8")` silently
+ * replaces undecodable bytes with U+FFFD, hiding corrupt config. Callers
+ * read raw bytes and route failures to a schema/encoding error (exit 2)
+ * before parsing. */
+export const decodeUtf8Fatal = (bytes: Uint8Array): string => {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    throw new UpSchemaError(0, "dosya UTF-8 çözülemedi (bozuk bayt) — dosya kodlamasını düzeltin")
+  }
+}
+
 const parseFlowList = (raw: string, line: number): YamlScalar[] => {
   const inner = raw.trim().slice(1, -1).trim()
   if (inner.length === 0) return []
-  return inner.split(",").map((part) => unquote(part))
+  // Quote-aware: quoted commas/empty strings/whitespace survive exactly;
+  // `unquote` trims only outside the quotes, never inside.
+  return splitTopLevel(inner).map((part) => unquote(part))
 }
 
 const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
@@ -114,10 +128,14 @@ const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
       }
       if (stack.length >= 3) throw new UpSchemaError(lineNo, `3. düzey desteklenmiyor: ${key}`)
       const child: Record<string, YamlNode> = {}
+      // `hasOwn` (not `in`): `parent` is a plain `{}` so prototype names
+      // like `constructor` must not read as duplicates.
+      if (Object.hasOwn(parent, key)) throw new UpSchemaError(lineNo, `tekrarlanan anahtar: ${key}`)
       parent[key] = child
       stack.push({ indent, map: child })
       continue
     }
+    if (Object.hasOwn(parent, key)) throw new UpSchemaError(lineNo, `tekrarlanan anahtar: ${key}`)
     parent[key] = parseValue(rest, lineNo)
   }
   return root
@@ -130,10 +148,17 @@ const parseValue = (rest: string, lineNo: number): YamlNode => {
   return unquote(rest)
 }
 
+/** Top-level comma split: tracks `[]`/`{}` depth so nested flow values never
+ * break the outer split, and only treats a quote as opening when it starts a
+ * value (empty current or after whitespace/`:`/`[`/`{`/`,`). A lone quote
+ * inside an unquoted token (e.g. `it's`) stays literal, so it can never
+ * swallow the rest of the map. An unbalanced quote that DID open a value
+ * stays literal too (no error): the value runs to end-of-input unchanged. */
 const splitTopLevel = (inner: string): string[] => {
   const parts: string[] = []
   let current = ""
   let quote: string | null = null
+  let depth = 0
   for (const ch of inner) {
     if (quote) {
       current += ch
@@ -141,11 +166,15 @@ const splitTopLevel = (inner: string): string[] => {
       continue
     }
     if (ch === '"' || ch === "'") {
-      quote = ch
+      if (current.length === 0 || /[\s:\[{,]$/.test(current)) {
+        quote = ch
+      }
       current += ch
       continue
     }
-    if (ch === ",") {
+    if (ch === "[" || ch === "{") depth += 1
+    else if (ch === "]" || ch === "}") depth = Math.max(0, depth - 1)
+    if (ch === "," && depth === 0) {
       parts.push(current)
       current = ""
       continue
@@ -183,7 +212,10 @@ const parseEnvValue = (node: YamlNode | undefined, serviceName: string): Readonl
   const env: Record<string, string> = Object.create(null)
   for (const [key, value] of entries) {
     if (!ENV_KEY.test(key)) throw new UpSchemaError(0, `${serviceName}: env içinde geçersiz anahtar adı`)
-    if (typeof value !== "string") throw new UpSchemaError(0, `${serviceName}: env değerleri metin olmalı`)
+    // Nested flow values (`{A: [x, y]}`, `{A: {B: c}}`) now survive the
+    // depth-tracking split intact and arrive here as non-strings: name the
+    // nesting explicitly instead of the generic scalar error.
+    if (typeof value !== "string") throw new UpSchemaError(0, `${serviceName}: env içinde iç içe değer desteklenmiyor (düz metin kullanın)`)
     if (Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8") > ENV_MAX_PAIR_BYTES) {
       throw new UpSchemaError(0, `${serviceName}: env bir çiftinde en fazla ${ENV_MAX_PAIR_BYTES} bayt olabilir`)
     }

@@ -5,13 +5,23 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { parseUpFile } from "./up-schema"
-import { downAll, probePort, runSupervised, type UpLineHandler } from "./up-supervisor"
+import {
+  assertNoLiveOrphans,
+  downAll,
+  findLiveOrphans,
+  mergePreservingSettled,
+  persistMerged,
+  probePort,
+  runSupervised,
+  type UpLineHandler,
+} from "./up-supervisor"
 import {
   acquireLock,
   classifyLock,
   classifySupervisorFile,
   ensureUpStateDir,
   isLivePid,
+  lockFileShape,
   readLstart,
   readSupervisorState,
   upPaths,
@@ -442,6 +452,316 @@ describe("per-service env merge", () => {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
       }
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("H5 empty-lstart refusal", () => {
+  test("live pid + empty lstart: down refuses, process survives, no false settlement", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const sleeper = spawnSleep()
+      const real = await readLstart(sleeper.pid)
+      expect(real).not.toBeNull()
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [{ name: "kor", pid: sleeper.pid, lstart: "", startedAt: new Date().toISOString() }],
+      })
+      const outcome = await downAll(root)
+      expect(outcome.results).toHaveLength(1)
+      expect(outcome.results[0].stopped).toBe(false)
+      expect(outcome.results[0].note).toMatch(/lstart bilinmiyor/)
+      expect(await isLivePid(sleeper.pid, real!)).toBe(true)
+      const state = await readSupervisorState(paths.supervisorFile)
+      expect(state?.services[0]?.exitCode).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("unknown tail lstart refuses even when the main pid is verifiable", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const main = spawnSleep()
+      const tail = spawnSleep()
+      const mainLstart = (await readLstart(main.pid))!
+      const tailLstart = (await readLstart(tail.pid))!
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [
+          {
+            name: "kuyruk",
+            pid: main.pid,
+            lstart: mainLstart,
+            startedAt: new Date().toISOString(),
+            logsPid: tail.pid,
+            logsLstart: "",
+          },
+        ],
+      })
+      const outcome = await downAll(root)
+      expect(outcome.results[0].stopped).toBe(false)
+      expect(outcome.results[0].note).toMatch(/logs lstart bilinmiyor/)
+      expect(await isLivePid(main.pid, mainLstart)).toBe(true)
+      expect(await isLivePid(tail.pid, tailLstart)).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M1 downAll corrupt gate", () => {
+  test("corrupt/bad-version throws without rm; --rm bypass still clears", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await expect(downAll(root)).rejects.toThrow(/bozuk/)
+      expect(existsSync(paths.supervisorFile)).toBe(true)
+      await writeFile(paths.supervisorFile, JSON.stringify({ version: 99, services: [] }), "utf8")
+      await expect(downAll(root)).rejects.toThrow(/sürüm/)
+      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      const outcome = await downAll(root, true)
+      expect(outcome.removedState).toBe(true)
+      expect(existsSync(paths.supervisorFile)).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M2 corrupt lock", () => {
+  test("corrupt lock classifies corrupt and reclaims with a warning, never silently", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeFile(paths.lockFile, "bozuk {{{", "utf8")
+      expect(await lockFileShape(paths.lockFile)).toBe("corrupt")
+      expect((await classifyLock(paths.lockFile)).kind).toBe("corrupt")
+      const warnings: string[] = []
+      const lock = await acquireLock(paths.lockFile, warnings)
+      expect(lock.pid).toBe(process.pid)
+      expect(warnings.join(" ")).toContain("bozuk kilit")
+      expect(await lockFileShape(paths.lockFile)).toBe("ok")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M3 merge-on-write", () => {
+  test("defined settlement wins over fresh absence per service", () => {
+    const onDisk = [
+      { name: "a", pid: 1, lstart: "x", startedAt: "t", exitCode: 3, exitedAt: "e" },
+      { name: "b", pid: 2, lstart: "y", startedAt: "t" },
+    ]
+    const fresh = [
+      { name: "a", pid: 1, lstart: "x", startedAt: "t" },
+      { name: "b", pid: 2, lstart: "y", startedAt: "t", exitCode: 0, exitedAt: "f" },
+    ]
+    const merged = mergePreservingSettled(onDisk, fresh)
+    expect(merged.find((svc) => svc.name === "a")).toMatchObject({ exitCode: 3, exitedAt: "e" })
+    expect(merged.find((svc) => svc.name === "b")).toMatchObject({ exitCode: 0, exitedAt: "f" })
+  })
+
+  test("behind-back write survives a stale persist (deterministic interleave)", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const stale = {
+        version: 1 as const,
+        startedAt: "2026-10-07T00:00:00.000Z",
+        services: [{ name: "web", pid: 4242, lstart: "Mon Oct  6 00:00:00 2026", startedAt: "2026-10-07T00:00:00.000Z" }],
+      }
+      await writeSupervisorState(paths.supervisorFile, stale)
+      // A concurrent writer settles behind our back…
+      await writeSupervisorState(paths.supervisorFile, {
+        ...stale,
+        services: [
+          {
+            ...stale.services[0],
+            exitCode: 3,
+            exitedAt: "2026-10-08T00:00:00.000Z",
+            logsEnded: { code: 1, at: "2026-10-08T00:00:00.000Z" },
+          },
+        ],
+      })
+      // …then our stale snapshot persists: newer fields must survive.
+      await persistMerged(paths.supervisorFile, stale)
+      const back = await readSupervisorState(paths.supervisorFile)
+      expect(back?.services[0]).toMatchObject({ exitCode: 3, exitedAt: "2026-10-08T00:00:00.000Z" })
+      expect(back?.services[0]?.logsEnded).toEqual({ code: 1, at: "2026-10-08T00:00:00.000Z" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("H6 lock exclusivity and orphan probe", () => {
+  test("second acquire with a live lock fails and leaves it byte-identical", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const sleeper = spawnSleep()
+      const lstart = await readLstart(sleeper.pid)
+      expect(lstart).not.toBeNull()
+      await writeFile(paths.lockFile, JSON.stringify({ pid: sleeper.pid, lstart, startedAt: new Date().toISOString() }), "utf8")
+      const before = await readFile(paths.lockFile, "utf8")
+      await expect(acquireLock(paths.lockFile, [])).rejects.toThrow("zaten çalışıyor")
+      expect(await readFile(paths.lockFile, "utf8")).toBe(before)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("up refuses when live orphans of a dead supervisor exist (names them)", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n", "utf8")
+      const sleeper = spawnSleep()
+      const lstart = (await readLstart(sleeper.pid))!
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [{ name: "web", pid: sleeper.pid, lstart, startedAt: new Date().toISOString() }],
+      })
+      // No lock file: dead supervisor, live child — a deterministic orphan.
+      expect(await findLiveOrphans(root)).toHaveLength(1)
+      const errors: string[] = []
+      const savedError = console.error
+      console.error = (...args: unknown[]): void => {
+        errors.push(args.map(String).join(" "))
+      }
+      let code = -1
+      try {
+        code = await run(["up", "--file", file])
+      } finally {
+        console.error = savedError
+      }
+      expect(code).toBe(2)
+      expect(errors.join("\n")).toContain("yetim")
+      expect(errors.join("\n")).toContain("web")
+      expect(await isLivePid(sleeper.pid, lstart)).toBe(true)
+      await expect(assertNoLiveOrphans(root)).rejects.toThrow(/yetim/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("L2 non-UTF8 config", () => {
+  test("0xFF bytes fail up --check with an encoding error (exit 2)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, Buffer.concat([Buffer.from("services:\n  a:\n    cmd: ", "utf8"), Buffer.from([0xff]), Buffer.from("\n", "utf8")]))
+      const errors: string[] = []
+      const savedError = console.error
+      console.error = (...args: unknown[]): void => {
+        errors.push(args.map(String).join(" "))
+      }
+      let code = -1
+      try {
+        code = await run(["up", "--check", "--file", file])
+      } finally {
+        console.error = savedError
+      }
+      expect(code).toBe(2)
+      expect(errors.join("\n")).toMatch(/UTF-8/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("runSuperviseFile rejects undecodable bytes before creating state", async () => {
+    const { runSuperviseFile } = await import("./up-supervisor-cli")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, Buffer.concat([Buffer.from("services:\n  a:\n    cmd: ", "utf8"), Buffer.from([0xff]), Buffer.from("\n", "utf8")]))
+      const errors: string[] = []
+      const savedError = console.error
+      console.error = (...args: unknown[]): void => {
+        errors.push(args.map(String).join(" "))
+      }
+      try {
+        expect(await runSuperviseFile(file, { quiet: true })).toBe(2)
+      } finally {
+        console.error = savedError
+      }
+      expect(errors.join("\n")).toMatch(/UTF-8/)
+      expect(existsSync(join(root, ".ow"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("supervisor build identity", () => {
+  test("explicit build block is recorded into supervisor.json", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const { onLine } = collectLines()
+      const code = await runSupervised([{ name: "a", cmd: "echo hi" }], {
+        rootDir: root,
+        stateFile: paths.supervisorFile,
+        onLine,
+        build: { sha: "s1", digest: "d-old", time: "2026-10-07T07:00:00Z" },
+      })
+      expect(code).toBe(0)
+      const state = await readSupervisorState(paths.supervisorFile)
+      expect(state?.build).toEqual({ sha: "s1", digest: "d-old", time: "2026-10-07T07:00:00Z" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("no sidecar in test env means no build key (silent path)", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const { onLine } = collectLines()
+      await runSupervised([{ name: "a", cmd: "echo hi" }], { rootDir: root, stateFile: paths.supervisorFile, onLine })
+      const state = await readSupervisorState(paths.supervisorFile)
+      expect(state).not.toHaveProperty("build")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("persistMerged preserves an on-disk build block it did not write", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: "2026-10-07T00:00:00.000Z",
+        services: [],
+        build: { sha: "s1", digest: "d-old", time: "2026-10-07T07:00:00Z" },
+      })
+      const { persistMerged } = await import("./up-supervisor")
+      await persistMerged(paths.supervisorFile, { version: 1, startedAt: "2026-10-08T00:00:00.000Z", services: [] })
+      const state = await readSupervisorState(paths.supervisorFile)
+      expect(state?.build).toEqual({ sha: "s1", digest: "d-old", time: "2026-10-07T07:00:00Z" })
+    } finally {
       await rm(root, { recursive: true, force: true })
     }
   })

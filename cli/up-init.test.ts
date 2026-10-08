@@ -145,6 +145,60 @@ describe("ow init maven/python/node", () => {
     }
   })
 
+  test("H3: spring mention in a line comment is checklist-only, no bootRun", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(join(root, "build.gradle"), "plugins {\n  id 'java'\n}\n// TODO: migrate to spring-boot later\n")
+      const result = await runInit({ rootDir: root })
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain("Spring işareti yok")
+      expect(result.stdout).toContain("boş iskelet yazılmadı")
+      let missing = false
+      try {
+        await readFile(join(root, "ow.yaml"), "utf8")
+      } catch {
+        missing = true
+      }
+      expect(missing).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("H3: spring mention in a block comment is checklist-only, no bootRun", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(join(root, "build.gradle"), "plugins {\n  id 'java'\n}\n/* roadmap: org.springframework.boot migration */\n")
+      const result = await runInit({ rootDir: root })
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain("Spring işareti yok")
+      let missing = false
+      try {
+        await readFile(join(root, "ow.yaml"), "utf8")
+      } catch {
+        missing = true
+      }
+      expect(missing).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("H3: real quoted marker still emits bootRun beside a spring comment", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(
+        join(root, "build.gradle"),
+        "plugins {\n  id 'org.springframework.boot' version '3.2.0'\n}\n// spring-boot via the plugin above\n",
+      )
+      const result = await runInit({ rootDir: root })
+      expect(result.code).toBe(0)
+      expect(await readFile(join(root, "ow.yaml"), "utf8")).toContain("bootRun")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("python-uv distinguishes environ subscripts from getenv; traced cmd prefixed", async () => {
     const root = await tempRoot()
     try {
@@ -186,6 +240,37 @@ describe("ow init maven/python/node", () => {
       expect(text).toContain("port: 5173")
       expect(text).not.toContain("env:")
       expect(result.stdout).toContain("tracing.ts")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("H4: unrelated dev script + vite config → no port + checklist note", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { dev: "echo hi" } }))
+      await writeFile(join(root, "vite.config.ts"), "export default {\n  server: { port: 5173 },\n}\n")
+      const result = await runInit({ rootDir: root })
+      expect(result.code).toBe(0)
+      const text = await readFile(join(root, "ow.yaml"), "utf8")
+      expect(text).toContain("cmd: npm run dev")
+      expect(text).not.toContain("port:")
+      expect(result.stdout).toContain("vite kullanmıyor")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("H4: vite start script + vite config → port attached", async () => {
+    const root = await tempRoot()
+    try {
+      await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { start: "vite preview" } }))
+      await writeFile(join(root, "vite.config.ts"), "export default {\n  server: { port: 4173 },\n}\n")
+      const result = await runInit({ rootDir: root })
+      expect(result.code).toBe(0)
+      const text = await readFile(join(root, "ow.yaml"), "utf8")
+      expect(text).toContain("cmd: npm run start")
+      expect(text).toContain("port: 4173")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -265,6 +350,28 @@ describe("ow init boundaries", () => {
         if (tracing) expect(text).toMatch(/env: \{[^}]*\}/)
         await rm(join(root, "ow.yaml"), { force: true })
       }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("L4: validation failure leaves the original file and creates no .bak", async () => {
+    const root = await tempRoot()
+    try {
+      await makeGradle(root)
+      const original = "services:\n  old:\n    cmd: old-cmd\n"
+      await writeFile(join(root, "ow.yaml"), original)
+      const result = await runInit({ rootDir: root, force: true }, { renderYaml: () => "services:\n  !!boom\n" })
+      expect(result.code).toBe(2)
+      expect(result.stderr).toContain("geçersiz iskelet")
+      expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(original)
+      let bakMissing = false
+      try {
+        await readFile(join(root, "ow.yaml.bak"), "utf8")
+      } catch {
+        bakMissing = true
+      }
+      expect(bakMissing).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

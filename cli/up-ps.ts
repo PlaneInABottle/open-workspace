@@ -108,8 +108,13 @@ const toPsService = (svc: UpServiceState, snap: Map<number, PsSnapshotRow> | nul
   const notes: string[] = []
   if (svc.portConflict === true) notes.push("port çakışması")
   if (svc.logsEnded !== undefined) notes.push(`logs bitti (code=${svc.logsEnded.code ?? "?"})`)
+  // Spawn-time `readLstart` failure (`lstartUnknown`): the pid guard is
+  // blind, so a live snapshot row can never be attributed and absence can
+  // never mean dead — always `unknown` unless a settlement was recorded.
+  const lstartUnknown = svc.lstart === "" || svc.lstartUnknown === true
+  if (lstartUnknown) notes.push("lstart bilinmiyor")
   const row = snap?.get(svc.pid)
-  if (row !== undefined && svc.lstart !== "" && row.lstart === svc.lstart) {
+  if (row !== undefined && !lstartUnknown && row.lstart === svc.lstart) {
     return {
       ...base,
       status: "running",
@@ -119,8 +124,8 @@ const toPsService = (svc: UpServiceState, snap: Map<number, PsSnapshotRow> | nul
     }
   }
   if (row !== undefined) {
-    // Live pid with a foreign lstart: recycled — report, never attribute.
-    notes.push("lstart uyuşmazlığı")
+    // Live pid with a foreign (or unverifiable) lstart: never attribute.
+    if (!lstartUnknown) notes.push("lstart uyuşmazlığı")
     return { ...base, status: "unknown", cpuPct: null, memBytes: null, note: notes.join("; ") }
   }
   if (snap === null && svc.exitCode === undefined) {
@@ -128,10 +133,14 @@ const toPsService = (svc: UpServiceState, snap: Map<number, PsSnapshotRow> | nul
     return { ...base, status: "unknown", cpuPct: null, memBytes: null, note: notes.join("; ") }
   }
   // Dead pid: a recorded numeric exit is `exited`; killed (-1) or unrecorded
-  // death is `stopped`. Recorded exits stand even when `ps` itself failed.
+  // death is `stopped`. Recorded exits stand even when `ps` itself failed —
+  // and even with an unknown lstart (the supervisor recorded the reap).
   if (svc.exitCode !== undefined && svc.exitCode >= 0) {
     notes.push(`çıkış kodu ${svc.exitCode}`)
     return { ...base, status: "exited", cpuPct: null, memBytes: null, note: notes.join("; ") }
+  }
+  if (lstartUnknown) {
+    return { ...base, status: "unknown", cpuPct: null, memBytes: null, note: notes.join("; ") }
   }
   return {
     ...base,

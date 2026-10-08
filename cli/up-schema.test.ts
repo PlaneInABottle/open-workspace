@@ -126,8 +126,8 @@ describe("up-schema per-service env", () => {
   test("non-map env values throw naming the service", () => {
     expect(() => parseUpFile("services:\n  web:\n    cmd: x\n    env: A=b\n")).toThrow(/web: env/)
     expect(() => parseUpFile("services:\n  web:\n    cmd: x\n    env: [A, B]\n")).toThrow(UpSchemaError)
-    expect(() => parseUpFile(withEnv("{A: [x]}"))).toThrow(/env değerleri metin|anahtar: değer/)
-    expect(() => parseUpFile(withEnv("{A: {B: c}}"))).toThrow(/env değerleri metin/)
+    expect(() => parseUpFile(withEnv("{A: [x]}"))).toThrow(/iç içe değer/)
+    expect(() => parseUpFile(withEnv("{A: {B: c}}"))).toThrow(/iç içe değer/)
   })
 
   test("block-form env is rejected by the subset parser", () => {
@@ -155,6 +155,48 @@ describe("up-schema per-service env", () => {
     expect(Object.keys(parseUpFile(withEnv(`{${ok}}`)).services[0].env ?? {}).length).toBe(64)
     const many = Array.from({ length: 65 }, (_, i) => `K${i}: v`).join(", ")
     expect(() => parseUpFile(withEnv(`{${many}}`))).toThrow(/en fazla 64/)
+  })
+
+  test("H1: unquoted apostrophe is literal, later entries survive", () => {
+    const file = parseUpFile(withEnv("{A: it's, B: c}"))
+    expect(file.services[0].env).toEqual({ A: "it's", B: "c" })
+  })
+
+  test("H1: unbalanced boundary quote stays literal (no error, locked behavior)", () => {
+    // A quote that opens a value but never closes runs to end-of-input as a
+    // literal value; it never throws and never echoes beyond the message.
+    const file = parseUpFile(withEnv('{A: "oops}'))
+    expect(file.services[0].env).toEqual({ A: '"oops' })
+  })
+
+  test("L1: nested flow values are a named unsupported-nesting error", () => {
+    expect(() => parseUpFile(withEnv("{A: [x, y]}"))).toThrow(/iç içe değer/)
+    expect(() => parseUpFile(withEnv("{A: {B: c}}"))).toThrow(/iç içe değer/)
+    try {
+      parseUpFile(withEnv("{A: [x, SECRETVAL]}"))
+    } catch (error) {
+      expect(String(error)).not.toContain("SECRETVAL")
+    }
+  })
+
+  test("M4: duplicate keys in the same map throw (no last-win)", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    cmd: y\n")).toThrow(/tekrarlanan anahtar: cmd/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n  a:\n    cmd: y\n")).toThrow(/tekrarlanan anahtar: a/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    env: {A: b, A: c}\n")).toThrow(/tekrarlanan anahtar/)
+    // Prototype names are real keys on first use, duplicates on second.
+    expect(parseUpFile("services:\n  constructor:\n    cmd: x\n").services[0].name).toBe("constructor")
+    expect(() => parseUpFile("services:\n  constructor:\n    cmd: x\n  constructor:\n    cmd: y\n")).toThrow(/tekrarlanan anahtar/)
+  })
+
+  test("H2: flow lists are quote-aware (commas, empties, whitespace exact)", () => {
+    const quoted = parseUpFile("services:\n  a:\n    cmd: [echo, \"a,b\"]\n")
+    expect(quoted.services[0].cmd).toEqual(["echo", "a,b"])
+    const single = parseUpFile("services:\n  a:\n    cmd: [echo, 'x, y', z]\n")
+    expect(single.services[0].cmd).toEqual(["echo", "x, y", "z"])
+    const empty = parseUpFile('services:\n  a:\n    cmd: [echo, "", done]\n')
+    expect(empty.services[0].cmd).toEqual(["echo", "", "done"])
+    const padded = parseUpFile('services:\n  a:\n    cmd: [echo, "  spaced  "]\n')
+    expect(padded.services[0].cmd).toEqual(["echo", "  spaced  "])
   })
 
   test("unknown sibling fields still warn-and-ignore", () => {

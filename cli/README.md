@@ -135,7 +135,9 @@ and writes a starter `ow.yaml`: commands only from strong signals (wrappers,
 Spring markers, declared scripts), ports and `required-env` names where
 provable, weak signals as `#` comments plus a printed checklist. `--tracing`
 adds the `trace:` block and per-service OTel `env:` (single-line flow maps);
-the generated file is re-validated in-process before reporting.
+the generated file is re-validated in-process before reporting. `--force`
+keeps a single backup (`ow.yaml.bak`, overwritten each time) — accepted
+single-generation behavior, not a rotation.
 
 State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.
@@ -169,6 +171,7 @@ capped in `<root>/.ow/traces/spans.jsonl`; read them with `ow trace`
 (recent list) and `ow trace <id>` (one parent/child tree).
 `ow trace --wait 15s` polls up to 5 minutes for a newly arriving span
 (batch exporters land late) and then renders once. If the receiver port is taken, `up` warns loudly with host+port and `ow doctor` appends an `alıcı dinlemiyor` hint to the trace line.
+The trace list hides ok single-span orphans (noise); `--min-spans 1` shows all, `--min-spans N` keeps ≥N-span traces. Error traces always render; direct `ow trace <id>` is unaffected.
 
 ```yaml
 trace:

@@ -24,7 +24,7 @@ import {
 import { doctor, formatDoctor } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./trace-cli"
-import { formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
+import { decodeUtf8Fatal, formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
@@ -32,7 +32,7 @@ const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "rea
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--trace"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--trace", "--min-spans"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing"])
 
 export type ParsedArgs = {
@@ -61,9 +61,9 @@ export const helpText = (): string =>
     "  down [--file] [--rm]          servisleri durdur (--rm durum dosyasını da siler)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
-  "  trace [iz] [--file] [--tail] [--since] [--service] [--wait]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
+  "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
-  "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti",
+  "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
     "",
     "genel: --db <yol> --log <yol> --json --help",
     "  --since  pencere: 30m|3h|1d|1w (varsayılan 1d; sessions/show/stuck/reads)",
@@ -128,6 +128,10 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   if (typeof flags["--tail"] === "string") {
     const tail = Number(flags["--tail"])
     if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`geçersiz --tail: ${flags["--tail"]} (1-5000 bekleniyor)`)
+  }
+  if (typeof flags["--min-spans"] === "string") {
+    const minSpans = Number(flags["--min-spans"])
+    if (!Number.isInteger(minSpans) || minSpans < 1 || minSpans > 5000) return fail(`geçersiz --min-spans: ${flags["--min-spans"]} (1-5000 bekleniyor)`)
   }
   if (typeof flags["--wait"] === "string" && parseWaitDuration(flags["--wait"]) === null) {
     return fail(`geçersiz --wait: ${flags["--wait"]} (ör. 15s, en fazla 5m)`)
@@ -269,6 +273,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const tailFlag = flag(flags, "--tail")
       const serviceFlag = flag(flags, "--service")
       const waitFlag = flag(flags, "--wait")
+      const minSpansFlag = flag(flags, "--min-spans")
       const result = await runTrace({
         rootDir,
         owYamlPath: yamlForRead,
@@ -278,6 +283,7 @@ export const run = async (argv: string[]): Promise<number> => {
         service: serviceFlag,
         json,
         waitMs: waitFlag === undefined ? undefined : (parseWaitDuration(waitFlag) ?? undefined),
+        minSpans: minSpansFlag === undefined ? undefined : Number(minSpansFlag),
         searchStart,
       })
       if (result.stdout.length > 0) console.log(result.stdout)
@@ -307,9 +313,15 @@ export const run = async (argv: string[]): Promise<number> => {
       const file = upFilePath(flags)
       let text: string
       try {
-        text = readFileSync(file, "utf8")
-      } catch {
-        console.error(`ow: ow.yaml bulunamadı: ${file}`)
+        // Raw bytes + fatal decode (L2): undecodable config fails here with
+        // a schema/encoding error (exit 2), never parsed with U+FFFD holes.
+        text = decodeUtf8Fatal(readFileSync(file))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          console.error(`ow: ow.yaml bulunamadı: ${file}`)
+        } else {
+          console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+        }
         return 2
       }
       let parsed: ReturnType<typeof parseUpFile>
@@ -360,6 +372,17 @@ export const run = async (argv: string[]): Promise<number> => {
         return 2
       }
       if (status.kind === "stale") warn(`uyarı: bayat kilit devralınacak (${status.reason})`)
+      if (status.kind === "corrupt") warn(`uyarı: bozuk kilit devralınacak (${status.reason})`)
+      // Orphan probe (H6): lock says free but recorded children may still be
+      // live from a crashed supervisor — refuse instead of duplicating them.
+      // (Adoption is riskier: no shutdown wiring for foreign pids.)
+      try {
+        const { assertNoLiveOrphans } = await import("./up-supervisor")
+        await assertNoLiveOrphans(rootDir)
+      } catch (error) {
+        console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+        return 2
+      }
       if (flags["--detach"] === true) {
         const { detachSupervised } = await import("./up-supervisor-cli")
         return detachSupervised(file, rootDir)
