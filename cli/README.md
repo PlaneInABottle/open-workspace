@@ -206,6 +206,81 @@ by the agents, no manual header code), decoded by the same M1 path as the
 unit fixtures. Only allowlisted keys land on disk; path identifiers arrive
 masked (`/orders/:id`), query strings and `Authorization` values never do.
 
+### İzleme tarifleri (tarayıcı)
+
+No zero-code option exists for browsers: `ow.yaml` can pass the endpoint
+via `env:`, but it cannot inject code into the bundle. The app's
+`tracing.ts` lives in the app repo and must be wired by hand; only this
+recipe lives here — never advertise browser tracing as automatic.
+
+`src/tracing.ts`, imported first in `main.tsx`, dev-only guard:
+
+```ts
+// MUST be the protobuf exporter (D10): the -otlp-http package sends JSON,
+// which the receiver does not decode.
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
+import { BatchSpanProcessor, WebTracerProvider } from "@opentelemetry/sdk-trace-web"
+import { ZoneContextManager } from "@opentelemetry/context-zone"
+import { registerInstrumentations } from "@opentelemetry/instrumentation"
+import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web"
+import { resourceFromAttributes } from "@opentelemetry/resources"
+import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions"
+
+if (import.meta.env.DEV && import.meta.env.VITE_OTEL_ENDPOINT) {
+  const provider = new WebTracerProvider({
+    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: "web" }),
+    spanProcessors: [new BatchSpanProcessor(
+      new OTLPTraceExporter({ url: `${import.meta.env.VITE_OTEL_ENDPOINT}/v1/traces` }))],
+  })
+  provider.register({ contextManager: new ZoneContextManager() })
+  registerInstrumentations({ instrumentations: [getWebAutoInstrumentations()] })
+}
+```
+
+Packages: `@opentelemetry/sdk-trace-web`
+**`@opentelemetry/exporter-trace-otlp-proto`**
+`@opentelemetry/context-zone @opentelemetry/auto-instrumentations-web
+@opentelemetry/instrumentation`. The `-proto` suffix is load-bearing: the
+`-otlp-http` package sends JSON and produces zero spans against this
+receiver (a JSON `content-type` fails loudly, never silently).
+
+`ow.yaml` side (`env:` only — span export goes straight to the receiver,
+not through Vite):
+
+```yaml
+  web:
+    cmd: vite dev
+    env: {VITE_OTEL_ENDPOINT: "http://127.0.0.1:4319"}
+```
+
+CORS shape (verified live with a real browser):
+
+- Span export relies on the receiver answering preflight for loopback
+  origins only (D6). No proxy is involved on this path.
+- The app's own `/api` calls stay same-origin through the ordinary Vite
+  proxy, which matters only because a same-origin call avoids a backend
+  CORS preflight that could strip `traceparent`.
+- For any cross-origin frontend→backend hop, the backend must also allow
+  `traceparent` through `Access-Control-Allow-Headers`, or continuity
+  silently breaks at the boundary.
+- Optional paired variant (both change together, otherwise unrelated to
+  span export): proxy `/otel/v1` → `127.0.0.1:4319` with a rewrite plus a
+  relative `VITE_OTEL_ENDPOINT=/otel`, making export same-origin (no
+  preflight at all). The verified v1 path is D6 direct-to-receiver.
+
+Trace roots (D8): the browser hides navigation request headers from page
+JS, so a trace starts at the frontend SDK by default — the robot just
+clicks and the trace is found via `ow trace` (newest-first). A manual
+`window.__TRACE_ID__` bridge (agent writes, `tracing.ts` reads) stays an
+optional dev-only pattern: documented here, not implemented or verified.
+
+Live proof (kept, disposable clone): instrumented page → same-origin Flask
+API produced one `traceId` (`web`-click → `web`-fetch → `api`-span),
+`content-type: application/x-protobuf` decoded by the M1 path; robot
+`set headers` rotation yielded disjoint backend traces per injected ID,
+`set '{}'` cleared cleanly, and the sentinel sweep over the resulting
+`spans.jsonl` found no secrets, query strings, or raw headers.
+
 ## Change discipline (evidence before code)
 
 No addition lands on the strength of an idea. Every change must show,

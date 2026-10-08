@@ -236,6 +236,30 @@ const maskPathSegments = (value: string): string =>
     .map((segment) => (isIdentifierSegment(segment) ? ":id" : segment))
     .join("/")
 
+/** S3 substring layer: whole-value `maskCredentials` misses a `key=value`
+ * pair embedded in a longer path (`/reset/token=abc` — `stripQuery` only
+ * cuts at `?`/`#`, the `=` segment is not identifier-shaped, and the
+ * whole-value pattern is anchored). The secret-key pattern therefore also
+ * runs per `/`-separated segment; a matching segment is masked wholesale. */
+const SECRET_PAIR_SEGMENT = /[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+/i
+
+/** Best-effort percent-decoding for the credential scan only: `%3D`/`%3A`
+ * spellings of separators must not bypass masking. Undecodable input
+ * (lone `%`, truncated `%2`) falls back to the raw segment — never throws. */
+const decodeSegment = (segment: string): string => {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
+const maskCredentialSegments = (value: string): string =>
+  value
+    .split("/")
+    .map((segment) => (SECRET_PAIR_SEGMENT.test(segment) || SECRET_PAIR_SEGMENT.test(decodeSegment(segment)) ? "***" : segment))
+    .join("/")
+
 /** S3 — credential-bearing forms masked wholesale: `Bearer <token>` keeps
  * only the scheme word, `key=secret`-shaped values and `user:pass@host`
  * authorities become `***`. */
@@ -261,12 +285,12 @@ const truncateBytes = (value: string, maxBytes: number): string => {
 }
 
 const sanitizeName = (name: string, maxBytes: number): string =>
-  truncateBytes(maskCredentials(maskPathSegments(stripQuery(name))), maxBytes)
+  truncateBytes(maskCredentials(maskCredentialSegments(maskPathSegments(stripQuery(name)))), maxBytes)
 
 const sanitizeAttrValue = (key: string, value: string, maxBytes: number): string => {
   const stripped = stripQuery(value)
   const shaped = key === "url.path" ? maskPathSegments(stripped) : stripped
-  return truncateBytes(maskCredentials(shaped), maxBytes)
+  return truncateBytes(maskCredentials(maskCredentialSegments(shaped)), maxBytes)
 }
 
 /** AnyValue → scalar string, or null for composite (array/kvlist) values,

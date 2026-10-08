@@ -292,6 +292,25 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     expect(spans.map((s) => s.name)).toEqual(["GET /orders/:id", "GET /orders/{id}", "GET /health"])
   })
 
+  test("lone or malformed % never throws and is stored verbatim", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      const store = createTraceStore(spansFile)
+      const decoded = decodeTraceRequest(
+        requestBytes(
+          scopeSpans("api", [spanBytes({ name: "GET /100% legit" }), spanBytes({ name: "GET /x%ZZy" })]),
+        ),
+      )
+      for (const span of decoded) store.append(span)
+      await store.flush()
+      expect(decoded.map((s) => s.name)).toEqual(["GET /100% legit", "GET /x%ZZy"])
+      expect(await readFile(spansFile, "utf8")).toContain("GET /100% legit")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("hostile service name is stripped/masked like span names; sentinel never reaches disk", async () => {
     const sentinel = "ZZSENTINELZZ"
     const root = await tempRoot()

@@ -539,24 +539,135 @@ describe("trace secret safety on the read path", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test("embedded key=value inside a path segment is masked in every output shape", async () => {
+    const root = await tempRoot()
+    const sentinel = "ZZSENTINELZZ"
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8(`GET /reset/token=${sentinel}`)),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("url.path", `/reset/token=${sentinel}`)),
+          ...lenField(9, kv("http.route", `/reset/token=${sentinel}`)),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).not.toContain(sentinel)
+      expect(onDisk).toContain("/reset/***")
+      const outputs = [
+        (await runTrace(opts(root))).stdout,
+        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      for (const output of outputs) expect(output).not.toContain(sentinel)
+      expect(outputs[2]).toContain("GET /reset/***")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("percent-encoded separators are decoded before masking, in every output shape", async () => {
+    const root = await tempRoot()
+    const sentinel = "ZZSENTINELZZ"
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8(`GET /reset/token%3D${sentinel}`)),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("url.path", `/reset/token%3d${sentinel}`)),
+          ...lenField(9, kv("http.route", `/login/auth%3A${sentinel}`)),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).not.toContain(sentinel)
+      expect(onDisk).toContain("/reset/***")
+      expect(onDisk).toContain("/login/***")
+      const outputs = [
+        (await runTrace(opts(root))).stdout,
+        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      for (const output of outputs) expect(output).not.toContain(sentinel)
+      expect(outputs[2]).toContain("GET /reset/***")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("trace doctor line", () => {
-  test("configured with spans → açık; missing block → kapalı; missing jar named", async () => {
+  const JAVA_YAML =
+    "trace:\n  port: 4319\nservices:\n  api:\n    cmd: java -jar app.jar\n    env: {JAVA_TOOL_OPTIONS: \"-javaagent:.ow/otel/opentelemetry-javaagent.jar\"}\n"
+
+  test("spans report açık regardless of jar; jar note is Java-only and silence-scoped", async () => {
     const root = await tempRoot()
     try {
       const now = Date.now()
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
       ])
-      const noJar = await checkTraceDoctor(root)
-      expect(noJar.ok).toBe(false)
-      expect(noJar.detail).toContain("javaagent jar yok")
-      await mkdir(join(root, ".ow", "otel"), { recursive: true })
-      await writeFile(join(root, ".ow", "otel", "opentelemetry-javaagent.jar"), "")
+      // Python-only setup (no java markers), spans present, jar absent → açık, no jar note
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
       expect(open.detail).toMatch(/açık \(port 4319, 1 span, son span .* önce\)/)
+      expect(open.detail).not.toContain("jar")
       const bare = await tempRoot()
       try {
         await writeFile(join(bare, "ow.yaml"), "services:\n  a:\n    cmd: x\n")
@@ -567,6 +678,39 @@ describe("trace doctor line", () => {
         await rm(bare, { recursive: true, force: true })
       }
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("Java service with zero spans and no jar names the jar; jar present stays açık", async () => {
+    const root = await tempRoot()
+    try {
+      await seedRows(root, [], [], JAVA_YAML)
+      const missing = await checkTraceDoctor(root)
+      expect(missing.ok).toBe(false)
+      expect(missing.detail).toContain("javaagent jar yok")
+      await mkdir(join(root, ".ow", "otel"), { recursive: true })
+      await writeFile(join(root, ".ow", "otel", "opentelemetry-javaagent.jar"), "")
+      const open = await checkTraceDoctor(root)
+      expect(open.ok).toBe(true)
+      expect(open.detail).toContain("açık (port 4319, 0 span)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("inherited JAVA_TOOL_OPTIONS with javaagent triggers the jar note", async () => {
+    const root = await tempRoot()
+    const saved = process.env.JAVA_TOOL_OPTIONS
+    process.env.JAVA_TOOL_OPTIONS = "-javaagent:/tmp/fake-agent.jar"
+    try {
+      await seedRows(root, [])
+      const missing = await checkTraceDoctor(root)
+      expect(missing.ok).toBe(false)
+      expect(missing.detail).toContain("javaagent jar yok")
+    } finally {
+      if (saved === undefined) delete process.env.JAVA_TOOL_OPTIONS
+      else process.env.JAVA_TOOL_OPTIONS = saved
       await rm(root, { recursive: true, force: true })
     }
   })

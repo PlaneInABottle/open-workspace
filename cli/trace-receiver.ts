@@ -141,11 +141,11 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
             return reject("bad-path", 403, "yabancı origin")
           }
           if (url.pathname !== "/v1/traces" || req.method !== "POST") {
-            return reject("bad-path", 404, `${req.method} ${url.pathname.slice(0, 64)}`)
+            return reject("bad-path", 404, "404")
           }
           const contentType = req.headers.get("content-type") ?? ""
           if (!contentType.startsWith("application/x-protobuf")) {
-            return reject("decode-failed", 415, `beklenmeyen content-type (${contentType.slice(0, 64)})`)
+            return reject("decode-failed", 415, "415")
           }
           const body = await readBoundedBody(req, maxBodyBytes)
           if ("over" in body) {

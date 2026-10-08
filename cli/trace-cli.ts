@@ -177,19 +177,18 @@ export type TraceDoctorCheck = { ok: boolean; detail: string }
 export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorCheck> => {
   let enabled = false
   let port = 4319
+  let services: { cmd?: string | string[]; env?: Readonly<Record<string, string>> }[] = []
   try {
     const parsed = parseUpFile(readFileSync(join(rootDir, "ow.yaml"), "utf8"))
     if (parsed.trace !== undefined && parsed.trace.enabled) {
       enabled = true
       port = parsed.trace.port
+      services = parsed.services
     }
   } catch {
     enabled = false
   }
   if (!enabled) return { ok: false, detail: "kapalı (ow.yaml içinde trace: yok)" }
-  if (!existsSync(join(rootDir, ".ow", "otel", "opentelemetry-javaagent.jar"))) {
-    return { ok: false, detail: "javaagent jar yok (.ow/otel/opentelemetry-javaagent.jar)" }
-  }
   let count = 0
   let lastEnd: bigint | null = null
   try {
@@ -202,7 +201,26 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
     count = 0
     lastEnd = null
   }
+  // The jar note is a silence diagnostic for Java setups only: spans flowing
+  // means the pipeline works, so an open report never carries the jar note.
+  // Java use is detected from ow.yaml services OR the inherited environment
+  // (D4 forbids injection, but the operator's own exported
+  // JAVA_TOOL_OPTIONS still counts as Java use for this diagnostic).
+  const jarMissing = !existsSync(join(rootDir, ".ow", "otel", "opentelemetry-javaagent.jar"))
+  const javaInvolved = services.some(usesJavaAgent) || (process.env.JAVA_TOOL_OPTIONS?.includes("javaagent") ?? false)
+  if (count === 0 && jarMissing && javaInvolved) {
+    return { ok: false, detail: "javaagent jar yok (.ow/otel/opentelemetry-javaagent.jar)" }
+  }
   if (count === 0 || lastEnd === null) return { ok: true, detail: `açık (port ${port}, 0 span)` }
   const agoMs = Math.max(0, Date.now() - Number(lastEnd / 1_000_000n))
   return { ok: true, detail: `açık (port ${port}, ${count} span, son span ${formatAgo(agoMs)})` }
+}
+
+/** True when a service launches through the Java agent (recipe `env:`). */
+const usesJavaAgent = (service: { cmd?: string | string[]; env?: Readonly<Record<string, string>> }): boolean => {
+  const cmd = Array.isArray(service.cmd) ? service.cmd.join(" ") : (service.cmd ?? "")
+  if (cmd.includes("javaagent") || cmd.includes("JAVA_TOOL_OPTIONS")) return true
+  const env = service.env ?? {}
+  if ("JAVA_TOOL_OPTIONS" in env) return true
+  return Object.values(env).some((value) => value.includes("javaagent"))
 }

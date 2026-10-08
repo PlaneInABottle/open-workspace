@@ -295,6 +295,32 @@ describe("trace-receiver HTTP contract", () => {
     }
   })
 
+  test("rejection warnings carry reason and status only, never request bytes", async () => {
+    const root = await tempRoot()
+    const sentinel = "ZZSENTINELZZ"
+    try {
+      const { receiver, warnings } = await startTestReceiver(root)
+      try {
+        const badPath = await fetch(`http://127.0.0.1:${receiver.port}/v1/${sentinel}`, {
+          method: "POST",
+          headers: { "content-type": "application/x-protobuf" },
+          body: validBody(),
+        })
+        expect(badPath.status).toBe(404)
+        const badType = await postTraces(receiver.port, validBody(), { "content-type": `application/x-${sentinel}` })
+        expect(badType.status).toBe(415)
+        expect(receiver.rejected["bad-path"]).toBe(1)
+        expect(receiver.rejected["decode-failed"]).toBe(1)
+        expect(warnings.length).toBeGreaterThan(0)
+        expect(warnings.join("\n")).not.toContain(sentinel)
+      } finally {
+        await receiver.stop()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("CORS: loopback origin allowed, foreign origin refused without headers", async () => {
     const root = await tempRoot()
     try {
