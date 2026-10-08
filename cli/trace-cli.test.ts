@@ -655,6 +655,89 @@ describe("trace secret safety on the read path", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+  test("business attributes render across list/tree human+json; denied keys absent", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const kvInt = (key: string, n: number): number[] => [...lenField(1, utf8(key)), ...lenField(2, [...tag(3, 0), ...encVarint(n)])]
+        const kvBool = (key: string, b: boolean): number[] => [...lenField(1, utf8(key)), ...lenField(2, [...tag(2, 0), ...encVarint(b ? 1 : 0)])]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("GET /jobs/run")),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("silent_dequeue_reason", "SENDER_NOT_ALLOWED")),
+          ...lenField(9, kvBool("conversion_successful", false)),
+          ...lenField(9, kvInt("token_count", 150)),
+          ...lenField(9, kv("http.route", "/jobs/{id}")),
+          ...lenField(9, kv("password", "hunter2")),
+          ...lenField(9, kv("db.statement", "SELECT 1")),
+          ...lenField(9, kv("session_token", "sess-abc-123")),
+          ...lenField(9, kv("deploy_key", "ghp_abc123DEF456")),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      for (const needle of ["SENDER_NOT_ALLOWED", '"conversion_successful":"false"', '"token_count":"150"']) {
+        expect(onDisk).toContain(needle)
+      }
+      for (const needle of ["hunter2", "SELECT 1", "password", "sess-abc-123", "ghp_abc123DEF456"]) {
+        expect(onDisk).not.toContain(needle)
+      }
+      const outputs = [
+        (await runTrace(opts(root))).stdout,
+        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      expect(outputs[0]).toContain("GET /jobs/run")
+      expect(outputs[1]).toContain(TRACE_A)
+      expect(outputs[2]).toContain("silent_dequeue_reason=SENDER_NOT_ALLOWED")
+      expect(outputs[2]).toContain("conversion_successful=false")
+      expect(outputs[2]).toContain("token_count=150")
+      expect(outputs[2]).toContain("deploy_key=***")
+      const treeJson = JSON.parse(outputs[3]) as { spans: { attrs: Record<string, string> }[] }
+      expect(treeJson.spans[0].attrs["silent_dequeue_reason"]).toBe("SENDER_NOT_ALLOWED")
+      expect(treeJson.spans[0].attrs["token_count"]).toBe("150")
+      expect(treeJson.spans[0].attrs["deploy_key"]).toBe("***")
+      expect(treeJson.spans[0].attrs).not.toHaveProperty("password")
+      expect(treeJson.spans[0].attrs).not.toHaveProperty("db.statement")
+      expect(treeJson.spans[0].attrs).not.toHaveProperty("session_token")
+      for (const output of outputs) {
+        expect(output).not.toContain("hunter2")
+        expect(output).not.toContain("SELECT 1")
+        expect(output).not.toContain("sess-abc-123")
+        expect(output).not.toContain("ghp_abc123DEF456")
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("route words survive verbatim in name and url.path across all four shapes", async () => {
     const root = await tempRoot()
     try {

@@ -215,6 +215,14 @@ Bearer/credential forms) are never stored; structure (endpoints, short IDs,
 route words) is kept verbatim because traces stay local. Trace output is
 still semi-sensitive (it carries resource IDs) — review before pasting into
 public issues.
+Attribute gate: any non-secret key is stored (business attributes like
+`silent_dequeue_reason` included) after value sanitization. Dropped outright:
+secret-shaped keys (`password`, `secret`, `api_key`, `private_key`,
+`credential`, token-family keys, `authorization` header dumps — only the exact
+`token_count` metadata key is exempt) and raw-payload keys (`url.full`,
+`db.query.text`, headers, `exception.message`). Credential-shaped values
+still mask (`Bearer`/JWT/provider tokens/`key=value`/≥32-hex), everything
+else stores verbatim.
 
 Local vs second pipeline: local export ALWAYS targets the ow receiver
 (`http://127.0.0.1:4319`, `http/protobuf`) — never repurpose that endpoint

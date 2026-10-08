@@ -249,6 +249,113 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     expect(text).toContain("/orders/{id}")
   })
 
+  test("business attributes stored verbatim; secret keys dropped; token_count survives", async () => {
+    const anyBool = (value: boolean): number[] => [...tag(2, 0), ...encVarint(value ? 1 : 0)]
+    const body = requestBytes(
+      scopeSpans("api", [
+        spanBytes({
+          attrs: [
+            ["silent_dequeue_reason", anyString("SENDER_NOT_ALLOWED")],
+            ["conversion_successful", anyBool(false)],
+            ["token_count", anyInt(150)],
+            ["shard", anyString("db-01")],
+            ["password", anyString("hunter2")],
+            ["api_key", anyString("AKIAIOSFODNN7EXAMPLE")],
+            ["Authorization", anyString("Bearer xyz")],
+            ["client_secret", anyString("shh")],
+          ],
+        }),
+      ]),
+    )
+    const { text, spans } = await storeAndRead(body)
+    expect(spans[0].attrs["silent_dequeue_reason"]).toBe("SENDER_NOT_ALLOWED")
+    expect(spans[0].attrs["conversion_successful"]).toBe("false")
+    expect(spans[0].attrs["token_count"]).toBe("150")
+    expect(spans[0].attrs["shard"]).toBe("db-01")
+    for (const needle of ["hunter2", "AKIAIOSFODNN7EXAMPLE", "Bearer xyz", "shh"]) {
+      expect(text).not.toContain(needle)
+    }
+    for (const key of ["password", "api_key", "Authorization", "client_secret"]) {
+      expect(spans[0].attrs).not.toHaveProperty(key)
+    }
+  })
+
+  test("credential-shaped values mask; plain values survive verbatim", async () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c"
+    const hex40 = "9f3c1a7b2e4d8c6f1a2b3c4d5e6f708199aabbcc"
+    const { spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            attrs: [
+              ["auth_header", anyString("Bearer tok-abc")],
+              ["id_token", anyString(jwt)],
+              ["trace_seed", anyString(hex40)],
+              ["note", anyString("ref=abc token=hunter2-x")],
+              ["attempt", anyInt(42)],
+            ],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].attrs["auth_header"]).toBe("Bearer ***")
+    // H1: token-family keys are denied outright (drop ⊃ mask — strictly stronger,
+    // documented here, not silently weakened).
+    expect(spans[0].attrs).not.toHaveProperty("id_token")
+    expect(spans[0].attrs["trace_seed"]).toBe(":id")
+    expect(spans[0].attrs["note"]).toBe("***")
+    expect(spans[0].attrs["attempt"]).toBe("42")
+  })
+
+  test("H1+H3: token-family and synonym keys denied; token_count exempt", async () => {
+    const body = requestBytes(
+      scopeSpans("api", [
+        spanBytes({
+          attrs: [
+            ["access_token", anyString("ya29.abc")],
+            ["refresh_token", anyString("1//def")],
+            ["session_token", anyString("sess-abc")],
+            ["auth_token", anyString("aut-abc")],
+            ["aws.access_key_id", anyString("AKIAIOSFODNN7EXAMPLE")],
+            ["pwd", anyString("hunter2")],
+            ["passphrase", anyString("correct horse")],
+            ["token_count", anyInt(150)],
+          ],
+        }),
+      ]),
+    )
+    const { text, spans } = await storeAndRead(body)
+    for (const key of ["access_token", "refresh_token", "session_token", "auth_token", "aws.access_key_id", "pwd", "passphrase"]) {
+      expect(spans[0].attrs).not.toHaveProperty(key)
+    }
+    // token_count is metadata, not a secret: exact-name exemption, locked here.
+    expect(spans[0].attrs["token_count"]).toBe("150")
+    expect(text).not.toContain("hunter2")
+    expect(text).not.toContain("AKIAIOSFODNN7EXAMPLE")
+  })
+
+  test("H2: provider credentials and PEM blocks mask to ***", async () => {
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
+    const { spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            attrs: [
+              ["deploy_key", anyString("ghp_abc123DEF456")],
+              ["stripe_key", anyString("sk_live_abc123XYZ")],
+              ["aws_id", anyString("AKIAIOSFODNN7EXAMPLE")],
+              ["tls_bundle", anyString(pem)],
+            ],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].attrs["deploy_key"]).toBe("***")
+    expect(spans[0].attrs["stripe_key"]).toBe("***")
+    expect(spans[0].attrs["aws_id"]).toBe("***")
+    expect(spans[0].attrs["tls_bundle"]).toBe("***")
+  })
+
   test("S1: query strings are stripped from name and values", async () => {
     const { text, spans } = await storeAndRead(
       requestBytes(scopeSpans("api", [spanBytes({ name: "GET /x?token=abc", attrs: [["url.path", anyString("/x?token=abc")]] })])),

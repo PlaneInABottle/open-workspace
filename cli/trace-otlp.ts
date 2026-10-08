@@ -182,28 +182,39 @@ const firstFixed = (fields: Field[], field: number): bigint | null => {
   return null
 }
 
-/** A3 — exact-key allowlist. Everything else (url.full, db.query.text,
- * http.request.header.*, exception.message, …) is dropped before storage. */
-const ATTR_ALLOWLIST = new Set([
-  "http.request.method",
-  "http.response.status_code",
-  "http.route",
-  "url.path",
-  "url.scheme",
-  "server.address",
-  "server.port",
-  "db.system.name",
-  "db.namespace",
-  "db.operation.name",
-  "db.collection.name",
-  "rpc.system",
-  "rpc.service",
-  "rpc.method",
-  "messaging.system",
-  "messaging.operation.name",
-  "error.type",
-  "exception.type",
+/** Key gate (deny-list, evaluated before any value handling). Strong-secret
+ * words only. Bare `token` is NOT in the word list — but token-family KEYS
+ * are denied by the explicit substring rule below, because field review
+ * disproved the old claim that value rules catch them (opaque values like
+ * `sess-abc` match no value shape). The single exemption is the exact key
+ * `token_count` (LLM-usage metadata, locked by test). The retained
+ * technical drops predate this gate: those keys carry raw payloads by
+ * construction (full URLs, query text, headers, messages, code refs), so
+ * they stay dropped. */
+const SECRET_KEY_PATTERN = /password|passwd|pwd|passphrase|secret|credential|a(?:pi|ccess)[_-]?key|private[_-]?key/i
+
+const TECHNICAL_DROP_KEYS = new Set([
+  "url.full",
+  "url.query",
+  "db.query.text",
+  "db.statement",
+  "user_agent.original",
+  "exception.message",
+  "exception.stacktrace",
 ])
+
+const TECHNICAL_DROP_PREFIXES = ["http.request.header.", "http.response.header.", "code."]
+
+const isDeniedKey = (key: string): boolean => {
+  const lowered = key.toLowerCase()
+  if (SECRET_KEY_PATTERN.test(lowered)) return true
+  // Token-family keys carry opaque secrets no value shape can catch; the
+  // exact `token_count` metadata key is exempt (locked by test).
+  if (lowered !== "token_count" && lowered.includes("token")) return true
+  if (lowered === "authorization" || lowered.split(/[._-]/).includes("authorization")) return true
+  if (TECHNICAL_DROP_KEYS.has(lowered)) return true
+  return TECHNICAL_DROP_PREFIXES.some((prefix) => lowered.startsWith(prefix))
+}
 
 /** S1 — strip everything from the first `?` or `#`. */
 const stripQuery = (value: string): string => {
@@ -279,6 +290,36 @@ const maskCredentials = (value: string): string => {
   return value
 }
 
+/** Credential-shaped SUBSTRINGS anywhere in a value (shared by names and
+ * every accepted attribute value — one copy, no fork): PEM blocks mask the
+ * whole value; `Bearer` tokens, provider-prefixed tokens (`sk_live_`,
+ * `ghp_`, …), AWS access-key IDs and JWT dot-triples mask to `***`; bare
+ * hex runs ≥32 (existing threshold semantics) to `:id`. The rest passes
+ * through verbatim. All patterns are substring-safe for shared `/g` use
+ * (only ever applied via `String.replace`, which resets matching per call). */
+const BEARER_PATTERN = /\bBearer\s+[^\s]+/gi
+const JWT_PATTERN = /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_+\/=~-]+\.[A-Za-z0-9_+\/=~-]+/g
+const HEX_RUN_PATTERN = /[0-9a-fA-F]{32,}/g
+const PEM_HEADER_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/
+const AWS_KEY_PATTERN = /\bAKIA[0-9A-Z]{16}\b/g
+const PROVIDER_TOKEN_PATTERN = /\b(?:sk_live_|sk_test_|ghp_|github_pat_|xox[bap]-|glpat-)[A-Za-z0-9_\-]+/g
+
+const maskCredentialSubstrings = (value: string): string => {
+  if (PEM_HEADER_PATTERN.test(value)) return "***"
+  return value
+    .replace(BEARER_PATTERN, "Bearer ***")
+    .replace(PROVIDER_TOKEN_PATTERN, "***")
+    .replace(AWS_KEY_PATTERN, "***")
+    .replace(JWT_PATTERN, "***")
+    .replace(HEX_RUN_PATTERN, ":id")
+}
+
+/** Shared value-sanitizer core: substring credential shapes, then the
+ * whole-value S3 forms. Callers apply S1 stripping (and S2 path shaping for
+ * path-like values) first; the byte cap stays outermost. */
+const sanitizeValueCore = (value: string): string =>
+  maskCredentials(maskCredentialSubstrings(maskCredentialSegments(value)))
+
 /** S5 — byte cap last (mirrors the `truncateLogLine` shape), so truncation
  * can never be the thing that "hides" a secret. */
 const truncateBytes = (value: string, maxBytes: number): string => {
@@ -292,12 +333,12 @@ const truncateBytes = (value: string, maxBytes: number): string => {
 }
 
 const sanitizeName = (name: string, maxBytes: number): string =>
-  truncateBytes(maskCredentials(maskCredentialSegments(maskPathSegments(stripQuery(name)))), maxBytes)
+  truncateBytes(sanitizeValueCore(maskPathSegments(stripQuery(name))), maxBytes)
 
-const sanitizeAttrValue = (key: string, value: string, maxBytes: number): string => {
+const sanitizeAttrValue = (value: string, maxBytes: number): string => {
   const stripped = stripQuery(value)
-  const shaped = key === "url.path" ? maskPathSegments(stripped) : stripped
-  return truncateBytes(maskCredentials(maskCredentialSegments(shaped)), maxBytes)
+  const shaped = stripped.includes("/") ? maskPathSegments(stripped) : stripped
+  return truncateBytes(sanitizeValueCore(shaped), maxBytes)
 }
 
 /** AnyValue → scalar string, or null for composite (array/kvlist) values,
@@ -371,8 +412,8 @@ const decodeSpan = (
     } catch {
       continue
     }
-    if (pair === null || !ATTR_ALLOWLIST.has(pair.key) || pair.key in attrs) continue
-    attrs[pair.key] = sanitizeAttrValue(pair.key, pair.value, attrValueMaxBytes)
+    if (pair === null || pair.key in attrs || isDeniedKey(pair.key)) continue
+    attrs[pair.key] = sanitizeAttrValue(pair.value, attrValueMaxBytes)
     kept += 1
   }
   let status: TraceSpanStatus = "unset"
