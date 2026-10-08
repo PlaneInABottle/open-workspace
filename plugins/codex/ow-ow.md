@@ -35,7 +35,7 @@ ow prompts <session>                  # latest 20 user instructions, chronologic
 ow reads <session> [--since 1d]       # which files were read most, by whom, which lines
 ow stuck <session> [--since 1d] [--tree]  # retries, overlap depth, slow commands
 ow timeline [oturum] [--trace <id>] [--since 1d]  # agent rows + spans merged; kesin/exact vs tahmini/estimated links
-ow show <session> --json              # stable machine output (show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace)
+ow show <session> --json              # stable machine output (all commands, English keys)
 ow show                               # no session → latest session
 ```
 
@@ -44,9 +44,8 @@ latest session. Exits: 0 ok, 1 structural failure, 2 usage error; non-interactiv
 
 ## Service supervision (`up`/`down`/`ps`/`logs`)
 
-Separate surface: supervises dev services declared in a repo's `ow.yaml`
-(dev servers, watch-only tails) as plain child processes — no Docker,
-no restarts, no dashboard.
+Supervises dev services from a repo's `ow.yaml` as plain child processes —
+no Docker, restarts, or dashboard.
 
 ```sh
 ow up --check --file ow.yaml   # validate only (unknown fields warn, never fail)
@@ -97,6 +96,16 @@ ow doctor                                          # trace open/closed + span co
 - Proving a flow: generate the trace ID BEFORE the action, deliver via `set
   headers` (rotates, clears with `'{}'`); never `open --headers` (per-origin
   sticky binding keeps the old ID).
+- `doctor` hints, in order: 0 spans → liveness (`ow ps`); `bilinmeyen`
+  service → set OTEL_SERVICE_NAME; not-listening → port held by another
+  process (bind failure only warns).
+- One port, one receiver: two OTLP listeners on 4319 → first wins. Diagnose:
+  `lsof -i :4319`, `doctor` last-span age (stale = spans go elsewhere).
+  Local stays 4319; remote backends (Langfuse) get a separate exporter
+  with short timeouts — never repurpose the local endpoint.
+- Business attributes flow (`silent_dequeue_reason`, `conversion_successful`;
+  `token_count` exempt); credential keys/values drop or mask. ERROR renders
+  only when the app sets status — `unset` means the app never said.
 
 ## Working with logs and traces (best practices)
 
@@ -109,41 +118,32 @@ ow doctor                                          # trace open/closed + span co
 - Prefer `--json` when piping into further analysis (stable English keys).
 - Join the two worlds by traceId: `ow trace <id>` for timing across services,
   `ow logs --grep <traceId>` for values (once apps log it).
-- Respect two lags: sidecar rows land ~5s after session end; browser spans
-  arrive 5–15s late in batches (`--wait 15s` covers it).
 
 ## Reading the output (Turkish labels)
 
-- `görev: ... (N komut, M patlak)` — task header. `[n] <signature> — <outcome>
-  xN` — repeats of one command shape; `(agent)` tag shows who ran it.
-- `kayıt:` — real command (clipped); full text via `--show`. `niyet:` — the
-  agent's sentence. `(sebep: ...)` / `çıktı:` on failures — diagnosis and raw
-  output. `(görev yok)` — intent missing; report the count, don't invent
-  causes. `(klasör yok)` — cosmetic only.
+- `görev: ... (N komut, M patlak)` — task header. `[n] <sig> — xN` — repeats.
+  `kayıt:` real command (full via `--show`); `niyet:` agent's sentence.
+  `(sebep:)`/`(çıktı:)` on failures. `(görev yok)` — intent missing, report
+  the count. `(klasör yok)` — cosmetic.
 
 ## Budgets (hard numbers, respect them)
 
-- Success excerpts: 2KB stored, 300 chars shown. Failures: up to 16KB stored.
-- `--show-fails` opens EVERY failure at full size. Check the failure count in
-  the summary first; with more than 2–3 failures open them one by one with
-  `--show N`, most-repeated shape first.
-- `--full` dumps every body whole — always pair with a narrow `--since`.
+- Success excerpts: 2KB stored, 300 chars shown; failures: up to 16KB.
+- `--show-fails`/`--full` open everything — check counts first, keep
+  `--since` narrow (3h ≈ 150KB); open failures one by one, repeats first.
 
 ## Rules
 
 - `doctor` first when results look wrong (stale tail, missing session).
-- Sidecar writes are asynchronous — wait ~5 seconds after a session ends
-  before reading, or the tail may be missing.
+- Sidecar rows land ~5s after session end; browser spans arrive 5–15s late
+  in batches (`--wait 15s`). Wait before concluding absence.
 - Honesty: report only what the output shows; `completed` with no exit code
   is unknown, not success. Never invent causes. Stuck claims need `--stuck`
   numbers, not impressions.
 
 ## Analyzing a session (method)
 
-1. Start with a `--since 1d` summary: where is the volume, where are failures?
-   For coordinator work spanning subagents, add `--tree`.
-2. If failures exist: `--show-fails` for full text of those only.
-3. Report: what the task was, what repeated, what failed (with reason),
-   one-sentence lesson for next time.
-4. Close the loop: propose a script or prompt/skill rule easing the repeat.
-   Next analysis checks whether repeats dropped.
+1. `--since 1d` summary first (add `--tree` for subagent work): volume, failures?
+2. Failures → `--show-fails` for those bodies only.
+3. Report: task, repeats, failures (with reason), one lesson for next time.
+4. Close the loop: propose a script or rule easing the repeat.
