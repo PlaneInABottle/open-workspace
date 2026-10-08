@@ -258,7 +258,7 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     expect(text).not.toContain("abc")
   })
 
-  test("S2/S3 sentinel: secrets inside allowed fields never reach disk", async () => {
+  test("S2/S3 sentinel: credential shapes never reach disk; short-ID structure is kept", async () => {
     const sentinel = "ZZSENTINELZZ"
     const { text, spans } = await storeAndRead(
       requestBytes(
@@ -273,23 +273,56 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
         ]),
       ),
     )
-    expect(spans[0].name).toBe("GET /reset/:id")
-    expect(spans[0].attrs["url.path"]).toBe("/reset/:id")
+    // doctrine-C: the 20-char mixed segment is structure (short ID), kept verbatim;
+    // the Bearer credential shape is a value and stays masked.
+    expect(spans[0].name).toBe(`GET /reset/${sentinel}9f3c1a7b`)
+    expect(spans[0].attrs["url.path"]).toBe(`/reset/${sentinel}9f3c1a7b`)
     expect(spans[0].attrs["http.route"]).toBe("Bearer ***")
-    expect(text).not.toContain(sentinel)
+    expect(text).toContain(sentinel)
   })
 
-  test("S2: identifiers masked, templates and route words kept", async () => {
+  test("doctrine-C: short IDs, slugs and words kept verbatim; templates pass through", async () => {
     const { spans } = await storeAndRead(
       requestBytes(
         scopeSpans("api", [
           spanBytes({ name: "GET /orders/12345" }),
           spanBytes({ name: "GET /orders/{id}" }),
           spanBytes({ name: "GET /health" }),
+          spanBytes({ name: "GET /api/v1/stations/query" }),
+          spanBytes({ name: "GET /archive/2024/03/report" }),
         ]),
       ),
     )
-    expect(spans.map((s) => s.name)).toEqual(["GET /orders/:id", "GET /orders/{id}", "GET /health"])
+    // doctrine-C: structure always — short numeric segments are route words, not IDs.
+    expect(spans.map((s) => s.name)).toEqual([
+      "GET /orders/12345",
+      "GET /orders/{id}",
+      "GET /health",
+      "GET /api/v1/stations/query",
+      "GET /archive/2024/03/report",
+    ])
+  })
+
+  test("doctrine-C rule 3: UUID and ≥32-hex runs mask; slugs and short runs survive", async () => {
+    const longHex = "9f3c1a7b2e4d8c6f1a2b3c4d5e6f7081"
+    const { spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({ name: "GET /o/9f3c1a7b-2e4d-4c6f-8234-56789abcdef0/end" }),
+          spanBytes({ name: `GET /f/${longHex}/end` }),
+          spanBytes({ name: "GET /orders/42" }),
+          spanBytes({ name: "GET /blog/hello-world-2024" }),
+          spanBytes({ name: "GET /api/v2/status" }),
+        ]),
+      ),
+    )
+    expect(spans.map((s) => s.name)).toEqual([
+      "GET /o/:id/end",
+      "GET /f/:id/end",
+      "GET /orders/42",
+      "GET /blog/hello-world-2024",
+      "GET /api/v2/status",
+    ])
   })
 
   test("lone or malformed % never throws and is stored verbatim", async () => {
@@ -311,7 +344,7 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     }
   })
 
-  test("hostile service name is stripped/masked like span names; sentinel never reaches disk", async () => {
+  test("hostile service name: query stripped, credential shapes masked, short-ID structure kept", async () => {
     const sentinel = "ZZSENTINELZZ"
     const root = await tempRoot()
     try {
@@ -321,8 +354,9 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
       const spans = decodeTraceRequest(body)
       for (const span of spans) store.append(span)
       await store.flush()
-      expect(spans[0].service).toBe("/reset/:id")
-      expect(await readFile(spansFile, "utf8")).not.toContain(sentinel)
+      // doctrine-C: S1 strips ?token=abc; the remaining 20-char segment is structure, kept verbatim.
+      expect(spans[0].service).toBe(`/reset/${sentinel}9f3c1a7b`)
+      expect(await readFile(spansFile, "utf8")).not.toContain("token=abc")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

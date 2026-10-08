@@ -396,7 +396,7 @@ describe("trace-receiver HTTP contract", () => {
     }
   })
 
-  test("secret sentinel e2e: allowed fields + name + Bearer → nowhere under .ow or in warnings", async () => {
+  test("secret sentinel e2e: credential shapes masked, short-ID structure kept (doctrine-C)", async () => {
     const root = await tempRoot()
     const sentinel = "ZZSENTINELZZ"
     try {
@@ -408,9 +408,13 @@ describe("trace-receiver HTTP contract", () => {
         ])
         expect((await postTraces(receiver.port, body)).status).toBe(200)
         expect(warnings.join("\n")).not.toContain(sentinel)
-        expect(await grepTree(join(root, ".ow"), sentinel)).toEqual([])
+        // doctrine-C: the 20-char mixed segment is structure (short ID) — visible on
+        // disk by design; the Bearer credential value must appear nowhere.
+        const hits = await grepTree(join(root, ".ow"), sentinel)
+        expect(hits).toEqual([join(root, ".ow", "traces", "spans.jsonl")])
+        expect(await readFile(join(root, ".ow", "traces", "spans.jsonl"), "utf8")).not.toContain(`Bearer ${sentinel}`)
         const { spans } = await readSpansFile(join(root, ".ow", "traces", "spans.jsonl"))
-        expect(spans[0].attrs["url.path"]).toBe("/reset/:id")
+        expect(spans[0].attrs["url.path"]).toBe(`/reset/${sentinel}9f3c1a7b`)
       } finally {
         await receiver.stop()
       }

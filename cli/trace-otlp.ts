@@ -219,20 +219,21 @@ const looksTemplated = (segment: string): boolean =>
   /^:[A-Za-z0-9_]+$/.test(segment) ||
   /^<[^/<>]+>$/.test(segment)
 
-/** S2 — a `/`-separated segment is an identifier (→ `:id`) when it matches
- * an ID shape: a long pure-digit run (≥5 — years, months, ports and other
- * short numeric route words survive), hex ≥8 chars, a UUID, or a length
- * ≥16 mixed-alphanumeric blob. Route words and already-templated segments
- * (`{id}`, `:id`, `<path:path>`, `*`) pass through. Lossy by design, and
- * deliberately mask-leaning: ambiguous shapes stay masked. */
+/** Doctrine-C ("values never, structure always"), segment-level, first match
+ * wins. A segment is replaced by `:id` ONLY for long opaque identifier
+ * shapes: UUIDs and hex runs ≥32 chars. Everything else — short ints,
+ * slugs, route words, years, ports — is kept VERBATIM, as are
+ * already-templated segments (`{id}`, `:id`, `<path:path>`-style Flask
+ * converters, `*`). Credential `key=value` shapes are NOT handled here
+ * (rule 1 in `maskCredentialSegments` + S1/S3 remain the safety net, and
+ * stay masking). Note: base64url-ish ≥32 runs are deliberately NOT matched
+ * — telling them apart from long slugs takes entropy heuristics, and a
+ * wrong guess here leaks structure either way; when in doubt on a shape,
+ * this table keeps (credential shapes still mask). */
 const isIdentifierSegment = (segment: string): boolean => {
   if (segment.length === 0 || looksTemplated(segment)) return false
-  if (/^[0-9]{5,}$/.test(segment)) return true
-  if (/^[0-9a-fA-F]{8,}$/.test(segment)) return true
   if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(segment)) return true
-  if (segment.length >= 16 && /[0-9]/.test(segment) && /[A-Za-z]/.test(segment) && /^[A-Za-z0-9_-]+$/.test(segment)) {
-    return true
-  }
+  if (/^[0-9a-fA-F]{32,}$/.test(segment)) return true
   return false
 }
 

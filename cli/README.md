@@ -207,6 +207,11 @@ Flask worker crossed one request into a single `traceId`
 by the agents, no manual header code), decoded by the same M1 path as the
 unit fixtures. Only allowlisted keys land on disk; path identifiers arrive
 masked (`/orders/:id`), query strings and `Authorization` values never do.
+Sanitizer doctrine: values (query strings, credential key=value pairs,
+Bearer/credential forms) are never stored; structure (endpoints, short IDs,
+route words) is kept verbatim because traces stay local. Trace output is
+still semi-sensitive (it carries resource IDs) — review before pasting into
+public issues.
 
 ### İzleme tarifleri (tarayıcı)
 

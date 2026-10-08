@@ -487,7 +487,7 @@ describe("trace --json envelopes", () => {
 })
 
 describe("trace secret safety on the read path", () => {
-  test("writer-masked values stay masked through list, tree, and json output", async () => {
+  test("writer-masked credential shapes stay masked; short-ID structure is kept verbatim", async () => {
     const root = await tempRoot()
     const sentinel = "ZZSENTINELZZ"
     try {
@@ -526,15 +526,20 @@ describe("trace secret safety on the read path", () => {
       const store = createTraceStore(spansFile)
       for (const span of decodeTraceRequest(encoded)) store.append(span)
       await store.flush()
-      expect(await readFile(spansFile, "utf8")).not.toContain(sentinel)
+      // doctrine-C: the 20-char mixed segment is structure (short ID), kept verbatim;
+      // the Bearer credential value stays masked — it is the only sentinel-free guarantee here.
+      expect(await readFile(spansFile, "utf8")).toContain(`/reset/${sentinel}9f3c1a7b`)
       const outputs = [
         (await runTrace(opts(root))).stdout,
         (await runTrace(opts(root, { json: true }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
         (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
       ]
-      for (const output of outputs) expect(output).not.toContain(sentinel)
-      expect(outputs[2]).toContain("GET /reset/:id")
+      for (const output of outputs) {
+        expect(output).toContain(`/reset/${sentinel}9f3c1a7b`)
+        expect(output).not.toContain(`Bearer ${sentinel}`)
+      }
+      expect(outputs[2]).toContain("Bearer ***")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -709,7 +714,7 @@ describe("trace secret safety on the read path", () => {
     }
   })
 
-  test("short numeric route words survive; identifiers still mask, mixed case included", async () => {
+  test("doctrine-C: short structure verbatim, ≥32-hex still masks, mixed case included", async () => {
     const root = await tempRoot()
     try {
       const spansFile = join(root, ".ow", "traces", "spans.jsonl")
@@ -745,7 +750,10 @@ describe("trace secret safety on the read path", () => {
         }
         const scope = [
           ...one("cd".repeat(8), "GET /archive/2024/03/report", "/archive/2024/03/report"),
+          // doctrine-C: the 20-hex segment below is structure (short ID), kept verbatim.
           ...one("ce".repeat(8), "GET /api/users/9f3c1a7b2e4d8c6fa1b2/profile", "/api/users/{id}/profile"),
+          // doctrine-C rule 3: a ≥32-hex run is an opaque identifier → :id.
+          ...one("cf".repeat(8), "GET /f/9f3c1a7b2e4d8c6f1a2b3c4d5e6f7081/end", "/f/{id}/end"),
         ]
         const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
         return new Uint8Array(lenField(1, resource))
@@ -755,11 +763,69 @@ describe("trace secret safety on the read path", () => {
       await store.flush()
       const onDisk = await readFile(spansFile, "utf8")
       expect(onDisk).toContain("GET /archive/2024/03/report")
-      expect(onDisk).toContain("GET /api/users/:id/profile")
-      expect(onDisk).not.toContain("9f3c1a7b2e4d8c6fa1b2")
+      expect(onDisk).toContain("GET /api/users/9f3c1a7b2e4d8c6fa1b2/profile")
+      expect(onDisk).toContain("GET /f/:id/end")
+      expect(onDisk).not.toContain("9f3c1a7b2e4d8c6f1a2b3c4d5e6f7081")
       const tree = (await runTrace(opts(root, { traceId: TRACE_A }))).stdout
       expect(tree).toContain("GET /archive/2024/03/report")
-      expect(tree).toContain("GET /api/users/:id/profile")
+      expect(tree).toContain("GET /api/users/9f3c1a7b2e4d8c6fa1b2/profile")
+      expect(tree).toContain("GET /f/:id/end")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("doctrine-C rule 3: UUID path masks to :id across all four shapes", async () => {
+    const root = await tempRoot()
+    const uuid = "9f3c1a7b-2e4d-4c6f-8234-56789abcdef0"
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8(`GET /o/${uuid}/end`)),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("url.path", `/o/${uuid}/end`)),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).toContain("GET /o/:id/end")
+      expect(onDisk).not.toContain(uuid)
+      const outputs = [
+        (await runTrace(opts(root))).stdout,
+        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      for (const output of outputs) {
+        expect(output).toContain("/o/:id/end")
+        expect(output).not.toContain(uuid)
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }
