@@ -602,6 +602,27 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
     expect(spans[0].errorFrames?.at(-1)).toBe("+11")
   })
 
+  test("hostile frame shapes mask: key=value function, provider token, long hex path", async () => {
+    const hex = "9f3c1a7b2e4d8c6f1a2b3c4d5e6f708199aabbcc"
+    const stack = [
+      `  File "/app/pay.py", line 4, in password=hunter2`,
+      `  File "/app/ghp_abcdefghijklmnopqrstuvwxyz0123/x.py", line 5, in charge`,
+      `  File "/app/${hex}/y.py", line 6, in save`,
+    ].join("\n")
+    const { text, spans } = await storeAndRead(
+      requestBytes(
+        scopeSpans("api", [
+          spanBytes({
+            status: 2,
+            events: [{ name: "exception", attrs: [["exception.stacktrace", anyString(stack)]] }],
+          }),
+        ]),
+      ),
+    )
+    expect(spans[0].errorFrames).toEqual(["/app/***", "/app/***/x.py:5 in charge", "/app/:id/y.py:6 in save"])
+    for (const needle of ["hunter2", "ghp_abcdef", hex]) expect(text).not.toContain(needle)
+  })
+
   test("hostile message shapes mask: Bearer, long token", async () => {
     const { text, spans } = await storeAndRead(
       requestBytes(
