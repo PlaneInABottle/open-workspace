@@ -520,7 +520,7 @@ describe("trace secret safety on the read path", () => {
           ...lenField(9, kv("http.route", `Bearer ${sentinel}`)),
         ]
         const scope = [...lenField(2, span)]
-        const resource = [...lenField(1, kv("service.name", "api")), ...lenField(2, scope)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
         return new Uint8Array(lenField(1, resource))
       })()
       const store = createTraceStore(spansFile)

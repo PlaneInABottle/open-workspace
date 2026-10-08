@@ -372,12 +372,18 @@ const decodeSpan = (
   }
 }
 
-/** Resource field-1 entries already are `KeyValue` messages (split by the
- * outer `readFields`); decode each directly. The service name runs the same
- * sanitize shape as span names (S1 strip, S2 segment masking, S3 credential
- * masking, S5 byte cap). Best-effort: failures keep the `"bilinmeyen"`
- * fallback and the spans still decode. */
-const decodeServiceName = (reader: Reader, fields: Field[], attrValueMaxBytes: number): string => {
+/** ResourceSpans field-1 is the `Resource` message (a sequence of
+ * field-1 `KeyValue` entries); decode each entry directly. The service name
+ * runs the same sanitize shape as span names (S1 strip, S2 segment
+ * masking, S3 credential masking, S5 byte cap). Best-effort: failures keep
+ * the `"bilinmeyen"` fallback and the spans still decode. */
+const decodeServiceName = (reader: Reader, resourceBytes: Uint8Array, attrValueMaxBytes: number): string => {
+  let fields: Field[]
+  try {
+    fields = readFields(reader.child(resourceBytes, `${reader.path}.resource`))
+  } catch {
+    return "bilinmeyen"
+  }
   for (const entry of fields) {
     if (entry.field !== 1 || entry.wire !== 2 || entry.bytes === null) continue
     try {
@@ -419,7 +425,8 @@ export const decodeTraceRequest = (body: Uint8Array, limits: TraceDecodeLimits =
     resourceIndex += 1
     const resourceReader = reader.child(entry.bytes, resourcePath)
     const resourceFields = readFields(resourceReader)
-    const service = decodeServiceName(resourceReader, resourceFields, attrValueMaxBytes)
+    const resourceBytes = firstLen(resourceFields, 1)
+    const service = resourceBytes === null ? "bilinmeyen" : decodeServiceName(resourceReader, resourceBytes, attrValueMaxBytes)
     let scopeIndex = 0
     for (const scopeEntry of resourceFields) {
       if (scopeEntry.field !== 2 || scopeEntry.wire !== 2 || scopeEntry.bytes === null) continue

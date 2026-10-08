@@ -76,7 +76,7 @@ const spanBytes = (o: SpanOpts): number[] => [
 ]
 
 const scopeSpans = (service: string | null, spans: number[][]): number[] => [
-  ...(service === null ? [] : lenField(1, kv("service.name", anyString(service)))),
+  ...(service === null ? [] : lenField(1, lenField(1, kv("service.name", anyString(service))))),
   ...lenField(2, spans.flatMap((s) => lenField(2, s))),
 ]
 

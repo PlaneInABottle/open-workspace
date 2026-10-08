@@ -141,6 +141,71 @@ Capture batches in memory (bounded) and drops with a visible `…[atıldı: N
 satır]…` event rather than blocking the child. An early-exiting `logs:`
 tail records `logs komutu bitti` + `logsEnded` while siblings keep running.
 
+### İzleme tarifleri (per-stack)
+
+Distributed tracing is opt-in per repo: a `trace:` block starts the embedded
+loopback OTLP/HTTP receiver (`127.0.0.1:4319` by default, `trace: {port: N}`
+overrides), and each service opts in by writing `env:` explicitly — `ow`
+never injects OTEL variables into services (D4). Spans land redacted and
+capped in `<root>/.ow/traces/spans.jsonl`; read them with `ow trace`
+(recent list) and `ow trace <id>` (one parent/child tree).
+
+```yaml
+trace:
+  port: 4319
+services:
+  api:
+    cmd: ./gradlew bootRun
+    env: {JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar",
+          OTEL_SERVICE_NAME: api,
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319",
+          OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf,
+          OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
+  worker:
+    cmd: opentelemetry-instrument python -m app
+    env: {OTEL_SERVICE_NAME: worker,
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319",
+          OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf,
+          OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
+```
+
+Rules that are load-bearing, not stylistic:
+
+- `OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf` is pinned in every recipe:
+  the receiver decodes protobuf only (Java's first-party exporters ship
+  `grpc` + `http/protobuf`; a `grpc` default would silently send nothing).
+- `OTEL_METRICS_EXPORTER=none` + `OTEL_LOGS_EXPORTER=none` are mandatory:
+  the receiver serves `/v1/traces` only (anything else is 404), so leaving
+  metrics/logs enabled spams the service's own stdout with exporter errors.
+- The Java agent jar is never auto-downloaded. Provision it by hand into
+  the conventional path, then `ow doctor` reports present/absent:
+  `mkdir -p .ow/otel && curl -L -o .ow/otel/opentelemetry-javaagent.jar https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar`
+- `-javaagent` resolves relative to the service `cwd`; use an absolute jar
+  path when the service `cwd` differs from the `ow.yaml` root.
+
+Python + `uv` (verified 2026-10-08, distro 0.66b1): `opentelemetry-bootstrap
+-a install` fails inside a `uv`-managed venv because bootstrap shells out
+to `python -m pip` and uv venvs ship no pip. Skip bootstrap; install the
+needed instrumentors with uv directly, then run the venv's own
+`opentelemetry-instrument` binary:
+
+```sh
+uv venv --python 3.13 svc && uv pip install --python svc/bin/python \
+  opentelemetry-distro opentelemetry-exporter-otlp \
+  flask opentelemetry-instrumentation-flask opentelemetry-instrumentation-requests
+OTEL_SERVICE_NAME=worker OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4319 \
+  OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+  OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none \
+  svc/bin/opentelemetry-instrument svc/bin/python svc/worker.py
+```
+
+Interop proof (kept, disposable clone): javaagent 2.32.0 on JDK 24 →
+Flask worker crossed one request into a single `traceId`
+(`api`-server → `api`-client → `worker`-server, W3C `traceparent` handled
+by the agents, no manual header code), decoded by the same M1 path as the
+unit fixtures. Only allowlisted keys land on disk; path identifiers arrive
+masked (`/orders/:id`), query strings and `Authorization` values never do.
+
 ## Change discipline (evidence before code)
 
 No addition lands on the strength of an idea. Every change must show,

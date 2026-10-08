@@ -59,7 +59,7 @@ const validBody = (name = "GET /api/x", attrs: [string, string][] = []): Uint8Ar
     ...fixed64(1_012_400_000n),
     ...attrs.flatMap(([k, v]) => lenField(9, kv(k, v))),
   ]
-  const resource: number[] = [...lenField(1, kv("service.name", "api")), ...lenField(2, lenField(2, span))]
+  const resource: number[] = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, lenField(2, span))]
   return new Uint8Array(lenField(1, resource))
 }
 
