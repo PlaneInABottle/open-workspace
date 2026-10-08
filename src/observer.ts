@@ -577,7 +577,7 @@ export async function listSessions(options: {
   const prompts = await sessionFirstPrompts({ dbPath: options.dbPath, sessionIDs: cappedIDs });
   const children = await sessionChildCounts({ dbPath: options.dbPath, sessionIDs: cappedIDs });
   const dirs = await sessionDirectories({ dbPath: options.dbPath, sessionIDs: cappedIDs });
-  const capped: SessionInfo[] = sessions.slice(0, maxSessions).map(entry => ({
+  const resolved: SessionInfo[] = sessions.slice(0, maxSessions).map(entry => ({
     sessionID: entry.sessionID,
     title: displayTitle({
       sessionID: entry.sessionID,
@@ -593,6 +593,12 @@ export async function listSessions(options: {
     workdir: entry.workdir ?? dirs.get(entry.sessionID) ?? null,
     childCount: children.get(entry.sessionID) ?? 0,
   }));
+  // Re-apply the dir filter on the resolved workdir: workdir-less sidecar
+  // rows (tool-calls) bypass the row-level filter, then inherit a stored
+  // directory that may lie outside it.
+  const capped = options.dir
+    ? resolved.filter(entry => typeof entry.workdir === 'string' && entry.workdir.includes(options.dir as string))
+    : resolved;
   if (sessions.length > maxSessions) warnings.push(`session list capped at ${maxSessions}; narrow the window`);
   return { sessions: capped, warnings };
 }

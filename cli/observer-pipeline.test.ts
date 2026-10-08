@@ -294,6 +294,24 @@ describe("listSessions", () => {
     expect(filtered.map((s) => s.sessionID)).toEqual(["s1"])
   })
 
+  test("dir filter applies to stored fallback too (workdir-less rows don't leak)", async () => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { Database } = await import("bun:sqlite")
+    const dir = await mkdtemp(joinPath(tmpdir(), "list-test-"))
+    const logPath = joinPath(dir, "events.jsonl")
+    await writeFile(logPath, JSON.stringify({ sessionID: "s9", timestamp: "2026-10-05T10:00:00.000Z", kind: "tool-call", tool: "subagent", outcome: "completed" }) + "\n")
+    const dbPath = joinPath(dir, "opencode.db")
+    const db = new Database(dbPath)
+    db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT)")
+    db.prepare("INSERT INTO session_v2 (id, directory) VALUES (?, ?)").run("s9", "/elsewhere/proj")
+    db.close()
+    const { listSessions } = await import("./join")
+    expect((await listSessions({ logPath, dbPath, dir: "/a/resai" })).length).toBe(0)
+    expect((await listSessions({ logPath, dbPath, dir: "/elsewhere" })).map((s) => s.sessionID)).toEqual(["s9"])
+  })
+
   test("falls back to stored directory when sidecar rows lack workdir", async () => {
     const { mkdtemp, writeFile } = await import("node:fs/promises")
     const { tmpdir } = await import("node:os")

@@ -408,6 +408,7 @@ export const listSessions = async (options: {
   }
   return [...by.entries()]
     .map(([sessionID, info]) => ({ sessionID, ...info }))
+    .filter((entry) => !options.dir || (typeof entry.workdir === "string" && entry.workdir.startsWith(options.dir)))
     .sort((a, b) => (b.last ?? "").localeCompare(a.last ?? ""))
 }
 
