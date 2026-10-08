@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { parseUpFile } from "./up-schema"
 import { downAll, probePort, runSupervised, type UpLineHandler } from "./up-supervisor"
 import {
   acquireLock,
@@ -419,5 +420,29 @@ describe("detach quoting", () => {
     const shell = superviseShell("/bin/ow", null, evil, "/tmp/x.out")
     expect(shell).toContain(shQuote(evil))
     expect(shell).toContain("echo $!")
+  })
+})
+
+describe("per-service env merge", () => {
+  test("service env overrides inherited env, OW_SERVICE always wins", async () => {
+    const root = await tempRoot()
+    const saved = { inherit: process.env.OW_ENV_TEST_INHERIT, over: process.env.OW_ENV_TEST_OVER }
+    process.env.OW_ENV_TEST_INHERIT = "from-process"
+    process.env.OW_ENV_TEST_OVER = "from-process"
+    try {
+      const services = parseUpFile(
+        "services:\n  app:\n    cmd: echo \"$OW_ENV_TEST_INHERIT|$OW_ENV_TEST_OVER|$OW_ENV_TEST_SVC|$OW_SERVICE\"\n    env: {OW_ENV_TEST_OVER: from-service, OW_ENV_TEST_SVC: svc, OW_SERVICE: spoof}\n",
+      ).services
+      const { lines, onLine } = collectLines()
+      const code = await runSupervised(services, { rootDir: root, onLine })
+      expect(code).toBe(0)
+      expect(lines).toContain("[app|stdout] from-process|from-service|svc|app")
+    } finally {
+      for (const [key, value] of [["OW_ENV_TEST_INHERIT", saved.inherit], ["OW_ENV_TEST_OVER", saved.over]] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

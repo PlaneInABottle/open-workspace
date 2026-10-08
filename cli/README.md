@@ -93,10 +93,27 @@ services:
 
 Schema notes: top-level `services:` required; per-service keys are
 `cmd|command`, `cwd|working_dir`, `port|ports` (flow list or
-`host:container`), `logs`. Unknown fields warn (`bilinmeyen alan
+`host:container`), `logs`, `env`. Unknown fields warn (`bilinmeyen alan
 yoksayıldı`), never fail; block-sequence lists are rejected with a
 line-naming error; a service needs `cmd` or `logs` (both allowed —
 `logs` then runs as a sibling tail).
+
+`env` sets per-service environment variables over the inherited process
+environment (service value wins over an inherited one; `OW_SERVICE` is always
+set last to the service name). It is a single inline flow map of scalar
+strings, because the YAML subset has no block maps:
+
+```yaml
+  web:
+    cmd: bun run dev
+    env: {NODE_ENV: development, API_URL: "http://localhost:4000"}
+```
+
+Limits: keys `^[A-Za-z_][A-Za-z0-9_]*$`, at most 64 entries, each key+value
+at most 4096 bytes. A non-map `env:` (scalar, list, or a block map) is a
+hard error naming the service, not a warning, so user environment is never
+silently dropped. Values are never printed: not in `ow up --check --json`,
+logs, `ps`, `doctor`, or error text.
 
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)

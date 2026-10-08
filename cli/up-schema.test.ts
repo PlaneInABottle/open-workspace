@@ -101,3 +101,64 @@ describe("up-schema", () => {
     expect((ok.services[0].cmd as string[]).length).toBe(32)
   })
 })
+
+describe("up-schema per-service env", () => {
+  const withEnv = (flow: string): string => `services:\n  a:\n    cmd: x\n    env: ${flow}\n`
+
+  test("inline flow map parses to a scalar string map", () => {
+    const file = parseUpFile(withEnv(`{A: b, "C_1": "d,e: f", URL: http://x:9}`))
+    expect(file.services[0].env).toEqual({ A: "b", C_1: "d,e: f", URL: "http://x:9" })
+    expect(file.warnings).toEqual([])
+  })
+
+  test("env is optional and empty map is allowed", () => {
+    expect(parseUpFile("services:\n  a:\n    cmd: x\n").services[0].env).toBeUndefined()
+    expect(parseUpFile(withEnv("{}")).services[0].env).toEqual({})
+  })
+
+  test("env is not enumerable, so serialized service listings omit values", () => {
+    const service = parseUpFile(withEnv("{TOKEN: s3cr3t}")).services[0]
+    expect(JSON.stringify(service)).not.toContain("s3cr3t")
+    expect(JSON.stringify(service)).not.toContain("TOKEN")
+    expect(service.env?.TOKEN).toBe("s3cr3t")
+  })
+
+  test("non-map env values throw naming the service", () => {
+    expect(() => parseUpFile("services:\n  web:\n    cmd: x\n    env: A=b\n")).toThrow(/web: env/)
+    expect(() => parseUpFile("services:\n  web:\n    cmd: x\n    env: [A, B]\n")).toThrow(UpSchemaError)
+    expect(() => parseUpFile(withEnv("{A: [x]}"))).toThrow(/env değerleri metin|anahtar: değer/)
+    expect(() => parseUpFile(withEnv("{A: {B: c}}"))).toThrow(/env değerleri metin/)
+  })
+
+  test("block-form env is rejected by the subset parser", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    env:\n      A: b\n")).toThrow(/3\. düzey/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    env:\n")).toThrow(UpSchemaError)
+  })
+
+  test("invalid key names, duplicate keys and oversize pairs throw without echoing values", () => {
+    expect(() => parseUpFile(withEnv("{1BAD: v}"))).toThrow(/geçersiz anahtar/)
+    expect(() => parseUpFile(withEnv("{A-B: v}"))).toThrow(/geçersiz anahtar/)
+    expect(() => parseUpFile(withEnv("{A: v, A: w}"))).toThrow(/tekrarlanan anahtar/)
+    expect(() => parseUpFile(withEnv("{notakey secretvalue}"))).toThrow(UpSchemaError)
+    try {
+      parseUpFile(withEnv("{notakey secretvalue}"))
+    } catch (error) {
+      expect(String(error)).not.toContain("secretvalue")
+    }
+    const big = "x".repeat(4096)
+    expect(() => parseUpFile(withEnv(`{A: ${big}}`))).toThrow(/4096 bayt/)
+    expect(parseUpFile(withEnv(`{A: ${"x".repeat(4094)}}`)).services[0].env?.A.length).toBe(4094)
+  })
+
+  test("at most 64 env entries", () => {
+    const ok = Array.from({ length: 64 }, (_, i) => `K${i}: v`).join(", ")
+    expect(Object.keys(parseUpFile(withEnv(`{${ok}}`)).services[0].env ?? {}).length).toBe(64)
+    const many = Array.from({ length: 65 }, (_, i) => `K${i}: v`).join(", ")
+    expect(() => parseUpFile(withEnv(`{${many}}`))).toThrow(/en fazla 64/)
+  })
+
+  test("unknown sibling fields still warn-and-ignore", () => {
+    const file = parseUpFile("services:\n  a:\n    cmd: x\n    replicas: 3\n    env: {A: b}\n")
+    expect(file.warnings.map((w) => w.message)).toEqual(["a: bilinmeyen alan yoksayıldı: replicas"])
+  })
+})

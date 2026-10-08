@@ -6,8 +6,10 @@
 import { lstat } from "node:fs/promises"
 import { resolve } from "node:path"
 
-import type { UpService } from "./up-schema"
+import type { TraceConfig, UpService } from "./up-schema"
 import { appendLogLine, flushUpLogs } from "./up-logs"
+import { startTraceReceiver } from "./trace-receiver"
+import { tracePaths } from "./trace-store"
 import { clearLock, ensureUpStateDir, isLivePid, readLock, readLstart, readSupervisorState, upPaths, writeSupervisorState } from "./up-state"
 import type { UpServiceState } from "./up-state"
 
@@ -75,7 +77,11 @@ export const probePort = async (port: number, timeoutMs = 500): Promise<boolean>
   return false
 }
 
-const spawnEnv = (svc: UpService): Record<string, string | undefined> => ({ ...process.env, OW_SERVICE: svc.name })
+const spawnEnv = (svc: UpService): Record<string, string | undefined> => ({
+  ...process.env,
+  ...svc.env,
+  OW_SERVICE: svc.name,
+})
 
 const spawnOne = (svc: UpService, cwd: string | undefined): ReturnType<typeof Bun.spawn> => {
   const target = svc.cmd as string | string[]
@@ -140,6 +146,10 @@ export type UpRunOptions = {
   stateFile?: string
   /** When set, every pumped line is also captured to `<logsDir>/<ad>.jsonl`. */
   logsDir?: string
+  /** When present and enabled, an OTLP/HTTP receiver runs for the
+   * supervisor's lifetime. Absent → tracing is a no-op (no listener,
+   * no `.ow/traces/`, no warnings). Failures are warn-only (D7). */
+  trace?: TraceConfig
 };
 
 /** Validate all cwds first (zero spawns on failure), probe ports (warn-only),
@@ -161,6 +171,13 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   const cwds = new Map<string, string | undefined>()
   for (const svc of services) {
     cwds.set(svc.name, await resolveServiceCwd(options.rootDir, svc.cwd))
+  }
+  // Trace receiver: embedded in the supervisor (D1), started before children
+  // so early spans are not missed. Any failure refuses warn-only (D7).
+  let traceReceiver: Awaited<ReturnType<typeof startTraceReceiver>> = null
+  if (options.trace?.enabled === true) {
+    const paths = tracePaths(options.rootDir)
+    traceReceiver = await startTraceReceiver({ tracesDir: paths.tracesDir, spansFile: paths.spansFile, port: options.trace.port })
   }
   const children: SpawnedChild[] = []
   const tails: LogTail[] = []
@@ -311,6 +328,10 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     process.off("SIGTERM", onSignal)
   }
   await stop()
+  // The receiver's lifetime equals the supervisor's: shut down with the
+  // children, before the log flush.
+  await traceReceiver?.stop().catch(() => undefined)
+  traceReceiver = null
   if (logsDir) await flushUpLogs()
   await persist()
   const spontaneous = children.filter(

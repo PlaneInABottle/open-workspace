@@ -4,17 +4,30 @@
  * (`- item`) are rejected with a line-naming error. Unknown fields warn,
  * never fail. */
 
+import { TRACE_DEFAULT_PORT } from "./trace-store"
+
 export type UpService = {
   name: string
   cmd?: string | string[]
   cwd?: string
   port?: number
   logs?: string
+  /** Per-service environment, merged over the inherited env. Non-enumerable so
+   * serialized service listings (`up --check --json`) never carry its values. */
+  env?: Readonly<Record<string, string>>
 }
+
+/** Flat `trace:` block (`enabled`, `port` only). Absent block → undefined
+ * (tracing off, a no-op); `enabled: false` → parsed but no listener. */
+export type TraceConfig = { enabled: boolean; port: number }
+
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
+const ENV_MAX_ENTRIES = 64
+const ENV_MAX_PAIR_BYTES = 4096
 
 export type UpWarning = { line: number; message: string }
 
-export type UpFile = { services: UpService[]; warnings: UpWarning[] }
+export type UpFile = { services: UpService[]; warnings: UpWarning[]; trace?: TraceConfig }
 
 export class UpSchemaError extends Error {
   readonly line: number
@@ -139,23 +152,76 @@ const splitTopLevel = (inner: string): string[] => {
   return parts.map((part) => part.trim()).filter((part) => part.length > 0)
 }
 
+/** Parse errors never echo the raw entry: flow maps may carry secret values. */
 const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNode> => {
   const inner = raw.trim().slice(1, -1).trim()
-  const out: Record<string, YamlNode> = {}
+  const out: Record<string, YamlNode> = Object.create(null)
   if (inner.length === 0) return out
   for (const part of splitTopLevel(inner)) {
     const colon = part.indexOf(":")
-    if (colon < 0) throw new UpSchemaError(lineNo, `harita içinde anahtar: değer bekleniyor: ${part}`)
+    if (colon < 0) throw new UpSchemaError(lineNo, "harita içinde anahtar: değer bekleniyor")
     const key = unquote(part.slice(0, colon).trim())
     const value = part.slice(colon + 1).trim()
-    if (key.length === 0 || value.length === 0) throw new UpSchemaError(lineNo, `boş anahtar/değer: ${part}`)
+    if (key.length === 0 || value.length === 0) throw new UpSchemaError(lineNo, "harita içinde boş anahtar/değer")
+    if (key in out) throw new UpSchemaError(lineNo, "harita içinde tekrarlanan anahtar")
     out[key] = parseValue(value, lineNo)
   }
   return out
 }
 
+const parseEnvValue = (node: YamlNode | undefined, serviceName: string): Readonly<Record<string, string>> | undefined => {
+  if (node === undefined) return undefined
+  if (typeof node !== "object" || Array.isArray(node)) {
+    throw new UpSchemaError(0, `${serviceName}: env anahtar: değer çiftlerinden oluşan satır içi harita olmalı (ör. env: {A: b})`)
+  }
+  const entries = Object.entries(node)
+  if (entries.length > ENV_MAX_ENTRIES) throw new UpSchemaError(0, `${serviceName}: env en fazla ${ENV_MAX_ENTRIES} anahtar olabilir`)
+  const env: Record<string, string> = Object.create(null)
+  for (const [key, value] of entries) {
+    if (!ENV_KEY.test(key)) throw new UpSchemaError(0, `${serviceName}: env içinde geçersiz anahtar adı`)
+    if (typeof value !== "string") throw new UpSchemaError(0, `${serviceName}: env değerleri metin olmalı`)
+    if (Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8") > ENV_MAX_PAIR_BYTES) {
+      throw new UpSchemaError(0, `${serviceName}: env bir çiftinde en fazla ${ENV_MAX_PAIR_BYTES} bayt olabilir`)
+    }
+    env[key] = value
+  }
+  return env
+}
+
 const asString = (value: YamlNode | undefined): string | null =>
   typeof value === "string" ? value : null
+
+/** Flat `trace:` block only (2nd level scalars). A non-map block, an unknown
+ * key or a nested map warns and is ignored; only an invalid `port` reuses
+ * the existing `geçersiz port:` hard error. */
+const parseTraceBlock = (node: YamlNode | undefined, warnings: UpWarning[]): TraceConfig | undefined => {
+  if (node === undefined) return undefined
+  if (typeof node !== "object" || Array.isArray(node)) {
+    warnings.push({ line: 0, message: "trace haritası bekleniyor, yoksayıldı" })
+    return undefined
+  }
+  let enabled = true
+  let port = TRACE_DEFAULT_PORT
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "enabled") {
+      if (value === "true") enabled = true
+      else if (value === "false") enabled = false
+      else warnings.push({ line: 0, message: "trace: enabled true/false olmalı, yoksayıldı" })
+    } else if (key === "port") {
+      if (typeof value === "object") {
+        warnings.push({ line: 0, message: `trace: iç içe alan yoksayıldı: ${key}` })
+        continue
+      }
+      const parsed = parsePortValue(value, 0, warnings, "trace")
+      if (parsed !== undefined) port = parsed
+    } else if (typeof value === "object") {
+      warnings.push({ line: 0, message: `trace: iç içe alan yoksayıldı: ${key}` })
+    } else {
+      warnings.push({ line: 0, message: `trace: bilinmeyen alan yoksayıldı: ${key}` })
+    }
+  }
+  return { enabled, port }
+}
 
 const parsePortValue = (value: YamlNode | undefined, line: number, warnings: UpWarning[], serviceName: string): number | undefined => {
   const take = (raw: string): number | undefined => {
@@ -186,7 +252,7 @@ export const parseUpFile = (text: string): UpFile => {
   for (const key of Object.keys(doc)) {
     if (key === "version") {
       warnings.push({ line: 0, message: "version yoksayıldı (v1)" })
-    } else if (key !== "services") {
+    } else if (key !== "services" && key !== "trace") {
       warnings.push({ line: 0, message: `bilinmeyen üst alan yoksayıldı: ${key}` })
     }
   }
@@ -231,14 +297,18 @@ export const parseUpFile = (text: string): UpFile => {
     if (cmd === undefined && logs === undefined) {
       throw new UpSchemaError(0, `${name}: cmd ya da logs gerekli`)
     }
+    const env = parseEnvValue(fields["env"], name)
     for (const key of Object.keys(fields)) {
-      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs"].includes(key)) {
+      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env"].includes(key)) {
         warnings.push({ line: 0, message: `${name}: bilinmeyen alan yoksayıldı: ${key}` })
       }
     }
-    services.push({ name, cmd, cwd, port, logs })
+    const service: UpService = { name, cmd, cwd, port, logs }
+    if (env !== undefined) Object.defineProperty(service, "env", { value: env, enumerable: false })
+    services.push(service)
   }
-  return { services, warnings }
+  const trace = parseTraceBlock(doc["trace"], warnings)
+  return trace === undefined ? { services, warnings } : { services, warnings, trace }
 };
 
 /** Human-readable warning lines for stderr (non-JSON mode). */
