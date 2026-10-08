@@ -49,6 +49,46 @@ export const ensureUpStateDir = async (stateDir: string): Promise<void> => {
   await chmod(stateDir, 0o700)
 }
 
+const OW_GITIGNORE_ENTRY = ".ow/"
+
+/** Keep tooling state (supervisor.json/lock, logs, traces: pids, absolute
+ * paths, commands, span data) out of version control: ensure the repo-root
+ * `.gitignore` covers `.ow/`. Create-or-append, never touching unrelated
+ * lines; byte-identical when an equivalent entry is already present.
+ * Returns a warning line when the file cannot be read or written, null on
+ * success. Never throws: `up` must not fail for this. */
+export const ensureOwGitignore = async (rootDir: string): Promise<string | null> => {
+  const ignorePath = join(rootDir, ".gitignore")
+  let text: string | null = null
+  try {
+    text = await readFile(ignorePath, "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return "uyarı: .gitignore okunamıyor (.ow/ girdisi eklenemedi)"
+    }
+  }
+  if (text === null) {
+    try {
+      await writeFile(ignorePath, `${OW_GITIGNORE_ENTRY}\n`, { encoding: "utf8" })
+      return null
+    } catch {
+      return "uyarı: .gitignore yazılamıyor (.ow/ girdisi eklenemedi)"
+    }
+  }
+  const covered = text.split("\n").some((line) => {
+    const entry = line.trim()
+    return entry === ".ow/" || entry === ".ow" || entry === "/.ow/" || entry === "/.ow"
+  })
+  if (covered) return null
+  const suffix = text.length === 0 || text.endsWith("\n") ? "" : "\n"
+  try {
+    await writeFile(ignorePath, `${text}${suffix}${OW_GITIGNORE_ENTRY}\n`, { encoding: "utf8" })
+    return null
+  } catch {
+    return "uyarı: .gitignore yazılamıyor (.ow/ girdisi eklenemedi)"
+  }
+}
+
 /** Atomic tmp+rename write, `0600` (observer-core discipline). */
 const atomicWriteJson = async (path: string, value: unknown): Promise<void> => {
   const temporary = join(dirname(path), `.ow-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`)

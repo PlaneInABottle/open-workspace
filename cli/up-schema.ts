@@ -15,6 +15,10 @@ export type UpService = {
   /** Per-service environment, merged over the inherited env. Non-enumerable so
    * serialized service listings (`up --check --json`) never carry its values. */
   env?: Readonly<Record<string, string>>
+  /** Declared-must-exist env key names (`required-env: [A, B]`). Checked
+   * against the merged env by `up`; non-enumerable so listings never carry
+   * the field. Key names (never values) may appear in the missing-var error. */
+  requiredEnv?: readonly string[]
 }
 
 /** Flat `trace:` block (`enabled`, `port` only). Absent block → undefined
@@ -191,6 +195,27 @@ const parseEnvValue = (node: YamlNode | undefined, serviceName: string): Readonl
 const asString = (value: YamlNode | undefined): string | null =>
   typeof value === "string" ? value : null
 
+const REQUIRED_ENV_MAX_NAMES = 32
+
+/** `required-env: [A, B]` flow list of env key names. Same key rules as
+ * `env:` keys; errors never echo entries (flow lists may name sensitive
+ * keys). A scalar or otherwise non-list value is a schema error. */
+const parseRequiredEnv = (node: YamlNode | undefined, serviceName: string): readonly string[] | undefined => {
+  if (node === undefined) return undefined
+  if (!Array.isArray(node)) {
+    throw new UpSchemaError(0, `${serviceName}: required-env liste olmalı (ör. required-env: [A, B])`)
+  }
+  if (node.length > REQUIRED_ENV_MAX_NAMES) {
+    throw new UpSchemaError(0, `${serviceName}: required-env en fazla ${REQUIRED_ENV_MAX_NAMES} anahtar olabilir`)
+  }
+  for (const key of node) {
+    if (typeof key !== "string" || !ENV_KEY.test(key)) {
+      throw new UpSchemaError(0, `${serviceName}: required-env içinde geçersiz anahtar adı`)
+    }
+  }
+  return [...node]
+}
+
 /** Flat `trace:` block only (2nd level scalars). A non-map block, an unknown
  * key or a nested map warns and is ignored; only an invalid `port` reuses
  * the existing `geçersiz port:` hard error. */
@@ -213,7 +238,12 @@ const parseTraceBlock = (node: YamlNode | undefined, warnings: UpWarning[]): Tra
         continue
       }
       const parsed = parsePortValue(value, 0, warnings, "trace")
-      if (parsed !== undefined) port = parsed
+      if (parsed !== undefined) {
+        if (parsed === 4318) {
+          throw new UpSchemaError(0, "trace: 4318 portu dashboard için ayrılmış (önizleme portu)")
+        }
+        port = parsed
+      }
     } else if (typeof value === "object") {
       warnings.push({ line: 0, message: `trace: iç içe alan yoksayıldı: ${key}` })
     } else {
@@ -298,18 +328,36 @@ export const parseUpFile = (text: string): UpFile => {
       throw new UpSchemaError(0, `${name}: cmd ya da logs gerekli`)
     }
     const env = parseEnvValue(fields["env"], name)
+    const requiredEnv = parseRequiredEnv(fields["required-env"], name)
     for (const key of Object.keys(fields)) {
-      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env"].includes(key)) {
+      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env", "required-env"].includes(key)) {
         warnings.push({ line: 0, message: `${name}: bilinmeyen alan yoksayıldı: ${key}` })
       }
     }
     const service: UpService = { name, cmd, cwd, port, logs }
     if (env !== undefined) Object.defineProperty(service, "env", { value: env, enumerable: false })
+    if (requiredEnv !== undefined) Object.defineProperty(service, "requiredEnv", { value: requiredEnv, enumerable: false })
     services.push(service)
   }
   const trace = parseTraceBlock(doc["trace"], warnings)
   return trace === undefined ? { services, warnings } : { services, warnings, trace }
 };
+
+/** Declared-contract check: every `required-env` name must exist in the
+ * merged env (`process.env` under service `env:`). Returns service/var
+ * pairs for the missing ones — key names only, never values. Services
+ * without a declaration behave exactly as before. */
+export const missingRequiredEnv = (services: UpService[]): { service: string; vars: string[] }[] => {
+  const missing: { service: string; vars: string[] }[] = []
+  for (const svc of services) {
+    const required = svc.requiredEnv
+    if (required === undefined || required.length === 0) continue
+    const merged: Record<string, string | undefined> = { ...process.env, ...svc.env }
+    const absent = required.filter((key) => merged[key] === undefined)
+    if (absent.length > 0) missing.push({ service: svc.name, vars: [...absent] })
+  }
+  return missing
+}
 
 /** Human-readable warning lines for stderr (non-JSON mode). */
 export const formatUpWarnings = (warnings: UpWarning[]): string[] =>

@@ -3,14 +3,14 @@
  * corruption tolerance, secret-sentinel absence, and the doctor line. */
 
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, appendFile, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { doctorFails, helpText, parseArgs } from "./cli"
 import { doctor, formatDoctor } from "./doctor"
 import { createTraceStore } from "./trace-store"
-import { checkTraceDoctor, runTrace } from "./trace-cli"
+import { checkTraceDoctor, parseWaitDuration, runTrace } from "./trace-cli"
 import { decodeTraceRequest, type TraceSpan } from "./trace-otlp"
 
 const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-trace-cli-"))
@@ -650,6 +650,120 @@ describe("trace secret safety on the read path", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+  test("route words survive verbatim in name and url.path across all four shapes", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const span: number[] = [
+          ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+          ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
+          ...lenField(5, utf8("POST /api/v1/stations/query")),
+          ...tag(6, 0),
+          ...encVarint(2),
+          ...lenField(9, kv("http.route", "/<path:path>")),
+          ...lenField(9, kv("url.path", "/api/v1/stations/query")),
+        ]
+        const scope = [...lenField(2, span)]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).toContain("POST /api/v1/stations/query")
+      expect(onDisk).toContain("/<path:path>")
+      const outputs = [
+        (await runTrace(opts(root))).stdout,
+        (await runTrace(opts(root, { json: true }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A }))).stdout,
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true }))).stdout,
+      ]
+      for (const output of outputs) {
+        expect(output).toContain("POST /api/v1/stations/query")
+        expect(output).toContain("/api/v1/stations/query")
+      }
+      // http.route renders as an attr: tree shapes only, never the list rows
+      expect(outputs[2]).toContain("/<path:path>")
+      expect(outputs[3]).toContain("/<path:path>")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("short numeric route words survive; identifiers still mask, mixed case included", async () => {
+    const root = await tempRoot()
+    try {
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
+      const encoded = (() => {
+        const encVarint = (n: number): number[] => {
+          let v = BigInt(n)
+          const out: number[] = []
+          do {
+            let byte = Number(v & 0x7fn)
+            v >>= 7n
+            if (v !== 0n) byte |= 0x80
+            out.push(byte)
+          } while (v !== 0n)
+          return out
+        }
+        const tag = (field: number, wire: number): number[] => encVarint((field << 3) | wire)
+        const lenField = (field: number, payload: number[]): number[] => [...tag(field, 2), ...encVarint(payload.length), ...payload]
+        const utf8 = (s: string): number[] => Array.from(new TextEncoder().encode(s))
+        const kv = (key: string, value: string): number[] => [...lenField(1, utf8(key)), ...lenField(2, lenField(1, utf8(value)))]
+        const one = (id: string, name: string, route: string): number[] => {
+          const span: number[] = [
+            ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
+            ...lenField(2, Array.from(Buffer.from(id, "hex"))),
+            ...lenField(5, utf8(name)),
+            ...tag(6, 0),
+            ...encVarint(2),
+            ...lenField(9, kv("http.route", route)),
+            ...lenField(9, kv("url.path", name.replace(/^[A-Z]+ /, ""))),
+          ]
+          return lenField(2, span)
+        }
+        const scope = [
+          ...one("cd".repeat(8), "GET /archive/2024/03/report", "/archive/2024/03/report"),
+          ...one("ce".repeat(8), "GET /api/users/9f3c1a7b2e4d8c6fa1b2/profile", "/api/users/{id}/profile"),
+        ]
+        const resource = [...lenField(1, lenField(1, kv("service.name", "api"))), ...lenField(2, scope)]
+        return new Uint8Array(lenField(1, resource))
+      })()
+      const store = createTraceStore(spansFile)
+      for (const span of decodeTraceRequest(encoded)) store.append(span)
+      await store.flush()
+      const onDisk = await readFile(spansFile, "utf8")
+      expect(onDisk).toContain("GET /archive/2024/03/report")
+      expect(onDisk).toContain("GET /api/users/:id/profile")
+      expect(onDisk).not.toContain("9f3c1a7b2e4d8c6fa1b2")
+      const tree = (await runTrace(opts(root, { traceId: TRACE_A }))).stdout
+      expect(tree).toContain("GET /archive/2024/03/report")
+      expect(tree).toContain("GET /api/users/:id/profile")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("trace doctor line", () => {
@@ -699,6 +813,26 @@ describe("trace doctor line", () => {
     }
   })
 
+  test("zero spans carry a bounded liveness hint; flowing spans carry none", async () => {
+    const root = await tempRoot()
+    try {
+      await seedRows(root, [], [], TRACE_YAML)
+      const silent = await checkTraceDoctor(root)
+      expect(silent.ok).toBe(true)
+      expect(silent.detail).toBe("açık (port 4319, 0 span). ipucu: span yok — servis ayakta mı? ow ps")
+      const now = Date.now()
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /gizli-hint-kanarya", startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
+      ])
+      const flowing = await checkTraceDoctor(root)
+      expect(flowing.ok).toBe(true)
+      expect(flowing.detail).not.toContain("ipucu")
+      expect(flowing.detail).not.toContain("gizli-hint-kanarya")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("inherited JAVA_TOOL_OPTIONS with javaagent triggers the jar note", async () => {
     const root = await tempRoot()
     const saved = process.env.JAVA_TOOL_OPTIONS
@@ -742,5 +876,63 @@ describe("trace command registration", () => {
     expect(parsed.flags["--service"]).toBe("api")
     expect(helpText()).toContain("trace [iz]")
     expect(parseArgs(["trace", "--nope"]).error).toContain("bilinmeyen seçenek")
+  })
+
+  test("parseArgs validates --wait; parseWaitDuration maps units with a 5m cap", () => {
+    expect(parseWaitDuration("15s")).toBe(15_000)
+    expect(parseWaitDuration("1m")).toBe(60_000)
+    expect(parseWaitDuration("5m")).toBe(300_000)
+    expect(parseWaitDuration("0s")).toBeNull()
+    expect(parseWaitDuration("6m")).toBeNull()
+    expect(parseWaitDuration("1h")).toBeNull()
+    expect(parseWaitDuration("bogus")).toBeNull()
+    expect(parseWaitDuration("15")).toBeNull()
+    const ok = parseArgs(["trace", "--wait", "15s"])
+    expect(ok.error).toBeNull()
+    expect(ok.flags["--wait"]).toBe("15s")
+    expect(parseArgs(["trace", "--wait", "0s"]).error).toContain("geçersiz --wait")
+    expect(parseArgs(["trace", "--wait", "bogus"]).error).toContain("geçersiz --wait")
+    expect(parseArgs(["trace", "--wait", "6m"]).error).toContain("geçersiz --wait")
+    expect(helpText()).toContain("--wait")
+  })
+})
+
+describe("trace --wait", () => {
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+  test("span appended mid-wait is picked up and rendered", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 60_000), endNano: ns(now - 59_000) }),
+      ])
+      const spansFile = join(root, ".ow", "traces", "spans.jsonl")
+      const pending = runTrace(opts(root, { waitMs: 8000 }))
+      await sleep(400)
+      await appendFile(spansFile, `${JSON.stringify(makeSpan({ traceId: TRACE_A, spanId: "a2".padEnd(16, "0"), startNano: ns(now - 1_000), endNano: ns(now) }))}\n`)
+      const result = await pending
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain("2 span")
+      expect(result.stderr).toBe("")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("deadline expiry renders current state plus the expiry line, exit 0", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 60_000), endNano: ns(now - 59_000) }),
+      ])
+      const result = await runTrace(opts(root, { waitMs: 600 }))
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain("1 span")
+      expect(result.stderr).toContain("bekleme süresi doldu")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

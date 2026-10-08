@@ -101,7 +101,8 @@ line-naming error; a service needs `cmd` or `logs` (both allowed —
 `env` sets per-service environment variables over the inherited process
 environment (service value wins over an inherited one; `OW_SERVICE` is always
 set last to the service name). It is a single inline flow map of scalar
-strings, because the YAML subset has no block maps:
+strings on ONE line, because the YAML subset reads line by line and has
+no block maps (a wrapped `{...}` fails `up --check`):
 
 ```yaml
   web:
@@ -114,6 +115,10 @@ at most 4096 bytes. A non-map `env:` (scalar, list, or a block map) is a
 hard error naming the service, not a warning, so user environment is never
 silently dropped. Values are never printed: not in `ow up --check --json`,
 logs, `ps`, `doctor`, or error text.
+`required-env: [DB_PASSWORD]` declares names that must exist in the merged
+env (`process.env` under service `env:`); missing names fail `up --check`
+(and `up`) with exit 2 naming service and variables — key names only, never
+values — so a valid-YAML/missing-credential boot failure is caught early.
 
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
@@ -126,6 +131,8 @@ ow doctor                      # observer health plus an informational up: line
 
 State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.
+`ow up` also ensures the repo-root `.gitignore` covers `.ow/`
+(create-or-append, warn-only) so tooling state never gets committed.
 Detached runs also append startup warnings/errors to `supervisor.out` —
 bounded to a handful of lines (per-line service output streams to the
 terminal in foreground, and always persists to per-service JSONL).
@@ -149,6 +156,8 @@ overrides), and each service opts in by writing `env:` explicitly — `ow`
 never injects OTEL variables into services (D4). Spans land redacted and
 capped in `<root>/.ow/traces/spans.jsonl`; read them with `ow trace`
 (recent list) and `ow trace <id>` (one parent/child tree).
+`ow trace --wait 15s` polls up to 5 minutes for a newly arriving span
+(batch exporters land late) and then renders once.
 
 ```yaml
 trace:
@@ -156,17 +165,10 @@ trace:
 services:
   api:
     cmd: ./gradlew bootRun
-    env: {JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar",
-          OTEL_SERVICE_NAME: api,
-          OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319",
-          OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf,
-          OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
+    env: {JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar", OTEL_SERVICE_NAME: api, OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
   worker:
     cmd: opentelemetry-instrument python -m app
-    env: {OTEL_SERVICE_NAME: worker,
-          OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319",
-          OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf,
-          OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
+    env: {OTEL_SERVICE_NAME: worker, OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
 ```
 
 Rules that are load-bearing, not stylistic:

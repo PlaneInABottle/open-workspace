@@ -162,3 +162,42 @@ describe("up-schema per-service env", () => {
     expect(file.warnings.map((w) => w.message)).toEqual(["a: bilinmeyen alan yoksayıldı: replicas"])
   })
 })
+
+describe("trace reserved port", () => {
+  const withTracePort = (port: string): string => `trace:\n  port: ${port}\nservices:\n  a:\n    cmd: x\n`
+
+  test("4318 is rejected naming the dashboard port", () => {
+    expect(() => parseUpFile(withTracePort("4318"))).toThrow(/4318/)
+    expect(() => parseUpFile(withTracePort("4318"))).toThrow(/dashboard/)
+  })
+
+  test("4319 and other ports are unaffected", () => {
+    expect(parseUpFile(withTracePort("4319")).trace).toEqual({ enabled: true, port: 4319 })
+    expect(parseUpFile(withTracePort("4320")).trace?.port).toBe(4320)
+    expect(parseUpFile("services:\n  a:\n    cmd: x\n").trace).toBeUndefined()
+  })
+})
+
+describe("required-env declaration", () => {
+  test("flow list parses to a non-enumerable name list, no unknown-field warning", () => {
+    const file = parseUpFile("services:\n  db:\n    cmd: x\n    required-env: [DB_PASSWORD, DB_USER]\n")
+    expect([...(file.services[0].requiredEnv ?? [])]).toEqual(["DB_PASSWORD", "DB_USER"])
+    expect(JSON.stringify(file.services[0])).not.toContain("required-env")
+    expect(JSON.stringify(file.services[0])).not.toContain("DB_PASSWORD")
+    expect(file.warnings).toEqual([])
+  })
+
+  test("absent without warning; at most 32 names", () => {
+    expect(parseUpFile("services:\n  a:\n    cmd: x\n").services[0].requiredEnv).toBeUndefined()
+    const ok = Array.from({ length: 32 }, (_, i) => `K${i}`).join(", ")
+    expect(parseUpFile(`services:\n  a:\n    cmd: x\n    required-env: [${ok}]\n`).services[0].requiredEnv?.length).toBe(32)
+    const many = Array.from({ length: 33 }, (_, i) => `K${i}`).join(", ")
+    expect(() => parseUpFile(`services:\n  a:\n    cmd: x\n    required-env: [${many}]\n`)).toThrow(/en fazla 32/)
+  })
+
+  test("non-list and bad keys are schema errors", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    required-env: FOO\n")).toThrow(/required-env/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    required-env: [1BAD]\n")).toThrow(/geçersiz anahtar/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    required-env: [A-B]\n")).toThrow(/geçersiz anahtar/)
+  })
+})

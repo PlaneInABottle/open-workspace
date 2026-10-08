@@ -214,14 +214,20 @@ const stripQuery = (value: string): string => {
 }
 
 const looksTemplated = (segment: string): boolean =>
-  segment === "*" || /^\{[^/{}]*\}$/.test(segment) || /^:[A-Za-z0-9_]+$/.test(segment)
+  segment === "*" ||
+  /^\{[^/{}]*\}$/.test(segment) ||
+  /^:[A-Za-z0-9_]+$/.test(segment) ||
+  /^<[^/<>]+>$/.test(segment)
 
-/** S2 — a `/`-separated segment is an identifier (→ `:id`) when it is pure
- * digits, hex ≥8 chars, a UUID, or length ≥16 mixed alphanumerics. Route
- * words and already-templated segments pass through. Lossy by design. */
+/** S2 — a `/`-separated segment is an identifier (→ `:id`) when it matches
+ * an ID shape: a long pure-digit run (≥5 — years, months, ports and other
+ * short numeric route words survive), hex ≥8 chars, a UUID, or a length
+ * ≥16 mixed-alphanumeric blob. Route words and already-templated segments
+ * (`{id}`, `:id`, `<path:path>`, `*`) pass through. Lossy by design, and
+ * deliberately mask-leaning: ambiguous shapes stay masked. */
 const isIdentifierSegment = (segment: string): boolean => {
   if (segment.length === 0 || looksTemplated(segment)) return false
-  if (/^[0-9]+$/.test(segment)) return true
+  if (/^[0-9]{5,}$/.test(segment)) return true
   if (/^[0-9a-fA-F]{8,}$/.test(segment)) return true
   if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(segment)) return true
   if (segment.length >= 16 && /[0-9]/.test(segment) && /[A-Za-z]/.test(segment) && /^[A-Za-z0-9_-]+$/.test(segment)) {

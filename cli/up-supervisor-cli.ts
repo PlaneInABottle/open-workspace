@@ -10,7 +10,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { formatUpWarnings, parseUpFile } from "./up-schema"
-import { acquireLock, clearLock, ensureUpStateDir, readSupervisorState, upPaths } from "./up-state"
+import { acquireLock, clearLock, ensureOwGitignore, ensureUpStateDir, readSupervisorState, upPaths } from "./up-state"
 import { runSupervised } from "./up-supervisor"
 
 const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
@@ -50,6 +50,8 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
     console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
     return 2
   }
+  const gitignoreWarning = await ensureOwGitignore(rootDir)
+  if (gitignoreWarning) warnings.push(gitignoreWarning)
   for (const line of [...warnings, ...formatUpWarnings(parsed.warnings)]) console.error(line)
   let code = 0
   try {
