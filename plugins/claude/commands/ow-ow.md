@@ -57,10 +57,23 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 
 - After `ow up -d`, prefer `ow up -d --wait 15s` (max 5m) over manual
   sleep/curl: waits until every declared `port` accepts TCP, exit 1 on
-  timeout (`zaman aşımı:`) or early exit (`bitti:`), exit 2 for `--wait`
-  without `-d`. Port-less services are named, never waited on. `--check`
-  rejects `--wait` (exit 2).
-- Readiness = TCP-accept, not HTTP/app health (`ps` `listening` key likewise).
+  timeout (`zaman aşımı:`) or early exit (`bitti:` — with an `ow logs <svc>`
+  pointer), exit 2 for `--wait` without `-d`. Port-less services are named,
+  never waited on. `--check` rejects `--wait` (exit 2).
+- Slow-boot services (Spring listens long before actuator is UP): add
+  `--health <svc>=<path>` (repeatable, CLI-only, needs `--wait`):
+  `ow up -d --wait 150s --health configuration=/actuator/health`. The
+  flagged service waits for HTTP 2xx on `127.0.0.1:<port><path>` after TCP;
+  others stay TCP-only. Unknown service, slash-less path, `--health`
+  without `--wait`/`-d`, or with `--check` → exit 2.
+- Readiness = TCP-accept, not HTTP/app health (`ps` `listening` key likewise)
+  unless `--health` opts a service into the HTTP 2xx gate.
+- Spring notes: `/` 404 is NORMAL — wait on `/actuator/health`. TCP≈ready
+  ports need no flag. Restart as `ow down && ow up -d --wait ...` (no
+  `sleep 4`; `down` is synchronous). Never `pkill`: a stale
+  `zaten çalışıyor` clears via `ow down` (`ow down --rm` for dead residue).
+  `down` during a wait reports `bitti:` everywhere (143-ish) — expected,
+  not an error.
 - State is repo-local (`<root>/.ow/`); every pid is `lstart`-guarded, so a
   recycled pid is reported unknown, never signaled.
 - Port conflicts warn and still spawn, never reassign.
@@ -70,6 +83,11 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   never printed). Single line only — the YAML subset reads line by line.
 - `required-env: [VAR, ...]` declares what the service needs; `up --check`
   fails (exit 2) naming service + missing vars before anything spawns.
+- `depends_on: [a, b]` sorts spawn order only (stable YAML order otherwise):
+  named services spawn first; nothing waits for ports/health, no restart
+  coupling. Unknown names, self-deps, cycles → exit 2 before anything
+  spawns. E.g. a live tail after config: `web-live` with
+  `depends_on: [configuration]`.
 - `ow up` ensures the repo `.gitignore` covers `.ow/` (warn-only).
 - `ow doctor` also prints an informational `up:` line (never affects exit code).
 - Full schema, caps, and non-goals: product `cli/README.md` ("Service supervision").

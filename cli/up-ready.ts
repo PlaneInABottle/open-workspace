@@ -6,20 +6,23 @@
 
 import { readSupervisorState, upPaths } from "./up-state"
 
-export type ReadyTarget = { name: string; port: number }
+export type ReadyTarget = { name: string; port: number; healthPath?: string }
 export type ReadyStatus = "ready" | "timeout" | "exited"
-export type ReadyResult = { name: string; port: number; status: ReadyStatus; waitedSec: number; exitCode?: number }
+export type ReadyResult = { name: string; port: number; status: ReadyStatus; waitedSec: number; exitCode?: number; healthPath?: string }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 
 /** Pure orchestration (probe/exited/now/sleep injected): ready when every
- * target's port accepts; a recorded supervisor exit fails that target fast —
- * waiting out the full window for a service that already died is noise. */
+ * target's probe passes; a recorded supervisor exit fails that target fast —
+ * waiting out the full window for a service that already died is noise. The
+ * probe is per-target so callers can layer extra gates (e.g. an HTTP health
+ * path after TCP-accept) without forking this loop; `healthPath` is echoed
+ * on the result only as provenance for the human/JSON renderers. */
 export const waitForReady = async (opts: {
   targets: ReadyTarget[]
   timeoutMs: number
   exited: () => Promise<Map<string, number>>
-  probe: (port: number) => Promise<boolean>
+  probe: (target: ReadyTarget) => Promise<boolean>
   intervalMs?: number
   now?: () => number
   sleep?: (ms: number) => Promise<void>
@@ -30,18 +33,20 @@ export const waitForReady = async (opts: {
   const interval = opts.intervalMs ?? 500
   const start = now()
   const elapsed = (): number => Math.max(0, Math.round((now() - start) / 1000))
+  const healthOf = (target: ReadyTarget): { healthPath?: string } =>
+    target.healthPath === undefined ? {} : { healthPath: target.healthPath }
   const done = new Map<string, ReadyResult>()
   for (;;) {
-    const probes = await Promise.all(opts.targets.map((t) => opts.probe(t.port).catch(() => false)))
+    const probes = await Promise.all(opts.targets.map((t) => opts.probe(t).catch(() => false)))
     const exited = await opts.exited().catch(() => new Map<string, number>())
     let pending = false
     opts.targets.forEach((target, index) => {
       if (done.has(target.name)) return
       const exitCode = exited.get(target.name)
       if (exitCode !== undefined) {
-        done.set(target.name, { name: target.name, port: target.port, status: "exited", waitedSec: elapsed(), exitCode })
+        done.set(target.name, { name: target.name, port: target.port, status: "exited", waitedSec: elapsed(), exitCode, ...healthOf(target) })
       } else if (probes[index]) {
-        done.set(target.name, { name: target.name, port: target.port, status: "ready", waitedSec: elapsed() })
+        done.set(target.name, { name: target.name, port: target.port, status: "ready", waitedSec: elapsed(), ...healthOf(target) })
       } else {
         pending = true
       }
@@ -50,7 +55,7 @@ export const waitForReady = async (opts: {
     if (now() - start >= opts.timeoutMs) {
       for (const target of opts.targets) {
         if (!done.has(target.name)) {
-          done.set(target.name, { name: target.name, port: target.port, status: "timeout", waitedSec: elapsed() })
+          done.set(target.name, { name: target.name, port: target.port, status: "timeout", waitedSec: elapsed(), ...healthOf(target) })
         }
       }
       return opts.targets.map((target) => done.get(target.name)!)

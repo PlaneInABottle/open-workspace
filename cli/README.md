@@ -93,7 +93,7 @@ services:
 
 Schema notes: top-level `services:` required; per-service keys are
 `cmd|command`, `cwd|working_dir`, `port|ports` (flow list or
-`host:container`), `logs`, `env`. Unknown fields warn (`bilinmeyen alan
+`host:container`), `logs`, `env`, `depends_on`. Unknown fields warn (`bilinmeyen alan
 yoksayıldı`), never fail; block-sequence lists are rejected with a
 line-naming error; a service needs `cmd` or `logs` (both allowed —
 `logs` then runs as a sibling tail).
@@ -120,6 +120,23 @@ env (`process.env` under service `env:`); missing names fail `up --check`
 (and `up`) with exit 2 naming service and variables — key names only, never
 values — so a valid-YAML/missing-credential boot failure is caught early.
 
+`depends_on: [ad, ...]` declares order-only startup sequencing: the named
+services spawn first, in topological order that stays stable in YAML order
+(dep-less files spawn exactly as written). Nothing waits — no port/health
+gating, no restart coupling. Unknown names, self-deps and cycles fail
+`up`/`up --check` with exit 2 before anything spawns (`up --check --json`
+shows the resolved order with `dependsOn` per service):
+
+```yaml
+services:
+  configuration:
+    cmd: ./gradlew bootRun
+    port: 8901
+  web-live:
+    logs: docker logs -f front
+    depends_on: [configuration]
+```
+
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir
@@ -130,25 +147,57 @@ ow doctor                      # observer health plus an informational up: line
 ow init [--force] [--tracing]  # scaffold ow.yaml from repo detection (never overwrites without --force)
 ```
 
-`ow up -d --wait <süre>` (ör. `--wait 15s`, en fazla 5m) detaches first,
+`ow up -d --wait <süre> [--health <ad>=<yol> ...]` (ör. `--wait 150s
+--health configuration=/actuator/health`, `--wait` en fazla 5m) detaches first,
 then waits until every declared `port` accepts a TCP connection: exit 0
 with `hazır: <ad> :<port> (<sn>sn)` per service, exit 1 when any port times
 out (`zaman aşımı: ...`) or a service exits early (`bitti: ... (çıkış kodu
-N)`). Services without a `port` are named (`port tanımsız (beklenmedi): ...`)
+N) — ow logs <ad>`). A `--health`-flagged service additionally waits for
+HTTP 2xx on `http://127.0.0.1:<port><yol>` after its TCP gate, and its
+`hazır:` line carries the path (`hazır: configuration
+:8901/actuator/health (42sn)`); unflagged services keep pure TCP.
+`--health` is repeatable (one `<ad>=<yol>` per occurrence, comma-separated
+also accepted) and a CLI flag only — never an `ow.yaml` key, never
+supervisor state. Unknown service names, slash-less paths, port-less
+services, `--health` without `--wait` (or without `-d`), and any `--health`
+with `--check` are usage errors (exit 2, nothing spawns). Services without
+a `port` are named (`port tanımsız (beklenmedi): ...`)
 but never waited on; with no declared ports at all `up -d --wait` exits 0
 immediately. `--wait` without `-d/--detach` is a usage error (exit 2, nothing
 spawns, no `.ow` created), as is any `--wait` combined with `--check`
 (`--check` only validates, never waits). `--json` mirrors the human lines with stable
-English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?}], noPort}`).
+English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?, healthPath?}], noPort}`).
 `ps` probes the same way per declared port: human `listen=evet/hayır`,
 JSON additive `listening` key (present only with `port`).
 
-Readiness here means TCP-accept (a listener answers on the port), not
-HTTP/app-health: `--wait`/`ps listen` never send HTTP requests and never
-inspect response bodies. That is deliberate and distinct from the
+Readiness defaults to TCP-accept (a listener answers on the port), not
+HTTP/app-health: plain `--wait`/`ps listen` never send HTTP requests and never
+inspect response bodies. `--health` is the explicit opt-in that adds one
+loopback GET per flagged service — still one-shot and bounded, never a
+restart/healthcheck daemon. That stays distinct from the
 spawn-time port-conflict probe, which is a best-effort HTTP fetch warning
 (`port çakışması`) before spawning. One-shot bounded wait only — no
 restart/healthcheck daemon semantics.
+
+### Spring tarifi (uyku/curl yerine)
+
+Spring servisleri portu actuator UP olmadan çok önce dinlemeye başlar:
+TCP hazır ≠ uygulama hazır. `sleep 90; curl` döngüleri üretmeyin:
+
+```sh
+ow up -d --wait 150s --health configuration=/actuator/health
+```
+
+- `8901 /` adresinde 404 NORMAL Spring davranışıdır — beklemeyi `/`
+  yerine `/actuator/health` (2xx) üzerinde yapın.
+- Yeniden başlatma: `ow down && ow up -d --wait 150s --health ...` —
+  araya `sleep 4` koymayın, `down` senkron durur.
+- `pkill` asla: bayat `zaten çalışıyor` görürseniz `ow down` (ölü
+  kalıntıysa `ow down --rm`) ile temizleyin.
+- Bekleme sırasında `down` çalıştırırsanız her servis `bitti:` raporlar
+  (143 civarı çıkış) — bu beklenen durumdur, hata değil; `hazır:`
+  gelmeyen servisin nedenini `ow logs <ad>` ile okuyun.
+- TCP≈hazır portlar için bayrak gerekmez — yalın `--wait` yeter.
 
 `ow init` scans the current directory (read-only, capped) for build files
 and writes a starter `ow.yaml`: commands only from strong signals (wrappers,

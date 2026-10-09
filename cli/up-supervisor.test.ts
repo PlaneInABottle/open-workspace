@@ -457,6 +457,74 @@ describe("per-service env merge", () => {
   })
 })
 
+describe("ow up --check with depends_on", () => {
+  test("unknown dep fails (exit 2) before any state exists", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    depends_on: [yok]\n", "utf8")
+      expect(await run(["up", "--check", "--file", file])).toBe(2)
+      expect(await run(["up", "-d", "--file", file])).toBe(2)
+      expect(existsSync(join(root, ".ow"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("cycle fails (exit 2) with members named, before any state exists", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n    depends_on: [b]\n  b:\n    cmd: echo hi\n    depends_on: [a]\n", "utf8")
+      expect(await run(["up", "--check", "--file", file])).toBe(2)
+      expect(existsSync(join(root, ".ow"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--check --json carries dependsOn in topo order", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web-live:\n    cmd: echo hi\n    depends_on: [configuration]\n  configuration:\n    cmd: echo hi\n", "utf8")
+      const lines: string[] = []
+      const original = console.log
+      console.log = (line?: unknown): void => void lines.push(String(line))
+      let code = 1
+      try {
+        code = await run(["up", "--check", "--json", "--file", file])
+      } finally {
+        console.log = original
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(lines.join("\n")) as { services: { name: string; dependsOn?: string[] }[] }
+      expect(payload.services.map((svc) => svc.name)).toEqual(["configuration", "web-live"])
+      expect(payload.services[1].dependsOn).toEqual(["configuration"])
+      expect(payload.services[0].dependsOn).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("depends_on spawn order", () => {
+  test("spawn follows topo order through the real spawn path (order file)", async () => {
+    const root = await tempRoot()
+    try {
+      const services = parseUpFile(
+        "services:\n  c:\n    cmd: echo c >> order.log\n    cwd: .\n    depends_on: [a]\n  b:\n    cmd: echo b >> order.log\n    cwd: .\n  a:\n    cmd: echo a >> order.log\n    cwd: .\n",
+      ).services
+      expect(services.map((svc) => svc.name)).toEqual(["b", "a", "c"])
+      expect(await runSupervised(services, { rootDir: root })).toBe(0)
+      const order = await readFile(join(root, "order.log"), "utf8")
+      expect(order.trim().split("\n")).toEqual(["b", "a", "c"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("H5 empty-lstart refusal", () => {
   test("live pid + empty lstart: down refuses, process survives, no false settlement", async () => {
     const root = await tempRoot()

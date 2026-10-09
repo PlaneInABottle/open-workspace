@@ -438,7 +438,7 @@ export const assertNoLiveOrphans = async (rootDir: string): Promise<void> => {
   const orphans = await findLiveOrphans(rootDir)
   if (orphans.length === 0) return
   const names = orphans.map((svc) => `${svc.name} (pid ${svc.pid})`).join(", ")
-  throw new Error(`yetim süreçler çalışıyor: ${names} — önce \`ow down\` ile durdurun (eski supervisor ölü)`)
+  throw new Error(`yetim süreçler çalışıyor: ${names} — önce \`ow down\` ile durdurun (eski supervisor ölü; ölü kalıntıysa \`ow down --rm\`)`)
 }
 
 export type DownResult = { name: string; stopped: boolean; note: string }

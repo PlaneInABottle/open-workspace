@@ -33,13 +33,15 @@ const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "rea
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--trace", "--min-spans"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing"])
 
 export type ParsedArgs = {
   command: Command | null
   sessionID: string | undefined
-  flags: Record<string, string | boolean>
+  /** `--health` is repeatable and accumulates into a string array; every
+   * other value flag holds a single string. */
+  flags: Record<string, string | boolean | string[]>
   error: string | null
 }
 
@@ -58,8 +60,9 @@ export const helpText = (): string =>
     "  meta [oturum]                 maliyet/token/değişiklik/tur",
     "  prompts [oturum]              son 20 kullanıcı yönergesi (eskiden yeniye)",
     "  reads [oturum] [--since]      okuma özeti",
-    "  up [--file] [--check] [-d|--detach] [--wait 120s]  servisleri kaldır (ow.yaml); --check yalnız doğrular;",
-    "                                -d ile --wait: bildirilen portlar açılana kadar bekle (çıkış: hazır değilse 1)",
+    "  up [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/yol]  servisleri kaldır (ow.yaml); --check yalnız doğrular;",
+  "                                -d ile --wait: bildirilen portlar açılana kadar bekle (çıkış: hazır değilse 1);",
+  "                                --health <ad>=<yol> (tekrarlanabilir, yalnız --wait ile): o servis TCP sonrası HTTP 2xx bekler",
     "  down [--file] [--rm]          servisleri durdur (--rm durum dosyasını da siler)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
@@ -76,7 +79,7 @@ export const helpText = (): string =>
   ].join("\n")
 
 export const parseArgs = (argv: string[]): ParsedArgs => {
-  const flags: Record<string, string | boolean> = {}
+  const flags: Record<string, string | boolean | string[]> = {}
   let command: Command | null = null
   let sessionID: string | undefined
   const fail = (error: string): ParsedArgs => ({ command, sessionID, flags, error })
@@ -94,7 +97,12 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       if (VALUE_FLAGS.has(arg)) {
         const value = argv[i + 1]
         if (value === undefined || value.startsWith("--")) return fail(`değer bekleniyor: ${arg}`)
-        flags[arg] = value
+        if (arg === "--health") {
+          const prior = flags[arg]
+          flags[arg] = [...(Array.isArray(prior) ? prior : prior !== undefined ? [prior as string] : []), value]
+        } else {
+          flags[arg] = value
+        }
         i += 1
         continue
       }
@@ -162,29 +170,41 @@ export const doctorFails = (lines: { name: string; ok: boolean }[]): boolean =>
   lines.filter((l) => l.name !== "up" && l.name !== "trace").some((l) => !l.ok)
 
 /** Supervisor root: --file dizini ya da cwd; state/logs <root>/.ow altında. */
-export const upRootDir = (flags: Record<string, string | boolean>): string => {
+export const upRootDir = (flags: Record<string, string | boolean | string[]>): string => {
   const file = flag(flags, "--file")
   return file ? dirname(resolve(file)) : process.cwd()
 }
-export const upFilePath = (flags: Record<string, string | boolean>): string => {
+export const upFilePath = (flags: Record<string, string | boolean | string[]>): string => {
   const file = flag(flags, "--file")
   return file ? resolve(file) : join(process.cwd(), "ow.yaml")
 }
 export const upStateDir = (rootDir: string): string => join(rootDir, ".ow")
 
-/** `ow up -d --wait <süre>`: block until every declared `port` accepts a TCP
- * connection, a service exits, or the window elapses. Exit 0 only when all
- * declared ports are ready; services without a port are named but not waited
- * on (nothing to probe). JSON mirrors the trace/ps English-key discipline. */
+/** `ow up -d --wait <süre> [--health <ad>=<yol> ...]`: block until every
+ * declared `port` accepts a TCP connection, a service exits, or the window
+ * elapses. A service named in `health` additionally waits for HTTP 2xx on
+ * `http://127.0.0.1:<port><yol>` after its TCP gate (unflagged services keep
+ * pure TCP). Exit 0 only when all declared ports are ready; services without
+ * a port are named but not waited on (nothing to probe). JSON mirrors the
+ * trace/ps English-key discipline, with `healthPath` echoed per flagged
+ * service (additive: `ready/services/noPort` untouched). */
 export const waitForUpReady = async (opts: {
   rootDir: string
   services: UpService[]
   timeoutMs: number
   json: boolean
+  health?: Record<string, string>
 }): Promise<number> => {
   const { exitedServices, waitForReady } = await import("./up-ready")
-  const { tcpListening } = await import("./up-net")
-  const targets = opts.services.filter((svc) => svc.port !== undefined).map((svc) => ({ name: svc.name, port: svc.port as number }))
+  const { httpHealthOk, tcpListening } = await import("./up-net")
+  const health = opts.health ?? {}
+  const targets = opts.services
+    .filter((svc) => svc.port !== undefined)
+    .map((svc) => ({
+      name: svc.name,
+      port: svc.port as number,
+      ...(health[svc.name] === undefined ? {} : { healthPath: health[svc.name] }),
+    }))
   const noPort = opts.services.filter((svc) => svc.port === undefined).map((svc) => svc.name)
   if (targets.length === 0) {
     if (opts.json) console.log(JSON.stringify({ ready: true, services: [], noPort, note: "port tanımlı servis yok" }))
@@ -194,24 +214,63 @@ export const waitForUpReady = async (opts: {
   const results = await waitForReady({
     targets,
     timeoutMs: opts.timeoutMs,
-    probe: (port) => tcpListening(port),
+    probe: async (target) => {
+      if (!(await tcpListening(target.port))) return false
+      const path = health[target.name]
+      if (path === undefined) return true
+      return httpHealthOk(target.port, path)
+    },
     exited: () => exitedServices(opts.rootDir),
   })
   const ready = results.every((result) => result.status === "ready")
+  const where = (result: { port: number; healthPath?: string }): string =>
+    result.healthPath === undefined ? `:${result.port}` : `:${result.port}${result.healthPath}`
   if (opts.json) {
     console.log(JSON.stringify({ ready, services: results, noPort }))
   } else {
     for (const result of results) {
-      if (result.status === "ready") console.log(`hazır: ${result.name} :${result.port} (${result.waitedSec}sn)`)
-      else if (result.status === "exited") console.log(`bitti: ${result.name} (çıkış kodu ${result.exitCode ?? "?"})`)
-      else console.log(`zaman aşımı: ${result.name} :${result.port} (${result.waitedSec}sn)`)
+      if (result.status === "ready") console.log(`hazır: ${result.name} ${where(result)} (${result.waitedSec}sn)`)
+      else if (result.status === "exited") console.log(`bitti: ${result.name} (çıkış kodu ${result.exitCode ?? "?"}) — ow logs ${result.name}`)
+      else console.log(`zaman aşımı: ${result.name} ${where(result)} (${result.waitedSec}sn)`)
     }
     if (noPort.length > 0) console.log(`port tanımsız (beklenmedi): ${noPort.join(", ")}`)
   }
   return ready ? 0 : 1
 }
 
-const flag = (flags: Record<string, string | boolean>, name: string): string | undefined =>
+/** Parse repeatable `--health <ad>=<yol>` values into a service→path map
+ * (last wins per service; one occurrence may hold comma-separated pairs).
+ * Throws a Turkish usage error when an entry lacks `=`, the path does not
+ * start with `/`, the service is unknown, or it declares no port (health
+ * needs a TCP gate to build on). */
+export const parseHealthFlags = (
+  raw: string | string[] | undefined,
+  services: UpService[],
+): Record<string, string> => {
+  const map: Record<string, string> = {}
+  if (raw === undefined) return map
+  const entries = (Array.isArray(raw) ? raw : [raw])
+    .flatMap((value) => value.split(","))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+  for (const entry of entries) {
+    const eq = entry.indexOf("=")
+    if (eq <= 0 || eq === entry.length - 1) throw new Error(`geçersiz --health: ${entry} (<hizmet>=<yol> bekleniyor)`)
+    const name = entry.slice(0, eq).trim()
+    const path = entry.slice(eq + 1).trim()
+    if (!path.startsWith("/")) throw new Error(`geçersiz --health: ${entry} (yol / ile başlamalı)`)
+    const svc = services.find((s) => s.name === name)
+    if (!svc) {
+      const known = services.map((s) => s.name).join(", ")
+      throw new Error(`bilinmeyen servis: ${name} (--health${known.length > 0 ? `; bilinenler: ${known}` : ""})`)
+    }
+    if (svc.port === undefined) throw new Error(`--health portsuz serviste kullanılamaz: ${name} (port tanımlı değil)`)
+    map[name] = path
+  }
+  return map
+}
+
+const flag = (flags: Record<string, string | boolean | string[]>, name: string): string | undefined =>
   typeof flags[name] === "string" ? (flags[name] as string) : undefined
 
 const resolveSession = async (
@@ -375,6 +434,28 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: --wait yalnızca -d/--detach ile kullanılır (önizleme)")
         return 2
       }
+      const healthRaw = flags["--health"] as string | string[] | undefined
+      if (healthRaw !== undefined && flags["--check"] === true) {
+        console.error("ow: --health --check ile kullanılamaz (doğrulama beklemez)")
+        return 2
+      }
+      if (healthRaw !== undefined && flags["--wait"] === undefined) {
+        console.error("ow: --health yalnız --wait ile kullanılır (--wait <süre> gerekli)")
+        return 2
+      }
+      if (healthRaw !== undefined && flags["--detach"] !== true) {
+        console.error("ow: --health yalnızca -d/--detach ile kullanılır (önizleme)")
+        return 2
+      }
+      let health: Record<string, string> = {}
+      if (healthRaw !== undefined) {
+        try {
+          health = parseHealthFlags(healthRaw, parsed.services)
+        } catch (error) {
+          console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+          return 2
+        }
+      }
       if (flags["--check"] === true) {
         for (const line of formatUpWarnings(parsed.warnings)) warn(line)
         const missing = missingRequiredEnv(parsed.services)
@@ -433,7 +514,7 @@ export const run = async (argv: string[]): Promise<number> => {
         if (code !== 0) return code
         const waitFlag = flag(flags, "--wait")
         if (waitFlag === undefined) return 0
-        return waitForUpReady({ rootDir, services: parsed.services, timeoutMs: parseWaitDuration(waitFlag) ?? 0, json })
+        return waitForUpReady({ rootDir, services: parsed.services, timeoutMs: parseWaitDuration(waitFlag) ?? 0, json, health })
       }
       const { runSuperviseFile } = await import("./up-supervisor-cli")
       return runSuperviseFile(file)

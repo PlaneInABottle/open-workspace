@@ -326,4 +326,110 @@ describe("ow up --wait", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test("--health without --wait is a usage error (exit 2) and starts nothing", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    port: 39991\n", "utf8")
+      expect(await run(["up", "--health", "web=/health", "--file", file])).toBe(2)
+      expect(await run(["up", "-d", "--health", "web=/health", "--file", file])).toBe(2)
+      // rejected flag combinations spawn nothing
+      expect(await run(["ps", "--file", file])).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--health with --check is a usage error (exit 2)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    port: 39991\n", "utf8")
+      expect(await run(["up", "--check", "-d", "--wait", "5s", "--health", "web=/health", "--file", file])).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--health with unknown service or slash-less path is a usage error (exit 2)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    port: 39991\n", "utf8")
+      expect(await run(["up", "-d", "--wait", "5s", "--health", "yok=/health", "--file", file])).toBe(2)
+      expect(await run(["up", "-d", "--wait", "5s", "--health", "web=saglik", "--file", file])).toBe(2)
+      expect(await run(["ps", "--file", file])).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--health on a port-less service is a usage error (exit 2) and starts nothing", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  job:\n    cmd: echo hi\n", "utf8")
+      expect(await run(["up", "-d", "--wait", "5s", "--health", "job=/health", "--file", file])).toBe(2)
+      expect(await run(["ps", "--file", file])).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--wait plus --health without -d is a usage error (exit 2) and starts nothing", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    port: 39991\n", "utf8")
+      expect(await run(["up", "--wait", "5s", "--health", "web=/health", "--file", file])).toBe(2)
+      expect(await run(["ps", "--file", file])).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a health-flagged service passes TCP but waits for HTTP 2xx (exit 0, healthPath in JSON)", async () => {
+    let well = false
+    const holder = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req) => {
+        if (new URL(req.url).pathname === "/health") return well ? new Response("up") : new Response("down", { status: 503 })
+        return new Response("nope", { status: 404 })
+      },
+    })
+    const timer = setTimeout(() => {
+      well = true
+    }, 1200)
+    const root = await tempRoot()
+    try {
+      const { waitForUpReady } = await import("./cli")
+      const lines: string[] = []
+      const original = console.log
+      console.log = (line?: unknown): void => void lines.push(String(line))
+      let code = 1
+      try {
+        code = await waitForUpReady({
+          rootDir: root,
+          services: [{ name: "slow", port: holder.port }],
+          timeoutMs: 15000,
+          json: true,
+          health: { slow: "/health" },
+        })
+      } finally {
+        console.log = original
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(lines.join("\n")) as { ready: boolean; services: unknown[] }
+      expect(payload.ready).toBe(true)
+      expect(payload.services).toEqual([
+        { name: "slow", port: holder.port, status: "ready", waitedSec: expect.any(Number), healthPath: "/health" },
+      ])
+    } finally {
+      clearTimeout(timer)
+      holder.stop(true)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })

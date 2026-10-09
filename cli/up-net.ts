@@ -37,3 +37,18 @@ export const tcpListening = async (port: number, timeoutMs = 400): Promise<boole
   }
   return false
 }
+
+/** One-shot loopback HTTP health probe for `up -d --wait --health`: GET the
+ * given path on 127.0.0.1 and report 2xx only. Any status outside 2xx, any
+ * refusal/timeout, or an invalid port/path is `false`. Never throws; never
+ * leaves loopback. */
+export const httpHealthOk = async (port: number, path: string, timeoutMs = 1000): Promise<boolean> => {
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || !path.startsWith("/")) return false
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(timeoutMs) })
+    await res.arrayBuffer().catch(() => undefined)
+    return res.status >= 200 && res.status < 300
+  } catch {
+    return false
+  }
+}

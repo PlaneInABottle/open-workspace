@@ -243,3 +243,59 @@ describe("required-env declaration", () => {
     expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    required-env: [A-B]\n")).toThrow(/geçersiz anahtar/)
   })
 })
+
+describe("depends_on ordering", () => {
+  test("dep-less files keep exact YAML order", () => {
+    const file = parseUpFile("services:\n  b:\n    cmd: x\n  a:\n    cmd: x\n")
+    expect(file.services.map((svc) => svc.name)).toEqual(["b", "a"])
+    expect(file.services[0].dependsOn).toBeUndefined()
+    expect(file.warnings).toEqual([])
+  })
+
+  test("scrambled declarations spawn dependencies first, stable otherwise", () => {
+    const file = parseUpFile(
+      "services:\n  c:\n    cmd: x\n    depends_on: [a]\n  b:\n    cmd: x\n  a:\n    cmd: x\n",
+    )
+    expect(file.services.map((svc) => svc.name)).toEqual(["b", "a", "c"])
+    expect([...(file.services[2].dependsOn ?? [])]).toEqual(["a"])
+  })
+
+  test("docs example: web-live waits its turn after configuration", () => {
+    const file = parseUpFile(
+      "services:\n  web-live:\n    cmd: x\n    depends_on: [configuration]\n  configuration:\n    cmd: x\n",
+    )
+    expect(file.services.map((svc) => svc.name)).toEqual(["configuration", "web-live"])
+  })
+
+  test("diamond resolves with YAML stability among siblings", () => {
+    const file = parseUpFile(
+      "services:\n  d:\n    cmd: x\n    depends_on: [b, c]\n  c:\n    cmd: x\n    depends_on: [a]\n  b:\n    cmd: x\n    depends_on: [a]\n  a:\n    cmd: x\n",
+    )
+    expect(file.services.map((svc) => svc.name)).toEqual(["a", "c", "b", "d"])
+  })
+
+  test("unknown dep names the service and the missing name", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [yok]\n")).toThrow(/a: depends_on içinde bilinmeyen servis: yok/)
+  })
+
+  test("self-dep fails", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [a]\n")).toThrow(/a: depends_on kendine olamaz/)
+  })
+
+  test("two-cycle names its members", () => {
+    const text = "services:\n  a:\n    cmd: x\n    depends_on: [b]\n  b:\n    cmd: x\n    depends_on: [a]\n"
+    expect(() => parseUpFile(text)).toThrow(/depends_on döngüsel: a, b/)
+  })
+
+  test("non-list, bad names and oversize lists are schema errors", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: api\n")).toThrow(/depends_on liste olmalı/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [ok!]\n")).toThrow(/geçersiz servis adı/)
+    const many = Array.from({ length: 33 }, (_, i) => `s${i}`).join(", ")
+    expect(() => parseUpFile(`services:\n  a:\n    cmd: x\n    depends_on: [${many}]\n`)).toThrow(/en fazla 32/)
+  })
+
+  test("depends_on is enumerable: names are not secrets and listings show them", () => {
+    const file = parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [b]\n  b:\n    cmd: x\n")
+    expect(JSON.parse(JSON.stringify(file.services[1]))).toMatchObject({ name: "a", dependsOn: ["b"] })
+  })
+})

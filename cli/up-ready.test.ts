@@ -90,4 +90,68 @@ describe("waitForReady", () => {
   test("no targets resolves immediately", async () => {
     expect(await waitForReady({ targets: [], timeoutMs: 1000, probe: async () => false, exited: async () => new Map() })).toEqual([])
   })
+
+  test("a health-gated target waits past TCP-accept until HTTP 200", async () => {
+    const clock = fakeClock()
+    let calls = 0
+    const seen: (string | undefined)[] = []
+    const results = await waitForReady({
+      targets: [{ name: "api", port: 1001, healthPath: "/health" }],
+      timeoutMs: 5000,
+      intervalMs: 500,
+      now: clock.now,
+      sleep: clock.sleep,
+      probe: async (target) => {
+        calls += 1
+        seen.push(target.healthPath)
+        return calls >= 3 // TCP accepts at once, HTTP 404s until the third poll
+      },
+      exited: async () => new Map(),
+    })
+    expect(results).toEqual([{ name: "api", port: 1001, status: "ready", waitedSec: 1, healthPath: "/health" }])
+    expect(seen).toEqual(["/health", "/health", "/health"])
+  })
+
+  test("a health gate that never turns 2xx marks timeout (healthPath echoed)", async () => {
+    const clock = fakeClock()
+    const results = await waitForReady({
+      targets: [{ name: "api", port: 1001, healthPath: "/actuator/health" }],
+      timeoutMs: 1000,
+      intervalMs: 400,
+      now: clock.now,
+      sleep: clock.sleep,
+      probe: async () => false,
+      exited: async () => new Map(),
+    })
+    expect(results).toEqual([{ name: "api", port: 1001, status: "timeout", waitedSec: 1, healthPath: "/actuator/health" }])
+  })
+
+  test("an exit during the health poll fails that target fast", async () => {
+    const clock = fakeClock()
+    let calls = 0
+    const results = await waitForReady({
+      targets: [{ name: "api", port: 1001, healthPath: "/health" }],
+      timeoutMs: 5000,
+      intervalMs: 500,
+      now: clock.now,
+      sleep: clock.sleep,
+      probe: async () => {
+        calls += 1
+        return false
+      },
+      exited: async () => new Map([["api", 143]]),
+    })
+    expect(results).toEqual([{ name: "api", port: 1001, status: "exited", waitedSec: 0, exitCode: 143, healthPath: "/health" }])
+    expect(calls).toBe(1)
+  })
+
+  test("unflagged targets carry no healthPath", async () => {
+    const results = await waitForReady({
+      targets: [{ name: "api", port: 1001 }],
+      timeoutMs: 1000,
+      probe: async () => true,
+      exited: async () => new Map(),
+    })
+    expect(results).toEqual([{ name: "api", port: 1001, status: "ready", waitedSec: 0 }])
+  })
 })
