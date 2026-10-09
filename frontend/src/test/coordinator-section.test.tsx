@@ -10,6 +10,7 @@ function snapshot(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSnap
     explanation: null,
     preflight: { pass: true, gates: [], missing: [] },
     checkpoints: null,
+    runs: [],
     scenarios: null,
     warnings: [],
     meta: { producedAt: new Date().toISOString(), snapshotId: 'a3f9c1d2', environment: 'dev' },
@@ -53,6 +54,7 @@ function checkpointed(): CoordinatorSnapshot {
   return snapshot({
     checkpoints: {
       run: 'demo',
+      runs: ['demo'],
       stages: [
         { stage: 'build', status: 'confirmed', staleReason: null, at: twoHoursAgo },
         { stage: 'test', status: 'stale', staleReason: 'checkout_rev', at: tenMinutesAgo },
@@ -251,5 +253,184 @@ describe('CoordinatorSection', () => {
     expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent))
       .toEqual(['Servis', 'Beklenen', 'Çalışan', 'Rev']);
     expect(within(table).getByRole('rowheader', { name: 'api' })).toBeInTheDocument();
+  });
+});
+
+function scenarioed(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSnapshot {
+  return snapshot({
+    checkpoints: {
+      run: 'yeni',
+      runs: ['yeni', 'eski'],
+      stages: [],
+      summary: { confirmed: 0, stale: 0, notObserved: 0 },
+      lastVerified: null,
+      firstGap: null,
+      safeNextAction: null,
+    },
+    runs: ['yeni', 'eski'],
+    scenarios: {
+      file: 'ow.scenarios.yaml',
+      columns: ['local', 'real', 'uydurma'],
+      rows: [
+        {
+          name: 'sepet',
+          services: ['api'],
+          unverifiedServices: [],
+          probes: [{ id: 'hazir', timeout: '10s' }],
+          checkpoints: ['onay'],
+          cells: { local: 'pass', real: 'uncovered', uydurma: 'unverified' },
+        },
+        {
+          name: 'odeme',
+          services: ['api', 'yabanci'],
+          unverifiedServices: ['yabanci'],
+          probes: [{ id: 'saglik', timeout: '5s' }],
+          checkpoints: ['dagitim'],
+          cells: { local: 'uncovered', real: 'stale', uydurma: 'skipped' },
+        },
+      ],
+      warnings: ['sepet: bilinmeyen alan yoksayıldı: not'],
+      error: null,
+    },
+    ...overrides,
+  });
+}
+
+describe('CoordinatorSection scenarios', () => {
+  it('renders the matrix as a scoped table with Turkish verdicts and no run action', async () => {
+    render(<CoordinatorSection api={apiReturning(scenarioed())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const table = await within(section).findByRole('table', { name: /Senaryo matrisi/ });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Senaryo', 'yerel', 'gerçek', 'uydurma']);
+    expect(within(table).getByRole('rowheader', { name: /sepet/ })).toBeInTheDocument();
+    expect(within(table).getByText('geçti')).toBeInTheDocument();
+    expect(within(table).getByText('bayat')).toBeInTheDocument();
+    expect(within(table).getByText('atlandı')).toBeInTheDocument();
+    expect(within(table).getByText('doğrulanamadı')).toBeInTheDocument();
+    expect(within(table).getByText('? doğrulanamadı')).toBeInTheDocument();
+    // Ham İngilizce enumlar kullanıcıya dönük metinde görünmez.
+    const tableText = table.textContent ?? '';
+    for (const raw of ['local', 'real', 'captured-response', 'pass', 'stale', 'skipped', 'uncovered', 'unverified', 'not_observed']) {
+      expect(tableText).not.toContain(raw);
+    }
+    // Probe id'leri görünür, çalıştırma denetimi yok: hücreler salt-metin.
+    expect(within(table).getByText(/1 probe \(hazir\)/)).toBeInTheDocument();
+    expect(within(table).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(table).queryByRole('link')).not.toBeInTheDocument();
+    // Bölüm uyarı şeridi matristen sonra gelir (odak sırası).
+    expect(within(section).getByText('sepet: bilinmeyen alan yoksayıldı: not')).toBeInTheDocument();
+  });
+
+  it('shows an explained empty state with a setup link when no file is bound', async () => {
+    render(<CoordinatorSection api={apiReturning(snapshot())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    expect(await within(section).findByText('Senaryo dosyası bağlı değil.')).toBeInTheDocument();
+    const link = within(section).getByRole('link', { name: 'Connect your AI →' });
+    expect(link).toHaveAttribute('href', '#setup');
+  });
+
+  it('shows an error box without killing sibling panels on a corrupt file', async () => {
+    const broken = scenarioed({
+      scenarios: { file: 'ow.scenarios.yaml', columns: [], rows: [], warnings: [], error: '`version: 1` gerekli' },
+    });
+    render(<CoordinatorSection api={apiReturning(broken)} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const alert = await within(section).findByRole('alert');
+    expect(alert).toHaveTextContent(/Senaryo dosyası okunamadı/);
+    expect(within(section).getByText('eşleşiyor')).toBeInTheDocument();
+    expect(within(section).queryByRole('table', { name: /Senaryo matrisi/ })).not.toBeInTheDocument();
+  });
+
+  it('nudges a stale matrix with age inside a status region', async () => {
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    render(<CoordinatorSection api={apiReturning(scenarioed({ meta: { producedAt: old, snapshotId: 'a3f9c1d2', environment: 'dev' } }))} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByRole('table', { name: /Senaryo matrisi/ });
+    const nudge = within(section).getByText('bayat olabilir — Yenile?');
+    expect(nudge.closest('[role="status"]')).not.toBeNull();
+    expect(nudge.parentElement?.textContent).toMatch(/5 dk önce/);
+  });
+
+  it('selects a checkpoint run with one user-triggered refetch and resets on environment change', async () => {
+    const calls: Array<string | undefined> = [];
+    const coordinator = vi.fn(async (_workspace: string, _environment: string, run?: string) => {
+      calls.push(run);
+      return scenarioed();
+    });
+    const api = { coordinator } as unknown as ApiClient;
+    const { rerender } = render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const select = await within(section).findByLabelText('Çalışma') as HTMLSelectElement;
+    expect([...select.options].map(option => option.text)).toEqual(['en güncel', 'yeni', 'eski']);
+    expect(calls).toEqual([undefined]);
+    select.focus();
+    expect(document.activeElement).toBe(select);
+    fireEvent.change(select, { target: { value: 'eski' } });
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'eski'));
+    expect(calls).toEqual([undefined, 'eski']);
+    // Ortam değişince seçim latest'e döner.
+    rerender(<CoordinatorSection api={api} workspace="Demo" environment="prod" refreshToken={0} />);
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'prod', undefined));
+  });
+
+  it('keeps the run picker on a content-less run and recovers on reselect', async () => {
+    const full = scenarioed();
+    const empty = scenarioed({ checkpoints: null });
+    const coordinator = vi.fn(async (_workspace: string, _environment: string, run?: string) =>
+      run === 'eski' ? empty : full);
+    const api = { coordinator } as unknown as ApiClient;
+    const { rerender } = render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByLabelText('Çalışma');
+    // İçeriksiz run: null iletisi + seçici kalır (dead-end yok).
+    fireEvent.change(within(section).getByLabelText('Çalışma'), { target: { value: 'eski' } });
+    await within(section).findByText('Checkpoint yok — runner kaydı bulunamadı.');
+    const stranded = within(section).getByLabelText('Çalışma') as HTMLSelectElement;
+    expect([...stranded.options].map(option => option.value)).toEqual(['', 'yeni', 'eski']);
+    expect(stranded.value).toBe('eski');
+    // Yenile aynı içeriksiz run'da kalır: ileti + seçici korunur.
+    rerender(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={1} />);
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'eski'));
+    expect(within(section).getByText('Checkpoint yok — runner kaydı bulunamadı.')).toBeInTheDocument();
+    expect(within(section).getByLabelText('Çalışma')).toBeInTheDocument();
+    // İçerikli run'a dönüş kurtarır: ileti gider, şerit döner.
+    fireEvent.change(within(section).getByLabelText('Çalışma'), { target: { value: 'yeni' } });
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'yeni'));
+    await vi.waitFor(() => expect(within(section).queryByText('Checkpoint yok — runner kaydı bulunamadı.')).not.toBeInTheDocument());
+    expect(within(section).getByText((_, el) => el?.tagName === 'P' && (el.textContent ?? '').includes('çalışma: yeni'))).toBeInTheDocument();
+    expect(within(section).getByLabelText('Çalışma')).toBeInTheDocument();
+  });
+
+  it('shows the picker on first load when checkpoints are null but runs are listed', async () => {
+    const firstLoad = scenarioed({ checkpoints: null, runs: ['yeni', 'eski'] });
+    const full = scenarioed();
+    const coordinator = vi.fn(async (_workspace: string, _environment: string, run?: string) =>
+      run === undefined ? firstLoad : full);
+    const api = { coordinator } as unknown as ApiClient;
+    render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    // Önbellek boştur: liste wire'daki üst-düzey runs'tan gelir.
+    const select = await within(section).findByLabelText('Çalışma') as HTMLSelectElement;
+    expect([...select.options].map(option => option.value)).toEqual(['', 'yeni', 'eski']);
+    expect(within(section).getByText('Checkpoint yok — runner kaydı bulunamadı.')).toBeInTheDocument();
+    // İçerikli seçim kurtarır (tekil yeniden-çekme).
+    fireEvent.change(select, { target: { value: 'yeni' } });
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'yeni'));
+    await vi.waitFor(() => expect(within(section).queryByText('Checkpoint yok — runner kaydı bulunamadı.')).not.toBeInTheDocument());
+  });
+
+  it('tara-test stays green with the matrix mounted', async () => {
+    render(<CoordinatorSection api={apiReturning(scenarioed())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByRole('table', { name: /Senaryo matrisi/ });
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const parts: string[] = [];
+    while (walker.nextNode()) parts.push(walker.currentNode.textContent ?? '');
+    const text = parts.join(' ');
+    const ariaTexts = [...document.querySelectorAll('[aria-label]')]
+      .map(element => element.getAttribute('aria-label') ?? '').join(' ');
+    const scanned = `${document.title} ${text} ${ariaTexts}`.replace(/#\s?[0-9a-fA-F]{8}\b/g, '');
+    expect(scanned).not.toMatch(/[0-9a-fA-F]{8,}/);
   });
 });

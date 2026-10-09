@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/http.js';
@@ -239,7 +239,7 @@ test('D2 hostile rev: secret-shaped revs mask to ***, legit shapes pass through'
     record,
     status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
     portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
-    checkpoint: { run: 'demo', envelopes: [hostileOut.envelope] },
+    checkpoint: { run: 'demo', envelopes: [hostileOut.envelope], runs: ['demo'] },
     supervisor: [rec],
     producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
   });
@@ -268,7 +268,7 @@ test('D2 cwd compare: same basename on different full paths goes stale/runtime',
     record,
     status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
     portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
-    checkpoint: { run: 'demo', envelopes: [first.envelope, second.envelope] },
+    checkpoint: { run: 'demo', envelopes: [first.envelope, second.envelope], runs: ['demo'] },
     producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
   });
   // Basename aynı ("api") ama tam-yol farklı → fail-open kapandı.
@@ -278,7 +278,7 @@ test('D2 cwd compare: same basename on different full paths goes stale/runtime',
     record,
     status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
     portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
-    checkpoint: { run: 'demo', envelopes: [first.envelope, third.envelope] },
+    checkpoint: { run: 'demo', envelopes: [first.envelope, third.envelope], runs: ['demo'] },
     producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
   });
   assert.equal(same.checkpoints?.stages[1].status, 'confirmed');
@@ -480,4 +480,202 @@ test('oversized/corrupt checkpoint fixture keeps the section alive with warnings
   assert.ok(snapshot.warnings.some(warning => warning.includes('kırpıldı')), `expected a trim warning, got ${JSON.stringify(snapshot.warnings)}`);
   assert.ok(snapshot.warnings.some(warning => warning.includes('bozuk satır')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
   assert.ok(snapshot.warnings.some(warning => warning.includes('symlink')), `expected a symlink warning, got ${JSON.stringify(snapshot.warnings)}`);
+});
+
+test('D3 scenarios aggregate: matrix verdicts, masked, argv never on wire', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+      { id: 'web', name: 'web', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  await mkdir(join(f.root, '.ow', 'checkpoints'), { recursive: true });
+  const line = (entry: unknown) => JSON.stringify(entry);
+  await writeFile(join(f.root, '.ow', 'checkpoints', 'demo.jsonl'), [
+    line({ stage: 'onay', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: 'r1' } }),
+    line({ stage: 'dagitim', status: 'stale', stale_reason: 'runtime', proof: 'ok', at: '2026-10-09T11:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: 'r1' } }),
+  ].join('\n'));
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  sepet:',
+    '    services: [api]',
+    '    boundaries: [local, test]',
+    '    targets: [http://x/token=hunter2]',
+    '    probes: [{id: hazir, argv: [./x.sh, --token, hunter2]}]',
+    '    checkpoints: [onay]',
+    '  odeme:',
+    '    services: [api, yabanci]',
+    '    boundaries: [real, uydurma-sinir]',
+    '    probes: [{id: saglik, argv: [./y.sh], timeout: 5s}]',
+    '    checkpoints: [dagitim, yok-stage]',
+    '',
+  ].join('\n'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    reconcile: { inSync: boolean };
+    scenarios: {
+      file: string; columns: string[];
+      rows: Array<{
+        name: string; services: string[]; unverifiedServices: string[];
+        probes: Array<{ id: string; timeout: string }>; checkpoints: string[];
+        cells: Record<string, string>;
+      }>;
+      warnings: string[]; error: string | null;
+    } | null;
+    warnings: string[];
+  };
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('hunter2'), 'hostile target/argv must not reach the wire');
+  assert.ok(!wire.includes('--token'), 'probe argv must not reach the wire');
+  assert.ok(!wire.includes('./x.sh'), 'probe argv must not reach the wire');
+  assert.ok(!wire.includes('http://x/'), 'targets must not reach the wire');
+  assert.ok(snapshot.reconcile.inSync, 'other panels stay alive');
+
+  assert.ok(snapshot.scenarios);
+  assert.equal(snapshot.scenarios.file, 'ow.scenarios.yaml');
+  assert.equal(snapshot.scenarios.error, null);
+  assert.deepEqual(snapshot.scenarios.columns, ['real', 'local', 'test', 'uydurma-sinir']);
+  const sepet = snapshot.scenarios.rows.find(row => row.name === 'sepet');
+  assert.ok(sepet);
+  assert.deepEqual(sepet.probes, [{ id: 'hazir', timeout: '10s' }]);
+  assert.deepEqual(sepet.unverifiedServices, []);
+  assert.equal(sepet.cells['local'], 'pass');
+  assert.equal(sepet.cells['test'], 'pass');
+  assert.equal(sepet.cells['real'], 'uncovered');
+  const odeme = snapshot.scenarios.rows.find(row => row.name === 'odeme');
+  assert.ok(odeme);
+  assert.deepEqual(odeme.unverifiedServices, ['yabanci']);
+  assert.equal(odeme.cells['real'], 'stale');
+  assert.equal(odeme.cells['uydurma-sinir'], 'unverified');
+  assert.equal(odeme.cells['local'], 'uncovered');
+});
+
+test('D3 scenarios empty: no file keeps the section alive with null', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    reconcile: { inSync: boolean }; scenarios: null; warnings: string[];
+  };
+  assert.equal(snapshot.reconcile.inSync, true);
+  assert.equal(snapshot.scenarios, null);
+});
+
+test('D3 scenarios corrupt: error box payload, other panels alive', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), 'version: 1\nscenarios:\n  - blok liste yasak\n');
+  const app = createApp(f.service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    reconcile: { inSync: boolean };
+    scenarios: { file: string; columns: string[]; rows: unknown[]; warnings: string[]; error: string | null } | null;
+    warnings: string[];
+  };
+  assert.equal(snapshot.reconcile.inSync, true);
+  assert.ok(snapshot.scenarios);
+  assert.equal(snapshot.scenarios.rows.length, 0);
+  assert.ok(snapshot.scenarios.error && snapshot.scenarios.error.length > 0);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('senaryo bozuk')), `expected a scenarios-corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
+});
+
+test('D3 ?run=: explicit selection, fallback with warning, runs list', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const dir = join(f.root, '.ow', 'checkpoints');
+  await mkdir(dir, { recursive: true });
+  const line = (entry: unknown) => JSON.stringify(entry);
+  await writeFile(join(dir, 'eski.jsonl'), line({ stage: 'kur', status: 'confirmed', proof: 'ok', at: '2026-10-08T10:00:00.000Z', by: 'runner', code: { script_hash: 's0' } }));
+  await writeFile(join(dir, 'yeni.jsonl'), line({ stage: 'kos', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1' } }));
+  // mtime sırası deterministik: eski dosya bilerek geriye alınır.
+  await utimes(join(dir, 'eski.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  type CheckpointWire = { run: string; runs: string[]; stages: Array<{ stage: string }> } | null;
+
+  const latest = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(latest.checkpoints?.run, 'yeni');
+  assert.deepEqual(latest.checkpoints?.runs, ['yeni', 'eski']);
+
+  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=eski`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(explicit.checkpoints?.run, 'eski');
+  assert.equal(explicit.checkpoints?.stages[0].stage, 'kur');
+
+  const bogus = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=../kacis`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(bogus.checkpoints?.run, 'yeni');
+  assert.ok(bogus.warnings.some(warning => warning.includes('istenen çalışma geçersiz')), `expected an invalid-run warning, got ${JSON.stringify(bogus.warnings)}`);
+
+  const missing = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=yok`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(missing.checkpoints?.run, 'yeni');
+  assert.ok(missing.warnings.some(warning => warning.includes('istenen çalışma yok')), `expected a missing-run warning, got ${JSON.stringify(missing.warnings)}`);
+});
+
+test('D3 empty newest run warns and shows older content; single empty file stays null with warning', async t => {
+  const f = await fixture(t);
+  const other = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-coordinator-other-')));
+  t.after(() => rm(other, { recursive: true, force: true }));
+  await f.service.register('Coord', [f.root, other]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const dir = join(f.root, '.ow', 'checkpoints');
+  const otherDir = join(other, '.ow', 'checkpoints');
+  await mkdir(dir, { recursive: true });
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(join(otherDir, 'eski.jsonl'), JSON.stringify({ stage: 'kur', status: 'confirmed', proof: 'ok', at: '2026-10-08T10:00:00.000Z', by: 'runner', code: { script_hash: 's0' } }));
+  await writeFile(join(dir, 'yeni.jsonl'), '');
+  await utimes(join(otherDir, 'eski.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    checkpoints: { run: string; runs: string[] } | null; runs: string[]; warnings: string[];
+  };
+  assert.equal(snapshot.checkpoints?.run, 'eski');
+  assert.deepEqual(snapshot.runs, ['yeni', 'eski']);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('checkpoint boş: yeni')), `expected an empty-newest warning, got ${JSON.stringify(snapshot.warnings)}`);
+
+  // Tek boş dosya: bölüm null kalır (D1 davranışı) + sepet satırı düşer —
+  // ama üst-düzey runs listesi seçiciyi besler.
+  await rm(join(otherDir, 'eski.jsonl'));
+  const single = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    checkpoints: unknown; runs: string[]; warnings: string[];
+  };
+  assert.equal(single.checkpoints, null);
+  assert.deepEqual(single.runs, ['yeni']);
+  assert.ok(single.warnings.some(warning => warning.includes('checkpoint boş: yeni')), `expected an empty-file warning, got ${JSON.stringify(single.warnings)}`);
+
+  // Açık boş-run isteği: null + runs listesi (seçici kaybolmaz).
+  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=yeni`)).json() as {
+    checkpoints: unknown; runs: string[]; warnings: string[];
+  };
+  assert.equal(explicit.checkpoints, null);
+  assert.deepEqual(explicit.runs, ['yeni']);
 });

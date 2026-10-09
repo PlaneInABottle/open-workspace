@@ -1,22 +1,27 @@
 /**
- * Dashboard-only coordinator snapshot (D2: P1 ortam haritası + P2 preflight
- * + P3 checkpoint çizgisi + P4 provenance kartı).
+ * Dashboard-only coordinator snapshot (D3: P1 ortam haritası + P2 preflight
+ * + P3 checkpoint çizgisi + P4 provenance kartı + P5 senaryo matrisi).
  *
  * Salt-okunur aggregate: kayıtlı topoloji + canlı durumdan reconcile
  * (eşleşiyor/kayık) + port preflight + runner-dosya bounded okuma
- * (frozen root, symlink-izlenmez, 256KB/500 cap, latest-only,
+ * (frozen root, symlink-izlenmez, 256KB/500 cap, seçili-run okuma,
  * fail-closed + warnings[]).
  *
  * Kaynaklar (hepsi kayıtlı dosya; canlı exec YOK, CLI davranış değişikliği
  * YOK):
- * - P3: `.ow/checkpoints/<run>.jsonl` latest run (zarf `at` = stage yaşı
- *   kaynağı; rev-yas kararı D2: envelope `at` + provenance `recordedAt`
- *   dışında saat yoktur, ikisi de zarfta zorunlu ISO'dur).
+ * - P3: `.ow/checkpoints/<run>.jsonl` seçili run — `?run=` adı (allowlist;
+ *   boş/geçersiz/yok → en yeni İÇERİKLİ dosya + uyarı), açık istenen
+ *   boş/bozuk dosya → bölüm null + tarama uyarısı (fallback yok).
+ *   Zarf `at` = stage yaşı kaynağı (D2 kararı: envelope `at` +
+ *   provenance `recordedAt` dışında saat yoktur).
  * - P4: `.ow/supervisor.json` spawn-kayıtları (provenance checkout rev +
  *   recordedAt = kayıtlı-rev yaşı kaynağı) + store topolojisi (beklenen) +
  *   environmentStatus (çalışan). Kaydedilmemiş rev'e "canlıda farklı"
  *   denmez — canlı checkout'u okumak git exec ister (fail-closed:
  *   "doğrulanamadı").
+ * - P5: `<root>/ow.scenarios.yaml` v1 (subset-YAML aynası; argv/target
+ *   ham değerleri dosyada kalır) + store topolojisi (referans kontrolü) +
+ *   seçili run tazeliği (hücre hükmü).
  *
  * Secret disiplini: tüm serbest-metin alanlar wire'a yazılmadan önce
  * maskelenir (aşağıdaki maske, cli/up-reconcile.ts + cli/up-evidence.ts
@@ -168,8 +173,10 @@ export interface CoordinatorCheckpointStage {
 }
 
 export interface CoordinatorCheckpoints {
-  /** Dosya adı (path değil) — latest run. */
+  /** Dosya adı (path değil) — seçili run (?run= yoksa latest). */
   run: string;
+  /** Keşfedilen run adları (yeni→eski); ?run= seçimi buradan yapılır. */
+  runs: string[];
   stages: CoordinatorCheckpointStage[];
   summary: { confirmed: number; stale: number; notObserved: number };
   lastVerified: { stage: string; at: string } | null;
@@ -209,6 +216,32 @@ export interface CoordinatorExplanationEntry {
   note: string;
 }
 
+export type ScenarioVerdict = 'pass' | 'stale' | 'skipped' | 'uncovered' | 'unverified';
+
+export interface ScenarioMatrixRow {
+  name: string;
+  services: string[];
+  /** Topolojide karşılığı yok (UNVERIFIED) — sarı rozetle işaretlenir. */
+  unverifiedServices: string[];
+  /** YALNIZCA id + timeout: probe argv dosyada kalır, wire'a çıkmaz. */
+  probes: { id: string; timeout: string }[];
+  checkpoints: string[];
+  /** Sütun adından hücre hükmüne (columns sırası UI'dadır). */
+  cells: Record<string, ScenarioVerdict>;
+}
+
+export interface CoordinatorScenarios {
+  /** Dosya adı (path değil) — köklerde hep `ow.scenarios.yaml`. */
+  file: string;
+  /** Sınır sütunları: bilinen sıra önce, bilinmeyenler alfabetik. */
+  columns: string[];
+  rows: ScenarioMatrixRow[];
+  /** Bölüm uyarıları (şema uyarıları + yineltiler). */
+  warnings: string[];
+  /** Bozuk dosya: satırlar boş + neden burada (diğer paneller sağlam). */
+  error: string | null;
+}
+
 export interface CoordinatorExplanation {
   entries: CoordinatorExplanationEntry[];
   revisions: CoordinatorRevision[];
@@ -222,8 +255,17 @@ export interface CoordinatorSnapshot {
   preflight: CoordinatorPreflight;
   /** Kayıt yoksa/bozuksa null → UI "checkpoint yok" gösterir. */
   checkpoints: CoordinatorCheckpoints | null;
-  /** D3 kapsamı — D2'de her zaman null. */
-  scenarios: null;
+  /**
+   * Keşfedilen checkpoint run adları (yeni→eski) — checkpoints null iken
+   * bile dolu olabilir; null dalındaki çalışma seçici buradan beslenir.
+   * Salt-okunur liste, tekil `?run=` yeniden-çekmede kullanılır.
+   */
+  runs: string[];
+  /**
+   * Dosya yoksa null → UI "senaryo dosyası bağlı değil" gösterir.
+   * Bozuk dosya: error'lu nesne (hata kutusu; diğer paneller sağlam).
+   */
+  scenarios: CoordinatorScenarios | null;
   warnings: string[];
   meta: CoordinatorMeta;
 }
@@ -341,6 +383,8 @@ function applyCheckpointFreshness(envelopes: ParsedCheckpointEnvelope[]): Parsed
 export interface CheckpointSource {
   run: string;
   envelopes: ParsedCheckpointEnvelope[];
+  /** Keşfedilen run adları (yeni→eski, ≤50). */
+  runs: string[];
 }
 
 export interface SupervisorProvenanceRecord {
@@ -359,6 +403,310 @@ export interface SupervisorProvenanceRecord {
 
 export function shortRev(full: string): string {
   return full.slice(0, 7);
+}
+
+// --- Senaryo aynası (cli/up-scenarios.ts v1 + cli/up-schema.ts subset) ----
+// CLI bun-only olduğu için import edilmez; davranış aynasıdır.
+// Wire'a argv ASLA çıkmaz (CLI maskeli-şekli bile taşımayız — matris
+// yalnızca id sayar); targets/checkpoints adları maskeden geçer.
+
+export const SCENARIOS_FILE_NAME = 'ow.scenarios.yaml';
+const SCENARIOS_VERSION = '1';
+const SCENARIO_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]{0,63}$/;
+const SCENARIO_BOUNDARIES = ['real', 'local', 'fake', 'captured-response', 'test'];
+const SCENARIO_KNOWN_BOUNDARIES = new Set(SCENARIO_BOUNDARIES);
+const SCENARIO_MAX_COUNT = 32;
+const SCENARIO_MAX_COLUMNS = 16;
+const SCENARIOS_MAX_BYTES = 256 * 1024;
+const PROBE_TIMEOUTS = new Set(['5s', '10s', '30s']);
+const PROBE_DEFAULT_TIMEOUT = '10s';
+const PROBE_MAX_PARTS = 16;
+const PROBE_MAX_PART_BYTES = 512;
+const SHELL_ARGV0 = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh']);
+export const RUN_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+type YamlScalar = string;
+interface YamlMap { [key: string]: YamlNode }
+type YamlNode = YamlScalar | YamlScalar[] | YamlMap;
+
+function yamlUnquote(raw: string): string {
+  const t = raw.trim();
+  if (t.length >= 2 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+function yamlStripComment(line: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#') return line.slice(0, i);
+  }
+  return line;
+}
+
+/** Üst-düzey virgül bölmesi: `[]`/`{}` derinliği + tırnak farkındalığı (CLI aynası). */
+function yamlSplitTopLevel(inner: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  let depth = 0;
+  for (const ch of inner) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (current.length === 0 || /[\s:\[{,]$/.test(current)) quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '[' || ch === '{') depth += 1;
+    else if (ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map(part => part.trim()).filter(part => part.length > 0);
+}
+
+function yamlParseFlowList(raw: string): YamlScalar[] {
+  const inner = raw.trim().slice(1, -1).trim();
+  if (inner.length === 0) return [];
+  return yamlSplitTopLevel(inner).map(part => yamlUnquote(part));
+}
+
+function yamlParseFlowMap(raw: string): Record<string, YamlNode> {
+  const inner = raw.trim().slice(1, -1).trim();
+  const out: Record<string, YamlNode> = Object.create(null);
+  if (inner.length === 0) return out;
+  for (const part of yamlSplitTopLevel(inner)) {
+    const colon = part.indexOf(':');
+    if (colon < 0) throw new Error('harita içinde anahtar: değer bekleniyor');
+    const key = yamlUnquote(part.slice(0, colon).trim());
+    const value = part.slice(colon + 1).trim();
+    if (key.length === 0 || value.length === 0) throw new Error('harita içinde boş anahtar/değer');
+    if (key in out) throw new Error('harita içinde tekrarlanan anahtar');
+    out[key] = yamlParseValue(value);
+  }
+  return out;
+}
+
+function yamlParseValue(rest: string): YamlNode {
+  if (rest.startsWith('[') && rest.endsWith(']')) return yamlParseFlowList(rest);
+  if (rest.startsWith('{') && rest.endsWith('}')) return yamlParseFlowMap(rest);
+  return yamlUnquote(rest);
+}
+
+function yamlParseSubset(text: string): Record<string, YamlNode> {
+  const root: Record<string, YamlNode> = {};
+  const stack: { indent: number; map: Record<string, YamlNode> }[] = [{ indent: -1, map: root }];
+  const lines = text.split('\n');
+  for (let n = 0; n < lines.length; n += 1) {
+    const bare = yamlStripComment(lines[n]).replace(/\s+$/, '');
+    if (bare.trim().length === 0) continue;
+    const indent = bare.match(/^ */)?.[0].length ?? 0;
+    const trimmed = bare.trim();
+    if (trimmed.startsWith('- ')) throw new Error('blok listesi desteklenmiyor (akış listesi kullanın: [a, b])');
+    const colon = trimmed.indexOf(':');
+    if (colon < 0) throw new Error('anahtar: değer bekleniyor');
+    const key = yamlUnquote(trimmed.slice(0, colon).trim());
+    const rest = trimmed.slice(colon + 1).trim();
+    if (key.length === 0) throw new Error('boş anahtar');
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
+    const parent = stack[stack.length - 1].map;
+    if (rest.length === 0) {
+      if (indent === 0 && parent !== root) throw new Error(`beklenmeyen girinti: ${key}`);
+      for (let m = n + 1; m < lines.length; m += 1) {
+        const peer = yamlStripComment(lines[m]).trim();
+        if (peer.length === 0) continue;
+        if (peer.startsWith('- ')) throw new Error('blok listesi desteklenmiyor (akış listesi kullanın: [a, b])');
+        break;
+      }
+      if (stack.length >= 3) throw new Error(`3. düzey desteklenmiyor: ${key}`);
+      const child: Record<string, YamlNode> = {};
+      if (Object.hasOwn(parent, key)) throw new Error(`tekrarlanan anahtar: ${key}`);
+      parent[key] = child;
+      stack.push({ indent, map: child });
+      continue;
+    }
+    if (Object.hasOwn(parent, key)) throw new Error(`tekrarlanan anahtar: ${key}`);
+    parent[key] = yamlParseValue(rest);
+  }
+  return root;
+}
+
+export interface ParsedScenario {
+  name: string;
+  services: string[];
+  boundaries: string[];
+  probes: { id: string; timeout: string }[];
+  checkpoints: string[];
+}
+
+/**
+ * Saf v1 senaryo normalizasyonu: şekil-sıkı fail-closed (hata fırlatır —
+ * çağıran `error` kutusuna çevirir). Uyarılar warn-only listede döner.
+ * argv/target ham DEĞERLERİ düşer (id/timeout/ad listeleri kalır).
+ */
+export function normalizeScenarios(text: string): { scenarios: ParsedScenario[]; warnings: string[] } {
+  const fileWarnings: string[] = [];
+  let doc: Record<string, YamlNode>;
+  try {
+    doc = yamlParseSubset(text);
+  } catch (error) {
+    throw new Error(`geçersiz senaryo dosyası: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const key of Object.keys(doc)) {
+    if (key !== 'version' && key !== 'scenarios') fileWarnings.push(`bilinmeyen üst alan yoksayıldı: ${key}`);
+  }
+  if (doc['version'] !== SCENARIOS_VERSION) throw new Error('geçersiz senaryo dosyası: `version: 1` gerekli');
+  const raw = doc['scenarios'];
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('geçersiz senaryo dosyası: `scenarios:` haritası gerekli');
+  const entries = Object.entries(raw as Record<string, YamlNode>);
+  if (entries.length === 0) throw new Error('geçersiz senaryo dosyası: senaryo yok (`scenarios:` boş)');
+  if (entries.length > SCENARIO_MAX_COUNT) throw new Error(`geçersiz senaryo dosyası: en fazla ${SCENARIO_MAX_COUNT} senaryo (v1 sınırı)`);
+  const scenarios: ParsedScenario[] = [];
+  for (const [name, node] of entries) {
+    if (!SCENARIO_NAME_PATTERN.test(name)) throw new Error(`geçersiz senaryo dosyası: senaryo adı geçersiz: ${name}`);
+    if (typeof node !== 'object' || node === null || Array.isArray(node)) throw new Error(`geçersiz senaryo dosyası: ${name}: senaryo haritası bekleniyor`);
+    const fields = node as Record<string, YamlNode>;
+    for (const key of Object.keys(fields)) {
+      if (!['services', 'boundaries', 'targets', 'probes', 'checkpoints'].includes(key)) {
+        fileWarnings.push(`${name}: bilinmeyen alan yoksayıldı: ${key}`);
+      }
+    }
+    const asList = (value: YamlNode | undefined, what: string): string[] => {
+      if (value === undefined) return [];
+      if (typeof value === 'string') return [value];
+      if (Array.isArray(value)) {
+        for (const part of value) {
+          if (typeof part !== 'string') throw new Error(`geçersiz senaryo dosyası: ${what} metin ya da liste olmalı`);
+        }
+        return [...value] as string[];
+      }
+      throw new Error(`geçersiz senaryo dosyası: ${what} metin ya da liste olmalı`);
+    };
+    const services = asList(fields['services'], `${name}: services`);
+    if (services.length === 0) throw new Error(`geçersiz senaryo dosyası: ${name}: services gerekli`);
+    const boundaries = asList(fields['boundaries'], `${name}: boundaries`);
+    asList(fields['targets'], `${name}: targets`);
+    const checkpoints = asList(fields['checkpoints'], `${name}: checkpoints`);
+    const probesRaw = fields['probes'];
+    if (probesRaw === undefined) throw new Error(`geçersiz senaryo dosyası: ${name}: probes gerekli`);
+    if (!Array.isArray(probesRaw) || probesRaw.length === 0) throw new Error(`geçersiz senaryo dosyası: ${name}: probes liste olmalı`);
+    const probes: { id: string; timeout: string }[] = [];
+    for (const entry of probesRaw) {
+      if (typeof entry !== 'string') throw new Error(`geçersiz senaryo dosyası: ${name}: probe satır-içi harita olmalı`);
+      const trimmed = entry.trim();
+      if (!(trimmed.startsWith('{') && trimmed.endsWith('}'))) throw new Error(`geçersiz senaryo dosyası: ${name}: probe satır-içi harita olmalı`);
+      let map: Record<string, YamlNode>;
+      try {
+        map = yamlParseFlowMap(trimmed);
+      } catch {
+        throw new Error(`geçersiz senaryo dosyası: ${name}: probe haritası bozuk`);
+      }
+      for (const key of Object.keys(map)) {
+        if (!['id', 'argv', 'timeout'].includes(key)) fileWarnings.push(`${name}: probe içinde bilinmeyen alan yoksayıldı: ${key}`);
+      }
+      const id = map['id'];
+      if (typeof id !== 'string' || !SCENARIO_NAME_PATTERN.test(id)) throw new Error(`geçersiz senaryo dosyası: ${name}: probe id metin olmalı`);
+      const argvRaw = map['argv'];
+      if (!Array.isArray(argvRaw) || argvRaw.length === 0) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv liste olmalı (id: ${id})`);
+      if (argvRaw.length > PROBE_MAX_PARTS) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv en fazla ${PROBE_MAX_PARTS} parça olabilir`);
+      for (const part of argvRaw) {
+        if (typeof part !== 'string') throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv parçaları metin olmalı`);
+        if (Buffer.byteLength(part, 'utf8') > PROBE_MAX_PART_BYTES) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv parçası çok uzun`);
+      }
+      if (SHELL_ARGV0.has((argvRaw as string[])[0])) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv shell ile başlayamaz`);
+      const timeoutRaw = map['timeout'];
+      let timeout = PROBE_DEFAULT_TIMEOUT;
+      if (timeoutRaw !== undefined) {
+        if (typeof timeoutRaw !== 'string' || !PROBE_TIMEOUTS.has(timeoutRaw)) throw new Error(`geçersiz senaryo dosyası: ${name}: probe timeout 5s|10s|30s olmalı`);
+        timeout = timeoutRaw;
+      }
+      probes.push({ id, timeout });
+    }
+    scenarios.push({ name, services, boundaries, probes, checkpoints });
+  }
+  return { scenarios, warnings: fileWarnings };
+}
+
+function buildScenarios(
+  record: EnvironmentRecord,
+  checkpoint: CheckpointSource | null,
+  parsed: ParsedScenario[],
+  fileWarnings: string[],
+): CoordinatorScenarios {
+  const knownServices = new Set(record.services.map(service => service.name ?? service.id));
+  // Sütunlar: bilinen sıra önce, bilinmeyenler alfabetik (≤16).
+  const seenColumns = new Set<string>();
+  for (const scenario of parsed) {
+    for (const boundary of scenario.boundaries) seenColumns.add(boundary);
+  }
+  const columns = [
+    ...SCENARIO_BOUNDARIES.filter(boundary => seenColumns.has(boundary)),
+    ...[...seenColumns].filter(boundary => !SCENARIO_KNOWN_BOUNDARIES.has(boundary)).sort(),
+  ];
+  const warnings = [...fileWarnings];
+  if (columns.length > SCENARIO_MAX_COLUMNS) {
+    warnings.push(`sütun kırpıldı (${SCENARIO_MAX_COLUMNS} sınır) — matris ilk sütunlarla sınırlı`);
+  }
+  const shownRaw = columns.slice(0, SCENARIO_MAX_COLUMNS);
+  // Wire anahtarları maskeli (ham sınır adları kullanıcı verisidir);
+  // bilinen adlar maskeden aynen geçer, eşleşme ham değerle yapılır.
+  const shownColumns = shownRaw.map(column => maskSecrets(column));
+  // Hüküm tabanı: seçili run'daki zarf tazeliği (son kayıt kazanır).
+  // Checkpoint görünümü yoksa kapsanan hücre "atlandı" düşer (kayıt yok).
+  const stageStatus = new Map<string, CheckpointStageStatus>();
+  if (checkpoint) {
+    const fresh = applyCheckpointFreshness(checkpoint.envelopes);
+    for (const envelope of fresh) stageStatus.set(envelope.stage, envelope.status);
+  }
+  const rows: ScenarioMatrixRow[] = parsed.map(scenario => {
+    const unverifiedServices = scenario.services.filter(service => !knownServices.has(service));
+    let verdict: ScenarioVerdict;
+    if (scenario.checkpoints.length === 0 || !checkpoint) {
+      verdict = 'skipped';
+    } else if (scenario.checkpoints.every(stage => stageStatus.get(stage) === 'confirmed')) {
+      verdict = 'pass';
+    } else if (scenario.checkpoints.some(stage => stageStatus.get(stage) === 'stale')) {
+      verdict = 'stale';
+    } else {
+      verdict = 'skipped';
+    }
+    const cells: Record<string, ScenarioVerdict> = {};
+    for (let i = 0; i < shownRaw.length; i += 1) {
+      const raw = shownRaw[i];
+      const column = shownColumns[i];
+      if (!scenario.boundaries.includes(raw)) cells[column] = 'uncovered';
+      else if (!SCENARIO_KNOWN_BOUNDARIES.has(raw)) cells[column] = 'unverified';
+      else cells[column] = verdict;
+    }
+    return {
+      name: maskSecrets(scenario.name),
+      services: scenario.services.map(service => maskSecrets(service)),
+      unverifiedServices: unverifiedServices.map(service => maskSecrets(service)),
+      probes: scenario.probes.map(probe => ({ id: maskSecrets(probe.id), timeout: probe.timeout })),
+      checkpoints: scenario.checkpoints.map(stage => maskSecrets(stage)),
+      cells,
+    };
+  });
+  return { file: SCENARIOS_FILE_NAME, columns: shownColumns, rows, warnings: warnings.map(warning => maskSecrets(warning)), error: null };
 }
 
 // --- Saf çekirdek (I/O yok; testler hostile fixture enjekte eder) -------------
@@ -403,6 +751,7 @@ function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoin
   const actionSource = firstGapRaw ?? fresh[fresh.length - 1];
   return {
     run: source.run,
+    runs: source.runs,
     stages,
     summary: { confirmed, stale, notObserved },
     lastVerified,
@@ -534,6 +883,18 @@ function buildExplanation(
   return { entries, revisions };
 }
 
+function buildScenariosSection(
+  record: EnvironmentRecord,
+  checkpoint: CheckpointSource | null,
+  read: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[] } | null,
+): CoordinatorScenarios | null {
+  if (!read || (read.scenarios === null && read.error === null)) return null;
+  if (read.scenarios === null) {
+    return { file: SCENARIOS_FILE_NAME, columns: [], rows: [], warnings: [], error: read.error ?? 'kayıt yok' };
+  }
+  return buildScenarios(record, checkpoint, read.scenarios, read.warnings);
+}
+
 export function buildCoordinatorSnapshot(input: {
   record: EnvironmentRecord;
   status: EnvironmentStatus;
@@ -547,6 +908,10 @@ export function buildCoordinatorSnapshot(input: {
   checkpoint?: CheckpointSource | null;
   /** Supervisor spawn-kayıtları (ad ile eşleşir; null/boş → kayıt yok). */
   supervisor?: SupervisorProvenanceRecord[] | null;
+  /** Senaryo okuma sonucu (null → dosya yok; error → bozuk-dosya kutusu). */
+  scenarioRead?: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[] } | null;
+  /** Keşfedilen run adları — checkpoints null iken bile wire'a çıkar. */
+  runs?: string[];
   unprobedPorts?: number[];
   producedAt?: string;
   snapshotId?: string;
@@ -636,7 +1001,8 @@ export function buildCoordinatorSnapshot(input: {
     explanation: buildExplanation(input.record, input.status, input.checkpoint ?? null, input.supervisor ?? null),
     preflight: { pass: missing.length === 0, gates, missing },
     checkpoints: buildCheckpoints(input.checkpoint ?? null),
-    scenarios: null,
+    scenarios: buildScenariosSection(input.record, input.checkpoint ?? null, input.scenarioRead ?? null),
+    runs: input.runs ?? [],
     warnings,
     meta: {
       producedAt: input.producedAt ?? new Date().toISOString(),
@@ -650,18 +1016,28 @@ export function buildCoordinatorSnapshot(input: {
 
 export const CHECKPOINT_MAX_BYTES = 256 * 1024;
 export const CHECKPOINT_MAX_LINES = 500;
+const CHECKPOINT_MAX_RUNS = 50;
 const runFilePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.jsonl$/;
 
 /**
- * `.ow/checkpoints` latest-only bounded okuma: latest run'un zarfları
- * (normalize edilmiş) + warnings[] sepeti (kırpma/bozuk/symlink/okunamadı).
- * Kök dışına çıkış, symlink ve aşırı dosya fail-closed atlanır; bölüm asla
- * ölmez. D1 uyarı metinleri aynen korunur.
+ * `.ow/checkpoints` bounded okuma: seçili run'un zarfları (normalize
+ * edilmiş) + keşfedilen run adları + warnings[] sepeti (kırpma/bozuk/
+ * symlink/okunamadı/boş). `runs` listesi source null iken bile döner —
+ * null dalındaki seçici buradan beslenir. Seçim: `?run=` adı
+ * (allowlist-dışı/yoksa latest + uyarı) yoksa en yeni İÇERİKLİ dosya;
+ * D1 uyarı metinleri aynen korunur. Kök dışına çıkış, symlink ve aşırı
+ * dosya fail-closed atlanır.
  */
-export async function readCheckpointSource(roots: string[]): Promise<{ source: CheckpointSource | null; warnings: string[] }> {
+export async function readCheckpointSource(roots: string[], requestedRun?: string): Promise<{
+  source: CheckpointSource | null;
+  /** Keşfedilen run adları — source null iken bile dolu olabilir (seçici). */
+  runs: string[];
+  warnings: string[];
+}> {
   const warnings: string[] = [];
   type Latest = { path: string; run: string; mtimeMs: number };
   const perRoot: Latest[] = [];
+  const runFiles = new Map<string, { path: string; mtimeMs: number }>();
   for (const root of roots) {
     const canonicalRoot = resolve(root);
     const dir = join(canonicalRoot, '.ow', 'checkpoints');
@@ -688,23 +1064,68 @@ export async function readCheckpointSource(roots: string[]): Promise<{ source: C
         if (entry.isSymbolicLink()) warnings.push(`checkpoint atlandı (symlink izlenmez): ${name}`);
         continue;
       }
+      const run = name.replace(/\.jsonl$/, '');
       candidates.push({ name, mtimeMs: entry.mtimeMs });
+      const known = runFiles.get(run);
+      if (!known || entry.mtimeMs > known.mtimeMs) runFiles.set(run, { path, mtimeMs: entry.mtimeMs });
     }
     if (candidates.length === 0) continue;
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
     const latest = candidates[0];
     perRoot.push({ path: join(dir, latest.name), run: latest.name.replace(/\.jsonl$/, ''), mtimeMs: latest.mtimeMs });
   }
-  if (perRoot.length === 0) return { source: null, warnings };
-  // Latest-only: görünüm en yeni dosyadan; uyarı sepeti her kökten (D1 disiplini).
-  const newest = perRoot.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a));
-  let envelopes: ParsedCheckpointEnvelope[] = [];
-  for (const candidate of perRoot) {
-    const parsed = await scanCheckpointFile(candidate.path, candidate.run, warnings);
-    if (candidate === newest) envelopes = parsed;
+  const runs = [...runFiles.entries()]
+    .sort((a, b) => b[1].mtimeMs - a[1].mtimeMs)
+    .map(([run]) => run);
+  if (runs.length > CHECKPOINT_MAX_RUNS) {
+    warnings.push(`çalışma listesi kırpıldı (${CHECKPOINT_MAX_RUNS} ad) — en yeniler listelenir`);
   }
-  if (envelopes.length === 0) return { source: null, warnings };
-  return { source: { run: newest.run, envelopes }, warnings };
+  const trimmedRuns = runs.slice(0, CHECKPOINT_MAX_RUNS);
+  if (perRoot.length === 0) return { source: null, runs: trimmedRuns, warnings };
+  // Uyarı sepeti her kökün latest'inden (D1 disiplini).
+  const scanned = new Map<string, ParsedCheckpointEnvelope[]>();
+  for (const candidate of perRoot) {
+    if (!scanned.has(candidate.path)) {
+      scanned.set(candidate.path, await scanCheckpointFile(candidate.path, candidate.run, warnings));
+    }
+  }
+  const envelopesOf = async (path: string, run: string): Promise<ParsedCheckpointEnvelope[]> => {
+    const known = scanned.get(path);
+    if (known !== undefined) return known;
+    const parsed = await scanCheckpointFile(path, run, warnings);
+    scanned.set(path, parsed);
+    return parsed;
+  };
+  // Açık istek: allowlist-dışı ad latest'e düşer + uyarı; bulunan dosya
+  // içeriği neyse odur (boş/bozuk → bölüm null + tarama uyarısı).
+  const requested = (requestedRun ?? '').trim();
+  if (requested) {
+    if (!RUN_NAME_PATTERN.test(requested)) {
+      warnings.push(maskSecrets(`istenen çalışma geçersiz: ${requested} — en güncel gösteriliyor`));
+    } else {
+      const hit = runFiles.get(requested);
+      if (!hit) {
+        warnings.push(maskSecrets(`istenen çalışma yok: ${requested} — en güncel gösteriliyor`));
+      } else {
+        const envelopes = await envelopesOf(hit.path, requested);
+        if (envelopes.length === 0) return { source: null, runs: trimmedRuns, warnings };
+        return { source: { run: requested, envelopes, runs: trimmedRuns }, runs: trimmedRuns, warnings };
+      }
+    }
+  }
+  // Latest: en yeni İÇERİKLİ dosya (D1 tek-dosya davranışı aynı). Taranan
+  // ama içeriksiz kalan dosya sessiz geçilmez — sepet satırı düşer
+  // (zaten uyarılmış Run adı tekrar uyarılmaz).
+  const ordered = [...perRoot].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const candidate of ordered) {
+    const before = warnings.length;
+    const envelopes = await envelopesOf(candidate.path, candidate.run);
+    if (envelopes.length > 0) return { source: { run: candidate.run, envelopes, runs: trimmedRuns }, runs: trimmedRuns, warnings };
+    if (!warnings.slice(before).some(warning => warning.includes(candidate.run))) {
+      warnings.push(maskSecrets(`checkpoint boş: ${candidate.run} — bölüm etkilenmedi`));
+    }
+  }
+  return { source: null, runs: trimmedRuns, warnings };
 }
 
 /**
@@ -855,6 +1276,69 @@ export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRe
   return record;
 }
 
+/**
+ * `<root>/ow.scenarios.yaml` bounded salt-okunur senaryo matrisi kaynağı.
+ * Kök-dışı/symlink/cap disiplini §0.3 ile aynı; dosya YOKSA sessiz
+ * null-kayıt (UI "senaryo dosyası bağlı değil"), bozuksa error kutusu
+ * (diğer paneller sağlam). Çok kökte ilk-kazanan adla birleşir.
+ */
+export async function readScenariosSource(roots: string[]): Promise<{
+  scenarios: ParsedScenario[] | null;
+  error: string | null;
+  warnings: string[];
+}> {
+  const warnings: string[] = [];
+  const merged = new Map<string, ParsedScenario>();
+  let error: string | null = null;
+  let found = false;
+  for (const root of roots) {
+    const canonicalRoot = resolve(root);
+    const path = join(canonicalRoot, SCENARIOS_FILE_NAME);
+    if (resolve(path) !== path || !path.startsWith(canonicalRoot + sep)) continue;
+    let entry;
+    try {
+      entry = await lstat(path);
+    } catch {
+      continue;
+    }
+    if (entry.isSymbolicLink()) {
+      warnings.push(`senaryo atlandı (symlink izlenmez): ${SCENARIOS_FILE_NAME}`);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (entry.size > SCENARIOS_MAX_BYTES) {
+      warnings.push(`senaryo kırpıldı: ${basename(canonicalRoot)} (256KB sınırı) — bölüm etkilenmedi`);
+      continue;
+    }
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(path));
+    } catch {
+      warnings.push(`senaryo okunamadı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      if (error === null) error = 'dosya okunamadı';
+      continue;
+    }
+    found = true;
+    let parsed: { scenarios: ParsedScenario[]; warnings: string[] };
+    try {
+      parsed = normalizeScenarios(text);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      warnings.push(maskSecrets(`senaryo bozuk: ${basename(canonicalRoot)} (${reason}) — bölüm etkilenmedi`));
+      if (error === null) error = maskSecrets(reason);
+      continue;
+    }
+    for (const warning of parsed.warnings) warnings.push(maskSecrets(warning));
+    for (const scenario of parsed.scenarios) {
+      if (!merged.has(scenario.name)) merged.set(scenario.name, scenario);
+      else warnings.push(maskSecrets(`senaryo yinelendi: ${scenario.name} (${basename(canonicalRoot)})`));
+    }
+  }
+  if (!found && error === null) return { scenarios: null, error: null, warnings };
+  if (merged.size === 0) return { scenarios: null, error: error ?? 'kayıt yok', warnings };
+  return { scenarios: [...merged.values()], error: null, warnings };
+}
+
 // --- Servis kablosu ------------------------------------------------------------
 
 export interface CoordinatorRuntime {
@@ -867,6 +1351,7 @@ export async function coordinatorSnapshot(
   workspaceName: string,
   environmentName: string,
   runtime: CoordinatorRuntime = {},
+  run?: string,
 ): Promise<CoordinatorSnapshot> {
   const state = await store.read();
   const workspace = resolveWorkspaceRecord(state, workspaceName, verifyMessages.notFoundRegister, verifyMessages.notFoundRegister);
@@ -877,10 +1362,11 @@ export async function coordinatorSnapshot(
     environmentNotFound: environmentMessages.envNotFound,
   });
   const roots = [...workspace.roots];
-  const [status, checkpointRead, supervisorRead] = await Promise.all([
+  const [status, checkpointRead, supervisorRead, scenariosRead] = await Promise.all([
     environmentStatus(store, workspaceName, environmentName, runtime.list),
-    readCheckpointSource(roots),
+    readCheckpointSource(roots, run),
     readSupervisorRecords(roots),
+    readScenariosSource(roots),
   ]);
   const probe = runtime.probe ?? probeTcpPort;
   const ports = [...new Set(record.services.map(service => service.port).filter((port): port is number => typeof port === 'number'))];
@@ -907,9 +1393,11 @@ export async function coordinatorSnapshot(
     status,
     portOccupied,
     freeSuggestion,
-    checkpointWarnings: [...checkpointRead.warnings, ...supervisorRead.warnings],
+    checkpointWarnings: [...checkpointRead.warnings, ...supervisorRead.warnings, ...scenariosRead.warnings],
     checkpoint: checkpointRead.source,
     supervisor: supervisorRead.records,
+    scenarioRead: scenariosRead,
+    runs: checkpointRead.runs,
     unprobedPorts,
   });
 }

@@ -607,12 +607,15 @@ export function createApp(service: WorkspaceService, options: {
           // Coordinator snapshot (dashboard-only in mcpMayCall above).
           // Observer-side read: viewing never records activity, so no
           // recordRead wrapper. Name/env mapping mirrors envStatusMatch.
+          // `?run=` salt-okunur checkpoint-çalışma seçimidir (rol kapısını
+          // etkilemez — gate pathname üzerindendir).
           const coordinatorMatch = new RegExp(`^/api/workspaces/(${nameSegment})/coordinator$`).exec(url.pathname);
           if (coordinatorMatch && request.method === 'GET') {
             const rawEnvironment = url.searchParams.get('environment') ?? '';
             if (!rawEnvironment.trim()) throw new Error(environmentMessages.envNotFound);
             const name = decodeNameSegment(coordinatorMatch[1], workspaceMessages.projectName);
-            json(response, 200, await service.coordinator(name, rawEnvironment));
+            const rawRun = (url.searchParams.get('run') ?? '').trim();
+            json(response, 200, await service.coordinator(name, rawEnvironment, undefined, rawRun || undefined));
             return;
           }
           // M2 runtime: ordered up (readiness-polled), owned-only down, and

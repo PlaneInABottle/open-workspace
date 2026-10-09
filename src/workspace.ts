@@ -189,11 +189,12 @@ export class WorkspaceService {
   }
 
   /**
-   * Dashboard-only coordinator snapshot (P1 reconcile + P2 preflight).
-   * Salt-okunur: viewing never records activity (observer emsali).
+   * Dashboard-only coordinator snapshot (P1+P2+P3+P4+P5). Salt-okunur:
+   * viewing never records activity (observer emsali). `run` açık
+   * checkpoint-çalışma isteğidir (boş/geçersiz/yok → latest + uyarı).
    */
-  async coordinator(name: string, environment: string, runtime?: CoordinatorRuntime) {
-    return coordinatorSnapshot(this.store, name, environment, { list: this.listPm2, ...runtime });
+  async coordinator(name: string, environment: string, runtime?: CoordinatorRuntime, run?: string) {
+    return coordinatorSnapshot(this.store, name, environment, { list: this.listPm2, ...runtime }, run);
   }
 
   // M2 runtime: ordered up with readiness, owned-only down, receipt-bound

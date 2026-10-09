@@ -67,10 +67,11 @@ export interface EnvironmentStatus {
 // ---------------------------------------------------------------------------
 // Coordinator snapshot (GET /api/workspaces/:name/coordinator?environment=X,
 // dashboard-only). Read-only P1 reconcile + P2 preflight + P3 checkpoints +
-// P4 explanation aggregate. Free text arrives server-masked; absolute paths
-// arrive as basenames only. Full revs travel on the wire for the copy-button
+// P4 explanation + P5 scenarios aggregate. Free text arrives server-masked;
+// absolute paths arrive as basenames only (probe argv and scenario targets
+// never leave the file). Full revs travel on the wire for the copy-button
 // clipboard payload only — they are never rendered (short-hash + badges +
-// age on screen). scenarios (D3) is null until its milestone lands.
+// age on screen).
 // ---------------------------------------------------------------------------
 
 export interface CoordinatorDrift {
@@ -121,6 +122,8 @@ export interface CoordinatorCheckpointStage {
 
 export interface CoordinatorCheckpoints {
   run: string;
+  /** Keşfedilen run adları (yeni→eski); ?run= seçimi buradan yapılır. */
+  runs: string[];
   stages: CoordinatorCheckpointStage[];
   summary: { confirmed: number; stale: number; notObserved: number };
   lastVerified: { stage: string; at: string } | null;
@@ -157,13 +160,45 @@ export interface CoordinatorExplanation {
   revisions: CoordinatorRevision[];
 }
 
+export type ScenarioVerdict = 'pass' | 'stale' | 'skipped' | 'uncovered' | 'unverified';
+
+export interface ScenarioMatrixRow {
+  name: string;
+  services: string[];
+  unverifiedServices: string[];
+  /** YALNIZCA id + timeout: probe argv dosyada kalır, wire'a çıkmaz. */
+  probes: { id: string; timeout: string }[];
+  checkpoints: string[];
+  /** Sütun adından hücre hükmüne (sıra `columns` dizisindedir). */
+  cells: Record<string, ScenarioVerdict>;
+}
+
+export interface CoordinatorScenarios {
+  /** Dosya adı (path değil) — köklerde hep `ow.scenarios.yaml`. */
+  file: string;
+  columns: string[];
+  rows: ScenarioMatrixRow[];
+  warnings: string[];
+  /** Bozuk dosya: satırlar boş + neden burada (diğer paneller sağlam). */
+  error: string | null;
+}
+
 export interface CoordinatorSnapshot {
   reconcile: { inSync: boolean; drifts: CoordinatorDrift[] };
   readiness: CoordinatorReadinessEntry[];
   explanation: CoordinatorExplanation | null;
   preflight: CoordinatorPreflight;
   checkpoints: CoordinatorCheckpoints | null;
-  scenarios: null;
+  /**
+   * Keşfedilen checkpoint run adları (yeni→eski) — checkpoints null iken
+   * bile dolu olabilir; null dalındaki çalışma seçici buradan beslenir.
+   */
+  runs: string[];
+  /**
+   * Dosya yoksa null ("senaryo dosyası bağlı değil"); bozuk dosya
+   * error'lu nesne (hata kutusu).
+   */
+  scenarios: CoordinatorScenarios | null;
   warnings: string[];
   meta: CoordinatorMeta;
 }
@@ -377,9 +412,10 @@ export class ApiClient {
     const params = new URLSearchParams({ environment });
     return this.request<EnvironmentStatus>(`/api/workspaces/${safeName(workspace)}/environments/status?${params}`);
   }
-  /** Read-only coordinator snapshot (P1 reconcile + P2 preflight) for one named environment. */
-  coordinator(workspace: string, environment: string) {
+  /** Read-only coordinator snapshot for one named environment; `run` selects a checkpoint run (absent = latest). */
+  coordinator(workspace: string, environment: string, run?: string) {
     const params = new URLSearchParams({ environment });
+    if (run !== undefined && run.trim().length > 0) params.set('run', run);
     return this.request<CoordinatorSnapshot>(`/api/workspaces/${safeName(workspace)}/coordinator?${params}`);
   }
 

@@ -6,7 +6,9 @@ import type {
   CoordinatorCheckpoints,
   CoordinatorDrift,
   CoordinatorExplanation,
+  CoordinatorScenarios,
   CoordinatorSnapshot,
+  ScenarioVerdict,
 } from '@/api';
 import { useObserverFetch, WarningsStrip } from '@/features/observe/use-observer';
 import { checkpointAgeLabel, yasEtiketi } from '@/features/environments/time-label';
@@ -22,6 +24,21 @@ const STALE_TR: Record<string, string> = {
   checkout_rev: 'kod revizyonu değişti',
   runtime: 'çalışma ortamı değişti',
   missing_basis: 'karşılaştırma kaydı yok',
+};
+
+const BOUNDARY_TR: Record<string, string> = {
+  real: 'gerçek',
+  local: 'yerel',
+  fake: 'sahte',
+  'captured-response': 'kayıtlı yanıt',
+  test: 'test',
+};
+
+const VERDICT_TR: Record<Exclude<ScenarioVerdict, 'uncovered'>, string> = {
+  pass: 'geçti',
+  stale: 'bayat',
+  skipped: 'atlandı',
+  unverified: 'doğrulanamadı',
 };
 
 function staleNedeni(staleReason: string | null): string {
@@ -56,7 +73,7 @@ function CopyButton({ full, label }: { full: string; label: string }) {
       type="button"
       aria-label={label}
       onClick={copy}
-      className="shrink-0 rounded border border-border px-1.5 py-0.5 text-xs font-medium hover:bg-muted"
+      className="shrink-0 rounded border border-border px-1.5 py-0.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       {copied ? '✓ kopyalandı' : 'Kopyala'}
     </button>
@@ -135,7 +152,7 @@ function DiffModal({ drift, onClose }: { drift: CoordinatorDrift; onClose: () =>
         <div className="mt-4 flex justify-end">
           <button
             type="button"
-            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             onClick={onClose}
           >
             Kapat
@@ -168,7 +185,7 @@ function PreflightPanel({ snapshot }: { snapshot: CoordinatorSnapshot }) {
             type="button"
             aria-expanded={open}
             aria-controls={regionId}
-            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+            className="text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             onClick={() => setOpen(current => !current)}
           >
             {open ? 'Eksik listesini gizle' : `Eksik listesini göster (${preflight.missing.length})`}
@@ -188,9 +205,11 @@ function PreflightPanel({ snapshot }: { snapshot: CoordinatorSnapshot }) {
  * Koordinatör bölümü: tek aggregate snapshot'tan P1 (reconcile özeti + drift
  * satırları + salt-okunur diff modalı) + P2 (preflight rozeti + eksik
  * akordiyonu) + P3 (checkpoint çizgisi: stage şeridi + bayat kuyruğu +
- * salt-metin sıradaki-adım) + P4 (provenance kartı: beklenen/çalışan tablosu
- * + rev şeridi) + tanık çizgisi. Eylem butonu yok; veri üst bardaki Yenile
- * ile one-shot gelir (refreshToken).
+ * salt-metin sıradaki-adım + çalışma seçimi) + P4 (provenance kartı:
+ * beklenen/çalışan tablosu + rev şeridi) + P5 (senaryo matrisi) + tanık
+ * çizgisi. Eylem butonu yok; veri üst bardaki Yenile ile one-shot gelir
+ * (refreshToken). Çalışma seçimi kullanıcı-tetikli tekil yeniden-çekmedir
+ * (timer/polling yok).
  */
 export function CoordinatorSection({ api, workspace, environment, refreshToken }: {
   api: ApiClient;
@@ -202,17 +221,30 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
   // Odak dönüşü deterministik: açan düğme tıklama anında yakalanır (modal
   // mount'undaki autoFocus yarışı ortadan kalkar).
   const openerRef = useRef<HTMLButtonElement | null>(null);
+  // Açık checkpoint-çalışma isteği (null = latest); ortam değişince sıfırlanır.
+  const [run, setRun] = useState<string | null>(null);
+  // Son içerikli yanıttaki çalışma listesi: içeriksiz run seçiminde
+  // (checkpoints null) seçici kaybolmasın diye önbellekte tutulur —
+  // kullanıcı aynı seçiciyle içerikli run'a dönebilir.
+  const [cachedRuns, setCachedRuns] = useState<string[]>([]);
   const { data, warnings, loading, error } = useObserverFetch<CoordinatorSnapshot>(() =>
-    api.coordinator(workspace, environment).then(snapshot => ({ data: snapshot, warnings: snapshot.warnings })),
-  [workspace, environment, refreshToken]);
+    api.coordinator(workspace, environment, run ?? undefined).then(snapshot => ({ data: snapshot, warnings: snapshot.warnings })),
+  [workspace, environment, refreshToken, run]);
 
   function closeDrift() {
     setOpenDrift(null);
     openerRef.current?.focus();
   }
 
-  // Ortam değişince açık modal kapanır — eski snapshot'ın diff'i kalmaz.
-  useEffect(() => { setOpenDrift(null); }, [workspace, environment]);
+  // Ortam değişince açık modal kapanır, çalışma seçimi latest'e döner.
+  useEffect(() => { setOpenDrift(null); setRun(null); setCachedRuns([]); }, [workspace, environment]);
+
+  // İçerikli yanıt geldikçe liste tazelenir; içeriksiz yanıtta korunur.
+  // Üst-düzey `runs` yoksa (eski sunucu) önbellek devreye girer.
+  useEffect(() => {
+    const listed = data?.runs ?? [];
+    if (listed.length > 0) setCachedRuns(listed);
+  }, [data]);
 
   return (
     <section aria-labelledby="koordinator-heading" className="border-t border-border pt-5">
@@ -256,7 +288,7 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
                     </p>
                     <button
                       type="button"
-                      className="shrink-0 text-sm font-medium text-primary underline-offset-4 hover:underline"
+                      className="shrink-0 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                       onClick={event => { openerRef.current = event.currentTarget; setOpenDrift(drift); }}
                     >
                       Diff&apos;i aç
@@ -269,9 +301,11 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
 
           <PreflightPanel snapshot={data} />
 
-          <CheckpointPanel checkpoints={data.checkpoints} />
+          <CheckpointPanel checkpoints={data.checkpoints} runs={data.runs ?? cachedRuns} run={run} onRunChange={setRun} />
 
           <ProvenancePanel explanation={data.explanation} />
+
+          <ScenariosPanel scenarios={data.scenarios} producedAt={data.meta.producedAt} />
 
           <WitnessLine snapshot={data} />
         </>
@@ -300,7 +334,40 @@ function WitnessLine({ snapshot }: { snapshot: CoordinatorSnapshot }) {
  * sıradaki ▸, bayat turuncu çerçeve + yaş) + first_gap "bayat kuyruğu"
  * (`role=status`) + salt-metin sıradaki-adım kutusu (eylem yok).
  */
-function CheckpointPanel({ checkpoints }: { checkpoints: CoordinatorCheckpoints | null }) {
+/**
+ * Çalışma seçici: etiketli native select (klavye-dostu, tekil yeniden-çekme
+ * tetikler — timer/polling yok). Liste ebeveynden gelir; içeriksiz seçimde
+ * bile görünür kalır (dead-end yok).
+ */
+function RunPicker({ runs, run, onRunChange }: {
+  runs: string[];
+  run: string | null;
+  onRunChange: (run: string | null) => void;
+}) {
+  if (runs.length === 0) return null;
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      Çalışma
+      <select
+        value={run ?? ''}
+        onChange={event => onRunChange(event.currentTarget.value === '' ? null : event.currentTarget.value)}
+        className="rounded-md border border-border bg-background px-1.5 py-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <option value="">en güncel</option>
+        {runs.map(name => (
+          <option key={name} value={name}>{name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
+  checkpoints: CoordinatorCheckpoints | null;
+  runs: string[];
+  run: string | null;
+  onRunChange: (run: string | null) => void;
+}) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     setNowMs(Date.now());
@@ -309,7 +376,10 @@ function CheckpointPanel({ checkpoints }: { checkpoints: CoordinatorCheckpoints 
   if (!checkpoints) {
     return (
       <article aria-labelledby="koordinator-checkpoints-heading" className="mt-4 border-t border-border pt-4">
-        <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint çizgisi</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint çizgisi</h3>
+          <RunPicker runs={runs} run={run} onRunChange={onRunChange} />
+        </div>
         <p className="mt-2 text-sm text-muted-foreground">Checkpoint yok — runner kaydı bulunamadı.</p>
       </article>
     );
@@ -322,10 +392,13 @@ function CheckpointPanel({ checkpoints }: { checkpoints: CoordinatorCheckpoints 
     <article aria-labelledby="koordinator-checkpoints-heading" className="mt-4 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint çizgisi</h3>
-        <p className="text-xs text-muted-foreground">
-          çalışma: <span className="font-medium text-foreground">{checkpoints.run}</span>
-          {' · '}{checkpoints.summary.confirmed} doğrulandı, {checkpoints.summary.stale} bayat, {checkpoints.summary.notObserved} gözlenmedi
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <RunPicker runs={runs} run={run} onRunChange={onRunChange} />
+          <p className="text-xs text-muted-foreground">
+            çalışma: <span className="font-medium text-foreground">{checkpoints.run}</span>
+            {' · '}{checkpoints.summary.confirmed} doğrulandı, {checkpoints.summary.stale} bayat, {checkpoints.summary.notObserved} gözlenmedi
+          </p>
+        </div>
       </div>
 
       <ol aria-label="Checkpoint aşamaları" className="mt-2 flex flex-wrap gap-2">
@@ -452,7 +525,7 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
                 <td className="py-2">
                   {entry.revShort ? (
                     <span className="inline-flex flex-wrap items-center gap-1.5">
-                      <code className="font-mono text-[0.8rem]">{entry.revShort}</code>
+                      <code translate="no" className="font-mono text-[0.8rem]">{entry.revShort}</code>
                       {entry.revDirty && <span className="text-xs text-muted-foreground">+kirli</span>}
                       {entry.revRecorded ? (
                         <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> kayıtlı</Badge>
@@ -503,9 +576,9 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
                     aria-current={isActive ? 'true' : undefined}
                     aria-pressed={isActive}
                     onClick={() => setSelected(revision.full)}
-                    className={`rounded border px-2 py-1 text-xs ${isActive ? 'border-primary font-semibold' : 'border-border'} ${revision.recorded ? '' : 'opacity-60'}`}
+                    className={`rounded border px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${isActive ? 'border-primary font-semibold' : 'border-border'} ${revision.recorded ? '' : 'opacity-60'}`}
                   >
-                    <span className="font-mono">{revision.short}</span>
+                    <span translate="no" className="font-mono">{revision.short}</span>
                     {' · '}
                     <span className="text-muted-foreground">{yasEtiketi(revision.at, nowMs)}</span>
                   </button>
@@ -515,6 +588,124 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
           </ol>
         </div>
       )}
+    </article>
+  );
+}
+
+function ScenarioCell({ verdict }: { verdict: ScenarioVerdict }) {
+  if (verdict === 'uncovered') {
+    return (
+      <span className="text-muted-foreground">
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">kapsam dışı</span>
+      </span>
+    );
+  }
+  return (
+    <Badge variant="outline" className={`gap-1 ${verdict === 'pass' ? 'text-success' : verdict === 'stale' ? 'text-warning' : verdict === 'unverified' ? 'text-warning' : 'text-muted-foreground'}`}>
+      <span aria-hidden="true">{verdict === 'pass' ? '✓' : verdict === 'stale' ? '!' : verdict === 'unverified' ? '?' : '○'}</span>
+      {VERDICT_TR[verdict]}
+    </Badge>
+  );
+}
+
+/**
+ * P5 senaryo matrisi: gerçek `<table>` (satır = senaryo, sütun = sınır),
+ * hücre = rozet metni. Hüküm, seçili run'daki checkpoint tazeliğinden
+ * gelir (kayıt yoksa "atlandı"); çalıştırma YOK — matris gösterir,
+ * koşturmaz. Sıra: matris → uyarı şeridi → tanık çizgisi (odak sırası).
+ */
+function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScenarios | null; producedAt: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, [scenarios, producedAt]);
+
+  if (!scenarios) {
+    return (
+      <article aria-labelledby="koordinator-scenarios-heading" className="mt-4 border-t border-border pt-4">
+        <h3 id="koordinator-scenarios-heading" className="text-sm font-semibold">Senaryo matrisi</h3>
+        <p className="mt-2 text-sm text-muted-foreground">Senaryo dosyası bağlı değil.</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Senaryo dosyasını asistanına bağlat — <a href="#setup" className="font-medium text-primary underline-offset-4 hover:underline">Connect your AI →</a>
+        </p>
+      </article>
+    );
+  }
+
+  const atMs = Date.parse(producedAt);
+  const staleSnapshot = Number.isFinite(atMs) && nowMs - atMs > 60_000;
+  const snapshotTime = Number.isFinite(atMs)
+    ? new Date(atMs).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : 'saat bilinmiyor';
+
+  return (
+    <article aria-labelledby="koordinator-scenarios-heading" className="mt-4 border-t border-border pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 id="koordinator-scenarios-heading" className="text-sm font-semibold">Senaryo matrisi</h3>
+        <p className="text-xs text-muted-foreground">
+          dosya: <span className="font-medium text-foreground">{scenarios.file}</span>
+          {' · '}{scenarios.rows.length} senaryo, {scenarios.columns.length} sınır
+        </p>
+      </div>
+      {staleSnapshot && (
+        <div role="status" className="mt-2 text-xs text-muted-foreground">
+          <span className="font-medium text-warning">bayat olabilir — Yenile?</span>
+          {' · '}{snapshotTime} · {yasEtiketi(producedAt, nowMs)}
+        </div>
+      )}
+
+      {scenarios.error !== null ? (
+        <p role="alert" className="mt-2 text-sm text-destructive">Senaryo dosyası okunamadı: {scenarios.error}</p>
+      ) : (
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <caption className="pb-2 text-left text-xs text-muted-foreground">
+              Senaryo matrisi — {scenarios.file} · satır senaryo, sütun sınır; hücre hükmü seçili run kaydından gelir, çalıştırma yapmaz.
+            </caption>
+            <thead>
+              <tr className="border-b border-border text-left">
+                <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Senaryo</th>
+                {scenarios.columns.map(column => (
+                  <th key={column} scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">
+                    {BOUNDARY_TR[column] ?? column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {scenarios.rows.map(row => (
+                <tr key={row.name} className="border-b border-border align-top last:border-0">
+                  <th scope="row" className="break-words py-2 pr-3 text-left font-medium">
+                    {row.name}
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      {row.services.map(service => (
+                        <span key={service} className="mr-1.5">
+                          {service}
+                          {row.unverifiedServices.includes(service) && (
+                            <span className="ml-1 font-medium text-warning">? doğrulanamadı</span>
+                          )}
+                        </span>
+                      ))}
+                    </span>
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      {row.probes.length} probe ({row.probes.map(probe => probe.id).join(', ')})
+                      {' · '}kayıt: {row.checkpoints.length > 0 ? row.checkpoints.join(', ') : 'yok'}
+                    </span>
+                  </th>
+                  {scenarios.columns.map(column => (
+                    <td key={column} className="py-2 pr-3">
+                      <ScenarioCell verdict={row.cells[column] ?? 'skipped'} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <WarningsStrip warnings={scenarios.warnings} />
     </article>
   );
 }
