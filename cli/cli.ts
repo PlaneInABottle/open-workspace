@@ -29,7 +29,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
@@ -74,6 +74,7 @@ export const helpText = (): string =>
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
     "  checkpoints list [--file] [--json]  kayıtlı kanıt koşuları (salt-okunur)",
     "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
+    "  preflight [--file] [--json] [--probe]  salt-okunur kapı (mutasyon yok; geçemezse çıkış 1)",
   "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
   "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
@@ -517,7 +518,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "ps" || command === "logs" || command === "trace") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "ps" || command === "logs" || command === "trace") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -864,6 +865,24 @@ export const run = async (argv: string[]): Promise<number> => {
         return 2
       }
       return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
+    }
+    if (command === "preflight") {
+      // P2-B: salt-okunur kapı — spawn/stop/restart/probe/health/git/lsof
+      // çağrılmaz (bayraksız); `--probe` yalnızca bildirimli portlara
+      // one-shot loopback TCP (bütçeli). `--probe` burada M3 bayrağı değil,
+      // kapının kendi canlı-onay yoludur.
+      if (positional !== undefined) {
+        console.error("ow: preflight konumsal argüman almaz")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} preflight ile kullanılamaz`)
+          return 2
+        }
+      }
+      const { runPreflight } = await import("./up-preflight")
+      return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
     }
     if (command === "ps") {
       const { formatPsLine, queryPs, toPsServiceJson } = await import("./up-ps")

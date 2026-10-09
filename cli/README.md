@@ -234,6 +234,28 @@ doğrulanmış` + `ilk eksik` + runner'ın `sonraki` passthrough'unu gösterir
 (probe/health/git/lsof) bu yollarda yoktur; ow `proof` içeriğini
 yorumlamaz.
 
+### Preflight kapısı (P2-B, salt-okunur)
+
+`ow preflight [--json] [--probe] [--file ow.yaml]` runner `prepare`
+öncesi tek kapıdır: `reconcile --check` diffleri + canlı servislerde
+beklenen/çalışan config kimliği (provenance lensi) + state'teki
+`lastReadiness` (son bilinen) sonuçlarını tek zarfta birleştirir; ayrıca
+checkpoint zarflarındaki bayat/gözlenmedi satırları kapıyı düşürür.
+Mutasyon YOK (spawn/stop/restart çağırmaz), gating YOK (karar runner'ındır).
+Geçerse exit 0 (`hazır: ortam kapıdan geçti`); geçemezse exit 1 + Türkçe
+eksik listesi (`eksik: …`, `bayat: …`, `hazır-değil: …`); kullanım hatası
+exit 2. `--json` additive `{pass, gates: [{name:
+reconcile|provenance|readiness, pass, detail}], missing, envelopes}` verir
+(`detail` M1 alt-ağaçlarını aynen gömer). Bayraksız canlı exec YOK;
+`--probe` bildirimli portlara one-shot loopback TCP onayı ekler (toplam
+≤60s bütçe, aşımda `(ölçülmedi: timeout-bütçesi)`); kayıtlı ret (`hazır-değil`)
+canlı TCP'yi yener. M2/M3 land etmedi: `lastReadiness` yoksa kapı
+`ölçülmedi` ile düşer.
+
+Runner reçetesi (docs-only, kod yok): runner `prepare` ilk satırında `ow
+preflight --json` çağırır; `pass:false` ise işi başlatmaz, `missing[]`'i
+aynen loglar; ow tarafında retry/öneri üretilmez.
+
 ### Spring tarifi (uyku/curl yerine)
 
 Spring servisleri portu actuator UP olmadan çok önce dinlemeye başlar:

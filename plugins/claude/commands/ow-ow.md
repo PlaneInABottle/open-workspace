@@ -99,6 +99,7 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 - `ow up` ensures the repo `.gitignore` covers `.ow/` (warn-only).
 - `ow doctor` also prints an informational `up:` line (never affects exit code).
 - Runner evidence lives in `<root>/.ow/checkpoints/<run>.jsonl` (runner writes, ow only reads and never prunes). `ow checkpoints show <run>` renders envelopes as confirmed/stale/not_observed with last-verified + first-gap, passing `safe_next_action` through without judging proof content.
+- Runner gate: call `ow preflight --json` as the first `prepare` step; on `pass:false` do not start work, log `missing[]` verbatim. `ow preflight` reports only (Türkçe `eksik:`/`bayat:`/`hazır-değil:` lines); `--probe` adds one-shot loopback TCP confirmation within budget.
 - Full schema, caps, and non-goals: product `cli/README.md` ("Service supervision").
 
 ### `--json` anahtarları (tek tablo, additive)
@@ -115,6 +116,7 @@ keys never change, new keys only add):
 | `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
 | `logs --json` | `{service, lines[]}` |
 | `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}}` |
+| `preflight --json` | `{pass, gates[] ({name: reconcile\|provenance\|readiness, pass, detail}), missing[], envelopes[]}` |
 | `doctor --json` | `{checks[] ({name, ok, detail})}` (çıkışa `up`/`trace` katılmaz) |
 
 ## Tracing (OpenTelemetry, optional)
