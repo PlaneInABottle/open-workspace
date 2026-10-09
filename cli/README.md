@@ -140,6 +140,10 @@ services:
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir
+ow up <ad> [-d] [--file ow.yaml]  # live: add one service via the supervisor (no live lock → bulk up)
+ow restart <ad> [--file ow.yaml]  # live: lstart-verified stop + respawn in place (no lock → exit 2)
+ow down [ad] [--file ow.yaml]  # single: stop only the target (lock/state files kept; --rm is bulk-only → exit 2)
+ow reconcile --check [--json] [--file ow.yaml]  # read-only drift report (never mutates)
 ow ps [--json]                 # pid, uptime, cpu%, mem, port, listen=evet/hayır
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
@@ -178,6 +182,36 @@ restart/healthcheck daemon. That stays distinct from the
 spawn-time port-conflict probe, which is a best-effort HTTP fetch warning
 (`port çakışması`) before spawning. One-shot bounded wait only — no
 restart/healthcheck daemon semantics.
+
+### Tek-servis yaşam döngüsü + salt-okunur reconcile (M1)
+
+No separate `.ow` patch is needed to add or refresh one service: while the
+supervisor lock is live, `up/restart/down <ad>` affects only that service —
+healthy services are never signaled.
+
+- While the lock is live the client never spawns: it prints a pre-mutation
+  diff (`+ başlatılacak:` / `yeniden:` / `durdurulacak:`, cmd in masked
+  shape), writes one atomic request under `.ow/requests/`, and waits one-shot
+  10s for the supervisor's result (no result → exit 1 `istek yanıtsız`,
+  never an assumed half-spawn). The supervisor is the sole writer; requests
+  run FIFO. An already-running target reports `zaten çalışıyor:` (exit 2,
+  no spawn). A blind target (unverifiable `lstart`) reports `zaten çalışıyor
+  olabilir:` (exit 2, no spawn — the slot is never treated as free). Live
+  single-`up` ignores `-d`/`--wait`: the result wait is always the fixed
+  one-shot 10s, independent of `--wait`. With no live lock, `up <ad>` falls
+  back to classic bulk `up`, `restart` refuses (exit 2, `önce ow up`), and
+  `down <ad>` stops the target directly without touching the lock file.
+- `ow reconcile --check` is the witness line: it never mutates, only reports
+  `eksik | fazla | durmuş | config-farklı(cmd-şekil/cwd/port/env-adları/
+  depends_on) | lstart-uyuşmazlığı | port-yabancı` plus the suggested open
+  command (`ow up/restart/down <ad>`). Exit 0 in sync, 1 on drift, 2 on
+  usage. `--json` adds the `reconcile: {inSync, drifts: [{service, kind,
+  expected?, running?, hint}]}` envelope (additive). No probe runs here:
+  `--probe` belongs to M3 (exit 2 until then), and `ps` never executes
+  `git`/`lsof`/probes — only the spawn-time and reconcile paths may.
+- Secret values never reach state/output/logs: recorded `cmd`/`logsCmd` are
+  masked shapes (deterministic, so expected-vs-running shape compare still
+  works); `envNames`/`dependsOn` in state carry names only, never values.
 
 ### Spring tarifi (uyku/curl yerine)
 

@@ -74,6 +74,8 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
       rootDir,
       stateFile: paths.supervisorFile,
       logsDir: paths.logsDir,
+      requestsDir: paths.requestsDir,
+      owFile: abs,
       trace: parsed.trace,
       onLine: opts?.quiet ? () => undefined : (name, stream, line) => console.log(`[${name}|${stream}] ${line}`),
     })

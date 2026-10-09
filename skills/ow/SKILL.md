@@ -50,6 +50,10 @@ no Docker, restarts, or dashboard.
 ```sh
 ow up --check --file ow.yaml   # validate only (unknown fields warn, never fail)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir; second up → exit 2
+ow up <svc>                    # live: add one service via the supervisor (healthy ones untouched)
+ow restart <svc>               # live: lstart-verified stop + respawn in place (no lock → exit 2)
+ow down [svc]                  # single: stop only the target (lock/state files kept; --rm is bulk-only)
+ow reconcile --check [--json]  # read-only drift report (never mutates; exit 1 on drift)
 ow ps [--json]                 # running/exited/stopped/unknown + pid, uptime, cpu, mem, port, listen=evet/hayır
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
@@ -69,11 +73,15 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 - Readiness = TCP-accept, not HTTP/app health (`ps` `listening` key likewise)
   unless `--health` opts a service into the HTTP 2xx gate.
 - Spring notes: `/` 404 is NORMAL — wait on `/actuator/health`. TCP≈ready
-  ports need no flag. Restart as `ow down && ow up -d --wait ...` (no
-  `sleep 4`; `down` is synchronous). Never `pkill`: a stale
-  `zaten çalışıyor` clears via `ow down` (`ow down --rm` for dead residue).
-  `down` during a wait reports `bitti:` everywhere (143-ish) — expected,
-  not an error.
+  ports need no flag. Prefer `ow restart <svc>` over `ow down && ow up -d`
+  (no `sleep 4`; single-service restart leaves healthy services untouched).
+  Never `pkill`: a stale `zaten çalışıyor` clears via `ow down`
+  (`ow down --rm` for dead residue). `down` during a wait reports `bitti:`
+  everywhere (143-ish) — expected, not an error.
+- `ow reconcile --check` reports drift without changing anything:
+  `eksik|fazla|durmuş|config-farklı|lstart-uyuşmazlığı|port-yabancı` plus the
+  suggested `ow up/restart/down <svc>` command (exit 0 in sync, 1 on drift).
+  `--probe` is not implemented yet (M3).
 - State is repo-local (`<root>/.ow/`); every pid is `lstart`-guarded, so a
   recycled pid is reported unknown, never signaled.
 - Port conflicts warn and still spawn, never reassign.

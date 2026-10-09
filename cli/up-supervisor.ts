@@ -4,9 +4,12 @@
  * via `up-logs` (M3); `logs:` tails run as supervisor siblings (M3/D4). */
 
 import { lstat } from "node:fs/promises"
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
 
 import type { TraceConfig, UpService } from "./up-schema"
+import { decodeUtf8Fatal, parseUpFile } from "./up-schema"
+import { maskCmdShape } from "./up-reconcile"
+import { completeRequest, scanRequests, sweepStaleResults, type ServiceRequest, type ServiceResult } from "./up-requests"
 import { appendLogLine, flushUpLogs } from "./up-logs"
 import { startTraceReceiver } from "./trace-receiver"
 import { tracePaths } from "./trace-store"
@@ -34,8 +37,24 @@ export type LogTail = {
   exit: { code: number | null; duringShutdown: boolean } | null
 }
 
-/** Resolve + validate cwd against the ow.yaml dir. Symlink-escaped targets rejected; throws Turkish usage error. */
-export const resolveServiceCwd = async (rootDir: string, cwd: string | undefined): Promise<string | undefined> => {
+/** One supervised service slot: fresh config plus its live handles. */
+export type LiveUnit = { svc: UpService; main: SpawnedChild | undefined; tail: LogTail | undefined }
+
+/** Live-supervisor execution context for M1 service requests (B1: the
+ * supervisor executes, persists, and answers; the client only writes the
+ * request and collects the result). */
+export type SupervisorCtx = {
+  rootDir: string
+  owFile: string
+  units: LiveUnit[]
+  children: SpawnedChild[]
+  tails: LogTail[]
+  retiring: Set<object>
+  spawnUnit: (svc: UpService, cwd: string | undefined, probeFirst: boolean) => Promise<void>
+  persist: () => Promise<void>
+}
+
+/** Resolve + validate cwd against the ow.yaml dir. Symlink-escaped targets rejected; throws Turkish usage error. */export const resolveServiceCwd = async (rootDir: string, cwd: string | undefined): Promise<string | undefined> => {
   if (cwd === undefined) return undefined
   const abs = resolve(rootDir, cwd)
   let info
@@ -146,6 +165,13 @@ export type UpRunOptions = {
   stateFile?: string
   /** When set, every pumped line is also captured to `<logsDir>/<ad>.jsonl`. */
   logsDir?: string
+  /** M1 request channel: when set, the supervisor loop scans this dir FIFO
+   * (100ms) and executes `up/restart/down <svc>` itself — the sole writer
+   * while live (B1). Unset (tests, one-shot runs) disables the scan. */
+  requestsDir?: string
+  /** ow.yaml path the request handler re-parses (defaults to
+   * `<rootDir>/ow.yaml`). Threaded from the original `--file`. */
+  owFile?: string
   /** Build identity recorded into supervisor state. Explicit value wins
    * (lets embedders/tests pin it); `undefined` reads the running binary's
    * sidecar, `null`/missing sidecar records nothing. */
@@ -191,6 +217,9 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   const tails: LogTail[] = []
   const portConflicts = new Map<string, boolean>()
   let stopping = false
+  /** Restart/down victims: their exits are supervisor-induced, never
+   * spontaneous failures (and never `logs komutu bitti` noise). */
+  const retiring = new Set<object>()
   const now = () => new Date().toISOString()
   const persist = async (): Promise<void> => {
     if (!options.stateFile) return
@@ -208,31 +237,37 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     // back; never clobber its settled fields with our older snapshot.
     await persistMerged(options.stateFile, state).catch(() => undefined)
   }
-  const units: { svc: UpService; main: SpawnedChild | undefined; tail: LogTail | undefined }[] = services.map(
-    (svc) => ({ svc, main: undefined, tail: undefined }),
-  )
-  const unitOf = (name: string): (typeof units)[number] => units.find((unit) => unit.svc.name === name) as (typeof units)[number]
+  const units: LiveUnit[] = services.map((svc) => ({ svc, main: undefined, tail: undefined }))
+  const unitOf = (name: string): LiveUnit | undefined => units.find((unit) => unit.svc.name === name)
+  const unitOfOrThrow = (name: string): LiveUnit => unitOf(name) as LiveUnit
   for (const svc of services) {
     if (svc.port !== undefined && (await probePort(svc.port))) {
       console.error(`uyarı: port çakışması: ${svc.port} dolu (${svc.name} yine de başlatılıyor)`)
       portConflicts.set(svc.name, true)
     }
   }
-  for (const svc of services) {
-    const cwd = cwds.get(svc.name)
+  /** Spawn one service's main child and/or `logs:` sibling into its unit
+   * slot (M1: initial spawn and live `up/restart <svc>` share this path).
+   * `probeFirst` runs the warn-only port probe (live path); the initial
+   * path probes up-front instead, so each service still warns exactly once. */
+  const spawnUnit = async (svc: UpService, cwd: string | undefined, probeFirst: boolean): Promise<void> => {
+    if (probeFirst && svc.port !== undefined && (await probePort(svc.port))) {
+      console.error(`uyarı: port çakışması: ${svc.port} dolu (${svc.name} yine de başlatılıyor)`)
+      portConflicts.set(svc.name, true)
+    }
     if (svc.cmd !== undefined) {
       const proc = spawnOne(svc, cwd)
       const lstart = (await readLstart(proc.pid)) ?? ""
       const child: SpawnedChild = { service: svc, proc, lstart, startedAt: now(), exit: null }
       children.push(child)
-      unitOf(svc.name).main = child
+      unitOfOrThrow(svc.name).main = child
       pumpLines(proc, svc.name, "stdout", "stdout", onLine, capture ? (line) => capture(svc.name, "stdout", line) : undefined)
       pumpLines(proc, svc.name, "stderr", "stderr", onLine, capture ? (line) => capture(svc.name, "stderr", line) : undefined)
       proc.exited.then((code) => {
-        child.exit = { code, signal: null, duringShutdown: stopping }
+        child.exit = { code, signal: null, duringShutdown: stopping || retiring.has(child) }
         void persist()
       }).catch(() => {
-        child.exit = { code: null, signal: "unknown", duringShutdown: stopping }
+        child.exit = { code: null, signal: "unknown", duringShutdown: stopping || retiring.has(child) }
         void persist()
       })
     }
@@ -241,22 +276,25 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
       const lstart = (await readLstart(proc.pid)) ?? ""
       const tail: LogTail = { service: svc, proc, lstart, startedAt: now(), exit: null }
       tails.push(tail)
-      unitOf(svc.name).tail = tail
+      unitOfOrThrow(svc.name).tail = tail
       const captureLog = capture ? (line: string): void => capture(svc.name, "log", line) : undefined
       pumpLines(proc, svc.name, "stdout", "log", onLine, captureLog)
       pumpLines(proc, svc.name, "stderr", "log", onLine, captureLog)
       proc.exited.then((code) => {
-        tail.exit = { code, duringShutdown: stopping }
-        if (!stopping && capture) {
+        tail.exit = { code, duringShutdown: stopping || retiring.has(tail) }
+        if (!stopping && !retiring.has(tail) && capture) {
           capture(svc.name, "event", `logs komutu bitti (code=${code ?? "?"})`)
         }
-        if (!stopping) console.error(`uyarı: ${svc.name} logs komutu bitti (code=${code ?? "?"})`)
+        if (!stopping && !retiring.has(tail)) console.error(`uyarı: ${svc.name} logs komutu bitti (code=${code ?? "?"})`)
         void persist()
       }).catch(() => {
-        tail.exit = { code: null, duringShutdown: stopping }
+        tail.exit = { code: null, duringShutdown: stopping || retiring.has(tail) }
         void persist()
       })
     }
+  }
+  for (const svc of services) {
+    await spawnUnit(svc, cwds.get(svc.name), false)
   }
   await persist()
   type Stoppable = { proc: ReturnType<typeof Bun.spawn>; lstart: string; done: () => boolean; markKilled: () => void }
@@ -323,11 +361,41 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   }
   process.on("SIGINT", onSignal)
   process.on("SIGTERM", onSignal)
+  // M1 request channel (B1): the live supervisor is the sole executor.
+  const requestsDir = options.requestsDir
+  const owFile = options.owFile ?? join(options.rootDir, "ow.yaml")
+  if (requestsDir) {
+    const { mkdir } = await import("node:fs/promises")
+    await mkdir(join(requestsDir, "results"), { recursive: true, mode: 0o700 }).catch(() => undefined)
+  }
+  const ctx: SupervisorCtx = { rootDir: options.rootDir, owFile, units, children, tails, retiring, spawnUnit, persist }
+  let scans = 0
   try {
     for (;;) {
       if (options.shouldStop?.()) {
         await stop()
         break
+      }
+      if (requestsDir) {
+        for (const { file, request } of await scanRequests(requestsDir)) {
+          try {
+            const result = await processServiceRequest(ctx, request)
+            await completeRequest(requestsDir, file, result)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            await completeRequest(requestsDir, file, {
+              action: request.action,
+              service: request.service,
+              nonce: request.nonce,
+              ok: false,
+              code: "refused",
+              message: `ow: ${message}`,
+            }).catch(() => undefined)
+          }
+        }
+        // L-1 TTL sweep, throttled (~60s): client leftovers never accumulate.
+        scans += 1
+        if (scans % 600 === 0) await sweepStaleResults(requestsDir).catch(() => undefined)
       }
       if (children.length > 0 && children.every((child) => child.exit)) break
       if (children.length === 0 && tails.every((tail) => tail.exit)) break
@@ -354,22 +422,62 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
 /** Merge-on-write: `persist` (spawn/exit path) and `down` (final mark path)
  * both rewrite the whole file, so each re-reads first and preserves settled
  * fields the in-memory copy never saw (`exitCode`/`exitedAt`,
- * `logsEnded`). Defined-wins per service: a recorded settlement is never
- * clobbered by a stale in-memory absence. No new lock files — the supervisor
- * is the sole writer while live, `down` only marks the dead. */
+ * `logsEnded`). Name-keyed union: on-disk-only services are kept (never
+ * dropped), defined-wins per field, and process-bound facts (`exitCode`/
+ * `exitedAt`, `logsEnded`, `lstartUnknown`, `logsPid`/`logsLstart`,
+ * `portConflict`, `envNames`/`dependsOn`) are only inherited when the
+ * process identity (pid+lstart) matches — a respawned service never
+ * inherits its predecessor's settlement, stale liveness flags, recycled
+ * handles, or phantom config (the latter would fake `config-farklı`
+ * drift). An inherited `cmd`/`logsCmd` is re-masked (B3). `startedAt`
+ * likewise follows the fresh record on identity change. No new lock
+ * files — the supervisor is the sole writer while live, `down` only marks
+ * the dead. */
 export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServiceState[]): UpServiceState[] => {
   const diskByName = new Map(onDisk.map((svc) => [svc.name, svc]))
-  return fresh.map((svc) => {
+  const freshNames = new Set(fresh.map((svc) => svc.name))
+  const merged = fresh.map((svc) => {
     const prior = diskByName.get(svc.name)
     if (!prior) return svc
-    return {
-      ...svc,
-      ...(svc.exitCode === undefined && prior.exitCode !== undefined
-        ? { exitCode: prior.exitCode, ...(prior.exitedAt === undefined ? {} : { exitedAt: prior.exitedAt }) }
-        : {}),
-      ...(svc.logsEnded === undefined && prior.logsEnded !== undefined ? { logsEnded: prior.logsEnded } : {}),
+    const sameIdentity = prior.pid === svc.pid && prior.lstart === svc.lstart
+    const out: UpServiceState = { ...svc }
+    // Defined-wins for every optional field the fresh record omits — but
+    // never across an identity change for process-bound facts: a respawned
+    // service starts clean, or stale flags/handles/config would haunt the
+    // new process (resurrected settlement, phantom `lstartUnknown`, a
+    // recycled `logsPid`, a `portConflict` that predates the new bind, or
+    // `envNames`/`dependsOn` faking a `config-farklı` drift in reconcile).
+    const staleOnRespawn: ReadonlySet<keyof UpServiceState> = new Set([
+      "exitCode",
+      "exitedAt",
+      "logsEnded",
+      "lstartUnknown",
+      "logsPid",
+      "logsLstart",
+      "portConflict",
+      "envNames",
+      "dependsOn",
+    ])
+    for (const [key, value] of Object.entries(prior) as [keyof UpServiceState, unknown][]) {
+      if ((out as Record<string, unknown>)[key as string] === undefined && value !== undefined) {
+        if (!sameIdentity && staleOnRespawn.has(key)) continue
+        ;(out as Record<string, unknown>)[key as string] = value
+      }
     }
+    // L-3: an inherited `cmd`/`logsCmd` is re-masked (legacy records may
+    // predate masked-shape recording; secret values never linger in state).
+    if (typeof out.cmd === "string") out.cmd = maskCmdShape(out.cmd) ?? out.cmd
+    if (typeof out.logsCmd === "string") out.logsCmd = maskCmdShape(out.logsCmd) ?? out.logsCmd
+    // `startedAt` follows the process: same identity keeps the original
+    // boot time (down-path stale snapshots must not rewind it), a new
+    // identity takes the fresh spawn time.
+    if (sameIdentity && prior.startedAt !== undefined) out.startedAt = prior.startedAt
+    return out
   })
+  for (const svc of onDisk) {
+    if (!freshNames.has(svc.name)) merged.push(svc)
+  }
+  return merged
 }
 
 /** Read-modify-write with settlement preservation; missing/corrupt on-disk
@@ -392,24 +500,32 @@ export const persistMerged = async (supervisorFile: string, state: { version: 1;
 
 /** Spawn-time record: an empty `lstart` means `readLstart` failed at spawn,
  * so the pid guard is blind for this unit — recorded as `lstartUnknown` so
- * `down` refuses (never reports success) and `ps` shows unknown. */
+ * `down` refuses (never reports success) and `ps` shows unknown.
+ * B3: `cmd`/`logsCmd` land masked-shape-only (secret values never reach
+ * state); `envNames` carries key names only. Masking is deterministic, so
+ * `reconcile --check` can still compare expected vs running shapes. */
 const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false): UpServiceState => {
   const primary = main ?? tail
   if (!primary) throw new Error(`${svc.name}: izlenecek süreç yok`)
+  const maskedCmd = maskCmdShape(svc.cmd)
+  const maskedLogs = svc.logs === undefined ? undefined : (maskCmdShape(svc.logs) ?? svc.logs)
+  const envNames = svc.env === undefined && svc.requiredEnv === undefined ? undefined : [...new Set([...Object.keys(svc.env ?? {}), ...(svc.requiredEnv ?? [])])].sort()
   return {
     name: svc.name,
     pid: primary.proc.pid,
     lstart: primary.lstart,
     startedAt: primary.startedAt,
-    ...(typeof svc.cmd !== "undefined" ? { cmd: svc.cmd } : {}),
+    ...(maskedCmd === undefined ? {} : { cmd: maskedCmd }),
     ...(typeof svc.cwd !== "undefined" ? { cwd: svc.cwd } : {}),
     ...(typeof svc.port !== "undefined" ? { port: svc.port } : {}),
-    ...(typeof svc.logs !== "undefined" ? { logsCmd: svc.logs } : {}),
+    ...(typeof maskedLogs !== "undefined" ? { logsCmd: maskedLogs } : {}),
     ...(tail ? { logsPid: tail.proc.pid, logsLstart: tail.lstart } : {}),
     ...(tail?.exit ? { logsEnded: { code: tail.exit.code, at: new Date().toISOString() } } : {}),
     ...(portConflict ? { portConflict: true as const } : {}),
     ...(main?.exit ? { exitCode: main.exit.code ?? -1, exitedAt: new Date().toISOString() } : {}),
     ...(primary.lstart === "" ? { lstartUnknown: true as const } : {}),
+    ...(envNames === undefined ? {} : { envNames }),
+    ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
   }
 }
 
@@ -542,7 +658,9 @@ const stopPid = async (pid: number, lstart: string): Promise<StopStatus> => {
   return "stopped"
 };
 
-const stopOne = async (svc: UpServiceState): Promise<DownResult> => {
+/** Single-service stop over a recorded state entry (exported: `ow down
+ * <svc>` reuses the same lstart guard; the guard itself is untouched). */
+export const stopOne = async (svc: UpServiceState): Promise<DownResult> => {
   // Empty `lstart` (spawn-time `readLstart` failure) means the pid guard is
   // blind: refusing loudly beats the old false `stopped: true` on a process
   // that may still be live. The process is deliberately left untouched.
@@ -571,4 +689,156 @@ const stopOne = async (svc: UpServiceState): Promise<DownResult> => {
   if (main === "already") return { name: svc.name, stopped: true, note: "çalışmıyor" }
   if (main === "stopped") return { name: svc.name, stopped: true, note: "durduruldu" }
   return { name: svc.name, stopped: false, note: "durmuyor" }
+};
+
+/** Drop a unit's dead handles from the supervisor's wait lists so a
+ * respawned slot is waited on exactly once (the exit tally stays honest). */
+const pruneUnitHandles = (ctx: SupervisorCtx, unit: LiveUnit): void => {
+  if (unit.main) {
+    const index = ctx.children.indexOf(unit.main)
+    if (index >= 0) ctx.children.splice(index, 1)
+    unit.main = undefined
+  }
+  if (unit.tail) {
+    const index = ctx.tails.indexOf(unit.tail)
+    if (index >= 0) ctx.tails.splice(index, 1)
+    unit.tail = undefined
+  }
+}
+
+const unitIsLive = async (unit: LiveUnit): Promise<boolean> => {
+  if (unit.main && unit.main.lstart !== "" && (await isLivePid(unit.main.proc.pid, unit.main.lstart))) return true
+  if (unit.tail && !unit.tail.exit && unit.tail.lstart !== "" && (await isLivePid(unit.tail.proc.pid, unit.tail.lstart))) return true
+  return false
+}
+
+const unitLstartUnknown = (unit: LiveUnit): boolean =>
+  (unit.main !== undefined && unit.main.lstart === "") || (unit.tail !== undefined && !unit.tail.exit && (unit.tail.lstart ?? "") === "")
+
+/** Execute one M1 service request inside the live supervisor (sole writer).
+ * Healthy units are never touched: `up` spawns only into a free slot,
+ * `restart`/`down` signal only the target's lstart-verified pids. Every
+ * path ends with `persist()`; the caller publishes the returned result. */
+export const processServiceRequest = async (ctx: SupervisorCtx, request: ServiceRequest): Promise<ServiceResult> => {
+  const fail = (code: string, message: string): ServiceResult => ({ action: request.action, service: request.service, nonce: request.nonce, ok: false, code, message })
+  let services: UpService[]
+  try {
+    const { readFileSync } = await import("node:fs")
+    services = parseUpFile(decodeUtf8Fatal(readFileSync(ctx.owFile))).services
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return fail("invalid-config", `ow: geçersiz ow.yaml: ${message}`)
+  }
+  const svc = services.find((entry) => entry.name === request.service)
+  if (!svc) {
+    const known = services.map((entry) => entry.name).join(", ")
+    return fail("unknown-service", `ow: bilinmeyen servis: ${request.service}${known.length > 0 ? ` (bilinenler: ${known})` : ""}`)
+  }
+  const existing = ctx.units.find((unit) => unit.svc.name === request.service)
+  if (request.action === "up") {
+    if (existing && (await unitIsLive(existing))) {
+      const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "already-running", message: `zaten çalışıyor: ${request.service} (pid ${pid})`, pid }
+    }
+    // Blind unit (spawn-time `readLstart` failure): the guard cannot verify
+    // the recorded pid, so the slot is never treated as free — spawning
+    // here would orphan the blind child and duplicate the service. Report
+    // already-running (exit 2, no spawn), never prune + respawn.
+    if (existing && unitLstartUnknown(existing)) {
+      const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "already-running", message: `zaten çalışıyor olabilir: ${request.service} (pid ${pid}, lstart bilinmiyor — doğrulanamaz, spawn yapılmadı)`, pid }
+    }
+    let cwd: string | undefined
+    try {
+      cwd = await resolveServiceCwd(ctx.rootDir, svc.cwd)
+    } catch (error) {
+      return fail("invalid-config", `ow: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    let unit = existing
+    if (!unit) {
+      unit = { svc, main: undefined, tail: undefined }
+      ctx.units.push(unit)
+    } else {
+      pruneUnitHandles(ctx, unit)
+    }
+    unit.svc = svc
+    await ctx.spawnUnit(svc, cwd, true)
+    await ctx.persist()
+    const live = ctx.units.find((unit) => unit.svc.name === request.service) as LiveUnit
+    const pid = live.main?.proc.pid ?? live.tail?.proc.pid ?? 0
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "started", message: `başlatıldı: ${request.service} (pid ${pid})`, pid }
+  }
+  if (request.action === "restart") {
+    if (!existing) {
+      // Unknown to the live supervisor but declared: start it (same as up).
+      let cwd: string | undefined
+      try {
+        cwd = await resolveServiceCwd(ctx.rootDir, svc.cwd)
+      } catch (error) {
+        return fail("invalid-config", `ow: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      const unit: LiveUnit = { svc, main: undefined, tail: undefined }
+      ctx.units.push(unit)
+      await ctx.spawnUnit(svc, cwd, true)
+      await ctx.persist()
+      const pid = unit.main?.proc.pid ?? unit.tail?.proc.pid ?? 0
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "started", message: `başlatıldı: ${request.service} (pid ${pid})`, pid }
+    }
+    if (unitLstartUnknown(existing)) {
+      return fail("refused", `güvenli durdurma yok: ${request.service} (lstart bilinmiyor — pid doğrulanamaz)`)
+    }
+    const oldPid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
+    if (existing.main && (await isLivePid(existing.main.proc.pid, existing.main.lstart))) {
+      ctx.retiring.add(existing.main)
+      const stopped = await stopPid(existing.main.proc.pid, existing.main.lstart)
+      if (stopped === "refused") return fail("refused", `durmuyor: ${request.service} (pid ${oldPid})`)
+    }
+    if (existing.tail && !existing.tail.exit && existing.tail.proc.pid !== oldPid) {
+      if ((existing.tail.lstart ?? "") === "") return fail("refused", `güvenli durdurma yok: ${request.service} (logs lstart bilinmiyor)`)
+      if (await isLivePid(existing.tail.proc.pid, existing.tail.lstart)) {
+        ctx.retiring.add(existing.tail)
+        const stopped = await stopPid(existing.tail.proc.pid, existing.tail.lstart)
+        if (stopped === "refused") return fail("refused", `durmuyor: ${request.service} (logs kuyruğu)`)
+      }
+    }
+    let cwd: string | undefined
+    try {
+      cwd = await resolveServiceCwd(ctx.rootDir, svc.cwd)
+    } catch (error) {
+      return fail("invalid-config", `ow: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    pruneUnitHandles(ctx, existing)
+    existing.svc = svc
+    await ctx.spawnUnit(svc, cwd, true)
+    await ctx.persist()
+    const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "restarted", message: `yeniden başlatıldı: ${request.service} (pid ${oldPid} → ${pid})`, pid }
+  }
+  // down: stop only the target, keep its settled record for ps/reconcile.
+  if (!existing) {
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "already-stopped", message: `çalışmıyor: ${request.service}` }
+  }
+  if (unitLstartUnknown(existing)) {
+    return fail("refused", `güvenli durdurma yok: ${request.service} (lstart bilinmiyor — pid doğrulanamaz)`)
+  }
+  let touched = false
+  if (existing.main && (await isLivePid(existing.main.proc.pid, existing.main.lstart))) {
+    ctx.retiring.add(existing.main)
+    const stopped = await stopPid(existing.main.proc.pid, existing.main.lstart)
+    if (stopped === "refused") return fail("refused", `durmuyor: ${request.service}`)
+    touched = true
+  }
+  if (existing.tail && !existing.tail.exit && existing.tail.proc.pid !== (existing.main?.proc.pid ?? -1)) {
+    if ((existing.tail.lstart ?? "") === "") return fail("refused", `güvenli durdurma yok: ${request.service} (logs lstart bilinmiyor)`)
+    if (await isLivePid(existing.tail.proc.pid, existing.tail.lstart)) {
+      ctx.retiring.add(existing.tail)
+      const stopped = await stopPid(existing.tail.proc.pid, existing.tail.lstart)
+      if (stopped === "refused") return fail("refused", `durmuyor: ${request.service} (logs kuyruğu)`)
+      touched = true
+    }
+  }
+  await ctx.persist()
+  return touched
+    ? { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "stopped", message: `durduruldu: ${request.service}` }
+    : { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "already-stopped", message: `çalışmıyor: ${request.service}` }
 };

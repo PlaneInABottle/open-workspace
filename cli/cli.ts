@@ -29,12 +29,12 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs", "trace", "timeline", "init"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
 const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -60,10 +60,13 @@ export const helpText = (): string =>
     "  meta [oturum]                 maliyet/token/değişiklik/tur",
     "  prompts [oturum]              son 20 kullanıcı yönergesi (eskiden yeniye)",
     "  reads [oturum] [--since]      okuma özeti",
-    "  up [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/yol]  servisleri kaldır (ow.yaml); --check yalnız doğrular;",
+    "  up [servis] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/yol]  servisleri kaldır (ow.yaml); --check yalnız doğrular;",
   "                                -d ile --wait: bildirilen portlar açılana kadar bekle (çıkış: hazır değilse 1);",
   "                                --health <ad>=<yol> (tekrarlanabilir, yalnız --wait ile): o servis TCP sonrası HTTP 2xx bekler",
-    "  down [--file] [--rm]          servisleri durdur (--rm durum dosyasını da siler)",
+  "                                tek servis (up <ad>): canlı supervisora istekle eklenir, sağlıklılar etkilenmez",
+    "  restart <servis> [--file]   canlı supervisorda tek servisi yeniden başlat (kilit yoksa çıkış 2)",
+    "  down [servis] [--file] [--rm]  servisleri durdur (--rm yalnız toplu down ile; tek serviste çıkış 2)",
+    "  reconcile --check [--json] [--file]  salt-okunur drift raporu (mutasyon yok; çıkış 1 drift, 0 uyumlu)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
   "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
@@ -273,6 +276,155 @@ export const parseHealthFlags = (
 const flag = (flags: Record<string, string | boolean | string[]>, name: string): string | undefined =>
   typeof flags[name] === "string" ? (flags[name] as string) : undefined
 
+/** M1 single-service client flow over the B1 request channel. Live lock →
+ * diff + atomic request + one-shot (10s) result wait; the client never
+ * spawns, acquires, or persists. Returns null only for `up` with no live
+ * supervisor (caller falls back to classic bulk `up`); `restart` refuses
+ * (exit 2) and `down` stops directly without touching the lock file (B5). */
+export const runSingleServiceRequest = async (opts: {
+  rootDir: string
+  file: string
+  action: "up" | "restart" | "down"
+  service: string
+  json: boolean
+}): Promise<number | null> => {
+  let text: string
+  try {
+    text = decodeUtf8Fatal(readFileSync(opts.file))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`ow: ow.yaml bulunamadı: ${opts.file}`)
+    } else {
+      console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return 2
+  }
+  let parsed: ReturnType<typeof parseUpFile>
+  try {
+    parsed = parseUpFile(text)
+  } catch (error) {
+    console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    return 2
+  }
+  const svc = parsed.services.find((entry) => entry.name === opts.service)
+  if (!svc) {
+    const known = parsed.services.map((entry) => entry.name).join(", ")
+    console.error(`ow: bilinmeyen servis: ${opts.service}${known.length > 0 ? ` (bilinenler: ${known})` : ""}`)
+    return 2
+  }
+  // `down` skips the env gate (stopping must never wait on credentials).
+  if (opts.action !== "down") {
+    const missing = missingRequiredEnv([svc])
+    if (missing.length > 0) {
+      for (const entry of missing) {
+        console.error(`ow: ${entry.service} gerekli ortam değişkenleri eksik: ${entry.vars.join(", ")}`)
+      }
+      return 2
+    }
+  }
+  const { classifyLock, readSupervisorState, upPaths } = await import("./up-state")
+  const paths = upPaths(opts.rootDir)
+  let status: Awaited<ReturnType<typeof classifyLock>>
+  try {
+    status = await classifyLock(paths.lockFile)
+  } catch {
+    status = { kind: "absent" }
+  }
+  if (status.kind !== "live") {
+    if (opts.action === "restart") {
+      console.error("ow: restart için çalışan supervisor yok — önce `ow up`")
+      return 2
+    }
+    if (opts.action === "down") return runDirectSingleDown(opts.rootDir, opts.service, opts.json)
+    return null
+  }
+  const state = await readSupervisorState(paths.supervisorFile)
+  const running = state?.services.find((entry) => entry.name === opts.service) ?? null
+  const { diffService } = await import("./up-reconcile")
+  const pre =
+    opts.action === "down"
+      ? { lines: [`durdurulacak: ${opts.service}${running ? ` pid=${running.pid}` : ""}`], diff: { status: running ? "running" : "missing" } }
+      : diffService(svc, running, opts.action === "restart" ? "restart" : "up")
+  if (!opts.json) for (const line of pre.lines) console.log(line)
+  const { waitResult, writeRequest } = await import("./up-requests")
+  let nonce: string
+  try {
+    nonce = await writeRequest(paths.requestsDir, opts.action, opts.service, opts.file)
+  } catch (error) {
+    console.error(`ow: istek yazılamadı: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
+  }
+  const result = await waitResult(paths.requestsDir, nonce)
+  if (!result) {
+    console.error("ow: istek yanıtsız — `ow ps` ile doğrulayın")
+    return 1
+  }
+  if (opts.json) {
+    console.log(
+      JSON.stringify({
+        service: opts.service,
+        action: opts.action,
+        ...(result.pid !== undefined ? { pid: result.pid } : {}),
+        diff: pre.diff,
+        ...(result.ok ? {} : { code: result.code }),
+      }),
+    )
+  } else if (result.ok) {
+    console.log(result.message)
+  } else {
+    console.error(`ow: ${result.message}`)
+  }
+  if (result.ok) return 0
+  if (result.code === "already-running" || result.code === "unknown-service" || result.code === "invalid-config") return 2
+  return 1
+}
+
+/** Lock-yok `down <svc>`: only the target pid is stopped (shared `stopOne`
+ * guard) and the record is merge-marked; the lock file is never touched
+ * and `supervisor.json` is never deleted (B5). `--rm` never reaches here
+ * (single `down --rm` is exit 2 at the call site). */
+export const runDirectSingleDown = async (rootDir: string, service: string, json: boolean): Promise<number> => {
+  const { classifySupervisorFile, isLivePid, readSupervisorState, upPaths } = await import("./up-state")
+  const { persistMerged, stopOne } = await import("./up-supervisor")
+  const paths = upPaths(rootDir)
+  const fileStatus = await classifySupervisorFile(paths.supervisorFile)
+  if (fileStatus === "corrupt") {
+    console.error("ow: okunamıyor: supervisor.json bozuk — `down --rm` ile temizleyin")
+    return 1
+  }
+  if (fileStatus === "bad-version") {
+    console.error("ow: okunamıyor: supervisor.json sürüm uyuşmazlığı — `down --rm` ile temizleyin")
+    return 1
+  }
+  if (fileStatus === "missing") {
+    console.error("ow: durdurulacak süreç yok")
+    return 2
+  }
+  const state = await readSupervisorState(paths.supervisorFile)
+  const record = state?.services.find((entry) => entry.name === service)
+  if (!record) {
+    const known = (state?.services ?? []).map((entry) => entry.name).join(", ")
+    console.error(`ow: bilinmeyen servis: ${service}${known.length > 0 ? ` (bilinenler: ${known})` : ""}`)
+    return 2
+  }
+  const outcome = await stopOne(record)
+  if (outcome.stopped) {
+    const fresh = await readSupervisorState(paths.supervisorFile)
+    const entry = fresh?.services.find((candidate) => candidate.name === service)
+    if (fresh && entry && entry.exitCode === undefined && entry.lstart !== "" && !(await isLivePid(entry.pid, entry.lstart))) {
+      entry.exitCode = -1
+      entry.exitedAt = new Date().toISOString()
+      await persistMerged(paths.supervisorFile, fresh).catch(() => undefined)
+    }
+  }
+  if (!json) {
+    console.log(`${outcome.stopped ? "durduruldu" : "durmuyor"}: ${outcome.name} (${outcome.note})`)
+  } else {
+    console.log(JSON.stringify({ stopped: [outcome], warnings: [] }))
+  }
+  return outcome.stopped ? 0 : 1
+}
+
 const resolveSession = async (
   positional: string | undefined,
   logPath: string,
@@ -347,22 +499,26 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "down" || command === "ps" || command === "logs" || command === "trace") {
-    // Readers walk upward to the enclosing workspace; `up` (which CREATES
-    // state) and any explicit --file stay exactly where pointed. `--check`
-    // rides the `up` (creation-anchored) path: it never walks.
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "ps" || command === "logs" || command === "trace") {
+    // Readers walk upward to the enclosing workspace; bulk `up` (which
+    // CREATES state, no positional) and any explicit --file stay exactly
+    // where pointed. `--check` rides the `up` (creation-anchored) path: it
+    // never walks. Single-service `up <svc>` walks like a reader: it must
+    // find the live supervisor's root, never spawn a sibling world.
     const explicitFile = flag(flags, "--file") !== undefined
+    const bulkUp = command === "up" && positional === undefined
     let rootDir = upRootDir(flags)
-    if (command !== "up" && !explicitFile) {
+    if (!bulkUp && !explicitFile) {
       const { resolveWorkspaceRoot } = await import("./up-state")
       rootDir = await resolveWorkspaceRoot(process.cwd())
     }
     const stateDir = upStateDir(rootDir)
     const searchStart = process.cwd()
     const { noStateNote } = await import("./up-state")
-    // Config reads follow the same rule: explicit --file or `up` read the
-    // pointed/cwd file; readers without --file read the walked root's file.
-    const yamlForRead = explicitFile || command === "up" ? upFilePath(flags) : join(rootDir, "ow.yaml")
+    // Config reads follow the same rule: explicit --file or bulk `up` read
+    // the pointed/cwd file; single-service and reader commands without
+    // --file read the walked root's file.
+    const yamlForRead = explicitFile || bulkUp ? upFilePath(flags) : join(rootDir, "ow.yaml")
     if (command === "trace") {
       const { runTrace } = await import("./trace-cli")
       const tailFlag = flag(flags, "--tail")
@@ -425,6 +581,29 @@ export const run = async (argv: string[]): Promise<number> => {
       } catch (error) {
         console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
         return 2
+      }
+      // `--probe` is M3-owned: anywhere else it is a usage error (exit 2),
+      // never a silent no-op. One guard covers bulk and single `up`.
+      if (flags["--probe"] === true) {
+        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        return 2
+      }
+      if (positional !== undefined) {
+        // M1 single-service `up`: live supervisor → request channel (the
+        // `--wait`/`--detach` guards below do not apply: the result wait is
+        // a fixed one-shot 10s, independent of `--wait`). No live lock →
+        // classic bulk behavior (plan M1), anchored at this root.
+        if (flags["--check"] === true) {
+          console.error("ow: --check tek servis ile kullanılamaz (dosyanın tümünü doğrular)")
+          return 2
+        }
+        if (flags["--health"] !== undefined) {
+          console.error("ow: --health tek-servis up ile kullanılamaz")
+          return 2
+        }
+        const single = await runSingleServiceRequest({ rootDir, file: yamlForRead, action: "up", service: positional, json })
+        if (single !== null) return single
+        warn(`canlı supervisor yok — toplu başlatılıyor (istenen: ${positional})`)
       }
       if (flags["--check"] === true && flags["--wait"] !== undefined) {
         console.error("ow: --wait --check ile kullanılamaz (doğrulama beklemez)")
@@ -519,7 +698,19 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runSuperviseFile } = await import("./up-supervisor-cli")
       return runSuperviseFile(file)
     }
-    if (!existsSync(stateDir)) {
+    // `--probe` is M3-owned: `ps`/`logs` reject it before the honest-empty
+    // branch (exit 2 with or without state), matching the `up`/`down`/
+    // `restart`/`reconcile` guards below.
+    if ((command === "ps" || command === "logs") && flags["--probe"] === true) {
+      console.error("ow: --probe henüz desteklenmiyor (M3)")
+      return 2
+    }
+    // `restart`/`reconcile`/tek-servis `down` state-dizini yokluğunda da
+    // kendi honest çıkışını üretir (kilit-yok restart exit 2, reconcile
+    // eksik exit 1, tek `down --rm` kullanım hatası) — erken boş-dal
+    // yalnızca toplu `down` ile klasik okuyuculara aittir.
+    const earlyEmpty = (command === "down" && positional === undefined) || command === "ps" || command === "logs"
+    if (!existsSync(stateDir) && earlyEmpty) {
       if (command === "down") {
         console.error(`ow: durdurulacak süreç yok (${noStateNote(searchStart)})`)
         return 2
@@ -535,6 +726,19 @@ export const run = async (argv: string[]): Promise<number> => {
       return 0
     }
     if (command === "down") {
+      if (flags["--probe"] === true) {
+        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        return 2
+      }
+      if (positional !== undefined && flags["--rm"] === true) {
+        console.error("ow: --rm yalnızca toplu down ile kullanılır (tek serviste `down <ad> --rm` çıkış 2)")
+        return 2
+      }
+      if (positional !== undefined) {
+        const single = await runSingleServiceRequest({ rootDir, file: yamlForRead, action: "down", service: positional, json })
+        // `down` never falls back to bulk: null is unreachable here.
+        return single ?? 2
+      }
       const { classifySupervisorFile, upPaths } = await import("./up-state")
       const { downAll } = await import("./up-supervisor")
       const rm = flags["--rm"] === true
@@ -573,6 +777,36 @@ export const run = async (argv: string[]): Promise<number> => {
         console.log(JSON.stringify({ stopped: outcome.results, warnings: outcome.warnings }))
       }
       return outcome.results.every((result) => result.stopped) ? 0 : 1
+    }
+    if (command === "restart") {
+      if (positional === undefined) {
+        console.error("ow: restart servis adı bekler (ör. ow restart api)")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} restart ile kullanılamaz`)
+          return 2
+        }
+      }
+      const single = await runSingleServiceRequest({ rootDir, file: yamlForRead, action: "restart", service: positional, json })
+      return single ?? 2
+    }
+    if (command === "reconcile") {
+      if (positional !== undefined) {
+        console.error("ow: reconcile konumsal argüman almaz (--check yeterli)")
+        return 2
+      }
+      if (flags["--check"] !== true) {
+        console.error("ow: reconcile --check ile kullanılır (salt-okunur rapor, mutasyon yok)")
+        return 2
+      }
+      if (flags["--probe"] === true) {
+        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        return 2
+      }
+      const { runReconcileCheck } = await import("./up-reconcile")
+      return runReconcileCheck({ rootDir, file: yamlForRead, json })
     }
     if (command === "ps") {
       const { formatPsLine, queryPs, toPsServiceJson } = await import("./up-ps")

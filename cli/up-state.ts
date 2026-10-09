@@ -28,6 +28,11 @@ export type UpServiceState = {
   /** Spawn-time `readLstart` failure marker: the pid guard is blind for this
    * unit, so `down`/`ps` must treat it as unknown, never as stoppable/dead. */
   lstartUnknown?: boolean
+  /** Spawn-time recorded env KEY names (values never stored) + declared
+   * `depends_on`, for M1 `reconcile --check` config drift. Absent on older
+   * records: the compare skips rather than drifting. */
+  envNames?: string[]
+  dependsOn?: string[]
 }
 
 export type UpSupervisorState = {
@@ -72,6 +77,9 @@ export const upPaths = (rootDir: string) => ({
   supervisorFile: join(rootDir, ".ow", "supervisor.json"),
   lockFile: join(rootDir, ".ow", "supervisor.lock"),
   logsDir: join(rootDir, ".ow", "logs"),
+  /** M1 service-request channel (B1): client writes, supervisor executes. */
+  requestsDir: join(rootDir, ".ow", "requests"),
+  resultsDir: join(rootDir, ".ow", "requests", "results"),
 })
 
 /** Upward-walk budget: filesystem root or 32 levels, whichever first. */

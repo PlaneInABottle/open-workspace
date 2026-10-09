@@ -12,7 +12,7 @@ Start with a developer who already uses a coding assistant but leaves value on t
 
 Three surfaces, one local service:
 
-- **`ow` CLI — the primary interface.** Read-only session observer (`sessions`, `show`, `stuck`, `meta`, `prompts`, `reads`, `tree`, `timeline`), dev-service supervision (`up`/`down`/`ps`/`logs`) from a repo `ow.yaml`, and opt-in OpenTelemetry tracing through an embedded loopback receiver. Observed via the OpenCode shell-observer plugin.
+- **`ow` CLI — the primary interface.** Read-only session observer (`sessions`, `show`, `stuck`, `meta`, `prompts`, `reads`, `tree`, `timeline`), dev-service supervision (`up`/`down`/`ps`/`logs`, plus single-service `up/restart/down <svc>` and read-only `reconcile --check`) from a repo `ow.yaml`, and opt-in OpenTelemetry tracing through an embedded loopback receiver. Observed via the OpenCode shell-observer plugin.
 - **Dashboard.** Observer-first, read-only React/TypeScript view: recorded agent activity plus environment status, AI setup and privacy/access removal. A coordination surface, not an operate console.
 - **MCP bridge + skills.** Project registration, owned-environment orchestration and a compact learning loop for the user's existing assistant. 13 MCP tools, 7 MCP-served consumer skills, project-local client snapshots. The dashboard does not create projects.
 
