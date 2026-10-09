@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ApiClient, EnvironmentRecord, EnvironmentStatus, Workspace } from '@/api';
 import { EnvironmentsSection } from '@/features/environments/environment-board';
+import { CoordinatorSection } from '@/features/environments/coordinator-section';
 import { useObserverFetch, WarningsStrip } from '@/features/observe/use-observer';
 
 interface WorkspaceEnvironments {
@@ -20,6 +21,11 @@ export function EnvironmentsView({ api, workspaces, refreshToken }: {
   refreshToken: number;
 }) {
   const [selected, setSelected] = useState('');
+  const [coordinatorEnvironment, setCoordinatorEnvironment] = useState('');
+  const selectWorkspace = (name: string) => {
+    setSelected(name);
+    setCoordinatorEnvironment('');
+  };
 
   const { data, warnings, loading, error } = useObserverFetch<WorkspaceEnvironments | null>(async () => {
     if (!selected) return { data: null, warnings: [] };
@@ -58,7 +64,7 @@ export function EnvironmentsView({ api, workspaces, refreshToken }: {
             id="environments-workspace"
             className="project-select"
             value={selected}
-            onChange={event => setSelected(event.currentTarget.value)}
+            onChange={event => selectWorkspace(event.currentTarget.value)}
           >
             <option value="">Select a project…</option>
             {workspaces.map(workspace => <option key={workspace.name} value={workspace.name}>{workspace.name}</option>)}
@@ -75,12 +81,35 @@ export function EnvironmentsView({ api, workspaces, refreshToken }: {
         <p role="status" className="text-sm text-muted-foreground">Reading environment status…</p>
       )}
       {data && (
-        <EnvironmentsSection
-          environments={data.environments}
-          statuses={data.statuses}
-          loading={loading}
-          error={null}
-        />
+        <>
+          <EnvironmentsSection
+            environments={data.environments}
+            statuses={data.statuses}
+            loading={loading}
+            error={null}
+          />
+          {data.environments.length > 0 && (
+            <>
+              <div className="grid max-w-xl gap-1">
+                <label htmlFor="coordinator-environment" className="text-xs font-medium text-muted-foreground">Koordinatör ortamı</label>
+                <select
+                  id="coordinator-environment"
+                  className="project-select"
+                  value={coordinatorEnvironment || data.environments[0].name}
+                  onChange={event => setCoordinatorEnvironment(event.currentTarget.value)}
+                >
+                  {data.environments.map(record => <option key={record.id} value={record.name}>{record.name}</option>)}
+                </select>
+              </div>
+              <CoordinatorSection
+                api={api}
+                workspace={data.workspace}
+                environment={coordinatorEnvironment || data.environments[0].name}
+                refreshToken={refreshToken}
+              />
+            </>
+          )}
+        </>
       )}
     </div>
   );

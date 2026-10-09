@@ -131,6 +131,9 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
     || pathname === '/api/observer/stuck'
     || pathname === '/api/observer/cost') return false;
   if (new RegExp(`^/api/observer/sessions/${nameSegment}(?:/(meta|records|stuck|prompts|reads))?$`).test(pathname)) return false;
+  // Coordinator snapshot is dashboard-only (observer deseni): raw-adjacent
+  // free-text envelopes ride masked, but the surface stays out of MCP scope.
+  if (new RegExp(`^/api/workspaces/${nameSegment}/coordinator$`).test(pathname)) return false;
   // The dashboard is not a permission gate, so the MCP client may use every
   // workspace operation; authority lives in the client's permission model.
   // The native picker and the client configuration stay dashboard-only, as
@@ -599,6 +602,17 @@ export function createApp(service: WorkspaceService, options: {
           if (envListMatch && request.method === 'GET') {
             const name = decodeNameSegment(envListMatch[1], workspaceMessages.projectName);
             json(response, 200, await recordRead('environment-list', await workspaceScopeId(name).catch(() => null), `environment_list ${name}`.slice(0, 100), () => service.environmentList(name)));
+            return;
+          }
+          // Coordinator snapshot (dashboard-only in mcpMayCall above).
+          // Observer-side read: viewing never records activity, so no
+          // recordRead wrapper. Name/env mapping mirrors envStatusMatch.
+          const coordinatorMatch = new RegExp(`^/api/workspaces/(${nameSegment})/coordinator$`).exec(url.pathname);
+          if (coordinatorMatch && request.method === 'GET') {
+            const rawEnvironment = url.searchParams.get('environment') ?? '';
+            if (!rawEnvironment.trim()) throw new Error(environmentMessages.envNotFound);
+            const name = decodeNameSegment(coordinatorMatch[1], workspaceMessages.projectName);
+            json(response, 200, await service.coordinator(name, rawEnvironment));
             return;
           }
           // M2 runtime: ordered up (readiness-polled), owned-only down, and

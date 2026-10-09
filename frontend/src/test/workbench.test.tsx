@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
 import type { ClientConfig, Overview, Workspace } from '../api';
@@ -108,6 +108,18 @@ describe('observer-first workbench', () => {
         return json([{ id: 'env-1', name: 'dev', services: [], state: 'down', updatedAt: '2026-10-06T00:00:00.000Z' }]);
       }
       if (path.startsWith('/api/workspaces/alpha/environments/status')) return json({ environmentId: 'env-1', name: 'dev', state: 'down', order: [], services: [] });
+      if (path.startsWith('/api/workspaces/alpha/coordinator')) {
+        return json({
+          reconcile: { inSync: true, drifts: [] },
+          readiness: [],
+          explanation: null,
+          preflight: { pass: true, gates: [], missing: [] },
+          checkpoints: null,
+          scenarios: null,
+          warnings: [],
+          meta: { producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2', environment: 'dev' },
+        });
+      }
       return json({ error: 'Not found.' }, 404);
     });
     render(<App />);
@@ -115,7 +127,12 @@ describe('observer-first workbench', () => {
     fireEvent.click(screen.getAllByRole('link', { name: /Environments/ })[0]);
     expect(await screen.findByText(/Select a project to review its recorded environments/i)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Project/), { target: { value: 'alpha' } });
-    expect(await screen.findByText('dev')).toBeInTheDocument();
+    const environments = await screen.findByRole('region', { name: 'Environments' });
+    expect(within(environments).getByText('dev')).toBeInTheDocument();
+    // The coordinator section follows the same one-shot refresh with its own
+    // environment scope and witness line.
+    expect(await screen.findByRole('region', { name: 'Koordinatör' })).toBeInTheDocument();
+    expect(await screen.findByText('eşleşiyor')).toBeInTheDocument();
   });
 
   it('renders the setup prompt without a project selection and lists registered projects', async () => {

@@ -41,6 +41,8 @@ ow show <session> --json              # stable machine output (English keys)
 
 The dashboard is the observer/coordination surface. Project registration happens through your assistant over MCP (`workspace_register({name, roots})`); the dashboard does not create projects and remains read-only for agent activity. It shows recorded sessions, environment status, AI setup guidance and privacy/access removal.
 
+The Environments view carries a read-only **Coordinator** section per environment (dashboard-only `GET /api/workspaces/:name/coordinator?environment=X`): a reconcile badge (in-sync vs drifted with expected→running rows and a read-only diff preview), a preflight badge (launchable vs missing ports) and a witness line (kind · time · age · snapshot id). Everything arrives in one snapshot on the top-bar Refresh — no polling, no action buttons, no secrets or absolute paths on the wire.
+
 To connect an assistant, use **Connect your AI → Copy setup prompt** in the dashboard: one pasted self-install message the agent runs project-locally (MCP entry, MCP-served skills, a marker-delimited `AGENTS.md` note, reload, then free-read verification). The client governs writes; the dashboard records what ran and never writes global client settings. Installed command copies refresh manually via `/ow-update`.
 
 ## Custom local configuration

@@ -64,6 +64,60 @@ export interface EnvironmentStatus {
   services: ServiceStatusEntry[];
 }
 
+// ---------------------------------------------------------------------------
+// Coordinator snapshot (GET /api/workspaces/:name/coordinator?environment=X,
+// dashboard-only). Read-only P1 reconcile + P2 preflight aggregate. Free text
+// arrives server-masked; absolute paths arrive as basenames only. explanation
+// (D2) and scenarios (D3) are null until their milestones land.
+// ---------------------------------------------------------------------------
+
+export interface CoordinatorDrift {
+  service: string;
+  field: string;
+  expected: string;
+  actual: string;
+}
+
+export interface CoordinatorReadinessEntry {
+  serviceId: string;
+  name: string;
+  /** Kayıtlı kökün dizin adı — tam path asla wire'a girmez. */
+  dir: string | null;
+  status: string;
+  detail: string;
+  lastPoll: EnvironmentLastPoll | null;
+}
+
+export interface CoordinatorPreflightGate {
+  service: string;
+  port: number | null;
+  free: boolean;
+  note: string;
+}
+
+export interface CoordinatorPreflight {
+  pass: boolean;
+  gates: CoordinatorPreflightGate[];
+  missing: string[];
+}
+
+export interface CoordinatorMeta {
+  producedAt: string;
+  snapshotId: string;
+  environment: string;
+}
+
+export interface CoordinatorSnapshot {
+  reconcile: { inSync: boolean; drifts: CoordinatorDrift[] };
+  readiness: CoordinatorReadinessEntry[];
+  explanation: null;
+  preflight: CoordinatorPreflight;
+  checkpoints: null;
+  scenarios: null;
+  warnings: string[];
+  meta: CoordinatorMeta;
+}
+
 export interface ActivityEntry {
   at: string;
   actor: 'dashboard' | 'mcp';
@@ -272,6 +326,11 @@ export class ApiClient {
   environmentStatus(workspace: string, environment: string) {
     const params = new URLSearchParams({ environment });
     return this.request<EnvironmentStatus>(`/api/workspaces/${safeName(workspace)}/environments/status?${params}`);
+  }
+  /** Read-only coordinator snapshot (P1 reconcile + P2 preflight) for one named environment. */
+  coordinator(workspace: string, environment: string) {
+    const params = new URLSearchParams({ environment });
+    return this.request<CoordinatorSnapshot>(`/api/workspaces/${safeName(workspace)}/coordinator?${params}`);
   }
 
   // Observer reads (GET /api/observer/*, dashboard role only).

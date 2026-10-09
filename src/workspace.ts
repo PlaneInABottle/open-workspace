@@ -12,6 +12,7 @@ import { listMilestones } from './milestones.js';
 import { appendLearningRule, collectRecentLocalRuns, countRecurrences, entryMeasured, maxLearningEntries, readLearningIndex, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, renameEnvironment, setEnvironment } from './environment.js';
+import { coordinatorSnapshot, type CoordinatorRuntime } from './coordinator.js';
 import { availableSkills } from './consumer-skills.js';
 
 export interface RootInspection {
@@ -185,6 +186,14 @@ export class WorkspaceService {
 
   async environmentStatus(name: string, environment: string) {
     return environmentStatus(this.store, name, environment, this.listPm2);
+  }
+
+  /**
+   * Dashboard-only coordinator snapshot (P1 reconcile + P2 preflight).
+   * Salt-okunur: viewing never records activity (observer emsali).
+   */
+  async coordinator(name: string, environment: string, runtime?: CoordinatorRuntime) {
+    return coordinatorSnapshot(this.store, name, environment, { list: this.listPm2, ...runtime });
   }
 
   // M2 runtime: ordered up with readiness, owned-only down, receipt-bound
