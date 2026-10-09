@@ -1,72 +1,86 @@
 # OpenWorkspace
 
-Keep your AI agent. Give it a ready multi-service environment plus memory that learns from its mistakes — shell-native work stays in your harness, orchestration and learning live here.
+Keep your own coding agent. OpenWorkspace shows what it actually did and runs the dev services around it — locally, without replacing your harness.
 
-**Source preview:** a host-native local service, React/TypeScript dashboard with Tailwind 4 and source-owned shadcn/Base UI components, direct project registration, bounded project discovery, read-only PM2/Docker inventory for the dashboard, owned multi-service environment orchestration with receipt-bound verification, and an actual stdio MCP bridge. Per-service shell control, log tails, direct database queries and declared local tools are intentionally not served: your harness already does that work. Docker/Compose control, packaged distribution and fresh-machine setup remain later gates. See [ROADMAP.md](ROADMAP.md) for the evolving milestones and plugin direction.
+- **`ow` CLI** — read-only session observer (`sessions`, `show`, `stuck`, `meta`, `prompts`, `reads`, `tree`, `timeline`) plus dev-service supervision (`up`/`down`/`ps`/`logs`) and optional OpenTelemetry tracing.
+- **Dashboard** — observer-first, read-only view of recorded agent activity, environment status, AI setup and privacy.
+- **MCP bridge + skills** — project registration, environment orchestration and a small learning loop for your existing assistant. Shell-native work (commands, log tails, process control, database queries) stays in your harness; MCP never duplicates it.
 
-## Install and use the product
-
-There is **no packaged end-user release yet**. This source preview is for local development and early pilots, not a Node-free installer. The intended journey is launch → observe agent activity on this machine → check environments → connect your existing AI for technical preparation. Project registration happens through your assistant over MCP; the dashboard no longer creates projects. A Java project's own toolchain must not change just to operate OpenWorkspace.
-
-The source instructions below are for developing OpenWorkspace itself. Do not run them inside Chatwoot or another application repository, and do not assume a global `openworkspace` command has been installed.
+**Source preview — no packaged release yet.** `ow` is bun-only and built manually; the dashboard runs from source with Node/pnpm. This is not a Node-free installer.
 
 ## Develop from source
 
-Prerequisites: Node.js 22.20+ and pnpm 11.24.0. Node 26.8.1 was used for the initial checks; Node 22 compatibility has not been executed yet.
+Prerequisites: Node.js 22.20+ and pnpm 11.24.0 for the service/dashboard; [bun](https://bun.sh) for the `ow` CLI. Node 26.8.1 has been exercised; Node 22 compatibility is declared but not yet executed.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm build
-pnpm start
+pnpm build        # dashboard bundle -> web-dist/ (required before start)
+pnpm start        # Node-served dashboard at http://127.0.0.1:4318
+pnpm ow:build     # compile cli/cli.ts -> cli/ow (bun)
 ```
 
-Startup opens the canonical dashboard at `http://127.0.0.1:4318` after readiness. Observe recorded sessions, mistakes, stuck signals and cost directly — there is no browser connect step. Project registration happens through your assistant over MCP; the dashboard does not register a directory. There is no key entry, pairing command or `pnpm pair`. If the default browser cannot be opened, use the printed safe URL. Use `127.0.0.1`, not the `localhost` alias.
+Run package scripts **from this source directory**, never from a registered project. `pnpm start` opens the dashboard at `http://127.0.0.1:4318` after readiness; use `127.0.0.1`, not the `localhost` alias. `OPENWORKSPACE_NO_OPEN=1` (or the source companion `start --no-open`) keeps startup headless. Startup opens only a secret-free URL — there is no password, pairing command or key-entry step.
 
-Do not copy the MCP credential into chat, URLs, logs or client settings. The source distribution still needs Node/pnpm to install OpenWorkspace itself; the bundled-runtime installer is not shipped.
+The Node service preflights the built manifest before it listens; a missing/invalid `web-dist/` exits with a build instruction. Vite is the build tool, not a production server.
 
-In **Connect your AI**, use **Copy setup prompt**: one pasted self-install message for your own assistant — it installs the secret-free project-local stdio entry, uses MCP-served skills, proposes an AGENTS.md note showing the exact diff, then verifies with free reads after reload. Already connected? Paste the new prompt — your agent re-merges the entry, adds the AGENTS.md note, and re-verifies with workspace_list. Your client governs writes; the dashboard records what ran; the app does not write global client settings. Installed command copies refresh manually via `/ow-update` (or a freshly pasted prompt); per-client command surfacing is UNVERIFIED until run on a real client. The MCP bridge must run under the same local user as the service.
+### The `ow` CLI
 
-Start the provided onboarding request or install `skills/onboarding/SKILL.md` in your client's supported skill location. This is consumer guidance shipped separately from the development tree, not automatically installed globally. Developers of OpenWorkspace use `AGENTS.md` and `.agents/skills/openworkspace-development/` instead.
+```sh
+pnpm ow:build                         # build once (gitignored binary)
+ln -sf "$PWD/cli/ow" ~/.local/bin/ow  # put it on PATH
+ow doctor                             # health: log growing, hooks firing, db readable
+ow sessions                           # what ran, where, how much
+ow show <session> [--tree]            # grouped task view, incl. subagent sessions
+ow stuck <session>                    # retries, re-reads, slow commands
+ow show <session> --json              # stable machine output (English keys)
+```
 
-### Custom local configuration
+`ow` observes **OpenCode sessions** through the shell-observer plugin (`~/.config/opencode/opencode-plugins/shell-observer/`); other harnesses are not observed — an empty result means "not observed", never "nothing happened". Session analysis is read-only. Service supervision, the `ow.yaml` schema, tracing recipes and caps live in [cli/README.md](cli/README.md); the consumer skills in `skills/` are the operator guidance.
+
+### Dashboard and MCP
+
+The dashboard is the observer/coordination surface. Project registration happens through your assistant over MCP (`workspace_register({name, roots})`); the dashboard does not create projects and remains read-only for agent activity. It shows recorded sessions, environment status, AI setup guidance and privacy/access removal.
+
+To connect an assistant, use **Connect your AI → Copy setup prompt** in the dashboard: one pasted self-install message the agent runs project-locally (MCP entry, MCP-served skills, a marker-delimited `AGENTS.md` note, reload, then free-read verification). The client governs writes; the dashboard records what ran and never writes global client settings. Installed command copies refresh manually via `/ow-update`.
+
+## Custom local configuration
 
 - `OPENWORKSPACE_PORT`: local HTTP port; default 4318.
 - `OPENWORKSPACE_HOME`: absolute dedicated private state directory; default `~/.local/share/openworkspace`.
-- `OPENWORKSPACE_NO_OPEN=1`: keep startup headless. The source companion also accepts `start --no-open`.
+- `OPENWORKSPACE_NO_OPEN=1`: keep startup headless (source companion also accepts `start --no-open`).
 
-No project environment files are imported. State requires 0700 directories and 0600 files, owned by the current user, without symlinked state-directory ancestors. Use canonical paths on platforms with filesystem aliases. One service owns a state directory; a second instance exits instead of taking over. After an ungraceful crash, verify no service still owns that directory before removing its `service.lock`. Never remove another instance's lock just to recover a port.
+State requires 0700 directories and 0600 files, owned by the current user, without symlinked state-directory ancestors; use canonical paths on platforms with filesystem aliases. One service owns a state directory; a second instance exits instead of taking over. After an ungraceful crash, verify no service still owns that directory before removing its `service.lock`.
 
-`pnpm build` creates ignored `web-dist/` assets. The Node service preflights the built manifest and entry before it listens or publishes a connection; a missing/invalid build exits with a build instruction. Vite is the build tool, not a production server. Old `/app.js` and `/styles.css` routes and the vanilla UI are not retained as compatibility fallbacks.
+`connection.json` is strict private `{origin,mcpToken}` state for the companion/MCP bridge, not a dashboard credential. The MCP credential never enters URLs, HTML, console output or client config. Restart preserves registrations.
+
+The `ow` CLI keeps its own repo-local state in `<root>/.ow/` (0700/0600), and its optional tracing receiver binds `127.0.0.1:4319` — never the dashboard's 4318.
 
 ## What works
 
-- Register a named project from explicitly selected repository folders through your assistant (`workspace_register({name, roots})` over MCP); no wrapper, cloning or moving is required. A wrapper/monorepo can still be one selected root. The dashboard no longer creates projects — it observes activity and manages removal/privacy.
-- Remove the whole project's registration in **Access & privacy** (or `DELETE /api/workspaces/:id`) without deleting repo files.
-- Detect manifests, guidance filenames, script **names**, and Compose file presence separately per registered root and its bounded immediate components. Compose YAML is not parsed; a changed/unavailable root is reported without hiding healthy groups.
-- Skip hidden directories, dependency/build directories, symlinked component directories and symlinked manifest files.
-- Show executable availability separately from unverified runtime/readiness.
-- Reuse registered workspace state after a service restart.
-- MCP tools (13): `workspace_list`, `workspace_register`, `workspace_inspect`, `onboarding_plan`, `environment_propose`, `environment_set`, `environment_status`, `environment_up`, `environment_down`, `environment_verify`, `environment_rename`, `run_import`, `learning_record`. Mutations are authorized by your coding assistant's own permission model — your client governs writes; the dashboard records what ran in recent activity instead of gating it. Re-registering a name replaces its root list in place (upsert) with the stable ID preserved. `environment_status` reports owned-environment service state; raw process reality stays in your own shell. Docker mapping requires an exact Compose `working_dir` or config-file directory label match to one registered root; ambiguous/unmatched containers remain visible but unactionable, and missing Docker/daemon is reported unavailable.
-- MCP prompts: `workspace_onboarding` plus `skill/<name>` for the three consumer skills (`learn-from-mistake`, `onboarding`, `update`).
+- **`ow` observer:** session inventory, grouped task view with subagent trees, stuck/retry signals, prompts, file reads, cost/tokens and JSON output — read-only over OpenCode's session store.
+- **`ow` supervision:** start/stop/list/log declared dev services from a repo `ow.yaml` as plain child processes; `lstart`-guarded pids, repo-local state, port-conflict warnings (never reassignment).
+- **`ow` tracing:** opt-in embedded loopback OTLP/HTTP-protobuf receiver with redacted, capped span storage and `ow trace` / `ow timeline` views.
+- **Dashboard:** React/TypeScript + Tailwind 4 + source-owned shadcn/Base UI; observer-first views plus environments, AI setup and privacy/access removal.
+- **MCP tools (13):** `workspace_list`, `workspace_register`, `workspace_inspect`, `onboarding_plan`, `environment_propose`, `environment_set`, `environment_status`, `environment_up`, `environment_down`, `environment_verify`, `environment_rename`, `run_import`, `learning_record`.
+- **Consumer skills (7):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`, `setup-tracing`, served over MCP and snapshotted per client.
+- **Bounded discovery:** manifests, guidance filenames, script **names** and Compose-file presence per registered root; hidden/dependency/symlinked entries skipped; found executables shown separately from unverified runtime/readiness.
+- **Private project state:** one strict schema, explicit `roots` arrays, no versioned upgrades; unknown shapes fail closed and stay byte-identical.
 
-Owned environment start/stop with readiness (`environment_up`/`environment_down`) and receipt-bound verification of one repo-native script (`environment_verify`) are available through MCP and the dashboard, authorized by your assistant's permission model and recorded in recent activity. Docker is presence-only: no restart, stop, exec, attach or log operations. Commands, log tails and process control stay in your own shell — MCP never duplicates what your harness already does. Manifest metadata may still contain sensitive information; this is not an arbitrary-file secret detector.
-
-Private project state has one strict schema: explicit `roots` arrays, no versioned upgrades. Unknown shapes fail closed and the file stays byte-identical; invalid/oversized input fails without reset.
+Owned-environment start/stop with readiness (`environment_up`/`environment_down`) and receipt-bound verification of one repo-native script (`environment_verify`) are available over MCP and the dashboard, authorized by your assistant's permission model and recorded in recent activity. Docker is presence-only inventory; commands, logs and process control stay in your own shell.
 
 ## Security boundary
 
-HTTP listens only on 127.0.0.1 with strict Host/Origin/fetch-metadata checks. The dashboard is open loopback (dev-only personal use: any local process can call it); the MCP credential gates the MCP-bridge path and is never minted from or exposed to the dashboard. The MCP credential may use workspace operations. Native folder picking and client configuration stay dashboard-side. Static assets contain no credential; no cookies or secret-bearing URLs are used.
+HTTP listens only on `127.0.0.1` with strict Host/Origin/fetch-metadata checks. The dashboard is open loopback (dev-only personal use: any local process can call it); the MCP credential gates the MCP-bridge path and is never minted from or exposed to the dashboard. Static assets contain no credential; no cookies or secret-bearing URLs. The stdio bridge runs as your local user and is trusted local code — not an OS sandbox.
 
-Registration is intentionally narrower than code execution or secret access. Metadata may still be confidential; MCP results are visible to your assistant and may be sent to its model provider. Local-first does not imply that your external assistant keeps all data local.
-
-The stdio bridge runs as your local user and is trusted local code. This is not an OS sandbox and cannot prevent a coding assistant with independent shell access from reading your files outside platform operations. Test coverage is a baseline, not a security audit or penetration-test certification.
+Registration is intentionally narrower than code execution or secret access. Metadata may still be confidential; MCP results are visible to your assistant and may be sent to its model provider. Test coverage is a baseline, not a security audit.
 
 ## Verify
 
 ```sh
-pnpm typecheck
-pnpm test
+pnpm typecheck                    # backend + frontend
+pnpm test                         # Node tests + React behavior suite
+bun test cli/                     # ow CLI suites (bun-only)
 pnpm audit
 ```
 
-Tests use owned temporary directories, loopback HTTP, a real stdio MCP client/server and a separate React behavior suite. They cover registration/removal, dashboard/MCP role gates, mutation-versus-refresh races and safe static delivery. They do not touch application repositories, read real credentials, install tools or start application services. `pnpm typecheck:backend`, `pnpm typecheck:frontend` and `pnpm test:ui` expose the narrower checks when needed.
+Tests use owned temporary directories, loopback HTTP, a real stdio MCP client/server and a separate React behavior suite; they do not touch application repositories, read real credentials, install tools or start application services.

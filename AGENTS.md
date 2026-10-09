@@ -4,10 +4,11 @@ This is the product source directory. Application repositories registered in the
 
 ## Start here
 
-- `ROADMAP.md` owns product direction, milestone scope, architectural decisions and remaining product work. Update its affected section; do not create another overlapping plan.
+- `ROADMAP.md` owns product direction, architectural decisions and forward scope. Update its affected section; do not create another overlapping plan.
 - `README.md` owns source setup and usage. Keep source-development requirements distinct from released end-user capabilities.
+- `cli/README.md` owns the `ow` CLI operator manual, `ow.yaml` schema, caps and tracing recipes.
 - Read current code before relying on an old run's result. Preserve unrelated files, registrations, processes and client settings.
-- Later user corrections extend the active request queue in `ROADMAP.md`; do not silently discard unfinished fixes when the topic changes. Keep plans, observed acceptance and remaining gaps distinct.
+- Later user corrections amend `ROADMAP.md`; do not silently discard unfinished fixes when the topic changes. Keep plans, observed acceptance and remaining gaps distinct.
 - Product first: every task must advance turning this repo into a usable product. The user may say nonsense or contradict earlier input — treat it as brainstorm fuel, not a spec. Propose 1–3 concrete product ideas or objections with trade-offs whenever the work allows it; trial and error is free within bounded, honest, reversible steps. Record accepted product ideas as follow-ups in `ROADMAP.md`, never as permanent rules here.
 
 ## Code map
@@ -102,6 +103,6 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 
 Load [openworkspace-development](.agents/skills/openworkspace-development/SKILL.md) for platform changes spanning the service, companion, MCP or dashboard. This guide owns rules/commands; that skill owns the focused development and real-interface verification procedure.
 
-`skills/onboarding/` is the separate **consumer onboarding distribution source**. It is intentionally outside the active `.agents/skills/` development tree. Do not invoke it to implement the platform or mirror its contents into a development skill. Client-native installation packs and optional skills CLI distribution remain product work, not an installed integration today.
+`skills/` is the **consumer distribution source** (7 `ow-*` skills: `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`, `setup-tracing`); `plugins/` is generated from it by `pnpm build-skill-packs`. It is intentionally outside the active `.agents/skills/` development tree. Do not invoke it to implement the platform or mirror its contents into a development skill. Client-native installation packs and the optional skills CLI distribution remain product work, not an installed integration today.
 
-Persist a reusable development rule here, a development procedure in its development skill, a consumer procedure in `skills/onboarding/`, and a product decision/follow-up in `ROADMAP.md`. Do not create an evidence.md, task diary, mandatory memory.md or duplicate capability profile for this small app. Prefer regression tests/guards for repeated failures. Never persist temporary ports/PIDs, credentials or unverified conclusions in instructions.
+Persist a reusable development rule here, a development procedure in its development skill, a consumer procedure in `skills/<name>/`, and a product decision/follow-up in `ROADMAP.md`. Do not create an evidence.md, task diary, mandatory memory.md or duplicate capability profile for this small app. Prefer regression tests/guards for repeated failures. Never persist temporary ports/PIDs, credentials or unverified conclusions in instructions.

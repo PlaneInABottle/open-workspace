@@ -5,7 +5,7 @@ description: Develop and verify OpenWorkspace itself across its local service, c
 
 # OpenWorkspace development
 
-Follow [the development guide](../../../AGENTS.md) for canonical commands, safety and knowledge ownership. Read [the roadmap](../../../ROADMAP.md) only for the affected milestone. Do not replay the whole roadmap or start later milestones implicitly.
+Follow [the development guide](../../../AGENTS.md) for canonical commands, safety and knowledge ownership. Read [the roadmap](../../../ROADMAP.md) only for the affected decision or scope. Do not replay the whole roadmap or pull in later scope implicitly.
 
 ## Preflight
 
