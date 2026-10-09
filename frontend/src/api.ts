@@ -89,6 +89,8 @@ export interface CoordinatorReadinessEntry {
   status: string;
   detail: string;
   lastPoll: EnvironmentLastPoll | null;
+  /** Worktree identity (additive-optional): carried only when >1 root is registered. */
+  worktree?: { rootBase: string; revShort: string | null };
 }
 
 export interface CoordinatorPreflightGate {
@@ -196,6 +198,17 @@ export interface CoordinatorScenarios {
   error: string | null;
 }
 
+/** Ownership ledger row: read-only identity per registered root +
+ * lock + recorded services. Missing `worktrees` is the "no record" branch. */
+export interface CoordinatorWorktreeEntry {
+  rootBase: string;
+  revShort: string | null;
+  branch: string | null;
+  lock: 'live' | 'stale' | 'absent' | 'corrupt' | 'unknown';
+  liveServices: string[];
+  state: 'ok' | 'missing' | 'corrupt' | 'bad-version';
+}
+
 export interface CoordinatorSnapshot {
   reconcile: { inSync: boolean; drifts: CoordinatorDrift[] };
   readiness: CoordinatorReadinessEntry[];
@@ -212,6 +225,8 @@ export interface CoordinatorSnapshot {
    * error'lu nesne (hata kutusu).
    */
   scenarios: CoordinatorScenarios | null;
+  /** Ownership ledger — absence is the "no record" branch (single-root wire). */
+  worktrees?: CoordinatorWorktreeEntry[];
   warnings: string[];
   meta: CoordinatorMeta;
 }

@@ -10,7 +10,9 @@ export const projectRootMessages = {
   empty: 'Select at least one repository folder.',
   tooMany: `Select no more than ${maxProjectRoots} repository folders.`,
   badPath: `Each repository folder must be an absolute path of ${maxProjectRootLength} characters or fewer.`,
-  overlap: 'Choose distinct folders without selecting a parent and its child.',
+  // Farm hint (rule unchanged — still refuses): worktree farms register
+  // each worktree as its own root, never a parent+child pair.
+  overlap: "Choose distinct folders without selecting a parent and its child. — çiftlik düzeni için her worktree'yi ayrı kök olarak kaydedin.",
   absoluteDir: 'Use an absolute project directory.',
   symlink: 'Choose a real directory, not a symlink.',
   homeRoot: 'Choose a project, not your home or filesystem root.',

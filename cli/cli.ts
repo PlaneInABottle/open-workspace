@@ -30,7 +30,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "scenarios", "failures"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "provision", "scenarios", "failures"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
@@ -78,6 +78,7 @@ export const helpText = (): string =>
     "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
     "  failures [--since 1h|24h|7d] [--file] [--json]  yinelenen bulgular (salt-okunur, mekanik)",
     "  preflight [--file] [--json] [--probe]  salt-okunur kapı (mutasyon yok; geçemezse çıkış 1)",
+  "  provision --check [--file] [--json] [--probe]  çalışma-alanı checklist'i (.env symlink + .venv + HEAD + ön-kapı; salt-okunur, çıkış 0 geçti / 1 eksik)",
     "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 şema doğrulama (çalıştırma yok)",
     "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
@@ -658,7 +659,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -1039,6 +1040,27 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       const { runPreflight } = await import("./up-preflight")
       return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
+    }
+    if (command === "provision") {
+      // Worktree checklist: witness-only, never gates up/ps/reconcile/
+      // preflight (those paths are untouched). `--check` required, bare
+      // `provision` is a usage error (exit 2).
+      if (positional !== undefined) {
+        console.error("ow: provision konumsal argüman almaz (ow provision --check [--file])")
+        return 2
+      }
+      if (flags["--check"] !== true) {
+        console.error("ow: provision --check gerekli (salt-okunur checklist, mutasyon yok)")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--wait", "--health", "--detach"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} provision ile kullanılamaz`)
+          return 2
+        }
+      }
+      const { runProvisionCheck } = await import("./up-provision")
+      return runProvisionCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
     }
     if (command === "scenarios") {
       // Senaryo validatoru: salt-okunur (probe koşmaz, exec yok). `--file`

@@ -36,6 +36,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, open, readdir, readFile } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { Store, resolveEnvironmentRecord, resolveWorkspaceRecord, type EnvironmentRecord } from './store.js';
+import { maxProjectRoots } from './project-roots.js';
 import { verifyMessages } from './verify.js';
 import {
   environmentMessages,
@@ -140,6 +141,10 @@ export interface CoordinatorReadinessEntry {
   status: string;
   detail: string;
   lastPoll: EnvironmentRecord['owned'][number]['lastPoll'];
+  /** Worktree identity (additive-optional): carried only when >1 root is
+   * registered; absent from single-root snapshots.
+   * `revShort` is null when missing → UI renders a basename-only chip. */
+  worktree?: { rootBase: string; revShort: string | null };
 }
 
 export interface CoordinatorPreflightGate {
@@ -281,6 +286,10 @@ export interface CoordinatorSnapshot {
    * Bozuk dosya: error'lu nesne (hata kutusu; diğer paneller sağlam).
    */
   scenarios: CoordinatorScenarios | null;
+  /** Ownership ledger (additive-optional): carried only when >1 root is
+   * registered; absent from single-root snapshots.
+   * Absence is the "no record" branch in the UI (old readers skip it). */
+  worktrees?: CoordinatorWorktreeEntry[];
   warnings: string[];
   meta: CoordinatorMeta;
 }
@@ -518,6 +527,8 @@ export interface SupervisorProvenanceRecord {
   dirty?: boolean;
   recordedAt?: string;
   exitCode?: number;
+   /** Basename of the reading root (`readSupervisorRecords` fills it; full path never reaches the wire). */
+  rootBase?: string;
   /** M-C probe-beyanlı derleme kimliği (durum-dosyasından ham basename →
    * tam-digest; tele indirgenmiş taşınır). */
   artifactDigests?: Record<string, string>;
@@ -1057,6 +1068,14 @@ export function buildCoordinatorSnapshot(input: {
   scenarioRead?: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[] } | null;
   /** Keşfedilen run adları — checkpoints null iken bile wire'a çıkar. */
   runs?: string[];
+  /** serviceId → {rootBase, revShort} identity (additive-optional).
+   * When absent, readiness entries carry no `worktree` field at all
+   * (single-root snapshots stay byte-identical). */
+  worktreeByService?: Map<string, { rootBase: string; revShort: string | null }>;
+  /** Ownership ledger input (additive-optional): `{rows, warnings}`.
+   * When absent, the snapshot carries no `worktrees` field and no matrix
+   * warning is produced (single-root snapshots stay byte-identical). */
+  worktreeLedger?: { rows: CoordinatorWorktreeEntry[]; warnings: string[] };
   unprobedPorts?: number[];
   producedAt?: string;
   snapshotId?: string;
@@ -1065,6 +1084,9 @@ export function buildCoordinatorSnapshot(input: {
   for (const port of input.unprobedPorts ?? []) {
     warnings.push(`port yoklaması ölçülemedi: ${port} — preflight bu portu boş sayar`);
   }
+  // Ledger warnings arrive masked from their builders; the push site does
+  // not re-mask (single mask point per string, like readiness above).
+  for (const warning of input.worktreeLedger?.warnings ?? []) warnings.push(warning);
   const byId = new Map(input.status.services.map(entry => [entry.serviceId, entry]));
   const topologyIds = new Set(input.record.services.map(service => service.id));
 
@@ -1106,6 +1128,7 @@ export function buildCoordinatorSnapshot(input: {
     .filter(entry => topologyIds.has(entry.serviceId))
     .map(entry => {
       const service = input.record.services.find(candidate => candidate.id === entry.serviceId);
+      const worktree = input.worktreeByService?.get(entry.serviceId);
       return {
         serviceId: maskSecrets(entry.serviceId),
         name: maskSecrets(entry.name),
@@ -1113,6 +1136,7 @@ export function buildCoordinatorSnapshot(input: {
         status: entry.status,
         detail: maskSecrets(entry.detail),
         lastPoll: entry.owned?.lastPoll ?? null,
+        ...(worktree === undefined ? {} : { worktree: { rootBase: maskSecrets(worktree.rootBase), revShort: worktree.revShort } }),
       };
     });
 
@@ -1148,6 +1172,7 @@ export function buildCoordinatorSnapshot(input: {
     checkpoints: buildCheckpoints(input.checkpoint ?? null),
     scenarios: buildScenariosSection(input.record, input.checkpoint ?? null, input.scenarioRead ?? null),
     runs: input.runs ?? [],
+    ...(input.worktreeLedger === undefined ? {} : { worktrees: input.worktreeLedger.rows }),
     warnings,
     meta: {
       producedAt: input.producedAt ?? new Date().toISOString(),
@@ -1386,11 +1411,250 @@ export async function readSupervisorRecords(roots: string[]): Promise<{ records:
         corrupt += 1;
         continue;
       }
-      if (!merged.has(record.name)) merged.set(record.name, record);
+      if (!merged.has(record.name)) merged.set(record.name, { ...record, rootBase: basename(canonicalRoot) });
     }
     if (corrupt > 0) warnings.push(`provenance bozuk kayıt atlandı: ${basename(canonicalRoot)} (${corrupt})`);
   }
   return { records: [...merged.values()], warnings };
+}
+
+// --- Worktree ownership ledger (read-only aggregate, no new exec) ----
+// Ledger answers who-is-live-where from already-read state: per-root
+// supervisor file + lock classification + bounded HEAD read. Pure file
+// reads (lstat/readFile); no spawn, no `git` exec, no farm scan, no writes.
+// Same-name services are listed per root (no first-wins collapse at this
+// layer); the merged `records` order above is untouched.
+
+export type WorktreeLockState = 'live' | 'stale' | 'absent' | 'corrupt' | 'unknown';
+export type WorktreeFileState = 'ok' | 'missing' | 'corrupt' | 'bad-version';
+
+export interface CoordinatorWorktreeEntry {
+  rootBase: string;
+  revShort: string | null;
+  branch: string | null;
+  lock: WorktreeLockState;
+  /** Spawn-recorded service names not known-dead (no `exitCode`); supervisor
+   * liveness itself is the separate `lock` field. */
+  liveServices: string[];
+  state: WorktreeFileState;
+}
+
+export interface WorktreeLedgerPerRoot {
+  rootBase: string;
+  records: SupervisorProvenanceRecord[];
+}
+
+const LEDGER_HEAD_MAX_BYTES = 4096;
+const LEDGER_HEX_REV = /^[0-9a-fA-F]{4,64}$/;
+
+/** Bounded HEAD read per root (`.git/HEAD` file or linked-worktree gitdir
+ * `HEAD`; ref → branch, detached hex → short-7; anything
+ * unreadable/unshaped → nulls, never fail, never `git` exec). */
+async function readLedgerHead(canonicalRoot: string): Promise<{ revShort: string | null; branch: string | null }> {
+  const capped = async (path: string): Promise<string | null> => {
+    try {
+      return (await readFile(path, 'utf8')).slice(0, LEDGER_HEAD_MAX_BYTES);
+    } catch {
+      return null;
+    }
+  };
+  let head = await capped(join(canonicalRoot, '.git', 'HEAD'));
+  if (head === null) {
+    const pointer = await capped(join(canonicalRoot, '.git'));
+    if (pointer !== null) {
+      const first = pointer.split('\n', 1)[0].trim();
+      if (first.startsWith('gitdir: ')) head = await capped(join(resolve(canonicalRoot, first.slice('gitdir: '.length).trim()), 'HEAD'));
+    }
+  }
+  if (head === null) return { revShort: null, branch: null };
+  const line = head.split('\n', 1)[0].trim();
+  if (line.startsWith('ref: ')) {
+    const ref = line.slice('ref: '.length).trim();
+    const branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+    return branch.length > 0 ? { revShort: null, branch } : { revShort: null, branch: null };
+  }
+  if (LEDGER_HEX_REV.test(line)) return { revShort: line.slice(0, 7), branch: null };
+  return { revShort: null, branch: null };
+}
+
+/** Supervisor-file classification (CLI `classifySupervisorFile` mirror:
+ * missing/ok/corrupt/bad-version) with symlink-reject (fail-closed
+ * `corrupt`; the `provenance atlandı` warning stays solely with
+ * `readSupervisorRecords` — this reader emits no duplicate file warnings). */
+async function classifyLedgerSupervisorFile(canonicalRoot: string): Promise<WorktreeFileState> {
+  const path = join(canonicalRoot, '.ow', 'supervisor.json');
+  if (resolve(path) !== path || !path.startsWith(canonicalRoot + sep)) return 'missing';
+  let entry;
+  try {
+    entry = await lstat(path);
+  } catch {
+    return 'missing';
+  }
+  if (entry.isSymbolicLink() || !entry.isFile()) return 'corrupt';
+  if (entry.size > SUPERVISOR_MAX_BYTES) return 'corrupt';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return 'corrupt';
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'corrupt';
+  const dict = parsed as Record<string, unknown>;
+  if (typeof dict['version'] !== 'number') return 'corrupt';
+  if (dict['version'] !== 1) return 'bad-version';
+  if (!Array.isArray(dict['services'])) return 'corrupt';
+  return 'ok';
+}
+
+/** Bounded per-root record read (same 256KB/200-service caps as
+ * `readSupervisorRecords`; invalid entries drop silently here — the merged
+ * reader already warns for the file, so no duplicate warning is emitted). */
+async function readLedgerRootRecords(canonicalRoot: string): Promise<SupervisorProvenanceRecord[]> {
+  const path = join(canonicalRoot, '.ow', 'supervisor.json');
+  if (resolve(path) !== path || !path.startsWith(canonicalRoot + sep)) return [];
+  let entry;
+  try {
+    entry = await lstat(path);
+  } catch {
+    return [];
+  }
+  if (entry.isSymbolicLink() || !entry.isFile() || entry.size > SUPERVISOR_MAX_BYTES) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return [];
+  const dict = parsed as Record<string, unknown>;
+  if (dict['version'] !== 1 || !Array.isArray(dict['services'])) return [];
+  const out: SupervisorProvenanceRecord[] = [];
+  for (const item of (dict['services'] as unknown[]).slice(0, SUPERVISOR_MAX_SERVICES)) {
+    const record = normalizeSupervisorService(item);
+    if (record) out.push(record);
+  }
+  return out;
+}
+
+/** Lock classification without exec (CLI `classifyLock` cannot run here —
+ * it spawns `ps` via Bun): shape check identical, liveness via signal-0
+ * existence probe. Existence-only (no `lstart` PID-reuse guard — residual
+ * reuse risk documented; advisory ledger only, never a gate). `EPERM`
+ * (exists, unverifiable) → `unknown`; dead/invalid pid → `stale`. */
+async function classifyLedgerLock(canonicalRoot: string): Promise<WorktreeLockState> {
+  const path = join(canonicalRoot, '.ow', 'supervisor.lock');
+  if (resolve(path) !== path || !path.startsWith(canonicalRoot + sep)) return 'absent';
+  let entry;
+  try {
+    entry = await lstat(path);
+  } catch {
+    return 'absent';
+  }
+  if (entry.isSymbolicLink() || !entry.isFile()) return 'corrupt';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return 'corrupt';
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'corrupt';
+  const dict = parsed as Record<string, unknown>;
+  if (typeof dict['pid'] !== 'number' || !Number.isInteger(dict['pid']) || (dict['pid'] as number) <= 0 || typeof dict['lstart'] !== 'string') {
+    return 'corrupt';
+  }
+  try {
+    process.kill(dict['pid'] as number, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM' ? 'unknown' : 'stale';
+  }
+  return 'live';
+}
+
+/** Per-root ledger rows + warnings basket. One row per registered root
+ * (cap reuses `maxProjectRoots`, overflow truncates with a warnings[] line).
+ * File-condition warnings stay with `readSupervisorRecords`; only ledger-own
+ * lines (lock-symlink skip, truncation) are emitted here. */
+export async function readWorktreeLedger(roots: string[]): Promise<{
+  rows: CoordinatorWorktreeEntry[];
+  warnings: string[];
+  perRoot: WorktreeLedgerPerRoot[];
+}> {
+  const warnings: string[] = [];
+  const capped = roots.slice(0, maxProjectRoots);
+  if (roots.length > capped.length) {
+    warnings.push(maskSecrets(`worktree listesi kırpıldı (${maxProjectRoots} kök sınırı) — ilk ${maxProjectRoots} kök listelenir`));
+  }
+  const rows: CoordinatorWorktreeEntry[] = [];
+  const perRoot: WorktreeLedgerPerRoot[] = [];
+  for (const root of capped) {
+    const canonicalRoot = resolve(root);
+    const rootBase = basename(canonicalRoot);
+    const state = await classifyLedgerSupervisorFile(canonicalRoot);
+    const records = state === 'ok' ? await readLedgerRootRecords(canonicalRoot) : [];
+    const lock = await classifyLedgerLock(canonicalRoot);
+    try {
+      const lockEntry = await lstat(join(canonicalRoot, '.ow', 'supervisor.lock'));
+      if (lockEntry.isSymbolicLink()) warnings.push(maskSecrets(`kilit atlandı (symlink izlenmez): ${rootBase}`));
+    } catch {
+      // Absent lock needs no warning (honest `yok` in the row).
+    }
+    const head = await readLedgerHead(canonicalRoot);
+    rows.push({
+      rootBase: maskSecrets(rootBase),
+      revShort: head.revShort,
+      branch: head.branch === null ? null : maskSecrets(head.branch),
+      lock,
+      liveServices: records.filter(record => record.exitCode === undefined).map(record => maskSecrets(record.name)),
+      state,
+    });
+    perRoot.push({ rootBase, records });
+  }
+  return { rows, warnings, perRoot };
+}
+
+const WORKTREE_ADVISORY_MAX_LINES = 10;
+
+/** Warnings-only collision guardrails (pure, advisory text, never a gate):
+ * cross-root port sharing (port source = `SupervisorProvenanceRecord.port`
+ * only — no `ow.yaml` reads, no farm scan) + same-service double-ownership
+ * (recorded without `exitCode` under ≥2 roots). Every line carries
+ * `worktree:<base>` scope tags and the non-gating wording; truncation at 10
+ * lines + `…[kesildi: N uyarı]`. Callers emit nothing when ≤1 root. */
+export function buildWorktreeAdvisories(perRoot: WorktreeLedgerPerRoot[]): string[] {
+  const lines: string[] = [];
+  const scope = (bases: string[]): string => bases.map(base => `worktree:${base}`).join(' + ');
+  const byPort = new Map<number, string[]>();
+  for (const { rootBase, records } of perRoot) {
+    for (const record of records) {
+      if (typeof record.port !== 'number') continue;
+      const bases = byPort.get(record.port) ?? [];
+      if (!bases.includes(rootBase)) bases.push(rootBase);
+      byPort.set(record.port, bases);
+    }
+  }
+  for (const port of [...byPort.keys()].sort((a, b) => a - b)) {
+    const bases = byPort.get(port) as string[];
+    if (bases.length < 2) continue;
+    lines.push(maskSecrets(`uyarı: ${port} portu dolu — ${scope(bases)} (bilgi amaçlı, engelleme yok)`));
+  }
+  const byService = new Map<string, string[]>();
+  for (const { rootBase, records } of perRoot) {
+    for (const record of records) {
+      if (record.exitCode !== undefined) continue;
+      const bases = byService.get(record.name) ?? [];
+      if (!bases.includes(rootBase)) bases.push(rootBase);
+      byService.set(record.name, bases);
+    }
+  }
+  for (const name of [...byService.keys()].sort()) {
+    const bases = byService.get(name) as string[];
+    if (bases.length < 2) continue;
+    lines.push(maskSecrets(`uyarı: ${name} birden fazla worktree'de kayıtlı — ${scope(bases)} (bilgi amaçlı, engelleme yok)`));
+  }
+  if (lines.length <= WORKTREE_ADVISORY_MAX_LINES) return lines;
+  const kept = lines.slice(0, WORKTREE_ADVISORY_MAX_LINES);
+  kept.push(maskSecrets(`…[kesildi: ${lines.length - WORKTREE_ADVISORY_MAX_LINES} uyarı]`));
+  return kept;
 }
 
 const ARTIFACT_BASE_PATTERN = /^[^/\\]+$/;
@@ -1566,6 +1830,24 @@ export async function coordinatorSnapshot(
       unprobedPorts.push(port);
     }
   }));
+  // Worktree identity: carried only when >1 root. rootBase comes from the
+  // recorded topology, revShort from the same-named supervisor record (null
+  // when missing → basename-only chip); no new exec/reads.
+  const worktreeByService = roots.length > 1
+    ? new Map(record.services.map(service => {
+      const key = service.name ?? service.id;
+      const rev = supervisorRead.records.find(candidate => candidate.name === key)?.rev;
+      return [service.id, { rootBase: basename(resolve(service.repositoryPath)), revShort: rev === undefined ? null : shortRev(rev) }] as const;
+    }))
+    : undefined;
+  // Ledger + advisories: read-only aggregation, >1 root only
+  // (single-root snapshots carry neither rows nor warnings). Never gates:
+  // preflight gates and spawn paths are untouched (warnings[] text only).
+  let worktreeLedger: { rows: CoordinatorWorktreeEntry[]; warnings: string[] } | undefined;
+  if (roots.length > 1) {
+    const ledger = await readWorktreeLedger(roots);
+    worktreeLedger = { rows: ledger.rows, warnings: [...ledger.warnings, ...buildWorktreeAdvisories(ledger.perRoot)] };
+  }
   return buildCoordinatorSnapshot({
     record,
     status,
@@ -1576,6 +1858,8 @@ export async function coordinatorSnapshot(
     supervisor: supervisorRead.records,
     scenarioRead: scenariosRead,
     runs: checkpointRead.runs,
+    ...(worktreeByService === undefined ? {} : { worktreeByService }),
+    ...(worktreeLedger === undefined ? {} : { worktreeLedger }),
     unprobedPorts,
   });
 }

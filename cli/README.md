@@ -144,6 +144,7 @@ ow up <ad> [-d] [--file ow.yaml]  # live: add one service via the supervisor (no
 ow restart <ad> [--file ow.yaml]  # live: lstart-verified stop + respawn in place (no lock → exit 2)
 ow down [ad] [--file ow.yaml]  # single: stop only the target (lock/state files kept; --rm is bulk-only → exit 2)
 ow reconcile --check [--json] [--file ow.yaml]  # read-only drift report (never mutates)
+ow provision --check [--json] [--probe] [--file ow.yaml]  # worktree checklist: .env symlink + .venv + HEAD + preflight gate (read-only, exit 0 pass / 1 missing / 2 usage; never gates up/ps/reconcile/preflight)
 ow ps [--json]                 # pid, uptime, cpu%, mem, port, listen=evet/hayır
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json

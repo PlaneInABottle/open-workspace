@@ -563,3 +563,116 @@ describe('CoordinatorSection M-C artifacts', () => {
     expect(scanned).not.toMatch(/[0-9a-fA-F]{8,}/);
   });
 });
+
+describe('M1 worktree identity (chip + wt: filter, conditional)', () => {
+  const WT_A = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
+  function twoRoot(): CoordinatorSnapshot {
+    return snapshot({
+      readiness: [
+        { serviceId: 'api', name: 'api', dir: 'wt-a', status: 'ready', detail: 'ok', lastPoll: null, worktree: { rootBase: 'wt-a', revShort: WT_A.slice(0, 7) } },
+        { serviceId: 'web', name: 'web', dir: 'wt-b', status: 'ready', detail: 'ok', lastPoll: null, worktree: { rootBase: 'wt-b', revShort: null } },
+      ],
+      explanation: {
+        entries: [
+          {
+            service: 'api',
+            expected: { cmd: 'dev', dir: 'wt-a', port: 3100 },
+            running: { status: 'ready', detail: 'çalışıyor' },
+            revShort: WT_A.slice(0, 7), revFull: WT_A, revAt: new Date().toISOString(), revDirty: false, revRecorded: true,
+            diffs: [], note: 'çalışıyor, bilinen sorun yok',
+            artifacts: [], artifactRest: 0,
+          },
+          {
+            service: 'web',
+            expected: { cmd: 'dev', dir: 'wt-b', port: null },
+            running: { status: 'ready', detail: 'çalışıyor' },
+            revShort: null, revFull: null, revAt: null, revDirty: false, revRecorded: false,
+            diffs: [], note: 'çalışıyor, bilinen sorun yok',
+            artifacts: [], artifactRest: 0,
+          },
+        ],
+        revisions: [{ short: WT_A.slice(0, 7), full: WT_A, at: new Date().toISOString(), current: true, recorded: true }],
+      },
+    });
+  }
+
+  it('shows basename@short7 chips on two roots and narrows with wt:<base>', async () => {
+    render(<CoordinatorSection api={apiReturning(twoRoot())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByText('Provenance kartı');
+    const chipA = within(section).getByText(`wt-a@${WT_A.slice(0, 7)}`);
+    const chipB = within(section).getByText('wt-b');
+    expect(chipA.textContent).toMatch(/^[^/\\@]{1,64}(@[0-9a-fA-F]{7})?$/);
+    expect(chipB.textContent).toMatch(/^[^/\\@]{1,64}(@[0-9a-fA-F]{7})?$/);
+    // Full rev travels only as the copy-button clipboard payload — never DOM text.
+    expect(document.body.textContent).not.toContain(WT_A);
+    // Filter narrows to the matching root only.
+    const filter = within(section).getByLabelText('Worktree filtresi (wt:<ad>)');
+    fireEvent.change(filter, { target: { value: 'wt:wt-a' } });
+    expect(within(section).queryByText(`wt-a@${WT_A.slice(0, 7)}`)).toBeInTheDocument();
+    expect(within(section).queryByText('wt-b')).not.toBeInTheDocument();
+    fireEvent.change(filter, { target: { value: '' } });
+    expect(within(section).getByText('wt-b')).toBeInTheDocument();
+  });
+
+  it('hides chips and filter on single-root snapshots (NO-WORKTREE-NO-FRICTION)', async () => {
+    // checkpointed() carries revs but no readiness worktree → no discriminating info.
+    render(<CoordinatorSection api={apiReturning(checkpointed())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByText('Provenance kartı');
+    expect(within(section).queryByLabelText('Worktree filtresi (wt:<ad>)')).not.toBeInTheDocument();
+    expect(within(section).queryByText(/wt:|backend@/)).not.toBeInTheDocument();
+  });
+});
+
+describe('M2 ownership ledger (read-only list, conditional)', () => {
+  const WT_A = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
+  function ledgered(): CoordinatorSnapshot {
+    return snapshot({
+      worktrees: [
+        { rootBase: 'wt-a', revShort: WT_A.slice(0, 7), branch: 'main', lock: 'live', liveServices: ['api', 'web'], state: 'ok' },
+        { rootBase: 'wt-b', revShort: null, branch: null, lock: 'stale', liveServices: [], state: 'corrupt' },
+      ],
+    });
+  }
+
+  function ledgerArticle(section: HTMLElement): HTMLElement | null {
+    return within(section).getByText('Worktree sahipliği').closest('article');
+  }
+
+  it('lists per-root lock states with rev chips and no action buttons', async () => {
+    render(<CoordinatorSection api={apiReturning(ledgered())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const ledger = ledgerArticle(section);
+    expect(ledger).not.toBeNull();
+    expect(within(ledger as HTMLElement).getByText('wt-a')).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText('@a1b2c3d')).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText('canlı')).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText(/dal: main/)).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText(/kayıtlı: api, web/)).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText('wt-b')).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText('bayat')).toBeInTheDocument();
+    expect(within(ledger as HTMLElement).getByText(/bozuk kayıt/)).toBeInTheDocument();
+    // Read-only: no buttons inside the ledger (copy buttons live in provenance only).
+    expect(within(ledger as HTMLElement).queryByRole('button')).not.toBeInTheDocument();
+    // Full rev never reaches the DOM (short-7 only).
+    expect(document.body.textContent).not.toContain(WT_A);
+  });
+
+  it('masks hostile ledger strings and stays hidden without worktrees', async () => {
+    const hostile = snapshot({
+      worktrees: [
+        { rootBase: '***', revShort: null, branch: '***', lock: 'absent', liveServices: ['***'], state: 'missing' },
+      ],
+    });
+    const { rerender } = render(<CoordinatorSection api={apiReturning(hostile)} workspace="Demo" environment="dev" refreshToken={0} />);
+    let section = await screen.findByRole('region', { name: 'Koordinatör' });
+    expect(document.body.textContent).not.toContain('hunter2');
+    expect(within(section).getByText('Worktree sahipliği')).toBeInTheDocument();
+    // Re-select with a worktree-less snapshot: the ledger unmounts (stale
+    // responses cannot linger past newer data).
+    rerender(<CoordinatorSection api={apiReturning(snapshot())} workspace="Demo" environment="dev" refreshToken={1} />);
+    section = await screen.findByRole('region', { name: 'Koordinatör' });
+    expect(within(section).queryByText('Worktree sahipliği')).not.toBeInTheDocument();
+  });
+});

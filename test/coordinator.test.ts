@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createApp } from '../src/http.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
-import { buildCoordinatorSnapshot, maskSecrets, normalizeCheckpointEnvelope, normalizeSupervisorService } from '../src/coordinator.js';
+import { buildCoordinatorSnapshot, buildWorktreeAdvisories, maskSecrets, normalizeCheckpointEnvelope, normalizeSupervisorService, readWorktreeLedger } from '../src/coordinator.js';
 import { environmentMessages } from '../src/environment.js';
 import { verifyMessages } from '../src/verify.js';
 import type { EnvironmentRecord } from '../src/store.js';
@@ -889,4 +889,305 @@ test('M-C supervisor record: hostile artifact map shape-strict, invalid entries 
   const badMap = normalizeSupervisorService({ name: 'api', artifactDigests: ['x'] });
   assert.ok(badMap);
   assert.equal(badMap?.artifactDigests, undefined);
+});
+
+test('M1 worktree identity: single-root snapshots carry no worktree/rootBase (NO-WORKTREE-NO-FRICTION)', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [
+      { id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  const app = createApp(f.service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    readiness: Array<Record<string, unknown>>;
+  };
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('worktree'), 'single-root wire must not mention worktree');
+  assert.ok(!wire.includes('rootBase'), 'single-root wire must not mention rootBase');
+  for (const entry of snapshot.readiness) assert.ok(!('worktree' in entry));
+});
+
+test('M1 worktree wire: map present → readiness carries rootBase + short-7, missing rev → null', () => {
+  const record = {
+    name: 'dev',
+    state: 'up',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: '/farm/wt-a', scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+      { id: 'web', name: 'web', repositoryPath: '/farm/wt-b', scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  } as unknown as EnvironmentRecord;
+  const statusOf = (services: { serviceId: string; name: string }[]) => ({
+    environmentId: 'env', name: 'dev', state: 'up' as const, order: services.map(s => s.serviceId),
+    services: services.map(s => ({
+      serviceId: s.serviceId, name: s.name, status: 'ready' as const, detail: 'ok',
+      owned: { serviceId: s.serviceId, pmId: 1, name: s.name, namespace: null, expectedRoot: '/x', lastPoll: null },
+    })),
+  });
+  const names = [{ serviceId: 'api', name: 'api' }, { serviceId: 'web', name: 'web' }];
+  // Without the map: byte-identical to today (no worktree key at all).
+  const bare = buildCoordinatorSnapshot({
+    record,
+    status: statusOf(names),
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  assert.ok(!JSON.stringify(bare).includes('worktree'));
+  // With the map: basename + short-7; web has no rev → null (basename-only chip).
+  const scoped = buildCoordinatorSnapshot({
+    record,
+    status: statusOf(names),
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    worktreeByService: new Map([
+      ['api', { rootBase: 'wt-a', revShort: '0123456' }],
+      ['web', { rootBase: 'wt-b', revShort: null }],
+    ]),
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  assert.deepEqual(scoped.readiness.map(e => e.worktree), [
+    { rootBase: 'wt-a', revShort: '0123456' },
+    { rootBase: 'wt-b', revShort: null },
+  ]);
+  const wire = JSON.stringify(scoped);
+  assert.ok(!wire.includes('/farm/wt-a'), 'absolute root must not reach the wire');
+});
+
+test('M1 supervisor record: rootBase basename only, hostile cmd masked on wire', () => {
+  const rec = normalizeSupervisorService({ name: 'api', port: 3000, provenance: { checkout: { rev: '0123456789abcdef0123456789abcdef01234567' } } });
+  assert.ok(rec);
+  const record = { name: 'dev', state: 'up', services: [] } as unknown as EnvironmentRecord;
+  const snapshot = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'up', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    supervisor: [{ ...(rec as object), rootBase: 'wt-a' } as typeof rec],
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  const entry = snapshot.explanation?.entries.find(item => item.service === 'api');
+  assert.ok(entry);
+  assert.equal(entry.revShort, '0123456');
+  // Full rev travels on the wire ONLY as the copy-button clipboard payload
+  // (existing discipline) — DOM/title/aria render short-7 (frontend test).
+  assert.equal(entry.revFull, '0123456789abcdef0123456789abcdef01234567');
+  const wire = JSON.stringify(snapshot);
+  assert.ok(wire.includes('0123456'), 'short-7 renders');
+});
+
+test('M2 ledger: two roots share a service name and port → two rows, merged records order untouched, advisories advisory-only', async t => {
+  const f = await fixture(t);
+  const ra = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-a-')));
+  const rb = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-b-')));
+  t.after(() => rm(ra, { recursive: true, force: true }));
+  t.after(() => rm(rb, { recursive: true, force: true }));
+  for (const root of [ra, rb]) {
+    await mkdir(join(root, 'backend'), { recursive: true });
+    await writeFile(join(root, 'backend', 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+    await mkdir(join(root, '.ow'), { recursive: true });
+  }
+  await writeFile(join(ra, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z',
+    services: [{ name: 'api', port: 4101 }, { name: 'web', port: 4102 }],
+  }));
+  await writeFile(join(rb, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z',
+    services: [{ name: 'api', port: 4101 }, { name: 'svc2', port: 4103 }],
+  }));
+  await writeFile(join(ra, '.ow', 'supervisor.lock'), JSON.stringify({ pid: process.pid, lstart: 't', startedAt: '2026-10-10T00:00:00.000Z' }));
+  await writeFile(join(rb, '.ow', 'supervisor.lock'), JSON.stringify({ pid: 1 << 30, lstart: 't', startedAt: '2026-10-10T00:00:00.000Z' }));
+  await mkdir(join(ra, '.git'), { recursive: true });
+  await writeFile(join(ra, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  await mkdir(join(rb, '.git'), { recursive: true });
+  await writeFile(join(rb, '.git', 'HEAD'), `${'b'.repeat(40)}\n`);
+  await f.service.register('M2', [ra, rb]);
+  await f.service.environmentSet('M2', {
+    name: 'dev',
+    services: [
+      { id: 'api', repositoryPath: join(ra, 'backend'), scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+      { id: 'web', repositoryPath: join(rb, 'backend'), scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const snapshot = await (await fetch(`${origin}/api/workspaces/M2/coordinator?environment=dev`)).json() as {
+    worktrees: { rootBase: string; revShort: string | null; branch: string | null; lock: string; liveServices: string[]; state: string }[];
+    warnings: string[];
+    preflight: { pass: boolean; missing: string[] };
+  };
+  const baseA = ra.split('/').pop() as string;
+  const baseB = rb.split('/').pop() as string;
+  // Ledger: one row per root, roots order, per-root scoping (no collapse).
+  assert.deepEqual(snapshot.worktrees, [
+    { rootBase: baseA, revShort: null, branch: 'main', lock: 'live', liveServices: ['api', 'web'], state: 'ok' },
+    { rootBase: baseB, revShort: 'bbbbbbb', branch: null, lock: 'stale', liveServices: ['api', 'svc2'], state: 'ok' },
+  ]);
+  // Advisories: shared port + double-owned service, scoped + non-gating wording.
+  const portLine = `uyarı: 4101 portu dolu — worktree:${baseA} + worktree:${baseB} (bilgi amaçlı, engelleme yok)`;
+  const svcLine = `uyarı: api birden fazla worktree'de kayıtlı — worktree:${baseA} + worktree:${baseB} (bilgi amaçlı, engelleme yok)`;
+  assert.ok(snapshot.warnings.includes(portLine), `missing port advisory, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.includes(svcLine), `missing service advisory, got ${JSON.stringify(snapshot.warnings)}`);
+  // Advisory-only separation: preflight gates never carry matrix text.
+  for (const line of snapshot.preflight.missing) {
+    assert.ok(!line.includes('worktree:') && !line.includes('bilgi amaçlı'), `matrix leaked into preflight: ${line}`);
+  }
+});
+
+test('M2 merged records keep first-wins order while ledger scopes per root', async t => {
+  const f = await fixture(t);
+  const ra = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-c-')));
+  const rb = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-d-')));
+  t.after(() => rm(ra, { recursive: true, force: true }));
+  t.after(() => rm(rb, { recursive: true, force: true }));
+  for (const root of [ra, rb]) await mkdir(join(root, '.ow'), { recursive: true });
+  await mkdir(join(ra, 'backend'), { recursive: true });
+  await writeFile(join(ra, 'backend', 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+  await writeFile(join(ra, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z', services: [{ name: 'api', port: 4101 }],
+  }));
+  await writeFile(join(rb, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z', services: [{ name: 'api', port: 4102 }, { name: 'web', port: 4103 }],
+  }));
+  await f.service.register('M2order', [ra, rb]);
+  await f.service.environmentSet('M2order', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: join(ra, 'backend'), scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const snapshot = await (await fetch(`${origin}/api/workspaces/M2order/coordinator?environment=dev`)).json() as {
+    worktrees: { rootBase: string; liveServices: string[] }[];
+  };
+  // Ledger lists the same name under both roots; the (unseen here) merged
+  // path still collapses — provenance rows covered by the unit below.
+  assert.equal(snapshot.worktrees.length, 2);
+  assert.deepEqual(snapshot.worktrees.map(row => row.liveServices), [['api'], ['api', 'web']]);
+});
+
+test('M2 corrupt root: that row is corrupt + warning, siblings intact', async t => {
+  const f = await fixture(t);
+  const ra = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-e-')));
+  const rb = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-f-')));
+  t.after(() => rm(ra, { recursive: true, force: true }));
+  t.after(() => rm(rb, { recursive: true, force: true }));
+  for (const root of [ra, rb]) await mkdir(join(root, '.ow'), { recursive: true });
+  await mkdir(join(ra, 'backend'), { recursive: true });
+  await writeFile(join(ra, 'backend', 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+  await writeFile(join(ra, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z', services: [{ name: 'api', port: 4101 }],
+  }));
+  await writeFile(join(rb, '.ow', 'supervisor.json'), 'bozuk{{{');
+  await f.service.register('M2corrupt', [ra, rb]);
+  await f.service.environmentSet('M2corrupt', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: join(ra, 'backend'), scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const snapshot = await (await fetch(`${origin}/api/workspaces/M2corrupt/coordinator?environment=dev`)).json() as {
+    worktrees: { rootBase: string; lock: string; liveServices: string[]; state: string }[];
+    warnings: string[];
+  };
+  assert.equal(snapshot.worktrees.length, 2);
+  assert.equal(snapshot.worktrees[0].state, 'ok');
+  assert.deepEqual(snapshot.worktrees[0].liveServices, ['api']);
+  assert.equal(snapshot.worktrees[1].state, 'corrupt');
+  assert.deepEqual(snapshot.worktrees[1].liveServices, []);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('provenance okunamadı')), `expected corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
+});
+
+test('M2 hostile: secret-shaped rootBase and service name never reach the wire', async t => {
+  const f = await fixture(t);
+  const ra = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-g-')));
+  const rb = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-token-hunter2-')));
+  t.after(() => rm(ra, { recursive: true, force: true }));
+  t.after(() => rm(rb, { recursive: true, force: true }));
+  for (const root of [ra, rb]) await mkdir(join(root, '.ow'), { recursive: true });
+  await mkdir(join(ra, 'backend'), { recursive: true });
+  await writeFile(join(ra, 'backend', 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+  await writeFile(join(ra, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z', services: [{ name: 'api', port: 4101 }],
+  }));
+  await writeFile(join(rb, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1, startedAt: '2026-10-10T00:00:00.000Z', services: [{ name: 'api token=hunter2', port: 4101 }],
+  }));
+  await f.service.register('M2hostile', [ra, rb]);
+  await f.service.environmentSet('M2hostile', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: join(ra, 'backend'), scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const snapshot = await (await fetch(`${origin}/api/workspaces/M2hostile/coordinator?environment=dev`)).json();
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('hunter2'), 'secret value must not reach the wire');
+  assert.ok(wire.includes('***'), 'masking must be visible');
+});
+
+test('M2 single-root: no worktrees key, no matrix warnings (softened no-friction)', async t => {
+  const f = await fixture(t);
+  await f.service.register('M2single', [f.root]);
+  await f.service.environmentSet('M2single', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  const snapshot = await (await fetch(`${origin}/api/workspaces/M2single/coordinator?environment=dev`)).json() as {
+    warnings: string[];
+  };
+  assert.ok(!('worktrees' in snapshot), 'single-root snapshot must not carry worktrees');
+  assert.ok(!JSON.stringify(snapshot).includes('worktree:'));
+  assert.ok(!snapshot.warnings.some(warning => warning.includes('bilgi amaçlı')));
+});
+
+test('M2 lock states: live/stale/absent/corrupt classify without exec', async t => {
+  const mk = async (prefix: string): Promise<string> => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), prefix)));
+    await mkdir(join(root, '.ow'), { recursive: true });
+    return root;
+  };
+  const live = await mk('openworkspace-m2-live-');
+  const stale = await mk('openworkspace-m2-stale-');
+  const absent = await mk('openworkspace-m2-absent-');
+  const corrupt = await mk('openworkspace-m2-corrupt-');
+  try {
+    await writeFile(join(live, '.ow', 'supervisor.lock'), JSON.stringify({ pid: process.pid, lstart: 't', startedAt: '2026-10-10T00:00:00.000Z' }));
+    await writeFile(join(stale, '.ow', 'supervisor.lock'), JSON.stringify({ pid: 1 << 30, lstart: 't', startedAt: '2026-10-10T00:00:00.000Z' }));
+    await writeFile(join(corrupt, '.ow', 'supervisor.lock'), 'bozuk{{{');
+    const { rows } = await readWorktreeLedger([live, stale, absent, corrupt]);
+    assert.deepEqual(rows.map(row => row.lock), ['live', 'stale', 'absent', 'corrupt']);
+    assert.ok(rows.every(row => row.state === 'missing'));
+  } finally {
+    for (const root of [live, stale, absent, corrupt]) await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('M2 caps: advisories truncate at 10 lines, ledger at 20 rows', async t => {
+  const perRoot = [
+    { rootBase: 'wt-a', records: Array.from({ length: 12 }, (_, index) => ({ name: `svc${index}`, port: 5000 + index })) },
+    { rootBase: 'wt-b', records: Array.from({ length: 12 }, (_, index) => ({ name: `svc${index}`, port: 5000 + index })) },
+  ];
+  const lines = buildWorktreeAdvisories(perRoot);
+  assert.equal(lines.length, 11);
+  assert.ok(lines[10].includes('…[kesildi: 14 uyarı]'), `expected truncation line, got ${lines[10]}`);
+  assert.ok(lines.slice(0, 10).every(line => line.includes('bilgi amaçlı, engelleme yok')));
+  const roots: string[] = [];
+  for (let index = 0; index < 21; index += 1) {
+    roots.push(await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-cap-'))));
+  }
+  try {
+    const ledger = await readWorktreeLedger(roots);
+    assert.equal(ledger.rows.length, 20);
+    assert.ok(ledger.warnings.some(warning => warning.includes('worktree listesi kırpıldı (20 kök sınırı)')));
+  } finally {
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+  }
 });

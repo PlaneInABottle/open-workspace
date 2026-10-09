@@ -6,8 +6,10 @@ import type {
   CoordinatorCheckpoints,
   CoordinatorDrift,
   CoordinatorExplanation,
+  CoordinatorReadinessEntry,
   CoordinatorScenarios,
   CoordinatorSnapshot,
+  CoordinatorWorktreeEntry,
   ScenarioVerdict,
 } from '@/api';
 import { useObserverFetch, WarningsStrip } from '@/features/observe/use-observer';
@@ -319,7 +321,9 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
 
           <CheckpointPanel checkpoints={data.checkpoints} runs={data.runs ?? cachedRuns} run={run} onRunChange={setRun} />
 
-          <ProvenancePanel explanation={data.explanation} />
+          <ProvenancePanel explanation={data.explanation} readiness={data.readiness} />
+
+          <WorktreesPanel worktrees={data.worktrees} />
 
           <ScenariosPanel scenarios={data.scenarios} producedAt={data.meta.producedAt} />
 
@@ -557,17 +561,38 @@ function expectedCellText(entry: CoordinatorExplanation['entries'][number]): str
 }
 
 /**
+ * Worktree chip text: `<rootBase>@<revShort7>`, or `<rootBase>` when the
+ * rev is unknown. Only the `^[^/\\@]{1,64}(@[0-9a-fA-F]{7})?$` shape
+ * renders (non-matching input gets no chip — full path/rev never reaches
+ * the DOM).
+ */
+function worktreeChipText(entry: CoordinatorExplanation['entries'][number]): string | null {
+  const dir = entry.expected?.dir;
+  if (!dir) return null;
+  const bare = dir;
+  const full = entry.revShort ? `${bare}@${entry.revShort}` : bare;
+  if (/^[^/\\@]{1,64}(@[0-9a-fA-F]{7})?$/.test(full)) return full;
+  return /^[^/\\@]{1,64}$/.test(bare) ? bare : null;
+}
+
+/**
  * P4 provenance kartı: beklenen/çalışan `<table>`si + rev şeridi
  * (nokta-zaman çizgisi: seçili vurgulu, eski soluk, etiket kısa-hash + yaş)
  * + diff satırları. Rev satırı asla çıplak hash değil; tam-hash yalnızca
  * kopyala-butonu clipboard payload'ındadır.
+ *
+ * Chip + `wt:<ad>` filter renders ONLY when discriminating info exists
+ * (the `worktree` field on readiness — i.e. >1 root); single-root flows
+ * render byte-identical to today.
  */
-function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation | null }) {
+function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorExplanation | null; readiness: CoordinatorReadinessEntry[] }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [selected, setSelected] = useState<string | null>(null);
+  const [worktreeFilter, setWorktreeFilter] = useState('');
   useEffect(() => {
     setNowMs(Date.now());
     setSelected(null);
+    setWorktreeFilter('');
   }, [explanation]);
 
   if (!explanation) {
@@ -579,11 +604,30 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
     );
   }
 
+  const showWorktree = readiness.some(entry => entry.worktree !== undefined);
+  const token = worktreeFilter.startsWith('wt:') ? worktreeFilter.slice('wt:'.length) : worktreeFilter;
+  const visibleEntries = !showWorktree || token.trim() === ''
+    ? explanation.entries
+    : explanation.entries.filter(entry => (entry.expected?.dir ?? '').toLowerCase().includes(token.trim().toLowerCase()));
+
   const activeFull = selected ?? explanation.revisions.find(revision => revision.current)?.full ?? null;
 
   return (
     <article aria-labelledby="koordinator-provenance-heading" className="mt-4 border-t border-border pt-4">
       <h3 id="koordinator-provenance-heading" className="text-sm font-semibold">Provenance kartı</h3>
+      {showWorktree && (
+        <label className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          Worktree filtresi
+          <input
+            type="text"
+            value={worktreeFilter}
+            onChange={event => setWorktreeFilter(event.currentTarget.value)}
+            placeholder="wt:<ad>"
+            aria-label="Worktree filtresi (wt:<ad>)"
+            className="rounded-md border border-border bg-background px-1.5 py-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          />
+        </label>
+      )}
 
       <div className="mt-2 overflow-x-auto">
         <table className="w-full border-collapse text-sm">
@@ -596,7 +640,7 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
             </tr>
           </thead>
           <tbody>
-            {explanation.entries.map(entry => (
+            {visibleEntries.map(entry => (
               <tr
                 key={entry.service}
                 // data-selected yalnızca seçiliyken render edilir ("false"
@@ -604,7 +648,14 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
                 {...(entry.revFull !== null && entry.revFull === activeFull ? { 'data-selected': true } : {})}
                 className={`border-b border-border last:border-0 ${entry.revFull !== null && entry.revFull === activeFull ? 'bg-muted/60' : ''}`}
               >
-                <th scope="row" className="py-2 pr-3 text-left font-medium">{entry.service}</th>
+                <th scope="row" className="py-2 pr-3 text-left font-medium">
+                  {entry.service}
+                  {showWorktree && worktreeChipText(entry) && (
+                    <span className="ml-1.5 inline-block">
+                      <Badge variant="outline" className="gap-1 font-mono text-[0.7rem]">{worktreeChipText(entry)}</Badge>
+                    </span>
+                  )}
+                </th>
                 <td className="py-2 pr-3">{expectedCellText(entry)}</td>
                 <td className="py-2 pr-3">
                   {entry.running ? <>{entry.running.status}: {entry.running.detail}</> : 'ölçülmedi'}
@@ -637,7 +688,7 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
         </table>
       </div>
 
-      {explanation.entries.filter(entry => entry.diffs.length > 0 || entry.note.length > 0).map(entry => (
+      {visibleEntries.filter(entry => entry.diffs.length > 0 || entry.note.length > 0).map(entry => (
         <div key={entry.service} className="mt-2 text-sm">
           <p className="font-medium">{entry.service}</p>
           {entry.diffs.length > 0 && (
@@ -685,6 +736,59 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
           </ol>
         </div>
       )}
+    </article>
+  );
+}
+
+const WORKTREE_LOCK_TR: Record<CoordinatorWorktreeEntry['lock'], string> = {
+  live: 'canlı',
+  stale: 'bayat',
+  absent: 'yok',
+  corrupt: 'bozuk',
+  unknown: 'doğrulanamadı',
+};
+
+const WORKTREE_STATE_TR: Record<Exclude<CoordinatorWorktreeEntry['state'], 'ok'>, string> = {
+  missing: 'kayıt yok',
+  corrupt: 'bozuk kayıt',
+  'bad-version': 'sürüm uyuşmazlığı',
+};
+
+/**
+ * Ownership ledger: read-only list per registered root (lock +
+ * revShort chip + branch + recorded services). No action buttons, no
+ * polling; fed from the same snapshot (refreshes with `data` on refetch).
+ * Never renders when `worktrees` is missing/empty (single-root flows stay
+ * byte-identical).
+ */
+function WorktreesPanel({ worktrees }: { worktrees: CoordinatorWorktreeEntry[] | undefined }) {
+  if (!worktrees || worktrees.length === 0) return null;
+  return (
+    <article aria-labelledby="koordinator-worktrees-heading" className="mt-4 border-t border-border pt-4">
+      <h3 id="koordinator-worktrees-heading" className="text-sm font-semibold">Worktree sahipliği</h3>
+      <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+        Salt-okunur kök listesi — hangi worktree&apos;de ne kayıtlı. Hiçbir şey başlatmaz, durdurmaz, düzeltmez.
+      </p>
+      <ul className="mt-2 divide-y divide-border border-y border-border">
+        {worktrees.map((entry, index) => (
+          <li key={`${entry.rootBase}-${index}`} className="py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium">{entry.rootBase}</p>
+              {entry.revShort && (
+                <Badge variant="outline" className="gap-1 font-mono text-[0.7rem]">
+                  <span translate="no">@{entry.revShort}</span>
+                </Badge>
+              )}
+              <Badge variant="outline" className="gap-1">{WORKTREE_LOCK_TR[entry.lock]}</Badge>
+            </div>
+            <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
+              {entry.branch ? `dal: ${entry.branch} · ` : ''}
+              {entry.state !== 'ok' ? `${WORKTREE_STATE_TR[entry.state]} · ` : ''}
+              {entry.liveServices.length > 0 ? `kayıtlı: ${entry.liveServices.join(', ')}` : 'kayıtlı servis yok'}
+            </p>
+          </li>
+        ))}
+      </ul>
     </article>
   );
 }
