@@ -137,6 +137,7 @@ ow doctor                                          # trace open/closed + span co
 ```
 
 - Exits: 0 ok/empty, 1 unknown/unreadable, 2 bad id.
+- `trace --wait` polls for late spans; it is unrelated to `up -d --wait` (readiness).
 - `--json` keys are English (`traces`/`traceId`/`spans`/`truncated`/`depth`).
 - Secrets are masked at write time (query strings, credential pairs, Bearer
   forms, UUID/32+hex → `:id`); endpoints/route words stay verbatim (values

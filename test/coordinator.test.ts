@@ -679,3 +679,45 @@ test('D3 empty newest run warns and shows older content; single empty file stays
   assert.equal(explicit.checkpoints, null);
   assert.deepEqual(explicit.runs, ['yeni']);
 });
+
+test('D3 same run name in two roots: newest-wins for ?run= and default, runs deduped', async t => {
+  const f = await fixture(t);
+  const other = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-coordinator-other-')));
+  t.after(() => rm(other, { recursive: true, force: true }));
+  await f.service.register('Coord', [f.root, other]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const dirA = join(f.root, '.ow', 'checkpoints');
+  const dirB = join(other, '.ow', 'checkpoints');
+  await mkdir(dirA, { recursive: true });
+  await mkdir(dirB, { recursive: true });
+  const envelope = (stage: string, at: string) => JSON.stringify({ stage, status: 'confirmed', proof: 'ok', at, by: 'runner', code: { script_hash: 's0' } });
+  await writeFile(join(dirA, 'demo.jsonl'), envelope('a-icerik', '2026-10-08T10:00:00.000Z'));
+  await writeFile(join(dirB, 'demo.jsonl'), envelope('b-icerik', '2026-10-09T10:00:00.000Z'));
+  await utimes(join(dirA, 'demo.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+  type CheckpointWire = { run: string; runs: string[]; stages: Array<{ stage: string }> } | null;
+
+  // Aynı ad iki kökte: açık istek ve default-latest YENİ içeriği vurur, ad tek listelenir.
+  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=demo`)).json() as { checkpoints: CheckpointWire; runs: string[] };
+  assert.equal(explicit.checkpoints?.run, 'demo');
+  assert.equal(explicit.checkpoints?.stages[0].stage, 'b-icerik');
+  const latest = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as { checkpoints: CheckpointWire; runs: string[]; warnings: string[] };
+  assert.equal(latest.checkpoints?.run, 'demo');
+  assert.equal(latest.checkpoints?.stages[0].stage, 'b-icerik');
+  assert.deepEqual(latest.runs, ['demo']);
+
+  // Yeni dosya boşalırsa: default eski İÇERİĞE düşer + uyarı; açık istek fail-closed null kalır.
+  await writeFile(join(dirB, 'demo.jsonl'), '');
+  const fallback = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as { checkpoints: CheckpointWire; runs: string[]; warnings: string[] };
+  assert.equal(fallback.checkpoints?.run, 'demo');
+  assert.equal(fallback.checkpoints?.stages[0].stage, 'a-icerik');
+  assert.ok(fallback.warnings.some(warning => warning.includes('checkpoint boş: demo')), `expected an empty-newest warning, got ${JSON.stringify(fallback.warnings)}`);
+  const explicitEmpty = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=demo`)).json() as { checkpoints: CheckpointWire; runs: string[] };
+  assert.equal(explicitEmpty.checkpoints, null);
+  assert.deepEqual(explicitEmpty.runs, ['demo']);
+});
