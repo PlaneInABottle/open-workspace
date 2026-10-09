@@ -47,8 +47,8 @@ export class UpSchemaError extends Error {
   }
 }
 
-type YamlScalar = string
-type YamlNode = YamlScalar | YamlScalar[] | Record<string, YamlNode>
+export type YamlScalar = string
+export type YamlNode = YamlScalar | YamlScalar[] | Record<string, YamlNode>
 
 const stripComment = (line: string): string => {
   let quote: string | null = null
@@ -98,8 +98,9 @@ const parseFlowList = (raw: string, line: number): YamlScalar[] => {
 const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
 
 /** Minimal indented-subset YAML: `key:` maps (services → service → fields),
- * scalars, `[a, b]` flow lists, inline `{k: v}` flow maps, `#` comments. */
-const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
+ * scalars, `[a, b]` flow lists, inline `{k: v}` flow maps, `#` comments. Exported
+ * for sibling-file validation (scenarios); parsing behavior unchanged. */
+export const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
   const root: Record<string, YamlNode> = {}
   const stack: { indent: number; map: Record<string, YamlNode> }[] = [{ indent: -1, map: root }]
   const lines = text.split("\n")
@@ -190,8 +191,9 @@ const splitTopLevel = (inner: string): string[] => {
   return parts.map((part) => part.trim()).filter((part) => part.length > 0)
 }
 
-/** Parse errors never echo the raw entry: flow maps may carry secret values. */
-const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNode> => {
+/** Parse errors never echo the raw entry: flow maps may carry secret values. Exported
+ * for sibling-file validation (scenario probe maps); behavior unchanged. */
+export const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNode> => {
   const inner = raw.trim().slice(1, -1).trim()
   const out: Record<string, YamlNode> = Object.create(null)
   if (inner.length === 0) return out

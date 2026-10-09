@@ -98,8 +98,9 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   `depends_on: [configuration]`.
 - `ow up` ensures the repo `.gitignore` covers `.ow/` (warn-only).
 - `ow doctor` also prints an informational `up:` line (never affects exit code).
-- Runner evidence lives in `<root>/.ow/checkpoints/<run>.jsonl` (runner writes, ow only reads and never prunes). `ow checkpoints show <run>` renders envelopes as confirmed/stale/not_observed with last-verified + first-gap, passing `safe_next_action` through without judging proof content.
-- Runner gate: call `ow preflight --json` as the first `prepare` step; on `pass:false` do not start work, log `missing[]` verbatim. `ow preflight` reports only (Türkçe `eksik:`/`bayat:`/`hazır-değil:` lines); `--probe` adds one-shot loopback TCP confirmation within budget.
+- `<root>/.ow/checkpoints/<run>.jsonl` is runner-written; `ow checkpoints show <run>` only renders confirmed/stale/not_observed + last-verified/first-gap + `safe_next_action` passthrough (never prunes, never judges proof content).
+- `prepare` begins with `ow preflight --json`; on `pass:false` stop and log `missing[]` verbatim (reports only, Türkçe `eksik:`/`bayat:`/`hazır-değil:`). `--probe` adds budgeted one-shot loopback TCP.
+- `ow scenarios --check` validates `ow.scenarios.yaml` only (never runs probes); unknown names/boundaries warn as UNVERIFIED, never fail.
 - Full schema, caps, and non-goals: product `cli/README.md` ("Service supervision").
 
 ### `--json` anahtarları (tek tablo, additive)

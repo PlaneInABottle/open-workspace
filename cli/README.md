@@ -256,6 +256,34 @@ Runner reçetesi (docs-only, kod yok): runner `prepare` ilk satırında `ow
 preflight --json` çağırır; `pass:false` ise işi başlatmaz, `missing[]`'i
 aynen loglar; ow tarafında retry/öneri üretilmez.
 
+### Senaryo şeması (salt-okunur doğrulama)
+
+`ow.yaml` şişmez: senaryolar ayrı dosyada (`<root>/ow.scenarios.yaml`,
+`version: 1`) durur, ow onları ÇALIŞTIRMAZ — yalnızca şemayı doğrular
+(`ow scenarios --check [--json] [--file]`). Her senaryo ow.yaml servis
+adlarına referans verir (yoksa warn + UNVERIFIED, fail değil), boundaries
+enumu dışına çıkarsa aynı sınıftır; targets/checkpoints opak stringdir (ağ
+politikası yok, secret-maske var); her probe `{id, argv (≤16 parça, parça
+≤512B, shell yok), timeout (5s|10s|30s, default 10s)}` taşır:
+
+```yaml
+version: 1
+scenarios:
+  truck-approval:
+    services: [api]
+    boundaries: [local]
+    targets: [http://127.0.0.1:8901/approval]
+    probes: [{id: ready, argv: [./scripts/ready-approval.sh, --local], timeout: 10s}]
+    checkpoints: [approval-ready]
+```
+
+Çıkış: 0 ok (warn'la da 0), 1 şema hatası, 2 kullanım; dosya yoksa exit 1
+(`senaryo dosyası yok` — `--check` doğrulama fiilidir, yanlış yolda sessiz
+geçmez). `--json` additive `{file, scenarios: [{name, services,
+boundaries, targets, probes: [{id, argvShape, timeout}], checkpoints}],
+warnings}` verir (argv HAM basılmaz, maskeli-şekil). Subset-YAML tek-satır
+kuralı geçerlidir: blok-map yazımı satırlı hata + inline örnek verir.
+
 ### Spring tarifi (uyku/curl yerine)
 
 Spring servisleri portu actuator UP olmadan çok önce dinlemeye başlar:

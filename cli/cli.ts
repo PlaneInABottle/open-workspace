@@ -29,7 +29,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "scenarios"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
@@ -75,7 +75,8 @@ export const helpText = (): string =>
     "  checkpoints list [--file] [--json]  kayıtlı kanıt koşuları (salt-okunur)",
     "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
     "  preflight [--file] [--json] [--probe]  salt-okunur kapı (mutasyon yok; geçemezse çıkış 1)",
-  "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
+    "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 şema doğrulama (çalıştırma yok)",
+    "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
   "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
     "",
@@ -518,7 +519,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "ps" || command === "logs" || command === "trace") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -883,6 +884,28 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       const { runPreflight } = await import("./up-preflight")
       return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
+    }
+    if (command === "scenarios") {
+      // Senaryo validatoru: salt-okunur (probe koşmaz, exec yok). `--file`
+      // senaryo dosyasını gösterir (varsayılan <root>/ow.scenarios.yaml);
+      // services-referansları aynı root'un ow.yaml'ına bakılır.
+      if (positional !== undefined) {
+        console.error("ow: scenarios konumsal argüman almaz")
+        return 2
+      }
+      if (flags["--check"] !== true) {
+        console.error("ow: scenarios --check ile kullanılır (salt-okunur doğrulama, çalıştırma yok)")
+        return 2
+      }
+      for (const unsupported of ["--probe", "--wait", "--health", "--detach", "--rm"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} scenarios ile kullanılamaz`)
+          return 2
+        }
+      }
+      const { runScenariosCheck, SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
+      return runScenariosCheck({ file: scenariosFile, rootDir, json })
     }
     if (command === "ps") {
       const { formatPsLine, queryPs, toPsServiceJson } = await import("./up-ps")
