@@ -213,6 +213,27 @@ healthy services are never signaled.
   masked shapes (deterministic, so expected-vs-running shape compare still
   works); `envNames`/`dependsOn` in state carry names only, never values.
 
+### Evidence zarfı + checkpoint konvensiyonu (P2-A)
+
+Runner (projeye ait) doğrulanmış adımlarını satır-başı JSON zarflar olarak
+`<root>/.ow/checkpoints/<run>.jsonl` dosyasına yazar (atomic tmp+rename,
+≤256KB/≤500 satır — aşımda runner en-eskiden budar); ow yalnızca okur ve
+gösterir, asla yazmaz/budamaz. Zarf `{stage, status
+confirmed|not_observed|stale, proof, at, by, code?, runtime?,
+safe_next_action?}` taşır; `proof` 8KB cap + secret-maske ile, `code`/
+`runtime` ikisi de yoksa zarf `stale (missing_basis)` olur (tek taraflı
+kayıp ilgili alanın adıyla bayatlar), baz dosyadaki ilk (en-erken yazılmış)
+aynı stage'in confirmed satırıdır (script_hash → checkout_rev → runtime sırasıyla).
+
+`ow checkpoints list [--json]` koşuları (ad + zarf sayısı + özet + son
+`at`) listeler; `ow checkpoints show <run> [--json]` satırları
+`doğrulandı/gözlenmedi/bayat` dilinde render eder, kapanışta `son
+doğrulanmış` + `ilk eksik` + runner'ın `sonraki` passthrough'unu gösterir
+(yorum katılmaz). Dosya yoksa exit 1, bozuk satırlar `bozuk-satır: N
+(atlandı)` ile atlanır, geçersiz run adı exit 2. Canlı exec
+(probe/health/git/lsof) bu yollarda yoktur; ow `proof` içeriğini
+yorumlamaz.
+
 ### Spring tarifi (uyku/curl yerine)
 
 Spring servisleri portu actuator UP olmadan çok önce dinlemeye başlar:

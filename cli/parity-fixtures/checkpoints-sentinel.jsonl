@@ -1,0 +1,2 @@
+{"stage":"auth","status":"confirmed","proof":{"token":"hunter2","nested":{"api_key":"hunter2"}},"at":"2026-10-09T08:00:00.000Z","by":"runner","code":{"script_hash":"abc123"}}
+{"stage":"login","status":"confirmed","safe_next_action":"yeniden dene --token hunter2","proof":"api_key=hunter2 ile giris denendi","at":"2026-10-09T08:05:00.000Z","by":"runner","code":{"script_hash":"abc123"}}

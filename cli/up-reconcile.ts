@@ -20,7 +20,12 @@ import { tcpListening } from "./up-net"
 const SECRET_WORD = /password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization/i
 const PROVIDER_PREFIX = /^(ghp_|gho_|ghu_|ghs_|sk-(live|test)-|xox[bpas]-|Bearer\s|eyJ[A-Za-z0-9_-]{8,})/
 
-const maskToken = (token: string, prevIsSecretFlag: boolean): string => {
+/** B3 maske listesi (P2-A evidence maskesiyle paylaşılır; tek kaynak). */
+export const SECRET_WORD_PATTERN = SECRET_WORD
+export const PROVIDER_PREFIX_PATTERN = PROVIDER_PREFIX
+
+/** B3 token maskesi (P2-A evidence maskesiyle paylaşılır; tek kaynak). */
+export const maskSecretToken = (token: string, prevIsSecretFlag: boolean): string => {
   if (token.length === 0) return token
   const eq = token.indexOf("=")
   if (eq > 0) {
@@ -41,13 +46,16 @@ const isSecretFlag = (token: string): boolean =>
   /^(-{1,2})?[A-Za-z0-9_-]*(password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization)$/i.test(token) &&
   !token.includes("=")
 
+/** B3 secret-bayrak testi (P2-A evidence maskesiyle paylaşılır; tek kaynak). */
+export const isSecretFlagToken = isSecretFlag
+
 /** Maskeli cmd-şekli: string aynen tokenize edilir, argv listesi parça-parça. */
 export const maskCmdShape = (cmd: string | string[] | undefined): string | undefined => {
   if (cmd === undefined) return undefined
   const parts = Array.isArray(cmd) ? cmd : cmd.split(/\s+/)
   let prevFlag = false
   const masked = parts.map((part) => {
-    const out = maskToken(part, prevFlag)
+    const out = maskSecretToken(part, prevFlag)
     prevFlag = isSecretFlag(part)
     return out
   })

@@ -29,7 +29,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
@@ -43,6 +43,9 @@ export type ParsedArgs = {
    * other value flag holds a single string. */
   flags: Record<string, string | boolean | string[]>
   error: string | null
+  /** Second and later positionals (`checkpoints show <run>`). Any other
+   * command rejects them with the pre-existing usage error. */
+  extra: string[]
 }
 
 export const helpText = (): string =>
@@ -69,6 +72,8 @@ export const helpText = (): string =>
     "  reconcile --check [--json] [--file]  salt-okunur drift raporu (mutasyon yok; çıkış 1 drift, 0 uyumlu)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
+    "  checkpoints list [--file] [--json]  kayıtlı kanıt koşuları (salt-okunur)",
+    "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
   "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
   "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
@@ -85,7 +90,8 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   const flags: Record<string, string | boolean | string[]> = {}
   let command: Command | null = null
   let sessionID: string | undefined
-  const fail = (error: string): ParsedArgs => ({ command, sessionID, flags, error })
+  const extra: string[] = []
+  const fail = (error: string): ParsedArgs => ({ command, sessionID, flags, error, extra })
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === "-d") {
@@ -127,9 +133,15 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       sessionID = arg
       continue
     }
+    // P2-A: only `checkpoints` takes a second positional (`show <run>`);
+    // every other surface keeps the pre-existing usage error (same text).
+    if (command === "checkpoints") {
+      extra.push(arg)
+      continue
+    }
     return fail(`beklenmeyen argüman: ${arg}`)
   }
-  if (flags["--help"]) return { command, sessionID, flags, error: null }
+  if (flags["--help"]) return { command, sessionID, flags, error: null, extra }
   if (!command) return fail("komut bekleniyor: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline|init (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
   if (typeof flags["--since"] === "string" && since === null) return fail(`geçersiz --since: ${flags["--since"]} (30m|3h|1d|1w)`)
@@ -152,7 +164,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   if (typeof flags["--grep"] === "string" && flags["--grep"].length > 256) {
     return fail("geçersiz --grep: en fazla 256 karakter")
   }
-  return { command, sessionID, flags, error: null }
+  return { command, sessionID, flags, error: null, extra }
 }
 
 // --json envelopes: stable English keys; human views keep Turkish labels.
@@ -452,6 +464,12 @@ export const run = async (argv: string[]): Promise<number> => {
     return 2
   }
   const { command, sessionID: positional, flags } = parsed
+  // P2-A: extra positionals belong only to `checkpoints show <run>`.
+  if (command !== "checkpoints" && parsed.extra.length > 0) {
+    console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
+    console.error(helpText())
+    return 2
+  }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
   const logPath = flag(flags, "--log") ?? DEFAULT_LOG_PATH
   const json = flags["--json"] === true
@@ -499,7 +517,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "ps" || command === "logs" || command === "trace") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "ps" || command === "logs" || command === "trace") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -820,6 +838,32 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       const { runReconcileCheck } = await import("./up-reconcile")
       return runReconcileCheck({ rootDir, file: yamlForRead, json })
+    }
+    if (command === "checkpoints") {
+      // P2-A: runner-yazar/ow-okur; salt-okunur, mutasyon yok, canlı exec yok.
+      if (flags["--probe"] === true) {
+        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        return 2
+      }
+      const { runCheckpointsList, runCheckpointsShow } = await import("./up-checkpoints")
+      if (positional === undefined || (positional !== "list" && positional !== "show")) {
+        console.error("ow: checkpoints list|show bekleniyor (ör. ow checkpoints show <run>)")
+        return 2
+      }
+      if (positional === "list") {
+        if (parsed.extra.length > 0) {
+          console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
+          return 2
+        }
+        return runCheckpointsList({ rootDir, json })
+      }
+      if (parsed.extra.length !== 1) {
+        console.error(
+          parsed.extra.length === 0 ? "ow: checkpoints show run adı bekler (ör. ow checkpoints show <run>)" : `ow: beklenmeyen argüman: ${parsed.extra[1]}`,
+        )
+        return 2
+      }
+      return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
     }
     if (command === "ps") {
       const { formatPsLine, queryPs, toPsServiceJson } = await import("./up-ps")

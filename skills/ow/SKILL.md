@@ -98,6 +98,7 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   `depends_on: [configuration]`.
 - `ow up` ensures the repo `.gitignore` covers `.ow/` (warn-only).
 - `ow doctor` also prints an informational `up:` line (never affects exit code).
+- Runner evidence lives in `<root>/.ow/checkpoints/<run>.jsonl` (runner writes, ow only reads and never prunes). `ow checkpoints show <run>` renders envelopes as confirmed/stale/not_observed with last-verified + first-gap, passing `safe_next_action` through without judging proof content.
 - Full schema, caps, and non-goals: product `cli/README.md` ("Service supervision").
 
 ### `--json` anahtarları (tek tablo, additive)
