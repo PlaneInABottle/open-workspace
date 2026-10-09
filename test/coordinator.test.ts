@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createApp } from '../src/http.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
-import { buildCoordinatorSnapshot, maskSecrets } from '../src/coordinator.js';
+import { buildCoordinatorSnapshot, maskSecrets, normalizeCheckpointEnvelope, normalizeSupervisorService } from '../src/coordinator.js';
 import { environmentMessages } from '../src/environment.js';
 import { verifyMessages } from '../src/verify.js';
 import type { EnvironmentRecord } from '../src/store.js';
@@ -205,6 +205,252 @@ test('wire sentinel: hostile free text is masked, cwd collapses to basename', ()
   assert.equal(snapshot.readiness[0].dir, 'api');
   assert.equal(snapshot.meta.snapshotId, 'a3f9c1d2');
   assert.ok(maskSecrets('plain status text').includes('plain'));
+});
+
+test('D2 hostile rev: secret-shaped revs mask to ***, legit shapes pass through', () => {
+  const envelopeWith = (rev: unknown) => normalizeCheckpointEnvelope({
+    stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner',
+    code: { script_hash: 's1', checkout_rev: rev }, runtime: { port: 1, cwd: '/r' },
+  });
+  // Hostile: zarf geçerli kalır (fail-safe) ama rev maskelenir.
+  for (const rev of ['token=hunter2-abcdef1234', 'api_key=hunter2', 'Bearer abcdef', 'sk-live-abc123', '--token hunter2']) {
+    const out = envelopeWith(rev);
+    assert.equal(out.ok, true);
+    assert.equal(out.ok && out.envelope.checkoutRev, '***');
+  }
+  // Meşru gerçek şekiller aynen geçer (hex SHA incl. 40-hex, kısa id'ler).
+  for (const rev of ['a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4', 'a1b2c3d', 'rev1', 'abc123', 'r1', 'YENI']) {
+    const out = envelopeWith(rev);
+    assert.equal(out.ok, true);
+    assert.equal(out.ok && out.envelope.checkoutRev, rev);
+  }
+  // Supervisor rev yolu da aynı maskeden geçer.
+  const rec = normalizeSupervisorService({
+    name: 'api', provenance: { checkout: { rev: 'token=hunter2-abcdef' }, recordedAt: '2026-10-09T09:00:00.000Z' },
+  });
+  assert.ok(rec);
+  assert.equal(rec.rev, '***');
+  // Wire: maskeli rev *** olarak taşınır, hunter2 hiçbir yerde yok.
+  const hostileOut = envelopeWith('token=hunter2-abcdef1234');
+  assert.equal(hostileOut.ok, true);
+  if (!hostileOut.ok || !rec) return;
+  const record = { name: 'dev', state: 'down', services: [] } as unknown as EnvironmentRecord;
+  const snapshot = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    checkpoint: { run: 'demo', envelopes: [hostileOut.envelope] },
+    supervisor: [rec],
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('hunter2'), 'hostile rev must not reach the wire');
+  assert.equal(snapshot.checkpoints?.stages[0].status, 'confirmed');
+  assert.equal(snapshot.explanation?.entries[0].revFull, '***');
+  assert.equal(snapshot.explanation?.entries[0].revShort, '***');
+  assert.equal(snapshot.explanation?.revisions[0].full, '***');
+});
+
+test('D2 cwd compare: same basename on different full paths goes stale/runtime', () => {
+  const mk = (at: string, cwd: string) => normalizeCheckpointEnvelope({
+    stage: 'build', status: 'confirmed', proof: 'ok', at, by: 'runner',
+    code: { script_hash: 's1', checkout_rev: 'r1' }, runtime: { port: 1, cwd },
+  });
+  const first = mk('2026-10-09T10:00:00.000Z', '/a/api');
+  const second = mk('2026-10-09T11:00:00.000Z', '/b/api');
+  const third = mk('2026-10-09T12:00:00.000Z', '/a/api');
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(third.ok, true);
+  if (!first.ok || !second.ok || !third.ok) return;
+  const record = { name: 'dev', state: 'down', services: [] } as unknown as EnvironmentRecord;
+  const snapshot = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    checkpoint: { run: 'demo', envelopes: [first.envelope, second.envelope] },
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  // Basename aynı ("api") ama tam-yol farklı → fail-open kapandı.
+  assert.equal(snapshot.checkpoints?.stages[1].status, 'stale');
+  assert.equal(snapshot.checkpoints?.stages[1].staleReason, 'runtime');
+  const same = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    checkpoint: { run: 'demo', envelopes: [first.envelope, third.envelope] },
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  assert.equal(same.checkpoints?.stages[1].status, 'confirmed');
+});
+
+test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, rev short/full split', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: 3100, dependsOn: [], readiness: { kind: 'http-200' } },
+      { id: 'ghost', name: 'ghost', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+      { id: 'sahipsiz', name: 'sahipsiz', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  // Latest-run checkpoint file: basis confirmed, same-basis confirmed,
+  // changed-rev confirmed (→ stale checkout_rev), then a hostile gap.
+  const revA = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
+  const revB = 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5';
+  const dir = join(f.root, '.ow', 'checkpoints');
+  await mkdir(dir, { recursive: true });
+  const line = (entry: unknown) => JSON.stringify(entry);
+  await writeFile(join(dir, 'demo.jsonl'), [
+    line({ stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revA }, runtime: { port: 3100, cwd: '/Users/x/proj/api' } }),
+    line({ stage: 'test', status: 'confirmed', proof: 'ok', at: '2026-10-09T11:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revA }, runtime: { port: 3100, cwd: '/Users/x/proj/api' } }),
+    line({ stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T12:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revB }, runtime: { port: 3100, cwd: '/Users/x/proj/api' }, safe_next_action: 'token=hunter2 --password hunter2 çalıştır' }),
+    line({ stage: 'deploy', status: 'not_observed', proof: 'yok', at: '2026-10-09T12:30:00.000Z', by: 'ow-probe' }),
+    'bozuk-satır{{{',
+  ].join('\n'));
+  // Supervisor spawn-kayıtları: api kayıtlı rev'li, ghost kayıtsız.
+  await writeFile(join(f.root, '.ow', 'supervisor.json'), JSON.stringify({
+    version: 1,
+    startedAt: '2026-10-09T09:00:00.000Z',
+    services: [
+      {
+        name: 'api', port: 3100,
+        provenance: { cwdAbs: '/Users/x/proj/api', checkout: { rev: revA, dirty: true }, recordedAt: '2026-10-09T09:30:00.000Z' },
+        lastReadiness: { ok: true, note: 'token=hunter2', at: '2026-10-09T11:30:00.000Z' },
+      },
+      { name: 'ghost' },
+    ],
+  }));
+  // Canlı durum: api failed kayıtlı, ghost ölçülmedi.
+  await f.store.update(state => {
+    const record = state.environments.flatMap(entry => entry.items).find(item => item.name === 'dev');
+    assert.ok(record);
+    record.state = 'up';
+    record.owned = [{
+      serviceId: 'api', pmId: 99, name: 'api', namespace: null, expectedRoot: f.backend,
+      lastPoll: { status: 'failed', attempts: 1, httpStatus: null, checkedAt: new Date().toISOString() },
+    }];
+  });
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const response = await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`);
+  assert.equal(response.status, 200);
+  const snapshot = await response.json() as {
+    checkpoints: {
+      run: string;
+      stages: Array<{ stage: string; status: string; staleReason: string | null; at: string }>;
+      summary: { confirmed: number; stale: number; notObserved: number };
+      lastVerified: { stage: string; at: string } | null;
+      firstGap: { stage: string; status: string; staleReason: string | null; at: string } | null;
+      safeNextAction: string | null;
+    } | null;
+    explanation: {
+      entries: Array<{
+        service: string; expected: { cmd: string | null; dir: string | null; port: number | null } | null;
+        running: { status: string; detail: string } | null;
+        revShort: string | null; revFull: string | null; revAt: string | null; revDirty: boolean; revRecorded: boolean;
+        diffs: string[]; note: string;
+      }>;
+      revisions: Array<{ short: string; full: string; at: string | null; current: boolean; recorded: boolean }>;
+    } | null;
+    warnings: string[];
+  };
+  const wire = JSON.stringify(snapshot);
+  // Secret disiplini: hostile serbest-metin + mutlak path wire'da yok.
+  assert.ok(!wire.includes('hunter2'), 'secret value must not reach the wire');
+  assert.ok(!wire.includes('/Users/x/proj/api'), 'absolute path must not reach the wire');
+  assert.ok(wire.includes('***'), 'masking must be visible');
+
+  // P3: tazelik uygulanmış aggregate.
+  assert.ok(snapshot.checkpoints);
+  assert.equal(snapshot.checkpoints.run, 'demo');
+  assert.equal(snapshot.checkpoints.stages.length, 4);
+  assert.deepEqual(snapshot.checkpoints.summary, { confirmed: 2, stale: 1, notObserved: 1 });
+  assert.equal(snapshot.checkpoints.stages[2].status, 'stale');
+  assert.equal(snapshot.checkpoints.stages[2].staleReason, 'checkout_rev');
+  assert.equal(snapshot.checkpoints.lastVerified?.stage, 'test');
+  // first_gap = son confirmed sonrasındaki ilk non-confirmed (stale build).
+  assert.equal(snapshot.checkpoints.firstGap?.stage, 'build');
+  assert.equal(snapshot.checkpoints.firstGap?.staleReason, 'checkout_rev');
+  assert.ok(snapshot.checkpoints.safeNextAction && !snapshot.checkpoints.safeNextAction.includes('hunter2'));
+  assert.ok(snapshot.checkpoints.safeNextAction.includes('***'));
+  assert.ok(snapshot.warnings.some(warning => warning.includes('bozuk satır')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
+
+  // P4: beklenen/çalışan + rev short/full ayrımı.
+  assert.ok(snapshot.explanation);
+  const api = snapshot.explanation.entries.find(entry => entry.service === 'api');
+  assert.ok(api);
+  assert.equal(api.expected?.dir, 'backend');
+  // PM2 yokluğunda kayıtlı sahiplik canlı listeyle eşleşemez: çalışan
+  // "down + ölçülmedi" düşer (D1 drift-emsaliyle aynı zemin).
+  assert.equal(api.running?.status, 'down');
+  assert.equal(api.revShort, revA.slice(0, 7));
+  assert.equal(api.revFull, revA);
+  assert.equal(api.revRecorded, true);
+  assert.equal(api.revDirty, true);
+  assert.ok(api.diffs.some(diff => diff.includes('kirli checkout')));
+  const ghost = snapshot.explanation.entries.find(entry => entry.service === 'ghost');
+  assert.ok(ghost);
+  // Boş supervisor kaydı: rev yok → doğrulanamadı, note canlılığı anlatır.
+  assert.equal(ghost.revShort, null);
+  assert.equal(ghost.revRecorded, false);
+  const sahipsiz = snapshot.explanation.entries.find(entry => entry.service === 'sahipsiz');
+  assert.ok(sahipsiz);
+  assert.ok(sahipsiz.expected);
+  assert.ok(sahipsiz.note.includes('kayıt yok'));
+  // Rev şeridi: kayıtsız zarf rev'i de taşınır (soluk), en yeni seçili.
+  const stripB = snapshot.explanation.revisions.find(revision => revision.full === revB);
+  assert.ok(stripB);
+  assert.equal(stripB.recorded, false);
+  assert.equal(stripB.short, revB.slice(0, 7));
+  const current = snapshot.explanation.revisions.filter(revision => revision.current);
+  assert.equal(current.length, 1);
+  // Tam rev wire'da taşınır (kopyala-butonu clipboard payload'ı) — DOM'a
+  // yazılmaması frontend tara-testinin işidir.
+  assert.ok(wire.includes(revA));
+});
+
+test('D2 empty: no runner files keeps the section alive with empty panels', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  const app = createApp(f.service, { mcpToken: 'e'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    reconcile: { inSync: boolean }; checkpoints: null; explanation: null; warnings: string[];
+  };
+  assert.equal(snapshot.reconcile.inSync, true);
+  assert.equal(snapshot.checkpoints, null);
+  assert.equal(snapshot.explanation, null);
+});
+
+test('D2 corrupt supervisor keeps the section alive with a warning', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'supervisor.json'), 'bozuk{{{');
+  const app = createApp(f.service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    reconcile: { inSync: boolean }; explanation: null; warnings: string[];
+  };
+  assert.equal(snapshot.reconcile.inSync, true);
+  assert.equal(snapshot.explanation, null);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('provenance okunamadı')), `expected a provenance warning, got ${JSON.stringify(snapshot.warnings)}`);
 });
 
 test('oversized/corrupt checkpoint fixture keeps the section alive with warnings', async t => {

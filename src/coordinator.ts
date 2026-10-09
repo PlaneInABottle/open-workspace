@@ -1,19 +1,34 @@
 /**
- * Dashboard-only coordinator snapshot (D1: P1 ortam haritası + P2 preflight).
+ * Dashboard-only coordinator snapshot (D2: P1 ortam haritası + P2 preflight
+ * + P3 checkpoint çizgisi + P4 provenance kartı).
  *
  * Salt-okunur aggregate: kayıtlı topoloji + canlı durumdan reconcile
  * (eşleşiyor/kayık) + port preflight + runner-dosya bounded okuma
  * (frozen root, symlink-izlenmez, 256KB/500 cap, latest-only,
  * fail-closed + warnings[]).
  *
+ * Kaynaklar (hepsi kayıtlı dosya; canlı exec YOK, CLI davranış değişikliği
+ * YOK):
+ * - P3: `.ow/checkpoints/<run>.jsonl` latest run (zarf `at` = stage yaşı
+ *   kaynağı; rev-yas kararı D2: envelope `at` + provenance `recordedAt`
+ *   dışında saat yoktur, ikisi de zarfta zorunlu ISO'dur).
+ * - P4: `.ow/supervisor.json` spawn-kayıtları (provenance checkout rev +
+ *   recordedAt = kayıtlı-rev yaşı kaynağı) + store topolojisi (beklenen) +
+ *   environmentStatus (çalışan). Kaydedilmemiş rev'e "canlıda farklı"
+ *   denmez — canlı checkout'u okumak git exec ister (fail-closed:
+ *   "doğrulanamadı").
+ *
  * Secret disiplini: tüm serbest-metin alanlar wire'a yazılmadan önce
  * maskelenir (aşağıdaki maske, cli/up-reconcile.ts + cli/up-evidence.ts
  * kurallarının node-tarafı aynasıdır — CLI bun-only olduğu için import
  * edilmez, davranış değişikliği yok); mutlak path'ler basename'e iner.
- * Ham enum/UUID/rev bu zarfta taşınmaz (D2'nin revisions[] kapsamı dışında).
+ * Zarf normalizasyonu + tazelik de aynı aynalama disiplinindedir
+ * (cli/up-evidence.ts + cli/up-checkpoints.ts).
+ * Tam rev wire'da taşınır (kopyala-butonu clipboard payload'ı) ama ASLA
+ * render edilmez — DOM/title/aria'da yalnızca kısa-hash (7) görünür.
  */
 import { randomBytes } from 'node:crypto';
-import { lstat, open, readdir } from 'node:fs/promises';
+import { lstat, open, readdir, readFile } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { Store, resolveEnvironmentRecord, resolveWorkspaceRecord, type EnvironmentRecord } from './store.js';
 import { verifyMessages } from './verify.js';
@@ -141,18 +156,209 @@ export interface CoordinatorMeta {
   environment: string;
 }
 
+export type CheckpointStageStatus = 'confirmed' | 'not_observed' | 'stale';
+
+export interface CoordinatorCheckpointStage {
+  stage: string;
+  status: CheckpointStageStatus;
+  /** Ham İngilizce enum (UI Türkçe'ye eşler — §3). */
+  staleReason: string | null;
+  /** Zarf kayıt saati (stage yaşı kaynağı). */
+  at: string;
+}
+
+export interface CoordinatorCheckpoints {
+  /** Dosya adı (path değil) — latest run. */
+  run: string;
+  stages: CoordinatorCheckpointStage[];
+  summary: { confirmed: number; stale: number; notObserved: number };
+  lastVerified: { stage: string; at: string } | null;
+  firstGap: { stage: string; status: CheckpointStageStatus; staleReason: string | null; at: string } | null;
+  /** Salt-metin öneri (butona bağlanmaz). */
+  safeNextAction: string | null;
+}
+
+export interface CoordinatorRevision {
+  /** Ekrandaki tek temsil (7 karakter). */
+  short: string;
+  /** YALNIZCA kopyala-butonu clipboard payload'ı — DOM'a yazılmaz. */
+  full: string;
+  /** İlk görülme kayıt saati (zarf `at` / provenance `recordedAt`). */
+  at: string | null;
+  // NOT: `services` alanı bilerek yok — şerit etiketi kısa-hash+yaştır
+  // (§3); zarf rev'lerinin servis atfı zaten yoktu, supervisor tarafı tek
+  // ad taşıyordu (kayıp-bilgi). D3 (P5 senaryo matrisi) rev-servis
+  // eşlemesi istemez; ihtiyaç doğarsa wire'a eklenir.
+  /** En yeni rev (şeritte vurgulu). */
+  current: boolean;
+  /** Supervisor spawn-kaydıyla eşleşiyor. */
+  recorded: boolean;
+}
+
+export interface CoordinatorExplanationEntry {
+  service: string;
+  expected: { cmd: string | null; dir: string | null; port: number | null } | null;
+  running: { status: string; detail: string } | null;
+  /** Rev satırı asla çıplak hash değil: kısa + rozet + yaş UI'da birleşir. */
+  revShort: string | null;
+  revFull: string | null;
+  revAt: string | null;
+  revDirty: boolean;
+  revRecorded: boolean;
+  diffs: string[];
+  note: string;
+}
+
+export interface CoordinatorExplanation {
+  entries: CoordinatorExplanationEntry[];
+  revisions: CoordinatorRevision[];
+}
+
 export interface CoordinatorSnapshot {
   reconcile: CoordinatorReconcile;
   readiness: CoordinatorReadinessEntry[];
-  /** D2 kapsamı — D1'de her zaman null. */
-  explanation: null;
+  /** Kayıt yoksa null → UI "provenance kaydı yok" gösterir. */
+  explanation: CoordinatorExplanation | null;
   preflight: CoordinatorPreflight;
-  /** D2 kapsamı — D1'de her zaman null (dosya okunur, yalnızca warnings üretir). */
-  checkpoints: null;
-  /** D3 kapsamı — D1'de her zaman null. */
+  /** Kayıt yoksa/bozuksa null → UI "checkpoint yok" gösterir. */
+  checkpoints: CoordinatorCheckpoints | null;
+  /** D3 kapsamı — D2'de her zaman null. */
   scenarios: null;
   warnings: string[];
   meta: CoordinatorMeta;
+}
+
+// --- Checkpoint zarf aynası (cli/up-evidence.ts + cli/up-checkpoints.ts) ----
+// Şekil-sıkı fail-closed: bozuk satır bölümü öldürmez (corrupt sayılır).
+
+const ENVELOPE_BY = new Set(['runner', 'ow-preflight', 'ow-reconcile', 'ow-probe']);
+const STALE_REASONS = new Set(['script_hash', 'checkout_rev', 'runtime', 'missing_basis']);
+const SAFE_NEXT_ACTION_MAX = 512;
+const REV_MAX_CHARS = 64;
+
+export interface ParsedCheckpointEnvelope {
+  stage: string;
+  status: CheckpointStageStatus;
+  staleReason: string | null;
+  safeNextAction: string | null;
+  at: string;
+  checkoutRev?: string;
+  scriptHash?: string;
+  port?: number;
+  /**
+   * Tam çözümlenmiş cwd — YALNIZCA tazelik karşılaştırması için iç slot
+   * (CLI `slotsOf` aynası: cwd tam-yoldan karşılaştırılır). Wire'a/çıktıya
+   * çıkmaz (basename indirgemesi bile yok — cwd P3/P4'te render edilmez).
+   */
+  cwdFull?: string;
+  provenanceRev?: string;
+}
+
+function revField(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const rev = value.trim();
+  if (rev.length === 0 || rev.length > REV_MAX_CHARS) return undefined;
+  // Secret-şekilli rev fail-safe maskelenir (***) — örn. token=hunter2-….
+  // Meşru şekiller (hex SHA incl. 40-hex, kısa id, dal adı) aynen geçer:
+  // uzun-hex kuralı uygulanmaz (40-hex SHA birincil meşru şekildir —
+  // maskSecrets'in 32+hex kuralı burada geçersizdir). Gerçek üreticiler
+  // yalnızca hex yazar (up-provenance gitCheckout: /^[0-9a-fA-F]{4,64}$/);
+  // CLI fixture-id'leri ("rev1", "abc123") secret-kelime içermez.
+  if (SECRET_WORD.test(rev) || PROVIDER_PREFIX.test(rev)) return '***';
+  return rev;
+}
+
+/** Saf zarf normalizasyonu (testler hostile fixture'ı buradan sokar). */
+export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope: ParsedCheckpointEnvelope } | { ok: false } {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false };
+  const dict = raw as Record<string, unknown>;
+  if (typeof dict['stage'] !== 'string' || (dict['stage'] as string).trim().length === 0) return { ok: false };
+  if (dict['status'] !== 'confirmed' && dict['status'] !== 'not_observed' && dict['status'] !== 'stale') return { ok: false };
+  if (typeof dict['at'] !== 'string' || !Number.isFinite(Date.parse(dict['at'] as string))) return { ok: false };
+  if (typeof dict['by'] !== 'string' || !ENVELOPE_BY.has(dict['by'] as string)) return { ok: false };
+  const status = dict['status'] as CheckpointStageStatus;
+  const reason = dict['stale_reason'];
+  if (status === 'stale') {
+    if (typeof reason !== 'string' || !STALE_REASONS.has(reason)) return { ok: false };
+  } else if (reason !== undefined) {
+    return { ok: false };
+  }
+  const envelope: ParsedCheckpointEnvelope = {
+    stage: dict['stage'] as string,
+    status,
+    staleReason: status === 'stale' ? (reason as string) : null,
+    safeNextAction: null,
+    at: dict['at'] as string,
+  };
+  if (typeof dict['safe_next_action'] === 'string') {
+    const text = maskSecrets(dict['safe_next_action'] as string);
+    envelope.safeNextAction = text.length <= SAFE_NEXT_ACTION_MAX ? text : `${text.slice(0, SAFE_NEXT_ACTION_MAX - '…[kesildi]'.length)}…[kesildi]`;
+  } else if (dict['safe_next_action'] !== undefined) {
+    return { ok: false };
+  }
+  if (dict['code'] !== undefined) {
+    if (typeof dict['code'] !== 'object' || dict['code'] === null || Array.isArray(dict['code'])) return { ok: false };
+    const code = dict['code'] as Record<string, unknown>;
+    const scriptHash = revField(code['script_hash']);
+    const checkoutRev = revField(code['checkout_rev']);
+    if (scriptHash !== undefined) envelope.scriptHash = scriptHash;
+    if (checkoutRev !== undefined) envelope.checkoutRev = checkoutRev;
+    if (scriptHash === undefined && checkoutRev === undefined && Object.keys(code).length > 0) return { ok: false };
+  }
+  if (dict['runtime'] !== undefined) {
+    if (typeof dict['runtime'] !== 'object' || dict['runtime'] === null || Array.isArray(dict['runtime'])) return { ok: false };
+    const runtime = dict['runtime'] as Record<string, unknown>;
+    let known = 0;
+    if (typeof runtime['port'] === 'number') { envelope.port = runtime['port']; known += 1; }
+    if (typeof runtime['cwd'] === 'string') { envelope.cwdFull = resolve(runtime['cwd'] as string); known += 1; }
+    const provenanceRev = revField(runtime['provenance_rev']);
+    if (provenanceRev !== undefined) { envelope.provenanceRev = provenanceRev; known += 1; }
+    if (known === 0 && Object.keys(runtime).length > 0) return { ok: false };
+  }
+  return { ok: true, envelope };
+}
+
+function applyCheckpointFreshness(envelopes: ParsedCheckpointEnvelope[]): ParsedCheckpointEnvelope[] {
+  const basisByStage = new Map<string, ParsedCheckpointEnvelope>();
+  for (const envelope of envelopes) {
+    if (envelope.status === 'confirmed' && !basisByStage.has(envelope.stage)) basisByStage.set(envelope.stage, envelope);
+  }
+  return envelopes.map(envelope => {
+    if (envelope.status !== 'confirmed') return { ...envelope };
+    if (envelope.scriptHash === undefined && envelope.checkoutRev === undefined && envelope.port === undefined && envelope.cwdFull === undefined && envelope.provenanceRev === undefined) {
+      return { ...envelope, status: 'stale' as const, staleReason: 'missing_basis' };
+    }
+    const basis = basisByStage.get(envelope.stage) as ParsedCheckpointEnvelope;
+    if (basis.scriptHash !== envelope.scriptHash) return { ...envelope, status: 'stale' as const, staleReason: 'script_hash' };
+    if (basis.checkoutRev !== envelope.checkoutRev) return { ...envelope, status: 'stale' as const, staleReason: 'checkout_rev' };
+    if (basis.port !== envelope.port || basis.cwdFull !== envelope.cwdFull || basis.provenanceRev !== envelope.provenanceRev) {
+      return { ...envelope, status: 'stale' as const, staleReason: 'runtime' };
+    }
+    return { ...envelope, staleReason: null };
+  });
+}
+
+export interface CheckpointSource {
+  run: string;
+  envelopes: ParsedCheckpointEnvelope[];
+}
+
+export interface SupervisorProvenanceRecord {
+  name: string;
+  port?: number;
+  rev?: string;
+  dirty?: boolean;
+  recordedAt?: string;
+  exitCode?: number;
+  // NOT: `cwdBase`/`lastReadiness` bilerek yok — P4 beklenen/çalışan
+  // environmentStatus + spawn rev'inden kurulur; supervisor cwd'si ve
+  // lastReadiness kaydı render edilmez. D3 (P5 + a11y) ikisini de istemez
+  // (§5-D3); cwd-diff gösterimi doğarsa tam-yol iç-slot + basename-çıktı
+  // çiftiyle birlikte eklenir.
+}
+
+export function shortRev(full: string): string {
+  return full.slice(0, 7);
 }
 
 // --- Saf çekirdek (I/O yok; testler hostile fixture enjekte eder) -------------
@@ -161,6 +367,171 @@ function expectedDescriptor(service: EnvironmentRecord['services'][number]): str
   const script = service.scriptName || '(komut yok)';
   const port = typeof service.port === 'number' ? `${service.port} portu` : 'portsuz';
   return `${script} · ${port}`;
+}
+
+function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoints | null {
+  if (!source || source.envelopes.length === 0) return null;
+  const fresh = applyCheckpointFreshness(source.envelopes);
+  const stages: CoordinatorCheckpointStage[] = fresh.map(envelope => ({
+    stage: maskSecrets(envelope.stage),
+    status: envelope.status,
+    staleReason: envelope.staleReason,
+    at: envelope.at,
+  }));
+  let confirmed = 0;
+  let stale = 0;
+  let notObserved = 0;
+  for (const envelope of fresh) {
+    if (envelope.status === 'confirmed') confirmed += 1;
+    else if (envelope.status === 'stale') stale += 1;
+    else notObserved += 1;
+  }
+  let lastVerified: CoordinatorCheckpoints['lastVerified'] = null;
+  for (const envelope of fresh) {
+    if (envelope.status === 'confirmed') lastVerified = { stage: maskSecrets(envelope.stage), at: envelope.at };
+  }
+  // first_gap = son confirmed sonrasındaki İLK non-confirmed (confirmed
+  // yoksa ilk satır) — cli/summarizeFresh aynası.
+  let lastIndex = -1;
+  for (let i = 0; i < fresh.length; i += 1) {
+    if (fresh[i].status === 'confirmed') lastIndex = i;
+  }
+  const firstGapRaw = fresh.find((envelope, index) => index > lastIndex && envelope.status !== 'confirmed') ?? null;
+  const firstGap = firstGapRaw
+    ? { stage: maskSecrets(firstGapRaw.stage), status: firstGapRaw.status, staleReason: firstGapRaw.staleReason, at: firstGapRaw.at }
+    : null;
+  const actionSource = firstGapRaw ?? fresh[fresh.length - 1];
+  return {
+    run: source.run,
+    stages,
+    summary: { confirmed, stale, notObserved },
+    lastVerified,
+    firstGap,
+    safeNextAction: actionSource?.safeNextAction ?? null,
+  };
+}
+
+function buildExplanation(
+  record: EnvironmentRecord,
+  status: EnvironmentStatus,
+  checkpoint: CheckpointSource | null,
+  supervisor: SupervisorProvenanceRecord[] | null,
+): CoordinatorExplanation | null {
+  const records = supervisor ?? [];
+  // Zarf rev'leri: yalnızca ilk-görülme `at` izlenir (şerit yaşı). Servis
+  // atfı zarfta yoktur — stages/servis kümesi taşınmaz (prune: D3
+  // istemez, wire'da karşılığı yok).
+  const envelopeRevs = new Map<string, string>();
+  if (checkpoint) {
+    for (const envelope of checkpoint.envelopes) {
+      if (envelope.checkoutRev === undefined) continue;
+      const seen = envelopeRevs.get(envelope.checkoutRev);
+      if (seen === undefined || Date.parse(envelope.at) < Date.parse(seen)) {
+        envelopeRevs.set(envelope.checkoutRev, envelope.at);
+      }
+    }
+  }
+  if (records.length === 0 && envelopeRevs.size === 0) return null;
+
+  const byId = new Map(status.services.map(entry => [entry.serviceId, entry]));
+  const byName = new Map(status.services.map(entry => [entry.name, entry]));
+  const storeByName = new Map(record.services.map(service => [service.name ?? service.id, service]));
+  const names: string[] = [];
+  for (const service of record.services) {
+    const key = service.name ?? service.id;
+    if (!names.includes(key)) names.push(key);
+  }
+  for (const rec of records) {
+    if (!names.includes(rec.name)) names.push(rec.name);
+  }
+
+  const recordedRevs = new Set(records.flatMap(rec => (rec.rev !== undefined ? [rec.rev] : [])));
+  const entries: CoordinatorExplanationEntry[] = names.map(name => {
+    const storeService = storeByName.get(name);
+    const rec = records.find(candidate => candidate.name === name);
+    const live = (storeService ? byId.get(storeService.id) : undefined) ?? byName.get(name);
+    const expected = storeService
+      ? {
+        cmd: maskSecrets(storeService.scriptName || '(komut yok)'),
+        dir: basename(resolve(storeService.repositoryPath)),
+        port: typeof storeService.port === 'number' ? storeService.port : null,
+      }
+      : null;
+    const running = live ? { status: live.status, detail: maskSecrets(live.detail) } : null;
+    const diffs: string[] = [];
+    if (rec === undefined) {
+      // Kayıt yok — diff üretilemez, note kapsar.
+    } else {
+      if (expected === null) {
+        diffs.push(maskSecrets('tanımda yok — kayıtlı topolojide karşılığı yok'));
+      } else if (typeof rec.port === 'number' && typeof expected.port === 'number' && rec.port !== expected.port) {
+        diffs.push(maskSecrets(`port değişti (beklenen: ${expected.port}, çalışan: ${rec.port})`));
+      }
+      if (rec.exitCode !== undefined) diffs.push(maskSecrets(`süreç bitti (çıkış kodu ${rec.exitCode})`));
+      if (rec.dirty === true) diffs.push(maskSecrets('kirli checkout ile başlatıldı'));
+    }
+    let note: string;
+    if (rec === undefined) note = 'kayıt yok — bu servis için provenance kaydı bulunamadı';
+    else if (running === null) note = 'ölçülmedi — canlı durum kaydı yok';
+    else if (rec.exitCode !== undefined) note = `çalışmıyor — çıkış kodu ${rec.exitCode}; günlük için asistanına danış`;
+    else if (running.status === 'starting') note = 'başlatılıyor — Yenile ile tazele';
+    else if (running.status === 'stale') note = 'bayat — Yenile ile tazele';
+    else if (running.status === 'ready') note = 'çalışıyor, bilinen sorun yok';
+    else note = `canlı durum ${running.status} — diff satırlarına bak`;
+    const rev = rec?.rev;
+    return {
+      service: maskSecrets(name),
+      expected,
+      running,
+      revShort: rev !== undefined ? shortRev(rev) : null,
+      // Tam rev yalnızca kopyala-butonu clipboard payload'ıdır — DOM'a
+      // yazılmaz (hover-title bile yok; tara-test §3).
+      revFull: rev ?? null,
+      revAt: rec?.recordedAt ?? null,
+      revDirty: rec?.dirty === true,
+      revRecorded: rev !== undefined,
+      diffs,
+      note: maskSecrets(note),
+    };
+  });
+
+  // Rev şeridi: supervisor kayıtlı-rev'leri (recordedAt yaşlı) + zarflardaki
+  // kayıtsız rev'ler (ilk-görülme `at` yaşlı, soluk). En yeni seçili.
+  const revisions: CoordinatorRevision[] = [];
+  const seen = new Set<string>();
+  for (const rec of records) {
+    if (rec.rev === undefined || seen.has(rec.rev)) continue;
+    seen.add(rec.rev);
+    revisions.push({
+      short: shortRev(rec.rev),
+      full: rec.rev,
+      at: rec.recordedAt ?? null,
+      current: false,
+      recorded: true,
+    });
+  }
+  for (const [rev, at] of envelopeRevs) {
+    if (seen.has(rev)) {
+      const existing = revisions.find(candidate => candidate.full === rev);
+      if (existing && existing.at !== null && Date.parse(at) < Date.parse(existing.at)) existing.at = at;
+      continue;
+    }
+    seen.add(rev);
+    revisions.push({
+      short: shortRev(rev),
+      full: rev,
+      at,
+      current: false,
+      recorded: recordedRevs.has(rev),
+    });
+  }
+  revisions.sort((a, b) => {
+    const aMs = a.at === null ? Number.NEGATIVE_INFINITY : Date.parse(a.at);
+    const bMs = b.at === null ? Number.NEGATIVE_INFINITY : Date.parse(b.at);
+    return aMs - bMs;
+  });
+  if (revisions.length > 0) revisions[revisions.length - 1].current = true;
+  return { entries, revisions };
 }
 
 export function buildCoordinatorSnapshot(input: {
@@ -172,6 +543,10 @@ export function buildCoordinatorSnapshot(input: {
   freeSuggestion: Map<number, number | null>;
   /** §0.3 dosya okuma sepeti (zaten Türkçe, yine de maskeden geçer). */
   checkpointWarnings: string[];
+  /** Latest-run checkpoint kaynağı (null → bölüm `null` + "checkpoint yok"). */
+  checkpoint?: CheckpointSource | null;
+  /** Supervisor spawn-kayıtları (ad ile eşleşir; null/boş → kayıt yok). */
+  supervisor?: SupervisorProvenanceRecord[] | null;
   unprobedPorts?: number[];
   producedAt?: string;
   snapshotId?: string;
@@ -258,9 +633,9 @@ export function buildCoordinatorSnapshot(input: {
   return {
     reconcile: { inSync: drifts.length === 0, drifts },
     readiness,
-    explanation: null,
+    explanation: buildExplanation(input.record, input.status, input.checkpoint ?? null, input.supervisor ?? null),
     preflight: { pass: missing.length === 0, gates, missing },
-    checkpoints: null,
+    checkpoints: buildCheckpoints(input.checkpoint ?? null),
     scenarios: null,
     warnings,
     meta: {
@@ -278,12 +653,15 @@ export const CHECKPOINT_MAX_LINES = 500;
 const runFilePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.jsonl$/;
 
 /**
- * `.ow/checkpoints` latest-only bounded tarama: D1 contenuti yok — yalnızca
- * warnings[] sepeti dolar (kırpma/bozuk/yok). Kök dışına çıkış, symlink ve
- * aşırı dosya fail-closed atlanır; bölüm asla ölmez.
+ * `.ow/checkpoints` latest-only bounded okuma: latest run'un zarfları
+ * (normalize edilmiş) + warnings[] sepeti (kırpma/bozuk/symlink/okunamadı).
+ * Kök dışına çıkış, symlink ve aşırı dosya fail-closed atlanır; bölüm asla
+ * ölmez. D1 uyarı metinleri aynen korunur.
  */
-export async function readCheckpointWarnings(roots: string[]): Promise<string[]> {
+export async function readCheckpointSource(roots: string[]): Promise<{ source: CheckpointSource | null; warnings: string[] }> {
   const warnings: string[] = [];
+  type Latest = { path: string; run: string; mtimeMs: number };
+  const perRoot: Latest[] = [];
   for (const root of roots) {
     const canonicalRoot = resolve(root);
     const dir = join(canonicalRoot, '.ow', 'checkpoints');
@@ -315,44 +693,166 @@ export async function readCheckpointWarnings(roots: string[]): Promise<string[]>
     if (candidates.length === 0) continue;
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
     const latest = candidates[0];
-    const path = join(dir, latest.name);
-    const run = latest.name.replace(/\.jsonl$/, '');
-    let handle;
+    perRoot.push({ path: join(dir, latest.name), run: latest.name.replace(/\.jsonl$/, ''), mtimeMs: latest.mtimeMs });
+  }
+  if (perRoot.length === 0) return { source: null, warnings };
+  // Latest-only: görünüm en yeni dosyadan; uyarı sepeti her kökten (D1 disiplini).
+  const newest = perRoot.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a));
+  let envelopes: ParsedCheckpointEnvelope[] = [];
+  for (const candidate of perRoot) {
+    const parsed = await scanCheckpointFile(candidate.path, candidate.run, warnings);
+    if (candidate === newest) envelopes = parsed;
+  }
+  if (envelopes.length === 0) return { source: null, warnings };
+  return { source: { run: newest.run, envelopes }, warnings };
+}
+
+/**
+ * Tek checkpoint dosyasını bounded tara: 256KB chunk + 500 satır cap +
+ * şekil-sıkı normalize. Uyarılar her çağrıda sepete işlenir.
+ */
+async function scanCheckpointFile(path: string, run: string, warnings: string[]): Promise<ParsedCheckpointEnvelope[]> {
+  const envelopes: ParsedCheckpointEnvelope[] = [];
+  let handle;
+  try {
+    handle = await open(path, 'r');
+  } catch {
+    warnings.push(`checkpoint okunamadı: ${run} — bölüm etkilenmedi`);
+    return envelopes;
+  }
+  try {
+    const chunk = Buffer.alloc(CHECKPOINT_MAX_BYTES + 1);
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, 0);
+    const truncated = bytesRead > CHECKPOINT_MAX_BYTES;
+    const text = chunk.subarray(0, Math.min(bytesRead, CHECKPOINT_MAX_BYTES)).toString('utf8');
+    const lines = text.split('\n');
+    let processed = 0;
+    let corrupt = 0;
+    for (const line of lines) {
+      if (line.trim().length === 0) continue;
+      if (processed >= CHECKPOINT_MAX_LINES) break;
+      processed += 1;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        corrupt += 1;
+        continue;
+      }
+      const normalized = normalizeCheckpointEnvelope(raw);
+      if (!normalized.ok) {
+        corrupt += 1;
+        continue;
+      }
+      envelopes.push(normalized.envelope);
+    }
+    // Cap penceresi dışında kalan dolu satırlar overCap sayılır.
+    const overCap = truncated || processed >= CHECKPOINT_MAX_LINES;
+    if (overCap) warnings.push(`checkpoint kırpıldı: ${run} (256KB/500 kayıt sınırı)`);
+    if (corrupt > 0) warnings.push(`checkpoint bozuk satır atlandı: ${run} (${corrupt})`);
+  } catch {
+    warnings.push(`checkpoint okunamadı: ${run} — bölüm etkilenmedi`);
+    return [];
+  } finally {
+    await handle.close().catch(() => {});
+  }
+  return envelopes;
+}
+
+/** D1 uyumluluk kabuğu: yalnızca warnings[] sepeti. */
+export async function readCheckpointWarnings(roots: string[]): Promise<string[]> {
+  return (await readCheckpointSource(roots)).warnings;
+}
+
+export const SUPERVISOR_MAX_BYTES = 256 * 1024;
+const SUPERVISOR_MAX_SERVICES = 200;
+
+/**
+ * `.ow/supervisor.json` bounded salt-okunur provenance: spawn-kayıtları
+ * (ad, port, checkout rev + recordedAt, exitCode). Yoksa sessiz null-kayıt
+ * (UI "provenance kaydı yok"); symlink/cap/bozuk fail-closed + warnings[]
+ * satırı. Canlı exec yok. `cwdAbs`/`lastReadiness` okunmaz (render
+ * edilmeyen alan — yukarıdaki NOT'a bak).
+ */
+export async function readSupervisorRecords(roots: string[]): Promise<{ records: SupervisorProvenanceRecord[]; warnings: string[] }> {
+  const warnings: string[] = [];
+  const merged = new Map<string, SupervisorProvenanceRecord>();
+  for (const root of roots) {
+    const canonicalRoot = resolve(root);
+    const path = join(canonicalRoot, '.ow', 'supervisor.json');
+    if (resolve(path) !== path || !path.startsWith(canonicalRoot + sep)) continue;
+    let entry;
     try {
-      handle = await open(path, 'r');
+      entry = await lstat(path);
     } catch {
-      warnings.push(`checkpoint okunamadı: ${run} — bölüm etkilenmedi`);
       continue;
     }
+    if (entry.isSymbolicLink()) {
+      warnings.push('provenance atlandı (symlink izlenmez): supervisor.json');
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (entry.size > SUPERVISOR_MAX_BYTES) {
+      warnings.push(`provenance kırpıldı: ${basename(canonicalRoot)} (256KB sınırı) — bölüm etkilenmedi`);
+      continue;
+    }
+    let parsed: unknown;
     try {
-      const chunk = Buffer.alloc(CHECKPOINT_MAX_BYTES + 1);
-      const { bytesRead } = await handle.read(chunk, 0, chunk.length, 0);
-      const truncated = bytesRead > CHECKPOINT_MAX_BYTES;
-      const text = chunk.subarray(0, Math.min(bytesRead, CHECKPOINT_MAX_BYTES)).toString('utf8');
-      const lines = text.split('\n');
-      let processed = 0;
-      let corrupt = 0;
-      for (const line of lines) {
-        if (line.trim().length === 0) continue;
-        if (processed >= CHECKPOINT_MAX_LINES) break;
-        processed += 1;
-        try {
-          JSON.parse(line);
-        } catch {
-          corrupt += 1;
-        }
-      }
-      // Cap penceresi dışında kalan dolu satırlar overCap sayılır.
-      const overCap = truncated || processed >= CHECKPOINT_MAX_LINES;
-      if (overCap) warnings.push(`checkpoint kırpıldı: ${run} (256KB/500 kayıt sınırı)`);
-      if (corrupt > 0) warnings.push(`checkpoint bozuk satır atlandı: ${run} (${corrupt})`);
+      parsed = JSON.parse(await readFile(path, 'utf8'));
     } catch {
-      warnings.push(`checkpoint okunamadı: ${run} — bölüm etkilenmedi`);
-    } finally {
-      await handle.close().catch(() => {});
+      warnings.push(`provenance okunamadı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      continue;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      warnings.push(`provenance okunamadı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      continue;
+    }
+    const dict = parsed as Record<string, unknown>;
+    if (dict['version'] !== 1 || !Array.isArray(dict['services'])) {
+      warnings.push(`provenance sürüm uyuşmazlığı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      continue;
+    }
+    const services = (dict['services'] as unknown[]).slice(0, SUPERVISOR_MAX_SERVICES);
+    let corrupt = 0;
+    for (const item of services) {
+      const record = normalizeSupervisorService(item);
+      if (!record) {
+        corrupt += 1;
+        continue;
+      }
+      if (!merged.has(record.name)) merged.set(record.name, record);
+    }
+    if (corrupt > 0) warnings.push(`provenance bozuk kayıt atlandı: ${basename(canonicalRoot)} (${corrupt})`);
+  }
+  return { records: [...merged.values()], warnings };
+}
+
+/** Saf supervisor-kayıt normalizasyonu (testler hostile rev'i buradan sokar). */
+export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRecord | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const dict = raw as Record<string, unknown>;
+  if (typeof dict['name'] !== 'string' || (dict['name'] as string).trim().length === 0) return null;
+  const record: SupervisorProvenanceRecord = { name: dict['name'] as string };
+  if (typeof dict['port'] === 'number') record.port = dict['port'] as number;
+  if (typeof dict['exitCode'] === 'number') record.exitCode = dict['exitCode'] as number;
+  const provenance = dict['provenance'];
+  if (provenance !== undefined) {
+    if (typeof provenance !== 'object' || provenance === null || Array.isArray(provenance)) return null;
+    const prov = provenance as Record<string, unknown>;
+    const checkout = prov['checkout'];
+    if (checkout !== undefined) {
+      if (typeof checkout !== 'object' || checkout === null || Array.isArray(checkout)) return null;
+      const checkoutDict = checkout as Record<string, unknown>;
+      const rev = revField(checkoutDict['rev']);
+      if (rev !== undefined) record.rev = rev;
+      else if (checkoutDict['rev'] !== undefined) return null;
+      if (checkoutDict['dirty'] === true) record.dirty = true;
+    }
+    if (typeof prov['recordedAt'] === 'string' && Number.isFinite(Date.parse(prov['recordedAt'] as string))) {
+      record.recordedAt = prov['recordedAt'] as string;
     }
   }
-  return warnings;
+  return record;
 }
 
 // --- Servis kablosu ------------------------------------------------------------
@@ -377,9 +877,10 @@ export async function coordinatorSnapshot(
     environmentNotFound: environmentMessages.envNotFound,
   });
   const roots = [...workspace.roots];
-  const [status, checkpointWarnings] = await Promise.all([
+  const [status, checkpointRead, supervisorRead] = await Promise.all([
     environmentStatus(store, workspaceName, environmentName, runtime.list),
-    readCheckpointWarnings(roots),
+    readCheckpointSource(roots),
+    readSupervisorRecords(roots),
   ]);
   const probe = runtime.probe ?? probeTcpPort;
   const ports = [...new Set(record.services.map(service => service.port).filter((port): port is number => typeof port === 'number'))];
@@ -401,5 +902,14 @@ export async function coordinatorSnapshot(
       unprobedPorts.push(port);
     }
   }));
-  return buildCoordinatorSnapshot({ record, status, portOccupied, freeSuggestion, checkpointWarnings, unprobedPorts });
+  return buildCoordinatorSnapshot({
+    record,
+    status,
+    portOccupied,
+    freeSuggestion,
+    checkpointWarnings: [...checkpointRead.warnings, ...supervisorRead.warnings],
+    checkpoint: checkpointRead.source,
+    supervisor: supervisorRead.records,
+    unprobedPorts,
+  });
 }

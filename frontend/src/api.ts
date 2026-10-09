@@ -66,9 +66,11 @@ export interface EnvironmentStatus {
 
 // ---------------------------------------------------------------------------
 // Coordinator snapshot (GET /api/workspaces/:name/coordinator?environment=X,
-// dashboard-only). Read-only P1 reconcile + P2 preflight aggregate. Free text
-// arrives server-masked; absolute paths arrive as basenames only. explanation
-// (D2) and scenarios (D3) are null until their milestones land.
+// dashboard-only). Read-only P1 reconcile + P2 preflight + P3 checkpoints +
+// P4 explanation aggregate. Free text arrives server-masked; absolute paths
+// arrive as basenames only. Full revs travel on the wire for the copy-button
+// clipboard payload only — they are never rendered (short-hash + badges +
+// age on screen). scenarios (D3) is null until its milestone lands.
 // ---------------------------------------------------------------------------
 
 export interface CoordinatorDrift {
@@ -107,12 +109,60 @@ export interface CoordinatorMeta {
   environment: string;
 }
 
+export type CheckpointStageStatus = 'confirmed' | 'not_observed' | 'stale';
+
+export interface CoordinatorCheckpointStage {
+  stage: string;
+  status: CheckpointStageStatus;
+  staleReason: string | null;
+  /** Zarf kayıt saati (stage yaşı kaynağı). */
+  at: string;
+}
+
+export interface CoordinatorCheckpoints {
+  run: string;
+  stages: CoordinatorCheckpointStage[];
+  summary: { confirmed: number; stale: number; notObserved: number };
+  lastVerified: { stage: string; at: string } | null;
+  firstGap: { stage: string; status: CheckpointStageStatus; staleReason: string | null; at: string } | null;
+  /** Salt-metin öneri — butona bağlanmaz. */
+  safeNextAction: string | null;
+}
+
+export interface CoordinatorRevision {
+  /** Ekrandaki tek temsil (7 karakter). */
+  short: string;
+  /** YALNIZCA kopyala-butonu clipboard payload'ı — DOM'a yazılmaz. */
+  full: string;
+  at: string | null;
+  current: boolean;
+  recorded: boolean;
+}
+
+export interface CoordinatorExplanationEntry {
+  service: string;
+  expected: { cmd: string | null; dir: string | null; port: number | null } | null;
+  running: { status: string; detail: string } | null;
+  revShort: string | null;
+  revFull: string | null;
+  revAt: string | null;
+  revDirty: boolean;
+  revRecorded: boolean;
+  diffs: string[];
+  note: string;
+}
+
+export interface CoordinatorExplanation {
+  entries: CoordinatorExplanationEntry[];
+  revisions: CoordinatorRevision[];
+}
+
 export interface CoordinatorSnapshot {
   reconcile: { inSync: boolean; drifts: CoordinatorDrift[] };
   readiness: CoordinatorReadinessEntry[];
-  explanation: null;
+  explanation: CoordinatorExplanation | null;
   preflight: CoordinatorPreflight;
-  checkpoints: null;
+  checkpoints: CoordinatorCheckpoints | null;
   scenarios: null;
   warnings: string[];
   meta: CoordinatorMeta;
