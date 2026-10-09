@@ -34,7 +34,7 @@ export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
 const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -71,6 +71,7 @@ export const helpText = (): string =>
     "  down [servis] [--file] [--rm]  servisleri durdur (--rm yalnız toplu down ile; tek serviste çıkış 2)",
     "  reconcile --check [--json] [--file]  salt-okunur drift raporu (mutasyon yok; çıkış 1 drift, 0 uyumlu)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
+    "  ps --explain [servis] [--file] [--json]  beklenen/çalışan tanık görünümü (salt-okunur)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
     "  checkpoints list [--file] [--json]  kayıtlı kanıt koşuları (salt-okunur)",
     "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
@@ -470,6 +471,12 @@ export const run = async (argv: string[]): Promise<number> => {
   if (command !== "checkpoints" && parsed.extra.length > 0) {
     console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
     console.error(helpText())
+    return 2
+  }
+  // M2: `--explain` renders only in `ps` (M-C precedent: unknown flags fail
+  // loudly instead of silently doing nothing elsewhere).
+  if (command !== "ps" && flags["--explain"] === true) {
+    console.error("ow: --explain yalnızca ps ile kullanılır")
     return 2
   }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
@@ -908,6 +915,10 @@ export const run = async (argv: string[]): Promise<number> => {
       return runScenariosCheck({ file: scenariosFile, rootDir, json })
     }
     if (command === "ps") {
+      if (flags["--explain"] === true) {
+        const { runPsExplain } = await import("./up-ps")
+        return runPsExplain({ rootDir, file: yamlForRead, ...(positional === undefined ? {} : { service: positional }), json })
+      }
       const { formatPsLine, queryPs, toPsServiceJson } = await import("./up-ps")
       let services: Awaited<ReturnType<typeof queryPs>>
       try {

@@ -9,6 +9,8 @@ import { join, resolve } from "node:path"
 import type { TraceConfig, UpService } from "./up-schema"
 import { decodeUtf8Fatal, parseUpFile } from "./up-schema"
 import { maskCmdShape } from "./up-reconcile"
+import type { ExecFn, Provenance } from "./up-provenance"
+import { recordProvenance } from "./up-provenance"
 import { completeRequest, scanRequests, sweepStaleResults, type ServiceRequest, type ServiceResult } from "./up-requests"
 import { appendLogLine, flushUpLogs } from "./up-logs"
 import { startTraceReceiver } from "./trace-receiver"
@@ -38,7 +40,13 @@ export type LogTail = {
 }
 
 /** One supervised service slot: fresh config plus its live handles. */
-export type LiveUnit = { svc: UpService; main: SpawnedChild | undefined; tail: LogTail | undefined }
+export type LiveUnit = {
+  svc: UpService
+  main: SpawnedChild | undefined
+  tail: LogTail | undefined
+  /** M2 spawn-time provenance (best-effort; absent when recording failed). */
+  provenance?: Provenance
+}
 
 /** Live-supervisor execution context for M1 service requests (B1: the
  * supervisor executes, persists, and answers; the client only writes the
@@ -172,6 +180,10 @@ export type UpRunOptions = {
   /** ow.yaml path the request handler re-parses (defaults to
    * `<rootDir>/ow.yaml`). Threaded from the original `--file`. */
   owFile?: string
+  /** M2 provenance exec override (default: real git/lsof, best-effort).
+   * Tests inject a counting fake to prove the spawn path observes while
+   * the ps path never executes. */
+  provenanceExec?: ExecFn
   /** Build identity recorded into supervisor state. Explicit value wins
    * (lets embedders/tests pin it); `undefined` reads the running binary's
    * sidecar, `null`/missing sidecar records nothing. */
@@ -230,7 +242,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     const state = {
       version: 1,
       startedAt: first?.startedAt ?? now(),
-      services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true)),
+      services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true, unit.provenance)),
       ...(build === null ? {} : { build }),
     }
     // Merge-on-write (M3): an exit handler may have persisted behind our
@@ -291,6 +303,21 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
         tail.exit = { code: null, duringShutdown: stopping || retiring.has(tail) }
         void persist()
       })
+    }
+    // M2 spawn-time provenance (best-effort, never fails the spawn): git +
+    // lsof run here — and ONLY here on the supervisor side — plus local
+    // readdir; every failure degrades to an omitted field.
+    try {
+      const unit = unitOfOrThrow(svc.name)
+      const pid = unit.main?.proc.pid ?? unit.tail?.proc.pid
+      unit.provenance = await recordProvenance({
+        svc,
+        cwdAbs: cwd ?? resolve(options.rootDir),
+        ...(pid === undefined ? {} : { pid }),
+        ...(options.provenanceExec === undefined ? {} : { exec: options.provenanceExec }),
+      })
+    } catch {
+      // recording must never break the spawn
     }
   }
   for (const svc of services) {
@@ -446,7 +473,8 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
     // service starts clean, or stale flags/handles/config would haunt the
     // new process (resurrected settlement, phantom `lstartUnknown`, a
     // recycled `logsPid`, a `portConflict` that predates the new bind, or
-    // `envNames`/`dependsOn` faking a `config-farklı` drift in reconcile).
+    // `envNames`/`dependsOn` faking a `config-farklı` drift in reconcile,
+    // or `provenance` haunting a new pid with the old process's checkout).
     const staleOnRespawn: ReadonlySet<keyof UpServiceState> = new Set([
       "exitCode",
       "exitedAt",
@@ -457,6 +485,7 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
       "portConflict",
       "envNames",
       "dependsOn",
+      "provenance",
     ])
     for (const [key, value] of Object.entries(prior) as [keyof UpServiceState, unknown][]) {
       if ((out as Record<string, unknown>)[key as string] === undefined && value !== undefined) {
@@ -504,7 +533,7 @@ export const persistMerged = async (supervisorFile: string, state: { version: 1;
  * B3: `cmd`/`logsCmd` land masked-shape-only (secret values never reach
  * state); `envNames` carries key names only. Masking is deterministic, so
  * `reconcile --check` can still compare expected vs running shapes. */
-const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false): UpServiceState => {
+const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false, provenance?: Provenance): UpServiceState => {
   const primary = main ?? tail
   if (!primary) throw new Error(`${svc.name}: izlenecek süreç yok`)
   const maskedCmd = maskCmdShape(svc.cmd)
@@ -526,6 +555,7 @@ const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTa
     ...(primary.lstart === "" ? { lstartUnknown: true as const } : {}),
     ...(envNames === undefined ? {} : { envNames }),
     ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
+    ...(provenance === undefined ? {} : { provenance }),
   }
 }
 

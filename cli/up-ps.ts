@@ -1,13 +1,21 @@
 /** `ow ps`: on-demand metrics snapshot over supervisor state. One `ps` call
  * per invocation (2 s timeout); every parse failure degrades to `unknown`,
  * never throws, exit stays 0. PID-reuse guard: a snapshot lstart that does
- * not match state is reported, never attributed. */
+ * not match state is reported, never attributed.
+ * `ps --explain` renders ONLY recorded provenance + this snapshot + TCP
+ * flags below — child-process inspection beyond `ps(1)` never happens here
+ * (see up-provenance.ts for the spawn-time observation point). */
 
 import { readFile } from "node:fs/promises"
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 
 import { tcpListening } from "./up-net"
-import { upPaths } from "./up-state"
+import { readSupervisorState, upPaths } from "./up-state"
 import type { UpServiceState } from "./up-state"
+import { decodeUtf8Fatal, parseUpFile, type UpService } from "./up-schema"
+import { maskCmdShape } from "./up-reconcile"
+import type { Provenance } from "./up-provenance"
 
 export type PsStatus = "running" | "exited" | "stopped" | "unknown"
 
@@ -235,3 +243,238 @@ export const toPsServiceJson = (svc: PsServiceView): PsService => ({
   ...(svc.port !== undefined && svc.listening !== undefined ? { listening: svc.listening } : {}),
   ...(svc.exitCode !== undefined ? { exitCode: svc.exitCode } : {}),
 })
+
+/** M2 `--explain`: expected (ow.yaml) vs running (recorded state +
+ * snapshot/TCP view) witness render. Pure: takes data, never executes.
+ * Inferred/UNVERIFIED provenance renders as-is — never a gate input. */
+export type ExplainLstart = "matched" | "mismatch" | "unknown" | "dead" | "absent"
+
+export type ExplainExpected = {
+  cmdShape?: string
+  cwd?: string
+  port?: number
+  envNames?: string[]
+} | null
+
+export type ExplainRunning = {
+  pid: number
+  status: PsStatus
+  lstart: ExplainLstart
+  listening?: boolean
+  /** Resolve edilmiş çalışan cwd (provenance'tan); yokluğu UNVERIFIED
+   * render edilir (karşı-doğrulama çelişkisi ya da kayıtsızlık). */
+  cwd?: string
+} | null
+
+export type Explanation = {
+  expected: ExplainExpected
+  running: ExplainRunning
+  /** Turkish diff lines (human `fark:` body, no prefix). */
+  diffs: string[]
+  /** Recorded provenance verbatim (masked shapes/names by construction). */
+  provenance: Provenance | null
+  /** Single Turkish reason line (human `neden:` body, no prefix). */
+  neden: string
+}
+
+export type ServiceExplanation = { service: string; explanation: Explanation }
+
+const LSTART_TR: Record<ExplainLstart, string> = {
+  matched: "eşleşti",
+  mismatch: "uyuşmazlığı",
+  unknown: "bilinmiyor",
+  dead: "ölü",
+  absent: "",
+}
+
+const expectedEnvNames = (svc: UpService): string[] | undefined =>
+  svc.env === undefined && svc.requiredEnv === undefined
+    ? undefined
+    : [...new Set([...Object.keys(svc.env ?? {}), ...(svc.requiredEnv ?? [])])].sort()
+
+export const explainServices = (opts: {
+  rootDir: string
+  expected: UpService[]
+  views: PsServiceView[]
+  records: UpServiceState[]
+  /** False when the `ps(1)` snapshot itself failed (unknown ≠ mismatch). */
+  snapshotOk: boolean
+}): ServiceExplanation[] => {
+  const viewByName = new Map(opts.views.map((view) => [view.name, view]))
+  const recordByName = new Map(opts.records.map((record) => [record.name, record]))
+  const names = [...opts.records.map((record) => record.name)]
+  for (const svc of opts.expected) {
+    if (!recordByName.has(svc.name)) names.push(svc.name)
+  }
+  return names.map((name) => {
+    const exp = opts.expected.find((svc) => svc.name === name)
+    const rec = recordByName.get(name)
+    const view = rec ? viewByName.get(name) : undefined
+    const expected: ExplainExpected =
+      exp === undefined
+        ? null
+        : {
+            ...(maskCmdShape(exp.cmd) === undefined ? {} : { cmdShape: maskCmdShape(exp.cmd) as string }),
+            ...(exp.cwd === undefined ? {} : { cwd: exp.cwd }),
+            ...(exp.port === undefined ? {} : { port: exp.port }),
+            ...(expectedEnvNames(exp) === undefined ? {} : { envNames: expectedEnvNames(exp) as string[] }),
+          }
+    let verdict: ExplainLstart = "absent"
+    if (rec !== undefined) {
+      if (rec.exitCode !== undefined) verdict = "dead"
+      else if (rec.lstart === "") verdict = "unknown"
+      else if (view === undefined || view.status === "exited" || view.status === "stopped") verdict = "dead"
+      else if (view.status === "running") verdict = "matched"
+      else verdict = opts.snapshotOk ? "mismatch" : "unknown"
+    }
+    const running: ExplainRunning =
+      rec === undefined || view === undefined
+        ? null
+        : {
+            pid: rec.pid,
+            status: view.status,
+            lstart: verdict,
+            ...(view.listening === undefined ? {} : { listening: view.listening }),
+            ...(rec?.provenance?.cwdAbs === undefined ? {} : { cwd: rec.provenance.cwdAbs }),
+          }
+    const provenance = rec?.provenance ?? null
+    const diffs: string[] = []
+    if (rec !== undefined && exp !== undefined) {
+      const expShape = maskCmdShape(exp.cmd)
+      const runShape = rec.cmd === undefined ? undefined : maskCmdShape(rec.cmd)
+      if (expShape !== undefined && runShape !== undefined && expShape !== runShape) {
+        diffs.push(`komut değişti (kayıtlı: ${runShape})`)
+      }
+      if (exp.cwd !== undefined) {
+        const runCwd = provenance?.cwdAbs ?? (rec.cwd === undefined ? undefined : resolve(opts.rootDir, rec.cwd))
+        const expCwd = resolve(opts.rootDir, exp.cwd)
+        if (runCwd !== undefined && runCwd !== expCwd) diffs.push(`cwd değişti (beklenen: ${exp.cwd}, çalışan: ${runCwd})`)
+      }
+      if (exp.port !== undefined && rec.port !== undefined && exp.port !== rec.port) {
+        diffs.push(`port değişti (beklenen: ${exp.port}, çalışan: ${rec.port})`)
+      }
+      const expEnv = expectedEnvNames(exp)
+      if (expEnv !== undefined && rec.envNames !== undefined && JSON.stringify(expEnv) !== JSON.stringify([...rec.envNames].sort())) {
+        diffs.push(`env adları değişti (beklenen: [${expEnv.join(", ")}], çalışan: [${rec.envNames.join(", ")}])`)
+      }
+    }
+    if (verdict === "mismatch") diffs.push("lstart uyuşmazlığı — pid geri dönüşümü şüphesi")
+    if (verdict === "unknown" && rec !== undefined && rec.exitCode === undefined) diffs.push("pid doğrulanamaz (lstart bilinmiyor)")
+    if (verdict === "dead" && rec !== undefined) {
+      diffs.push(rec.exitCode !== undefined ? `süreç bitti (çıkış kodu ${rec.exitCode})` : `süreç çalışmıyor (durum: ${STATUS_TR[view?.status ?? "stopped"]})`)
+    }
+    if (verdict === "matched" && rec?.port !== undefined && view?.listening === false) {
+      diffs.push(`port ${rec.port} dinlemiyor`)
+    }
+    const rev = provenance?.checkout?.rev
+    if (rev !== undefined && provenance?.checkout?.dirty === true) diffs.push(`kirli checkout ile başlatıldı (rev=${rev})`)
+    const hasConfigDiff = diffs.some((line) => line.startsWith("komut değişti") || line.startsWith("cwd değişti") || line.startsWith("port değişti") || line.startsWith("env adları değişti"))
+    let neden: string
+    if (rec === undefined) neden = `kayıt yok → ow up ${name} ile başlatın`
+    else if (exp === undefined) neden = `tanımda yok → ow down ${name} ile durdurun`
+    else if (verdict === "mismatch") neden = "lstart uyuşmazlığı — pid geri dönüşümü şüphesi, ow down ile temizleyin"
+    else if (verdict === "dead") neden = `çalışmıyor → ow logs ${name} ile bakın, ow restart ${name} ile yenileyin`
+    else if (verdict === "unknown") neden = "pid doğrulanamaz (lstart bilinmiyor) — güvenli işlem yok"
+    else if (hasConfigDiff) neden = `kayıtlı komut/cwd/port değişti → ow restart ${name} ile yenileyin`
+    else if (view?.status === "running" && rec.port !== undefined) neden = "UP ama /endpoint yok → readiness tanımsız, M3 probe ekleyin"
+    else if (view?.status === "running") neden = "çalışıyor (port tanımsız, TCP beklenmez)"
+    else neden = "çalışıyor, bilinen sorun yok"
+    return { service: name, explanation: { expected, running, diffs, provenance, neden } }
+  })
+}
+
+/** Human block for one explanation (Turkish labels, no secrets: shapes,
+ * names, counts and revs only). */
+export const formatExplanation = (item: ServiceExplanation): string[] => {
+  const { service, explanation } = item
+  const lines = [`${service}:`]
+  if (explanation.expected === null) {
+    lines.push("  beklenen: bilinmiyor (ow.yaml okunamadı)")
+  } else {
+    const parts = [
+      ...(explanation.expected.cmdShape === undefined ? [] : [`cmd=${explanation.expected.cmdShape}`]),
+      ...(explanation.expected.cwd === undefined ? [] : [`cwd=${explanation.expected.cwd}`]),
+      ...(explanation.expected.port === undefined ? [] : [`port=${explanation.expected.port}`]),
+      ...(explanation.expected.envNames === undefined ? [] : [`env=[${explanation.expected.envNames.join(", ")}]`]),
+    ]
+    lines.push(`  beklenen: ${parts.length > 0 ? parts.join(" ") : "-"}`)
+  }
+  if (explanation.running === null) {
+    lines.push("  çalışan: yok (kayıt yok)")
+  } else {
+    const parts = [
+      `pid=${explanation.running.pid}`,
+      STATUS_TR[explanation.running.status],
+      `lstart=${LSTART_TR[explanation.running.lstart]}`,
+    ]
+    if (explanation.running.listening !== undefined) parts.push(`listen=${explanation.running.listening ? "evet" : "hayır"}`)
+    parts.push(explanation.running.cwd === undefined ? "cwd=doğrulanamadı(UNVERIFIED)" : `cwd=${explanation.running.cwd}`)
+    const rev = explanation.provenance?.checkout?.rev
+    parts.push(
+      rev === undefined
+        ? "rev=doğrulanamadı(UNVERIFIED)"
+        : `rev=${rev}(observed)${explanation.provenance?.checkout?.dirty === true ? "+kirli" : ""}`,
+    )
+    const interpreter = explanation.provenance?.interpreter?.name
+    parts.push(interpreter === undefined ? "interpreter=-" : `interpreter=${interpreter}(inferred)`)
+    lines.push(`  çalışan: ${parts.join(" ")}`)
+  }
+  for (const diff of explanation.diffs) lines.push(`  fark: ${diff}`)
+  lines.push(`  neden: ${explanation.neden}`)
+  return lines
+}
+
+/** `ow ps --explain [svc] [--json]`: recorded render (exit 0 ok / 1
+ * yapısal / 2 kullanım). Unknown service → exit 2. */
+export const runPsExplain = async (opts: { rootDir: string; file: string; service?: string; json: boolean }): Promise<number> => {
+  let views: PsServiceView[]
+  try {
+    views = await queryPs(opts.rootDir)
+  } catch (error) {
+    console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
+  }
+  let records: UpServiceState[] = []
+  try {
+    const text = await readFile(upPaths(opts.rootDir).supervisorFile, "utf8")
+    const parsed = JSON.parse(text) as { services?: UpServiceState[] }
+    if (Array.isArray(parsed.services)) records = parsed.services
+  } catch {
+    records = []
+  }
+  let expected: UpService[] | null = null
+  try {
+    expected = parseUpFile(decodeUtf8Fatal(readFileSync(opts.file))).services
+  } catch {
+    if (!opts.json) console.error("uyarı: ow.yaml okunamadı (beklenen bilinmiyor)")
+  }
+  const known = [...new Set([...(expected ?? []).map((svc) => svc.name), ...records.map((svc) => svc.name)])]
+  if (opts.service !== undefined && !known.includes(opts.service)) {
+    console.error(`ow: bilinmeyen servis: ${opts.service}${known.length > 0 ? ` (${known.join(", ")})` : ""}`)
+    return 2
+  }
+  // Snapshot health for the lstart verdict: `ps(1)` ran inside queryPs;
+  // unknown-without-measurement must not read as mismatch. Any view whose
+  // note carries the measurement-failure marker proves a blind snapshot.
+  const snapshotOk = !views.some((view) => view.note !== undefined && view.note.includes("ölçüm alınamadı"))
+  const items = explainServices({ rootDir: opts.rootDir, expected: expected ?? [], views, records }).filter(
+    (item) => opts.service === undefined || item.service === opts.service,
+  )
+  if (opts.json) {
+    console.log(
+      JSON.stringify({
+        services: views
+          .filter((view) => opts.service === undefined || view.name === opts.service)
+          .map(toPsServiceJson),
+        explanations: items.map((item) => ({ service: item.service, explanation: item.explanation })),
+      }),
+    )
+    return 0
+  }
+  if (items.length === 0) {
+    console.log("durum yok")
+    return 0
+  }
+  console.log(items.flatMap(formatExplanation).join("\n"))
+  return 0
+}

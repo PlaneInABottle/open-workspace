@@ -9,6 +9,7 @@ import { parseUpFile, type UpService } from "./up-schema"
 import { decodeUtf8Fatal } from "./up-schema"
 import { readLstart, readSupervisorState, upPaths, type UpServiceState } from "./up-state"
 import { tcpListening } from "./up-net"
+import { gitCheckout, resolveCwdAbs } from "./up-provenance"
 
 /** Secret-shaped argv/cmd yankısı maskeli-şekildir (B3): ham değer asla
  * output/state/log'a girmez. Kurallar: `ad=değer` içinde secret-kelime
@@ -281,12 +282,52 @@ export const runReconcileCheck = async (opts: { rootDir: string; file: string; j
     if (drift) drifts.push(drift)
   }
   const inSync = drifts.length === 0
+  // M2 revision witness (B4 point b: explicit `--check` one-shot, best
+  // effort): recorded rev per service + live checkout rev. Display-only —
+  // drift/exit/keys unchanged (`revisions` is additive). ow.yaml carries
+  // no checkout pin, so the "new" side is always the live checkout.
+  type Revision = { service: string; recordedRev?: string; recordedDirty?: boolean; liveRev?: string; liveDirty?: boolean; match?: boolean }
+  const revisions: Revision[] = []
+  for (const name of names) {
+    const exp = expected.find((svc) => svc.name === name) ?? null
+    const run = running.find((svc) => svc.name === name) ?? null
+    const recorded = run?.provenance?.checkout
+    const live = await gitCheckout(resolveCwdAbs(opts.rootDir, exp?.cwd ?? run?.cwd))
+    if (recorded?.rev === undefined && live === null) continue
+    const entry: Revision = { service: name }
+    if (recorded?.rev !== undefined) {
+      entry.recordedRev = recorded.rev
+      if (recorded.dirty === true) entry.recordedDirty = true
+    }
+    if (live !== null) {
+      entry.liveRev = live.rev
+      if (live.dirty) entry.liveDirty = true
+    }
+    if (entry.recordedRev !== undefined && entry.liveRev !== undefined) {
+      entry.match = entry.recordedRev === entry.liveRev
+    }
+    revisions.push(entry)
+  }
+  const revMark = (rev: string, dirty: boolean | undefined): string => (dirty === true ? `${rev}+kirli` : rev)
+  const revLines = revisions.map((entry) => {
+    if (entry.recordedRev !== undefined && entry.liveRev !== undefined && !entry.match) {
+      return `fark: revision ${revMark(entry.recordedRev, entry.recordedDirty)}→${revMark(entry.liveRev, entry.liveDirty)} (${entry.service}; canlı checkout, restart gerekli değil, rapor)`
+    }
+    if (entry.recordedRev !== undefined && entry.liveRev !== undefined) {
+      return `rev: ${entry.service} ${revMark(entry.liveRev, entry.liveDirty)} (eşleşti)`
+    }
+    if (entry.recordedRev !== undefined) return `rev: ${entry.service} ${revMark(entry.recordedRev, entry.recordedDirty)} (kayıtlı; canlı okunamadı)`
+    return `rev: ${entry.service} ${revMark(entry.liveRev as string, entry.liveDirty)} (yalnızca canlı; kayıt yok)`
+  })
   if (opts.json) {
-    console.log(JSON.stringify({ reconcile: { inSync, drifts } }))
+    console.log(JSON.stringify({ reconcile: { inSync, drifts }, revisions }))
   } else if (inSync) {
     console.log(`uyumlu: ${expected.length} servis (${expected.map((svc) => svc.name).join(", ")})`)
   } else {
     for (const drift of drifts) console.log(formatDrift(drift))
+  }
+  if (!opts.json) {
+    for (const line of revLines) console.log(line)
   }
   return inSync ? 0 : 1
 }

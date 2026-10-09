@@ -55,6 +55,7 @@ ow restart <svc>               # live: lstart-verified stop + respawn in place (
 ow down [svc]                  # single: stop only the target (lock/state files kept; --rm is bulk-only)
 ow reconcile --check [--json]  # read-only drift report (never mutates; exit 1 on drift)
 ow ps [--json]                 # running/exited/stopped/unknown + pid, uptime, cpu, mem, port, listen=evet/hayır
+ow ps --explain [svc] [--json]  # expected-vs-running, never executes
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
 ```
@@ -80,8 +81,11 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   everywhere (143-ish) — expected, not an error.
 - `ow reconcile --check` reports drift without changing anything:
   `eksik|fazla|durmuş|config-farklı|lstart-uyuşmazlığı|port-yabancı` plus the
-  suggested `ow up/restart/down <svc>` command (exit 0 in sync, 1 on drift).
+  suggested `ow up/restart/down <svc>` command (exit 0 in sync, 1 on drift;
+  since M2, recorded-vs-live rev lines are informational).
   `--probe` is not implemented yet (M3).
+- `ow ps --explain [svc]` shows expected shapes vs running (recorded
+  provenance + snapshot) with `fark:`/`neden:` lines; never executes beyond `ps(1)`+TCP.
 - State is repo-local (`<root>/.ow/`); every pid is `lstart`-guarded, so a
   recycled pid is reported unknown, never signaled.
 - Port conflicts warn and still spawn, never reassign.
@@ -105,18 +109,18 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 
 ### `--json` anahtarları (tek tablo, additive)
 
-Human lines stay Turkish; `--json` envelopes keep stable English keys (old
-keys never change, new keys only add):
+Turkish human lines; stable English `--json` keys (old keys never change, new keys only add):
 
 | komut | zarf |
 |---|---|
-| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` yalnız `depends_on` varsa; `env` ad/değer taşımaz) |
+| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` yalnız `depends_on` varsa) |
 | `up -d --wait --json` | `{ready, services[] ({name, port, status, waitedSec, exitCode?, healthPath?}), noPort[], note?}` |
 | `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` yalnız başarısızlıkta) |
 | `down [--rm]`, `down <svc> --json` | `{stopped[] ({name, stopped, note}), warnings[]}` |
 | `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
 | `logs --json` | `{service, lines[]}` |
-| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}}` |
+| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[]}` |
+| `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, neden}})}` |
 | `preflight --json` | `{pass, gates[] ({name: reconcile\|provenance\|readiness, pass, detail}), missing[], envelopes[]}` |
 | `doctor --json` | `{checks[] ({name, ok, detail})}` (çıkışa `up`/`trace` katılmaz) |
 
@@ -135,29 +139,22 @@ ow trace <traceId> --wait 15s                     # wait for late spans (browser
 ow doctor                                          # trace open/closed + span count + hint when 0 spans
 ```
 
-- Exits: 0 ok/quiet-empty, 1 unknown id or unreadable store, 2 bad/ambiguous id.
+- Exits: 0 ok/empty, 1 unknown/unreadable, 2 bad id.
 - `--json` keys are English (`traces`/`traceId`/`spans`/`truncated`/`depth`).
-- Secrets are masked at write time (query strings, credential key=value
-  pairs, Bearer forms, UUID/32+hex blobs become `:id`); endpoints and route
-  words stay verbatim (doctrine: values never, structure always). Trace output
-  is semi-sensitive — review before pasting into public issues. Correlate by
-  traceId + endpoint + time, not business IDs.
+- Secrets are masked at write time (query strings, credential pairs, Bearer
+  forms, UUID/32+hex → `:id`); endpoints/route words stay verbatim (values
+  never, structure always). Trace output is semi-sensitive — review before
+  pasting. Correlate by traceId + endpoint + time, not business IDs.
 - Per-stack recipes (Java `-javaagent`, Python `opentelemetry-instrument`,
   browser `-otlp-proto` + CORS): product `cli/README.md` ("İzleme tarifleri").
   App code lives in the app repo; `ow.yaml` carries only `env:` + endpoint.
-- Proving a flow: generate the trace ID BEFORE the action, deliver in the browser-automation session (not `ow`) via `set
-  headers` (rotates, clears with `'{}'`); never `open --headers` (per-origin
-  sticky binding keeps the old ID).
-- `doctor` hints, in order: 0 spans → liveness (`ow ps`); `bilinmeyen`
-  service → set OTEL_SERVICE_NAME; not-listening → port held by another
-  process (bind failure only warns).
-- One port, one receiver: two OTLP listeners on 4319 → first wins. Diagnose:
-  `lsof -i :4319`, `doctor` last-span age (stale = spans go elsewhere).
-  Local stays 4319; remote backends (Langfuse) get a separate exporter
-  with short timeouts — never repurpose the local endpoint.
+- Proving a flow: generate the trace ID BEFORE the action; deliver via `set
+  headers` in the browser session (rotates, `'{}'` clears); never `open --headers`.
+- `doctor` hints: 0 spans → `ow ps`; `bilinmeyen` service → OTEL_SERVICE_NAME; not-listening → foreign port-holder.
+- One port, one receiver: two listeners on 4319 → first wins (`lsof -i :4319`); remote backends get a separate exporter — never repurpose local.
 - Business attributes flow (`silent_dequeue_reason`, `conversion_successful`;
   `token_count` exempt); credential keys/values drop or mask. ERROR renders
-  only when the app sets status — `unset` means the app never said.
+  only when the app sets status (`unset` = app never said).
 
 ## Working with logs and traces (best practices)
 

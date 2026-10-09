@@ -8,6 +8,8 @@ import { chmod, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } fr
 import { closeSync, openSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
+import type { Provenance } from "./up-provenance"
+
 export const UP_STATE_VERSION = 1
 
 export type UpServiceState = {
@@ -33,6 +35,9 @@ export type UpServiceState = {
    * records: the compare skips rather than drifting. */
   envNames?: string[]
   dependsOn?: string[]
+  /** M2 spawn-time provenance (observed/inferred, ham argv yok). Absent on
+   * older records and on best-effort recording failure. */
+  provenance?: Provenance
 }
 
 export type UpSupervisorState = {

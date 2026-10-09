@@ -213,6 +213,33 @@ healthy services are never signaled.
   masked shapes (deterministic, so expected-vs-running shape compare still
   works); `envNames`/`dependsOn` in state carry names only, never values.
 
+### Runtime provenance (M2, tanık raporu — mutasyon yok)
+
+Supervisor her spawn'da bir kez gözlem kaydeder (best-effort, exec-başı
+≤2s): resolve edilmiş cwd, `git rev-parse HEAD` + `status --porcelain`
+(checkout rev/kirli), maskeli argv-şekli, argv'den inferred interpreter
+(`python*|uv|bun|node|java|gradlew` — sürüm exec'i yok), java classpath
+sayısı/JAR adları, cwd'deki `.env*` DOSYA ADLARI (içerik asla okunmaz),
+kayıt zamanı. Ham argv, secret değer ve env içerikleri state'e girmez;
+`git`/`lsof` YALNIZCA spawn-anında ve explicit `reconcile --check`
+yolunda çalışır — `ps`/`ps --explain` asla çalıştırmaz (kayıtlı değeri
+render eder).
+
+```sh
+ow ps --explain [servis] [--json]  # beklenen vs çalışan + fark + neden
+```
+
+Her servis için `beklenen:` (ow.yaml cmd-şekli/cwd/port/env-adları) vs
+`çalışan:` (pid/durum/lstart-hükmü/listen/rev/interpreter) + `fark:`
+satırları + tek `neden:` satırı yazdırır (`UP ama /endpoint yok →
+readiness tanımsız, M3 probe ekleyin` — M3 yokken portlu UP
+servislerde). `--json` additive
+`{services, explanations: [{service, explanation:
+{expected, running, diffs[], provenance, neden}}]}` verir. `reconcile --check`
+ayrıca kayıtlı rev + canlı checkout rev'ini gösterir (`fark: revision
+<eski>→<yeni> (canlı checkout; restart gerekli değil, rapor)` — drift
+değil, çıkış değişmez).
+
 ### Evidence zarfı + checkpoint konvensiyonu (P2-A)
 
 Runner (projeye ait) doğrulanmış adımlarını satır-başı JSON zarflar olarak
