@@ -5,6 +5,7 @@
 
 import { readFile } from "node:fs/promises"
 
+import { tcpListening } from "./up-net"
 import { upPaths } from "./up-state"
 import type { UpServiceState } from "./up-state"
 
@@ -18,6 +19,9 @@ export type PsService = {
   cpuPct: number | null
   memBytes: number | null
   port?: number
+  /** Live TCP probe of the declared `port` (present only with `port`):
+   * true = a listener accepts, false = nothing listening. */
+  listening?: boolean
   exitCode?: number
 }
 
@@ -97,12 +101,17 @@ const uptimeOf = (startedAt: string): number | null => {
 
 export type PsServiceView = PsService & { note?: string }
 
-const toPsService = (svc: UpServiceState, snap: Map<number, PsSnapshotRow> | null): PsServiceView => {
+const toPsService = (
+  svc: UpServiceState,
+  snap: Map<number, PsSnapshotRow> | null,
+  listening: boolean | undefined,
+): PsServiceView => {
   const base = {
     name: svc.name,
     pid: svc.pid,
     uptimeSec: uptimeOf(svc.startedAt),
     ...(svc.port !== undefined ? { port: svc.port } : {}),
+    ...(svc.port !== undefined && listening !== undefined ? { listening } : {}),
     ...(svc.exitCode !== undefined ? { exitCode: svc.exitCode } : {}),
   }
   const notes: string[] = []
@@ -174,8 +183,11 @@ export const queryPs = async (rootDir: string): Promise<PsServiceView[]> => {
     throw new Error("okunamıyor: supervisor.json sürüm uyuşmazlığı — `down --rm` ile temizleyin")
   }
   const services = dict["services"] as UpServiceState[]
-  const snap = await runSnapshot(services.map((svc) => svc.pid))
-  return services.map((svc) => toPsService(svc, snap))
+  const [snap, probes] = await Promise.all([
+    runSnapshot(services.map((svc) => svc.pid)),
+    Promise.all(services.map((svc) => (svc.port !== undefined ? tcpListening(svc.port) : Promise.resolve(undefined)))),
+  ])
+  return services.map((svc, i) => toPsService(svc, snap, probes[i]))
 }
 
 const formatDuration = (seconds: number | null): string => {
@@ -204,7 +216,10 @@ export const formatPsLine = (svc: PsServiceView): string => {
     `cpu=${svc.cpuPct === null ? "?" : `%${svc.cpuPct}`}`,
     `mem=${formatMem(svc.memBytes)}`,
   ]
-  if (svc.port !== undefined) parts.push(`port=${svc.port}`)
+  if (svc.port !== undefined) {
+    parts.push(`port=${svc.port}`)
+    if (svc.listening !== undefined) parts.push(`listen=${svc.listening ? "evet" : "hayır"}`)
+  }
   return svc.note ? `${parts.join(" ")} (${svc.note})` : parts.join(" ")
 }
 
@@ -217,5 +232,6 @@ export const toPsServiceJson = (svc: PsServiceView): PsService => ({
   cpuPct: svc.cpuPct,
   memBytes: svc.memBytes,
   ...(svc.port !== undefined ? { port: svc.port } : {}),
+  ...(svc.port !== undefined && svc.listening !== undefined ? { listening: svc.listening } : {}),
   ...(svc.exitCode !== undefined ? { exitCode: svc.exitCode } : {}),
 })

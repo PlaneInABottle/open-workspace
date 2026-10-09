@@ -90,6 +90,9 @@ describe("queryPs", () => {
       expect(Number.isFinite(svc.cpuPct!)).toBe(true)
       expect(svc.note).toContain("port çakışması")
       expect(formatPsLine(svc)).toContain("çalışıyor")
+      // Declared port 4123 has no listener in this fixture → probed false.
+      expect(svc.listening).toBe(false)
+      expect(formatPsLine(svc)).toContain("listen=hayır")
       expect(toPsServiceJson(svc)).toEqual({
         name: "uyu",
         status: "running",
@@ -98,8 +101,33 @@ describe("queryPs", () => {
         cpuPct: svc.cpuPct,
         memBytes: svc.memBytes,
         port: 4123,
+        listening: false,
       })
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("declared port with a live listener reports listening=true", async () => {
+    const root = await tempRoot()
+    const holder = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") })
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const sleeper = spawnSleep()
+      const lstart = (await readLstart(sleeper.pid))!
+      const startedAt = new Date().toISOString()
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt,
+        services: [{ name: "api", pid: sleeper.pid, lstart, startedAt, cmd: "sleep 30", port: holder.port }],
+      })
+      const [svc] = await queryPs(root)
+      expect(svc.listening).toBe(true)
+      expect(formatPsLine(svc)).toContain("listen=evet")
+      expect(toPsServiceJson(svc)).toMatchObject({ port: holder.port, listening: true })
+    } finally {
+      holder.stop(true)
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -251,6 +279,51 @@ describe("queryPs", () => {
       expect(await run(["doctor", "--db", dbPath, "--log", logPath, "--file", file])).toBe(0)
     } finally {
       await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("ow up --wait", () => {
+  test("--wait without -d is a usage error (exit 2) and starts nothing", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n", "utf8")
+      expect(await run(["up", "--wait", "5s", "--file", file])).toBe(2)
+      // no supervisor was created by the rejected flag combination
+      expect(await run(["ps", "--file", file])).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--wait with --check is a usage error (exit 2), even with -d", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n", "utf8")
+      expect(await run(["up", "--check", "--wait", "5s", "--file", file])).toBe(2)
+      expect(await run(["up", "--check", "-d", "--wait", "5s", "--file", file])).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a service without a declared port waits for nothing and exits 0", async () => {
+    const root = await tempRoot()
+    try {
+      const { waitForUpReady } = await import("./cli")
+      const { parseUpFile } = await import("./up-schema")
+      const services = parseUpFile("services:\n  job:\n    cmd: echo hi\n").services
+      const original = console.log
+      console.log = () => undefined
+      try {
+        expect(await waitForUpReady({ rootDir: root, services, timeoutMs: 1000, json: true })).toBe(0)
+      } finally {
+        console.log = original
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

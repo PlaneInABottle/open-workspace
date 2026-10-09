@@ -25,6 +25,7 @@ import { doctor, formatDoctor } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./trace-cli"
 import { decodeUtf8Fatal, formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
+import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
@@ -57,9 +58,10 @@ export const helpText = (): string =>
     "  meta [oturum]                 maliyet/token/değişiklik/tur",
     "  prompts [oturum]              son 20 kullanıcı yönergesi (eskiden yeniye)",
     "  reads [oturum] [--since]      okuma özeti",
-    "  up [--file] [--check] [-d|--detach]  servisleri kaldır (ow.yaml); --check yalnız doğrular",
+    "  up [--file] [--check] [-d|--detach] [--wait 120s]  servisleri kaldır (ow.yaml); --check yalnız doğrular;",
+    "                                -d ile --wait: bildirilen portlar açılana kadar bekle (çıkış: hazır değilse 1)",
     "  down [--file] [--rm]          servisleri durdur (--rm durum dosyasını da siler)",
-    "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port)",
+    "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
   "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
@@ -169,6 +171,45 @@ export const upFilePath = (flags: Record<string, string | boolean>): string => {
   return file ? resolve(file) : join(process.cwd(), "ow.yaml")
 }
 export const upStateDir = (rootDir: string): string => join(rootDir, ".ow")
+
+/** `ow up -d --wait <süre>`: block until every declared `port` accepts a TCP
+ * connection, a service exits, or the window elapses. Exit 0 only when all
+ * declared ports are ready; services without a port are named but not waited
+ * on (nothing to probe). JSON mirrors the trace/ps English-key discipline. */
+export const waitForUpReady = async (opts: {
+  rootDir: string
+  services: UpService[]
+  timeoutMs: number
+  json: boolean
+}): Promise<number> => {
+  const { exitedServices, waitForReady } = await import("./up-ready")
+  const { tcpListening } = await import("./up-net")
+  const targets = opts.services.filter((svc) => svc.port !== undefined).map((svc) => ({ name: svc.name, port: svc.port as number }))
+  const noPort = opts.services.filter((svc) => svc.port === undefined).map((svc) => svc.name)
+  if (targets.length === 0) {
+    if (opts.json) console.log(JSON.stringify({ ready: true, services: [], noPort, note: "port tanımlı servis yok" }))
+    else console.log("beklenecek port yok (servislerde port tanımlı değil)")
+    return 0
+  }
+  const results = await waitForReady({
+    targets,
+    timeoutMs: opts.timeoutMs,
+    probe: (port) => tcpListening(port),
+    exited: () => exitedServices(opts.rootDir),
+  })
+  const ready = results.every((result) => result.status === "ready")
+  if (opts.json) {
+    console.log(JSON.stringify({ ready, services: results, noPort }))
+  } else {
+    for (const result of results) {
+      if (result.status === "ready") console.log(`hazır: ${result.name} :${result.port} (${result.waitedSec}sn)`)
+      else if (result.status === "exited") console.log(`bitti: ${result.name} (çıkış kodu ${result.exitCode ?? "?"})`)
+      else console.log(`zaman aşımı: ${result.name} :${result.port} (${result.waitedSec}sn)`)
+    }
+    if (noPort.length > 0) console.log(`port tanımsız (beklenmedi): ${noPort.join(", ")}`)
+  }
+  return ready ? 0 : 1
+}
 
 const flag = (flags: Record<string, string | boolean>, name: string): string | undefined =>
   typeof flags[name] === "string" ? (flags[name] as string) : undefined
@@ -326,6 +367,14 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
         return 2
       }
+      if (flags["--check"] === true && flags["--wait"] !== undefined) {
+        console.error("ow: --wait --check ile kullanılamaz (doğrulama beklemez)")
+        return 2
+      }
+      if (flags["--wait"] !== undefined && flags["--detach"] !== true) {
+        console.error("ow: --wait yalnızca -d/--detach ile kullanılır (önizleme)")
+        return 2
+      }
       if (flags["--check"] === true) {
         for (const line of formatUpWarnings(parsed.warnings)) warn(line)
         const missing = missingRequiredEnv(parsed.services)
@@ -380,7 +429,11 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       if (flags["--detach"] === true) {
         const { detachSupervised } = await import("./up-supervisor-cli")
-        return detachSupervised(file, rootDir)
+        const code = await detachSupervised(file, rootDir)
+        if (code !== 0) return code
+        const waitFlag = flag(flags, "--wait")
+        if (waitFlag === undefined) return 0
+        return waitForUpReady({ rootDir, services: parsed.services, timeoutMs: parseWaitDuration(waitFlag) ?? 0, json })
       }
       const { runSuperviseFile } = await import("./up-supervisor-cli")
       return runSuperviseFile(file)

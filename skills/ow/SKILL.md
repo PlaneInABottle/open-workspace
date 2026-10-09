@@ -49,12 +49,18 @@ no Docker, restarts, or dashboard.
 
 ```sh
 ow up --check --file ow.yaml   # validate only (unknown fields warn, never fail)
-ow up -d                       # detach: one supervisor per ow.yaml dir; second up → exit 2
-ow ps [--json]                 # running/exited/stopped/unknown + pid, uptime, cpu, mem, port
+ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir; second up → exit 2
+ow ps [--json]                 # running/exited/stopped/unknown + pid, uptime, cpu, mem, port, listen=evet/hayır
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
 ```
 
+- After `ow up -d`, prefer `ow up -d --wait 15s` (max 5m) over manual
+  sleep/curl: waits until every declared `port` accepts TCP, exit 1 on
+  timeout (`zaman aşımı:`) or early exit (`bitti:`), exit 2 for `--wait`
+  without `-d`. Port-less services are named, never waited on. `--check`
+  rejects `--wait` (exit 2).
+- Readiness = TCP-accept, not HTTP/app health (`ps` `listening` key likewise).
 - State is repo-local (`<root>/.ow/`); every pid is `lstart`-guarded, so a
   recycled pid is reported unknown, never signaled.
 - Port conflicts warn and still spawn, never reassign.

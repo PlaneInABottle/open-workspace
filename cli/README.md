@@ -122,13 +122,33 @@ values — so a valid-YAML/missing-credential boot failure is caught early.
 
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
-ow up -d                       # detach: one supervisor per ow.yaml dir
-ow ps [--json]                 # pid, uptime, cpu%, mem, port, port çakışması notes
+ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir
+ow ps [--json]                 # pid, uptime, cpu%, mem, port, listen=evet/hayır
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
 ow doctor                      # observer health plus an informational up: line
 ow init [--force] [--tracing]  # scaffold ow.yaml from repo detection (never overwrites without --force)
 ```
+
+`ow up -d --wait <süre>` (ör. `--wait 15s`, en fazla 5m) detaches first,
+then waits until every declared `port` accepts a TCP connection: exit 0
+with `hazır: <ad> :<port> (<sn>sn)` per service, exit 1 when any port times
+out (`zaman aşımı: ...`) or a service exits early (`bitti: ... (çıkış kodu
+N)`). Services without a `port` are named (`port tanımsız (beklenmedi): ...`)
+but never waited on; with no declared ports at all `up -d --wait` exits 0
+immediately. `--wait` without `-d/--detach` is a usage error (exit 2, nothing
+spawns, no `.ow` created), as is any `--wait` combined with `--check`
+(`--check` only validates, never waits). `--json` mirrors the human lines with stable
+English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?}], noPort}`).
+`ps` probes the same way per declared port: human `listen=evet/hayır`,
+JSON additive `listening` key (present only with `port`).
+
+Readiness here means TCP-accept (a listener answers on the port), not
+HTTP/app-health: `--wait`/`ps listen` never send HTTP requests and never
+inspect response bodies. That is deliberate and distinct from the
+spawn-time port-conflict probe, which is a best-effort HTTP fetch warning
+(`port çakışması`) before spawning. One-shot bounded wait only — no
+restart/healthcheck daemon semantics.
 
 `ow init` scans the current directory (read-only, capped) for build files
 and writes a starter `ow.yaml`: commands only from strong signals (wrappers,
