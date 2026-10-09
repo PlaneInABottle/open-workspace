@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import { formatUpWarnings, parseUpFile, UpSchemaError } from "./up-schema"
+import { formatUpWarnings, isSubsetNestingError, parseUpFile, UpSchemaError } from "./up-schema"
 
 describe("up-schema", () => {
   test("parses all aliases, flow-list ports, host:container and logs-only services", () => {
@@ -64,6 +64,22 @@ describe("up-schema", () => {
       "uyarı (satır 5): m",
       "uyarı: n",
     ])
+  })
+
+  test("isSubsetNestingError flags the inline trap, not other schema errors", () => {
+    const trap = (text: string): unknown => {
+      try {
+        parseUpFile(text)
+      } catch (error) {
+        return error
+      }
+      return null
+    }
+    expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    env:\n      A: b\n"))).toBe(true)
+    expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    ports:\n      - 3000\n"))).toBe(true)
+    expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    depends_on: [yok]\n"))).toBe(false)
+    expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    port: 99999\n"))).toBe(false)
+    expect(isSubsetNestingError(new Error("başka hata"))).toBe(false)
   })
 
   test("version: is ignored with a warning", () => {

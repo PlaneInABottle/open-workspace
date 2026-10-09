@@ -50,7 +50,47 @@ describe("doctor up line without sidecars", () => {
     try {
       const lines = await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })
       const up = lines.find((line) => line.name === "up")
-      expect(up?.detail).toBe("durgun (çalışan supervisor yok)")
+      expect(up?.detail).toBe("durgun (çalışan supervisor yok) — öneri: ow reconcile --check")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("non-live up details carry the reconcile hint, live does not", async () => {
+    const root = await tempRoot()
+    try {
+      const { mkdir, writeFile: write } = await import("node:fs/promises")
+      const { readLstart, upPaths } = await import("./up-state")
+      const paths = upPaths(root)
+      await mkdir(paths.stateDir, { recursive: true })
+      // Stale lock (dead pid) → `bayat` + hint.
+      await write(paths.lockFile, JSON.stringify({ pid: 987654321, lstart: "bogus", startedAt: new Date().toISOString() }), "utf8")
+      const stale = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
+        (line) => line.name === "up",
+      )
+      expect(stale?.ok).toBe(false)
+      expect(stale?.detail).toContain("bayat")
+      expect(stale?.detail).toContain("öneri: ow reconcile --check")
+      // Corrupt lock → `doğrulanamıyor` + hint.
+      await write(paths.lockFile, "bozuk{{{", "utf8")
+      const corrupt = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
+        (line) => line.name === "up",
+      )
+      expect(corrupt?.detail).toContain("doğrulanamıyor")
+      expect(corrupt?.detail).toContain("öneri: ow reconcile --check")
+      // Live lock, no state → hint-free live wording.
+      const keeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+      try {
+        const lstart = (await readLstart(keeper.pid))!
+        await write(paths.lockFile, JSON.stringify({ pid: keeper.pid, lstart, startedAt: new Date().toISOString() }), "utf8")
+        const live = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
+          (line) => line.name === "up",
+        )
+        expect(live?.ok).toBe(true)
+        expect(live?.detail).toBe("çalışıyor (durum yok)")
+      } finally {
+        keeper.kill("SIGKILL")
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }

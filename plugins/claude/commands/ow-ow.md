@@ -100,6 +100,22 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 - `ow doctor` also prints an informational `up:` line (never affects exit code).
 - Full schema, caps, and non-goals: product `cli/README.md` ("Service supervision").
 
+### `--json` anahtarları (tek tablo, additive)
+
+Human lines stay Turkish; `--json` envelopes keep stable English keys (old
+keys never change, new keys only add):
+
+| komut | zarf |
+|---|---|
+| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` yalnız `depends_on` varsa; `env` ad/değer taşımaz) |
+| `up -d --wait --json` | `{ready, services[] ({name, port, status, waitedSec, exitCode?, healthPath?}), noPort[], note?}` |
+| `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` yalnız başarısızlıkta) |
+| `down [--rm]`, `down <svc> --json` | `{stopped[] ({name, stopped, note}), warnings[]}` |
+| `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
+| `logs --json` | `{service, lines[]}` |
+| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}}` |
+| `doctor --json` | `{checks[] ({name, ok, detail})}` (çıkışa `up`/`trace` katılmaz) |
+
 ## Tracing (OpenTelemetry, optional)
 
 Off unless the repo's `ow.yaml` has a top-level `trace:` block (flat: port,

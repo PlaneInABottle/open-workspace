@@ -480,3 +480,18 @@ export const missingRequiredEnv = (services: UpService[]): { service: string; va
 /** Human-readable warning lines for stderr (non-JSON mode). */
 export const formatUpWarnings = (warnings: UpWarning[]): string[] =>
   warnings.map((w) => (w.line > 0 ? `uyarı (satır ${w.line}): ${w.message}` : `uyarı: ${w.message}`))
+
+/** True for subset-YAML nesting errors (the single-line inline trap:
+ * block lists/sequences, 3rd-level maps, non-inline maps). Callers use
+ * this to append the inline example hint; the `(satır N)` in the error
+ * itself names the offending line. */
+export const isSubsetNestingError = (error: unknown): boolean => {
+  if (!(error instanceof UpSchemaError)) return false
+  return /blok listesi|3\. düzey|harita içinde|satır içi harita|iç içe/.test(error.message)
+}
+
+/** Single-line inline hint for the nesting trap (stderr, Turkish). The
+ * `readiness` shape is M3-owned; it appears here only as a second inline
+ * example, never as accepted syntax. */
+export const subsetNestingHint =
+  `ipucu: iç içe haritalar tek-satır inline yazılır (ör. env: {A: "1"} ya da readiness: {probe: [...], timeout: 10s}) — örnek için ow init çıktısına bakın`

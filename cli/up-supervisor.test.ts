@@ -525,6 +525,142 @@ describe("depends_on spawn order", () => {
   })
 })
 
+describe("polish: --check order + nesting hint", () => {
+  const capture = (): { out: string[]; err: string[]; restore: () => void } => {
+    const out: string[] = []
+    const err: string[] = []
+    const origLog = console.log
+    const origError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    return { out, err, restore: () => {
+      console.log = origLog
+      console.error = origError
+    } }
+  }
+
+  test("--check prints resolved spawn order + order-only line when depends_on present", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web-live:\n    cmd: echo hi\n    depends_on: [configuration]\n  configuration:\n    cmd: echo hi\n", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["up", "--check", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out).toEqual([
+        "ow.yaml geçerli: 2 servis (configuration, web-live)",
+        "başlatma sırası: configuration, web-live",
+        "depends_on bekletmez (order-only)",
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--check --json carries additive spawnOrder only when depends_on present", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web-live:\n    cmd: echo hi\n    depends_on: [configuration]\n  configuration:\n    cmd: echo hi\n", "utf8")
+      const io = capture()
+      try {
+        expect(await run(["up", "--check", "--json", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as { services: unknown[]; warnings: unknown[]; spawnOrder?: string[] }
+      expect(payload.spawnOrder).toEqual(["configuration", "web-live"])
+      expect(payload.services).toHaveLength(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("dep-less --check output stays byte-identical (text + json)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  b:\n    cmd: echo hi\n  a:\n    cmd: echo hi\n", "utf8")
+      const io = capture()
+      try {
+        expect(await run(["up", "--check", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.out).toEqual(["ow.yaml geçerli: 2 servis (b, a)"])
+      const io2 = capture()
+      try {
+        expect(await run(["up", "--check", "--json", "--file", file])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as Record<string, unknown>
+      expect(payload).not.toHaveProperty("spawnOrder")
+      expect(Object.keys(payload).sort()).toEqual(["file", "services", "warnings"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("nesting trap in --check: exit 2 with inline example + ow init pointer", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n    env:\n      A: b\n", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["up", "--check", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain("geçersiz ow.yaml")
+      expect(io.err.join("\n")).toContain('env: {A: "1"}')
+      expect(io.err.join("\n")).toContain("ow init")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("non-nesting schema error carries no inline hint; bulk up stays hint-free", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    depends_on: [yok]\n", "utf8")
+      const io = capture()
+      try {
+        expect(await run(["up", "--check", "--file", file])).toBe(2)
+      } finally {
+        io.restore()
+      }
+      expect(io.err.join("\n")).toContain("bilinmeyen servis")
+      expect(io.err.join("\n")).not.toContain("tek-satır inline")
+      // Same nesting trap through bulk `up` (no --check): gated, no hint.
+      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n    env:\n      A: b\n", "utf8")
+      const io2 = capture()
+      try {
+        expect(await run(["up", "--file", file])).toBe(2)
+      } finally {
+        io2.restore()
+      }
+      expect(io2.err.join("\n")).toContain("geçersiz ow.yaml")
+      expect(io2.err.join("\n")).not.toContain("tek-satır inline")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("H5 empty-lstart refusal", () => {
   test("live pid + empty lstart: down refuses, process survives, no false settlement", async () => {
     const root = await tempRoot()

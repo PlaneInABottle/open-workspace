@@ -72,6 +72,9 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
   // `up` and `trace` out). ok:true solely for a lock-verified live supervisor.
   // A build mismatch appends a bounded refresh hint; any compare failure
   // stays silent (missing sidecars must not fail or reword doctor).
+  // Polish (sürtünme 9): every non-live `up` detail ends with the
+  // reconcile pointer (live needs no action).
+  const reconcileHint = " — öneri: ow reconcile --check"
   try {
     const paths = upPaths(options.upRoot ?? process.cwd())
     const status = await classifyLock(paths.lockFile)
@@ -87,14 +90,14 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
       }
       lines.push({ name: "up", ok: true, detail })
     } else if (status.kind === "absent") {
-      lines.push({ name: "up", ok: false, detail: "durgun (çalışan supervisor yok)" })
+      lines.push({ name: "up", ok: false, detail: `durgun (çalışan supervisor yok)${reconcileHint}` })
     } else if (status.kind === "stale") {
-      lines.push({ name: "up", ok: false, detail: `bayat (${status.reason})` })
+      lines.push({ name: "up", ok: false, detail: `bayat (${status.reason})${reconcileHint}` })
     } else {
-      lines.push({ name: "up", ok: false, detail: `doğrulanamıyor (${status.reason})` })
+      lines.push({ name: "up", ok: false, detail: `doğrulanamıyor (${status.reason})${reconcileHint}` })
     }
   } catch (error) {
-    lines.push({ name: "up", ok: false, detail: `okunamıyor: ${String(error).slice(0, 80)}` })
+    lines.push({ name: "up", ok: false, detail: `okunamıyor: ${String(error).slice(0, 80)}${reconcileHint}` })
   }
   try {
     const check = await checkTraceDoctor(options.upRoot ?? process.cwd())

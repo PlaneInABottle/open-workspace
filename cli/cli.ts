@@ -24,7 +24,7 @@ import {
 import { doctor, formatDoctor } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./trace-cli"
-import { decodeUtf8Fatal, formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
+import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, subsetNestingHint } from "./up-schema"
 import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
@@ -580,6 +580,9 @@ export const run = async (argv: string[]): Promise<number> => {
         parsed = parseUpFile(text)
       } catch (error) {
         console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+        // Polish (sürtünme 2): the nesting trap bites hardest at validation
+        // time — show the inline example only on the `--check` path.
+        if (flags["--check"] === true && isSubsetNestingError(error)) console.error(subsetNestingHint)
         return 2
       }
       // `--probe` is M3-owned: anywhere else it is a usage error (exit 2),
@@ -644,10 +647,20 @@ export const run = async (argv: string[]): Promise<number> => {
           }
           return 2
         }
+        // Polish (sürtünme 5): `--check` prints the resolved spawn order
+        // (already topo-sorted by the parser) plus the order-only reminder.
+        // Dep-less files keep exact YAML order — and byte-identical output,
+        // since both lines print only when some service declares depends_on.
+        const hasDeps = parsed.services.some((svc) => (svc.dependsOn?.length ?? 0) > 0)
+        const order = parsed.services.map((svc) => svc.name)
         if (!json) {
-          console.log(`ow.yaml geçerli: ${parsed.services.length} servis (${parsed.services.map((s) => s.name).join(", ")})`)
+          console.log(`ow.yaml geçerli: ${parsed.services.length} servis (${order.join(", ")})`)
+          if (hasDeps) {
+            console.log(`başlatma sırası: ${order.join(", ")}`)
+            console.log(`depends_on bekletmez (order-only)`)
+          }
         } else {
-          console.log(JSON.stringify({ file, services: parsed.services, warnings: parsed.warnings }))
+          console.log(JSON.stringify({ file, services: parsed.services, warnings: parsed.warnings, ...(hasDeps ? { spawnOrder: order } : {}) }))
         }
         return 0
       }
