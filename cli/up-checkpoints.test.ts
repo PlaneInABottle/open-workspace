@@ -294,6 +294,225 @@ describe("checkpoints list (CLI)", () => {
   })
 })
 
+describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
+  const sideFixture = async (): Promise<{ root: string; file: string }> => {
+    const root = await tempRoot()
+    const file = join(root, "ow.yaml")
+    await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
+    await writeRun(root, "etki", await readFile(join(FIXTURES, "checkpoints-side-effect.jsonl"), "utf8"))
+    await writeRun(root, "soyagaci", await readFile(join(FIXTURES, "checkpoints-lineage.jsonl"), "utf8"))
+    await writeRun(root, "bozuk-ma", await readFile(join(FIXTURES, "checkpoints-hostile-ma.jsonl"), "utf8"))
+    return { root, file }
+  }
+
+  test("bayrak satırları: yok/denendi/onaylandı/bilinmiyor + sayımlar", async () => {
+    const { root, file } = await sideFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "etki", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = io.out.join("\n")
+      expect(text).toContain("yan-etki: build (yok)")
+      expect(text).toContain("yan-etki: test (denendi, denenen: 2)")
+      expect(text).toContain("yan-etki: deploy (onaylandı, denenen: 1, onaylanan: 1)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("eksik side_effect bilinmiyor render edilir (uyarısız)", async () => {
+    const { root, file } = await sideFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "soyagaci", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = io.out.join("\n")
+      expect(text).toContain("yan-etki: build (bilinmiyor)")
+      expect(io.err.join("\n")).not.toContain("bilinmiyor")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("denendi-doğrulanmadı retry ipucu (kilitli metin, tektir)", async () => {
+    const { root, file } = await sideFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "soyagaci", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const hint = "tekrar-öncesi: ow reconcile --check"
+      const hits = io.out.join("\n").split(hint).length - 1
+      expect(hits).toBe(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("sonra doğrulanan deneme ipucu söndürür (salt-okunur, exec yok)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
+      await writeRun(root, "kapanan", [
+        `{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:00:00.000Z","by":"runner","side_effect":"attempted"}`,
+        `{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T09:00:00.000Z","by":"runner","side_effect":"confirmed"}`,
+      ].join("\n") + "\n")
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "kapanan", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.out.join("\n")).not.toContain("tekrar-öncesi:")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("açık alan ağacı: senaryo → deneme (kilitli sözcükler + doğrulanmadı)", async () => {
+    const { root, file } = await sideFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "soyagaci", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = io.out.join("\n")
+      expect(text).toContain("senaryo: gece")
+      expect(text).toContain("deneme 1: build (doğrulandı)")
+      expect(text).toContain("deneme 2: test (doğrulandı, doğrulanmadı)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("ek-sonuç: run-adı soneki + sahipsiz-düz (grupsuz)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
+      await writeRun(root, "gece-attempt2", `{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:00:00.000Z","by":"runner","code":{"script_hash":"s1","checkout_rev":"r1"},"runtime":{"port":1}}\n`)
+      await writeRun(root, "duz", `{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:00:00.000Z","by":"runner"}\n`)
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "gece-attempt2", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const suffixText = io.out.join("\n")
+      expect(suffixText).toContain("senaryo: gece")
+      expect(suffixText).toContain("deneme 2: build (doğrulandı)")
+      const io2 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "duz", "--file", file])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      expect(io2.out.join("\n")).not.toContain("senaryo:")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile M-A: 13 satırın tamamı bozuk sayılır (fail-closed)", async () => {
+    const { root, file } = await sideFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "bozuk-ma", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as { envelopes: unknown[]; skipped: { corrupt: number } }
+      expect(payload.envelopes).toHaveLength(0)
+      expect(payload.skipped.corrupt).toBe(13)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--json yeni alanları taşır (bayrak/sayım/soyağacı)", async () => {
+    const { root, file } = await sideFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "etki", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as {
+        envelopes: { side_effect?: string; side_effect_counts?: unknown; scenario?: string; attempt?: number; step_signature?: string }[]
+      }
+      expect(payload.envelopes[0]).toMatchObject({ side_effect: "none", scenario: "gece", attempt: 1, step_signature: "build-imza" })
+      expect(payload.envelopes[1]).toMatchObject({ side_effect: "attempted", side_effect_counts: { attempted: 2 }, attempt: 2 })
+      expect(payload.envelopes[2]).toMatchObject({ side_effect: "confirmed" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M-B kod haritası geçidi (legacy-kararlı + tek-sapma)", () => {
+  const codeFixture = async (): Promise<{ root: string; file: string }> => {
+    const root = await tempRoot()
+    const file = join(root, "ow.yaml")
+    await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
+    await writeRun(root, "harita", await readFile(join(FIXTURES, "checkpoints-code-map.jsonl"), "utf8"))
+    await writeRun(root, "bozuk-mb", await readFile(join(FIXTURES, "checkpoints-hostile-mb.jsonl"), "utf8"))
+    return { root, file }
+  }
+
+  test("karışık eski/yeni dizi: confirmed, confirmed, tek script_hash-sapma", async () => {
+    const { root, file } = await codeFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "harita", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as {
+        envelopes: { status: string; stale_reason?: string; code?: unknown }[]
+        summary: { confirmed: number; stale: number; not_observed: number }
+      }
+      expect(payload.envelopes.map((line) => line.status)).toEqual(["confirmed", "confirmed", "stale"])
+      expect(payload.envelopes[2].stale_reason).toBe("script_hash")
+      expect(payload.envelopes[1].code).toEqual({ runner: "r1", body: "s1" })
+      expect(payload.envelopes[2].code).toEqual({ runner: "r1", fixture: "f1", body: "s2", provider_contract: "pc1" })
+      expect(payload.summary).toEqual({ confirmed: 2, stale: 1, not_observed: 0 })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile M-B: 6 satırın tamamı bozuk sayılır (çakışma + disiplinsiz slot)", async () => {
+    const { root, file } = await codeFixture()
+    try {
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "bozuk-mb", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as { envelopes: unknown[]; skipped: { corrupt: number } }
+      expect(payload.envelopes).toHaveLength(0)
+      expect(payload.skipped.corrupt).toBe(6)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("konumsal gramer korunur", () => {
   test("diğer komutlarda ikinci konumsal hâlâ exit 2", async () => {
     const root = await tempRoot()

@@ -56,14 +56,15 @@ function checkpointed(): CoordinatorSnapshot {
       run: 'demo',
       runs: ['demo'],
       stages: [
-        { stage: 'build', status: 'confirmed', staleReason: null, at: twoHoursAgo },
-        { stage: 'test', status: 'stale', staleReason: 'checkout_rev', at: tenMinutesAgo },
-        { stage: 'deploy', status: 'not_observed', staleReason: null, at: tenMinutesAgo },
+        { stage: 'build', status: 'confirmed', staleReason: null, at: twoHoursAgo, sideEffect: null, sideEffectAttempted: null, sideEffectConfirmed: null, scenario: null, attempt: null, stepSignature: null },
+        { stage: 'test', status: 'stale', staleReason: 'checkout_rev', at: tenMinutesAgo, sideEffect: null, sideEffectAttempted: null, sideEffectConfirmed: null, scenario: null, attempt: null, stepSignature: null },
+        { stage: 'deploy', status: 'not_observed', staleReason: null, at: tenMinutesAgo, sideEffect: null, sideEffectAttempted: null, sideEffectConfirmed: null, scenario: null, attempt: null, stepSignature: null },
       ],
       summary: { confirmed: 1, stale: 1, notObserved: 1 },
       lastVerified: { stage: 'build', at: twoHoursAgo },
       firstGap: { stage: 'test', status: 'stale', staleReason: 'checkout_rev', at: tenMinutesAgo },
       safeNextAction: 'betiği yeniden çalıştır',
+      retryHint: false,
     },
     explanation: {
       entries: [
@@ -73,6 +74,7 @@ function checkpointed(): CoordinatorSnapshot {
           running: { status: 'ready', detail: 'çalışıyor' },
           revShort: REV_A.slice(0, 7), revFull: REV_A, revAt: twoHoursAgo, revDirty: false, revRecorded: true,
           diffs: [], note: 'çalışıyor, bilinen sorun yok',
+          artifacts: [], artifactRest: 0,
         },
         {
           service: 'ghost',
@@ -80,6 +82,7 @@ function checkpointed(): CoordinatorSnapshot {
           running: null,
           revShort: null, revFull: null, revAt: null, revDirty: false, revRecorded: false,
           diffs: [], note: 'kayıt yok — bu servis için provenance kaydı bulunamadı',
+          artifacts: [], artifactRest: 0,
         },
       ],
       revisions: [
@@ -266,6 +269,7 @@ function scenarioed(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSn
       lastVerified: null,
       firstGap: null,
       safeNextAction: null,
+      retryHint: false,
     },
     runs: ['yeni', 'eski'],
     scenarios: {
@@ -431,6 +435,131 @@ describe('CoordinatorSection scenarios', () => {
     const ariaTexts = [...document.querySelectorAll('[aria-label]')]
       .map(element => element.getAttribute('aria-label') ?? '').join(' ');
     const scanned = `${document.title} ${text} ${ariaTexts}`.replace(/#\s?[0-9a-fA-F]{8}\b/g, '');
+    expect(scanned).not.toMatch(/[0-9a-fA-F]{8,}/);
+  });
+});
+
+function flagged(): CoordinatorSnapshot {
+  const at = new Date().toISOString();
+  return snapshot({
+    checkpoints: {
+      run: 'gece-attempt2',
+      runs: ['gece-attempt2'],
+      stages: [
+        { stage: 'build', status: 'confirmed', staleReason: null, at, sideEffect: 'attempted', sideEffectAttempted: 2, sideEffectConfirmed: null, scenario: 'gece', attempt: 1, stepSignature: 'build-imza' },
+        { stage: 'test', status: 'confirmed', staleReason: null, at, sideEffect: 'none', sideEffectAttempted: null, sideEffectConfirmed: null, scenario: 'gece', attempt: 2, stepSignature: null },
+        { stage: 'deploy', status: 'not_observed', staleReason: null, at, sideEffect: null, sideEffectAttempted: null, sideEffectConfirmed: null, scenario: null, attempt: null, stepSignature: null },
+      ],
+      summary: { confirmed: 2, stale: 0, notObserved: 1 },
+      lastVerified: { stage: 'test', at },
+      firstGap: { stage: 'deploy', status: 'not_observed', staleReason: null, at },
+      safeNextAction: null,
+      retryHint: true,
+    },
+  });
+}
+
+describe('CoordinatorSection M-A flags', () => {
+  it('renders per-stage side-effect flags with counts and bilinmiyor for missing', async () => {
+    render(<CoordinatorSection api={apiReturning(flagged())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByText('Checkpoint çizgisi');
+    expect(within(section).getByText(/yan-etki: build \(denendi, denenen: 2\)/)).toBeInTheDocument();
+    expect(within(section).getByText(/yan-etki: test \(yok\)/)).toBeInTheDocument();
+    expect(within(section).getByText(/yan-etki: deploy \(bilinmiyor\)/)).toBeInTheDocument();
+    // Ham İngilizce enum kullanıcıya dönük metinde görünmez.
+    const text = section.textContent ?? '';
+    expect(text).not.toContain('attempted');
+    expect(text).not.toContain('side_effect');
+  });
+
+  it('renders the locked reconcile-before-retry hint as text with no action control', async () => {
+    render(<CoordinatorSection api={apiReturning(flagged())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const hint = await within(section).findByText('tekrar-öncesi: ow reconcile --check');
+    expect(hint).toBeInTheDocument();
+    const box = hint.closest('div')!;
+    expect(within(box).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(box).queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('renders the scenario→attempt tree with locked vocab and doğrulanmadı', async () => {
+    render(<CoordinatorSection api={apiReturning(flagged())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const tree = await within(section).findByRole('list', { name: 'Deneme ağacı' });
+    expect(within(tree).getByText(/senaryo: gece/)).toBeInTheDocument();
+    expect(within(tree).getByText(/deneme 1: build/)).toBeInTheDocument();
+    expect(within(tree).getByText(/deneme 2: test/)).toBeInTheDocument();
+    expect(within(tree).getByText(/doğrulanmadı/)).toBeInTheDocument();
+    // Sahipsiz zarf ağaca girmez (düz listede kalır).
+    expect(within(tree).queryByText(/deploy/)).not.toBeInTheDocument();
+  });
+});
+
+function artifacted(): CoordinatorSnapshot {
+  const at = new Date().toISOString();
+  return snapshot({
+    checkpoints: {
+      run: 'demo',
+      runs: ['demo'],
+      stages: [
+        { stage: 'build', status: 'confirmed', staleReason: null, at, sideEffect: null, sideEffectAttempted: null, sideEffectConfirmed: null, scenario: null, attempt: null, stepSignature: null },
+      ],
+      summary: { confirmed: 1, stale: 0, notObserved: 0 },
+      lastVerified: { stage: 'build', at },
+      firstGap: null,
+      safeNextAction: null,
+      retryHint: false,
+    },
+    explanation: {
+      entries: [
+        {
+          service: 'api',
+          expected: { cmd: 'dev', dir: 'backend', port: null },
+          running: { status: 'ready', detail: 'çalışıyor' },
+          revShort: null, revFull: null, revAt: null, revDirty: false, revRecorded: false,
+          diffs: [], note: 'çalışıyor, bilinen sorun yok',
+          artifacts: [
+            { base: 'api.jar', digest: 'a1b2c3d4' },
+            { base: 'extra.jar', digest: 'ffffffff' },
+          ],
+          artifactRest: 3,
+        },
+      ],
+      revisions: [],
+    },
+  });
+}
+
+describe('CoordinatorSection M-C artifacts', () => {
+  it('renders basename@short-8 chips with a rest count and no full digest', async () => {
+    render(<CoordinatorSection api={apiReturning(artifacted())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByText('Provenance kartı');
+    expect(within(section).getByText('api.jar@a1b2c3d4')).toBeInTheDocument();
+    expect(within(section).getByText('extra.jar@ffffffff')).toBeInTheDocument();
+    expect(within(section).getByText('+3 daha')).toBeInTheDocument();
+    // Tam-digest/argv ASLA DOM'da yok (tel zaten indirgenmiş taşır).
+    const rawText = document.body.textContent ?? '';
+    expect(rawText).not.toMatch(/[0-9a-fA-F]{32,}/);
+  });
+
+  it('tara-test stays green with artifact chips mounted', async () => {
+    render(<CoordinatorSection api={apiReturning(artifacted())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    await within(section).findByText('Provenance kartı');
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const parts: string[] = [];
+    while (walker.nextNode()) parts.push(walker.currentNode.textContent ?? '');
+    const text = parts.join(' ');
+    const ariaTexts = [...document.querySelectorAll('[aria-label]')]
+      .map(element => element.getAttribute('aria-label') ?? '').join(' ');
+    // Kasıtlı kısa-8 çipler düğüm-bazında ayıklanır (tam-hash koruması sürer).
+    const chips = [...document.querySelectorAll('[data-artifact-digest]')].map(element => element.textContent ?? '');
+    expect(chips).toHaveLength(2);
+    for (const chip of chips) expect(chip).toMatch(/^[^@/]+@[0-9a-fA-F]{8}$/);
+    let scanned = `${document.title} ${text} ${ariaTexts}`.replace(/#\s?[0-9a-fA-F]{8}\b/g, '');
+    for (const chip of chips) scanned = scanned.replace(chip, '');
     expect(scanned).not.toMatch(/[0-9a-fA-F]{8,}/);
   });
 });

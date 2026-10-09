@@ -4,6 +4,8 @@
  * yalnızca raporlar + cap/timeout/maske uygular). argv-only: shell/sh-c
  * formu şemada reddedilir, burada yorumlanmaz. */
 
+import { basename } from "node:path"
+
 import { maskSecrets } from "./up-evidence"
 import { PROBE_TIMEOUT_MS, type UpReadiness } from "./up-schema"
 
@@ -13,7 +15,17 @@ export const PROBE_NOTE_MAX_CHARS = 200
 export const PROBE_RESULT_NOTE_MAX_CHARS = 500
 export const ORPHAN_NOTE = "artakalan-torun-olabilir"
 
-export type ProbeCheck = { name: string; ok: boolean }
+/** M-C (#1): probe-beyanlı kod-kimliği — runner'ın ÇÖZÜMLENMİŞ modül yolu
+ * (`path`, ≤512ch) + içerik digesti (`digest`, hex 7..128ch). İkisi de
+ * katkısal-isteğe-bağlı; şekilsiz alan düşer, girdi yaşar. Ham `path`/
+ * tam `digest`/probe-argv asla render/tel/log'a çıkmaz — yalnızca
+ * basename + kısa-8 indirgenmiş taşınır (durum dosyası ham tutar). */
+export const PROBE_PATH_MAX_CHARS = 512
+export const ARTIFACT_DIGEST_PATTERN = /^[0-9a-fA-F]{7,128}$/
+/** İnsan/tel listesinde gösterilen en çok girdi; kalanı sayılır. */
+export const ARTIFACT_DISPLAY_MAX = 32
+
+export type ProbeCheck = { name: string; ok: boolean; path?: string; digest?: string }
 
 export type ProbeOutcome = {
   ok: boolean
@@ -73,9 +85,11 @@ export const findFirstJsonObject = (text: string): string | null => {
 
 type ParsedContract = { ready: boolean; note?: string; checks?: ProbeCheck[] }
 
-/** `{ready: bool, note?: ≤200ch, checks?: [{name, ok}]}` sözleşmesi:
+/** `{ready: bool, note?: ≤200ch, checks?: [{name, ok, path?, digest?}]}` sözleşmesi:
  * ready ZORUNLU bool (yoksa geçersiz); note kırpılır; checks yalnızca
- * şekli tutan girdilerle alınır (bozuk girdiler düşer, fatal değil). */
+ * şekli tutan girdilerle alınır (bozuk girdiler düşer, fatal değil).
+ * M-C: `path` (1..512ch dize) + `digest` (hex 7..128ch) şekil-sıkı
+ * alınır — bozuk alan düşer, girdi YAŞAR (asla tüm-sözleşme fatalı yok). */
 export const parseProbeContract = (text: string): ParsedContract | null => {
   const raw = findFirstJsonObject(text)
   if (raw === null) return null
@@ -96,13 +110,73 @@ export const parseProbeContract = (text: string): ParsedContract | null => {
       if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
         const record = entry as Record<string, unknown>
         if (typeof record["name"] === "string" && typeof record["ok"] === "boolean") {
-          checks.push({ name: record["name"] as string, ok: record["ok"] as boolean })
+          const check: ProbeCheck = { name: record["name"] as string, ok: record["ok"] as boolean }
+          if (typeof record["path"] === "string" && record["path"].length > 0 && record["path"].length <= PROBE_PATH_MAX_CHARS) {
+            check.path = record["path"] as string
+          }
+          if (typeof record["digest"] === "string" && ARTIFACT_DIGEST_PATTERN.test(record["digest"] as string)) {
+            check.digest = record["digest"] as string
+          }
+          checks.push(check)
         }
       }
     }
     out.checks = checks
   }
   return out
+}
+
+/** Kayıtlı-harita anahtar disiplini: basename-şekil (ayraç/`..` yok). */
+export const isArtifactBase = (base: unknown): base is string =>
+  typeof base === "string" && base.length > 0 && base.length <= PROBE_PATH_MAX_CHARS && !base.includes("/") && !base.includes("\\") && base !== "." && base !== ".."
+
+/** Kayıtlı-harita değer disiplini: hex 7..128ch. */
+export const isArtifactDigest = (digest: unknown): digest is string =>
+  typeof digest === "string" && ARTIFACT_DIGEST_PATTERN.test(digest)
+
+/** Çözümlenmiş yolun sızdırmaz adı (dizinler düşer). */
+export const artifactBase = (path: string): string => basename(path)
+
+/** Tel/insan görüntüsü (kısa-8; tam-digest asla render edilmez). */
+export const shortDigest = (digest: string): string => digest.slice(0, 8)
+
+export type ReducedArtifact = { base: string; digest: string }
+
+/** Kayıtlı-harita girişi seçimi (şekil-sıkı: bozuk girdi düşer, geçerli yaşar). */
+export const pickArtifactEntries = (raw: unknown): Record<string, string> => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {}
+  const out: Record<string, string> = {}
+  for (const [base, digest] of Object.entries(raw as Record<string, unknown>)) {
+    if (isArtifactBase(base) && isArtifactDigest(digest)) out[base] = digest as string
+  }
+  return out
+}
+
+/** Beyan haritası (tazelik karşılaştırması için bellek-içi): ok-girdilerin
+ * tam-digestleri. Ham basename anahtarlıdır (maskesiz — render dışı);
+ * aynı basename tekrarında İLK girdi kazanır (deterministik). */
+export const declaredArtifactDigests = (checks: ProbeCheck[] | undefined): Record<string, string> => {
+  const out: Record<string, string> = {}
+  for (const check of checks ?? []) {
+    if (!check.ok || check.path === undefined || check.digest === undefined) continue
+    const base = artifactBase(check.path)
+    if (!isArtifactBase(base) || !isArtifactDigest(check.digest)) continue
+    if (out[base] === undefined) out[base] = check.digest
+  }
+  return out
+}
+
+/** İndirgenmiş görünüm (tel/insan): maskeli-basename + kısa-8, sıralı ilk
+ * 32 gösterilir, kalan sayılır. Tam-yol/tam-digest asla çıkmaz. */
+export const reduceArtifacts = (checks: ProbeCheck[] | undefined): { shown: ReducedArtifact[]; rest: number } =>
+  reduceArtifactMap(declaredArtifactDigests(checks))
+
+/** Kayıtlı-harita indirgemesi (durum-dosyasından tele/insana): aynı
+ * basename + kısa-8 disiplini (maske-önce). */
+export const reduceArtifactMap = (map: Record<string, string> | undefined): { shown: ReducedArtifact[]; rest: number } => {
+  const bases = Object.keys(map ?? {}).sort()
+  const shown = bases.slice(0, ARTIFACT_DISPLAY_MAX).map((base) => ({ base: maskSecrets(base), digest: shortDigest((map as Record<string, string>)[base]) }))
+  return { shown, rest: Math.max(0, bases.length - shown.length) }
 }
 
 /** Tek probe koşusu: exit 0 + timeout-içi + geçerli JSON + ready:true =

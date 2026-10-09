@@ -118,6 +118,14 @@ export interface CoordinatorCheckpointStage {
   staleReason: string | null;
   /** Zarf kayıt saati (stage yaşı kaynağı). */
   at: string;
+  /** M-A (#2): ham İngilizce bayrak (`null` ≡ eksik → `bilinmiyor`). */
+  sideEffect: string | null;
+  sideEffectAttempted: number | null;
+  sideEffectConfirmed: number | null;
+  /** M-A (#3): soy (ikisi de `null` → sahipsiz, ağaç-dışı). */
+  scenario: string | null;
+  attempt: number | null;
+  stepSignature: string | null;
 }
 
 export interface CoordinatorCheckpoints {
@@ -130,6 +138,8 @@ export interface CoordinatorCheckpoints {
   firstGap: { stage: string; status: CheckpointStageStatus; staleReason: string | null; at: string } | null;
   /** Salt-metin öneri — butona bağlanmaz. */
   safeNextAction: string | null;
+  /** M-A (#2): true → kilitli `tekrar-öncesi` metni (eylem yok). */
+  retryHint: boolean;
 }
 
 export interface CoordinatorRevision {
@@ -153,6 +163,9 @@ export interface CoordinatorExplanationEntry {
   revRecorded: boolean;
   diffs: string[];
   note: string;
+  /** M-C derleme kimliği (indirgenmiş: maskeli-basename + kısa-8). */
+  artifacts: { base: string; digest: string }[];
+  artifactRest: number;
 }
 
 export interface CoordinatorExplanation {

@@ -1,6 +1,6 @@
 ---
 name: ow-ow
-description: Operate the ow CLI: past session analysis plus dev-service supervision and trace lookup. Use for agent work, service state, or which trace a request produced.
+description: "Operate the ow CLI: past session analysis plus dev-service supervision and trace lookup. Use for agent work, service state, or which trace a request produced."
 ---
 
 # ow — session observer operator manual

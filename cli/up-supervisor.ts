@@ -16,8 +16,9 @@ import { completeRequest, scanRequests, sweepStaleResults, type ServiceRequest, 
 import { appendLogLine, flushUpLogs } from "./up-logs"
 import { startTraceReceiver } from "./trace-receiver"
 import { tracePaths } from "./trace-store"
-import { clearLock, classifySupervisorFile, ensureUpStateDir, isLivePid, readLock, readLstart, readOwnBuildSidecar, readSupervisorState, upPaths, writeSupervisorState } from "./up-state"
+import { clearLock, classifySupervisorFile, ensureUpStateDir, isLivePid, readLock, readLstart, readOwnBuildSidecar, readSupervisorState, upPaths, writeSupervisorState, ARTIFACT_DIGESTS_MAX } from "./up-state"
 import type { UpBuildInfo, UpServiceState } from "./up-state"
+import { pickArtifactEntries } from "./up-probe"
 
 export type UpLineStream = "stdout" | "stderr" | "log"
 export type UpLineHandler = (service: string, stream: UpLineStream, line: string) => void
@@ -50,6 +51,9 @@ export type LiveUnit = {
   /** M3 last-known readiness (client-observed probe verdict, merged only
    * while the probed pid matches the live unit). */
   lastReadiness?: UpServiceState["lastReadiness"]
+  /** M-C probe-beyanlı derleme kimliği (basename → tam-digest ham;
+   * readiness zarfıyla birleşir, respawn'da diriltilmez). */
+  artifactDigests?: Record<string, string>
 }
 
 /** Live-supervisor execution context for M1 service requests (B1: the
@@ -246,7 +250,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     const state = {
       version: 1,
       startedAt: first?.startedAt ?? now(),
-      services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true, unit.provenance, unit.lastReadiness)),
+      services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true, unit.provenance, unit.lastReadiness, unit.artifactDigests)),
       ...(build === null ? {} : { build }),
     }
     // Merge-on-write (M3): an exit handler may have persisted behind our
@@ -492,6 +496,7 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
       "dependsOn",
       "provenance",
       "lastReadiness",
+      "artifactDigests",
     ])
     for (const [key, value] of Object.entries(prior) as [keyof UpServiceState, unknown][]) {
       if ((out as Record<string, unknown>)[key as string] === undefined && value !== undefined) {
@@ -539,7 +544,7 @@ export const persistMerged = async (supervisorFile: string, state: { version: 1;
  * B3: `cmd`/`logsCmd` land masked-shape-only (secret values never reach
  * state); `envNames` carries key names only. Masking is deterministic, so
  * `reconcile --check` can still compare expected vs running shapes. */
-const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false, provenance?: Provenance, lastReadiness?: UpServiceState["lastReadiness"]): UpServiceState => {
+const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false, provenance?: Provenance, lastReadiness?: UpServiceState["lastReadiness"], artifactDigests?: Record<string, string>): UpServiceState => {
   const primary = main ?? tail
   if (!primary) throw new Error(`${svc.name}: izlenecek süreç yok`)
   const maskedCmd = maskCmdShape(svc.cmd)
@@ -563,6 +568,7 @@ const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTa
     ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
     ...(provenance === undefined ? {} : { provenance }),
     ...(lastReadiness === undefined ? {} : { lastReadiness: { ...lastReadiness } }),
+    ...(artifactDigests === undefined ? {} : { artifactDigests: { ...artifactDigests } }),
   }
 }
 
@@ -744,6 +750,9 @@ const pruneUnitHandles = (ctx: SupervisorCtx, unit: LiveUnit): void => {
   // A respawned slot starts unsettled: the old readiness verdict belongs to
   // the dead pid and must never be re-recorded under the new one.
   unit.lastReadiness = undefined
+  // M-C: ölü pid'in yüklediği derleme kimliği de diriltilmez (aksi halde
+  // yeni pid'e eski-digest musallat olur — sahte derleme-eski).
+  unit.artifactDigests = undefined
 }
 
 const unitIsLive = async (unit: LiveUnit): Promise<boolean> => {
@@ -881,6 +890,18 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
       ...(outcome.note === undefined ? {} : { note: maskSecrets(outcome.note).slice(0, 200) }),
       at: outcome.at,
       kind: "probe",
+    }
+    // M-C derleme kimliği: aynı pid-korumalı zarfta taşınan beyan
+    // haritası şekil-sıkı birleşir (bozuk girdi düşer, geçerli yaşar;
+    // servis-başı cap; aynı-digest yeniden-yazımı no-op).
+    if (outcome.artifacts !== undefined) {
+      const picked = pickArtifactEntries(outcome.artifacts)
+      if (Object.keys(picked).length > 0) {
+        const merged: Record<string, string> = { ...(existing.artifactDigests ?? {}) }
+        for (const [base, digest] of Object.entries(picked)) merged[base] = digest
+        const keys = Object.keys(merged).sort()
+        existing.artifactDigests = Object.fromEntries(keys.slice(0, ARTIFACT_DIGESTS_MAX).map((base) => [base, merged[base]]))
+      }
     }
     await ctx.persist()
     return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "recorded", message: `kaydedildi: ${request.service} readiness (${outcome.ok ? "hazır" : "hazır-değil"})`, pid: outcome.pid }

@@ -25,6 +25,10 @@ export type ReadinessOutcome = {
   ok: boolean
   note?: string
   at: string
+  /** M-C probe-beyanlı derleme kimliği (basename → tam-digest, ham):
+   * readiness isteğiyle aynı zarfta taşınır (tek-yazar supervisor
+   * birleştirir; cap + şekil-disiplini supervisor tarafında). */
+  artifacts?: Record<string, string>
 }
 
 export type ServiceRequest = {

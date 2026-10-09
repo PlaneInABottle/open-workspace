@@ -26,6 +26,22 @@ const STALE_TR: Record<string, string> = {
   missing_basis: 'karşılaştırma kaydı yok',
 };
 
+/** M-A (#2): yan-etki Türkçe sözcüğü (`null` ≡ eksik → `bilinmiyor`). */
+const SIDE_EFFECT_TR: Record<string, string> = {
+  none: 'yok',
+  attempted: 'denendi',
+  confirmed: 'onaylandı',
+  unknown: 'bilinmiyor',
+};
+
+function yanEtkiSozcugu(sideEffect: string | null): string {
+  if (!sideEffect) return 'bilinmiyor';
+  return SIDE_EFFECT_TR[sideEffect] ?? 'bilinmiyor';
+}
+
+/** M-A (#2): kilitli retry metni (salt-metin; düğme/bağlantı yok). */
+const RETRY_HINT_TR = 'tekrar-öncesi: ow reconcile --check';
+
 const BOUNDARY_TR: Record<string, string> = {
   real: 'gerçek',
   local: 'yerel',
@@ -388,6 +404,44 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
   const currentStage = checkpoints.firstGap?.stage ?? checkpoints.lastVerified?.stage ?? null;
   const staleStages = checkpoints.stages.filter(stage => stage.status === 'stale');
 
+  // M-A: bayrak satırları (zarf-sıralı, tek-metin düğümlü) + deneme ağacı
+  // (senaryo → deneme; sahipsiz zarf ağaç-dışı). Doğrulanmamış-deneme
+  // kuralı CLI `isAttemptedUnconfirmed` aynasıdır.
+  const flagText = (stage: CoordinatorCheckpoints['stages'][number]): string => {
+    const counts: string[] = [];
+    if (stage.sideEffectAttempted !== null) counts.push(`denenen: ${stage.sideEffectAttempted}`);
+    if (stage.sideEffectConfirmed !== null) counts.push(`onaylanan: ${stage.sideEffectConfirmed}`);
+    return counts.length > 0
+      ? `yan-etki: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)}, ${counts.join(', ')})`
+      : `yan-etki: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)})`;
+  };
+  const unconfirmedAt = (index: number): boolean => {
+    const stage = checkpoints.stages[index];
+    if (stage.sideEffect !== 'attempted') return false;
+    return !checkpoints.stages.slice(index + 1).some(later => later.stage === stage.stage && later.sideEffect === 'confirmed');
+  };
+  const leafText = (index: number): string => {
+    const stage = checkpoints.stages[index];
+    const words = [STAGE_TR[stage.status]];
+    if (unconfirmedAt(index)) words.push('doğrulanmadı');
+    return `${stage.stage} (${words.join(', ')})`;
+  };
+  const attemptTree = new Map<string, { attempts: Map<number, number[]>; flat: number[] }>();
+  checkpoints.stages.forEach((stage, index) => {
+    if (stage.scenario === null) return;
+    let group = attemptTree.get(stage.scenario);
+    if (!group) {
+      group = { attempts: new Map(), flat: [] };
+      attemptTree.set(stage.scenario, group);
+    }
+    if (stage.attempt === null) group.flat.push(index);
+    else {
+      const bucket = group.attempts.get(stage.attempt) ?? [];
+      bucket.push(index);
+      group.attempts.set(stage.attempt, bucket);
+    }
+  });
+
   return (
     <article aria-labelledby="koordinator-checkpoints-heading" className="mt-4 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -446,6 +500,39 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
             </div>
           )}
         </div>
+      )}
+
+      <ul aria-label="Yan etkiler" className="mt-3 space-y-1 text-sm text-muted-foreground">
+        {checkpoints.stages.map((stage, index) => (
+          <li key={`${stage.stage}-${index}`}><span>{flagText(stage)}</span></li>
+        ))}
+      </ul>
+
+      {checkpoints.retryHint && (
+        <div className="mt-3 rounded-md border border-border p-3">
+          <p className="text-sm">{RETRY_HINT_TR}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Bu bir öneri — çalıştırmaz. Uygulamak asistana aittir.</p>
+        </div>
+      )}
+
+      {attemptTree.size > 0 && (
+        <ul aria-label="Deneme ağacı" className="mt-3 space-y-2 text-sm">
+          {[...attemptTree.entries()].map(([scenario, group]) => (
+            <li key={scenario}>
+              <span className="font-medium">{`senaryo: ${scenario}`}</span>
+              <ul className="ml-4 mt-1 space-y-1 text-muted-foreground">
+                {[...group.attempts.keys()].sort((a, b) => a - b).flatMap(attempt =>
+                  (group.attempts.get(attempt) ?? []).map(index => (
+                    <li key={`${attempt}-${index}`}><span>{`deneme ${attempt}: ${leafText(index)}`}</span></li>
+                  )),
+                )}
+                {group.flat.map(index => (
+                  <li key={`duz-${index}`}><span>{leafText(index)}</span></li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
       )}
 
       {checkpoints.safeNextAction && (
@@ -556,6 +643,16 @@ function ProvenancePanel({ explanation }: { explanation: CoordinatorExplanation 
           {entry.diffs.length > 0 && (
             <ul aria-label={`${entry.service} farkları`} className="list-disc pl-5 text-muted-foreground">
               {entry.diffs.map(diff => <li key={diff}>{diff}</li>)}
+            </ul>
+          )}
+          {entry.artifacts.length > 0 && (
+            <ul aria-label={`${entry.service} derlemeleri`} className="mt-1 flex flex-wrap gap-1.5 text-xs">
+              {entry.artifacts.map(artifact => (
+                <li key={artifact.base} className="rounded border border-border px-1.5 py-0.5">
+                  <code translate="no" data-artifact-digest className="font-mono">{`${artifact.base}@${artifact.digest}`}</code>
+                </li>
+              ))}
+              {entry.artifactRest > 0 && <li className="px-1 py-0.5 text-muted-foreground">+{entry.artifactRest} daha</li>}
             </ul>
           )}
           <p className="text-muted-foreground">neden: {entry.note}</p>

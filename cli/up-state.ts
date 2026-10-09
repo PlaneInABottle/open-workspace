@@ -47,7 +47,15 @@ export type UpServiceState = {
     at: string
     kind?: string
   }
+  /** M-C probe-beyanlı derleme kimliği: basename → tam-digest (ham;
+   * tel/insan YALNIZCA basename + kısa-8 indirgenmiş görür). Yalnızca
+   * supervisor istek-kanalı yazar (tek-yazar); respawn'da diriltilmez
+   * (ölü pid'in yüklediği derleme yeni pid'e bulaşmaz). */
+  artifactDigests?: Record<string, string>
 }
+
+/** M-C: servis-başı derleme-harita cap'i (önerilen 200 — kilitli). */
+export const ARTIFACT_DIGESTS_MAX = 200
 
 export type UpSupervisorState = {
   version: number

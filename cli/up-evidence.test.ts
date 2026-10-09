@@ -19,7 +19,7 @@ const basis = (overrides: Partial<EvidenceEnvelope> = {}): EvidenceEnvelope => (
   proof: { ok: true },
   at: "2026-10-09T08:00:00.000Z",
   by: "runner",
-  code: { script_hash: "abc123", checkout_rev: "rev1" },
+  code: { runner: "rev1", body: "abc123" },
   runtime: { port: 8080, cwd: "/repo/svc", provenance_rev: "rev1" },
   ...overrides,
 })
@@ -51,12 +51,12 @@ describe("normalizeEnvelope", () => {
     for (const raw of bad) expect(normalizeEnvelope(raw).ok).toBe(false)
   })
 
-  test("bilinen alt-alanlar alınır, ek alanlar atılır", () => {
+  test("bilinen alt-alanlar alınır, legacy eşdeğer yeni slota eşlenir, ek alanlar atılır", () => {
     const raw = { ...basis(), code: { script_hash: "h", extra: "drop" }, runtime: { port: 1 } }
     const normalized = normalizeEnvelope(raw)
     expect(normalized.ok).toBe(true)
     if (normalized.ok) {
-      expect(normalized.envelope.code).toEqual({ script_hash: "h" })
+      expect(normalized.envelope.code).toEqual({ body: "h" })
       expect(normalized.envelope.runtime).toEqual({ port: 1 })
     }
   })
@@ -107,14 +107,30 @@ describe("applyFreshness (tazelik matrisi)", () => {
     expect(out.map((line) => line.status)).toEqual(["confirmed", "confirmed"])
   })
 
-  test("öncelik script_hash > checkout_rev > runtime", () => {
-    const out = fresh([
-      basis(),
-      { ...basis(), at: "2026-10-09T09:00:00.000Z", code: { script_hash: "YENI", checkout_rev: "rev2" }, runtime: { port: 9090, cwd: "/baska", provenance_rev: "rev2" } },
-    ])
-    expect(out[1]).toMatchObject({ status: "stale", stale_reason: "script_hash" })
-    const out2 = fresh([basis(), { ...basis(), at: "2026-10-09T09:00:00.000Z", code: { script_hash: "abc123", checkout_rev: "rev2" }, runtime: { port: 9090 } }])
-    expect(out2[1]).toMatchObject({ status: "stale", stale_reason: "checkout_rev" })
+  test("kod-harita uyuşmazlığı (her slot) → script_hash; runtime ayrı", () => {
+    // M-B: 4 slot sabit sırada (runner → fixture → body → provider_contract)
+    // karşılaştırılır; herhangi bir kod-slotu farkı enum-sabit
+    // `script_hash` bayatlatır (kod-harita uyuşmazlığı).
+    const diverged = (code: Record<string, string>): EvidenceEnvelope => ({
+      ...basis(),
+      at: "2026-10-09T09:00:00.000Z",
+      code: code as EvidenceEnvelope["code"],
+    })
+    const cases: Record<string, string>[] = [
+      { runner: "rev2" },
+      { fixture: "f1" },
+      { body: "YENI" },
+      { provider_contract: "pc1" },
+    ]
+    for (const code of cases) {
+      const out = fresh([basis(), diverged(code)])
+      expect(out[1]).toMatchObject({ status: "stale", stale_reason: "script_hash" })
+    }
+    const out2 = fresh([basis(), { ...basis(), at: "2026-10-09T09:00:00.000Z", code: { runner: "rev1", body: "abc123" }, runtime: { port: 9090 } }])
+    expect(out2[1]).toMatchObject({ status: "stale", stale_reason: "runtime" })
+    // Kod-harita runtime'tan önce gelir: ikisi birden farklıysa neden script_hash olur.
+    const out3 = fresh([basis(), { ...basis(), at: "2026-10-09T09:00:00.000Z", code: { body: "YENI" }, runtime: { port: 9090 } }])
+    expect(out3[1]).toMatchObject({ status: "stale", stale_reason: "script_hash" })
   })
 
   test("runtime alt-alan değişimleri (port/cwd/provenance_rev)", () => {
@@ -137,7 +153,7 @@ describe("applyFreshness (tazelik matrisi)", () => {
   })
 
   test("tek taraflı runtime kaybı runtime-bayat sayılır", () => {
-    const out = fresh([basis(), { ...basis(), at: "2026-10-09T09:00:00.000Z", runtime: undefined, code: { script_hash: "abc123", checkout_rev: "rev1" } }])
+    const out = fresh([basis(), { ...basis(), at: "2026-10-09T09:00:00.000Z", runtime: undefined, code: { runner: "rev1", body: "abc123" } }])
     expect(out[1]).toMatchObject({ status: "stale", stale_reason: "runtime" })
   })
 
@@ -151,7 +167,7 @@ describe("applyFreshness (tazelik matrisi)", () => {
   })
 
   test("baz stage-bazlıdır (başka stage etkilenmez)", () => {
-    const out = fresh([basis(), { ...basis(), stage: "test", code: { script_hash: "BAM" }, at: "2026-10-09T09:00:00.000Z" }])
+    const out = fresh([basis(), { ...basis(), stage: "test", code: { body: "BAM" }, at: "2026-10-09T09:00:00.000Z" }])
     expect(out[1].status).toBe("confirmed")
   })
 })
@@ -160,7 +176,7 @@ describe("summarizeFresh (last_verified/first_gap)", () => {
   test("confirmed→stale→not_observed seçimi", () => {
     const lines = applyFreshness([
       basis(),
-      { ...basis(), at: "2026-10-09T09:00:00.000Z", code: { script_hash: "YENI", checkout_rev: "rev1" } },
+      { ...basis(), at: "2026-10-09T09:00:00.000Z", code: { body: "YENI", runner: "rev1" } },
       { ...basis(), stage: "deploy", status: "not_observed", at: "2026-10-09T09:05:00.000Z" },
     ])
     const { summary, last_verified, first_gap } = summarizeFresh(lines)
@@ -189,5 +205,165 @@ describe("summarizeFresh (last_verified/first_gap)", () => {
     ]))
     expect(last_verified?.stage).toBe("test")
     expect(first_gap).toBeNull()
+  })
+})
+
+describe("M-A side_effect/counts/scenario/attempt/step_signature (katkısal)", () => {
+  test("geçerli yeni alanlar aynen geçer", () => {
+    const raw = {
+      ...basis(),
+      side_effect: "attempted",
+      side_effect_counts: { attempted: 2, confirmed: 1 },
+      scenario: "gece-kosusu",
+      attempt: 3,
+      step_signature: "build-adim-1",
+    }
+    const normalized = normalizeEnvelope(raw)
+    expect(normalized.ok).toBe(true)
+    if (normalized.ok) {
+      expect(normalized.envelope.side_effect).toBe("attempted")
+      expect(normalized.envelope.side_effect_counts).toEqual({ attempted: 2, confirmed: 1 })
+      expect(normalized.envelope.scenario).toBe("gece-kosusu")
+      expect(normalized.envelope.attempt).toBe(3)
+      expect(normalized.envelope.step_signature).toBe("build-adim-1")
+    }
+  })
+
+  test("eksik side_effect/sayım/senaryo/attempt/imza geçer (bilinmiyor-uyumlu)", () => {
+    const normalized = normalizeEnvelope(basis())
+    expect(normalized.ok).toBe(true)
+    if (normalized.ok) {
+      expect(normalized.envelope.side_effect).toBeUndefined()
+      expect(normalized.envelope.side_effect_counts).toBeUndefined()
+      expect(normalized.envelope.scenario).toBeUndefined()
+      expect(normalized.envelope.attempt).toBeUndefined()
+      expect(normalized.envelope.step_signature).toBeUndefined()
+    }
+  })
+
+  test("bozuk yeni alanlar satırı bozar (fail-closed, asla zorlama)", () => {
+    const bad: unknown[] = [
+      { ...basis(), side_effect: "maybe" },
+      { ...basis(), side_effect: "NONE" },
+      { ...basis(), side_effect: 42 },
+      { ...basis(), side_effect_counts: { attempted: 1000000 } },
+      { ...basis(), side_effect_counts: { confirmed: -1 } },
+      { ...basis(), side_effect_counts: { attempted: 1.5 } },
+      { ...basis(), side_effect_counts: { attempted: "2" } },
+      { ...basis(), side_effect_counts: "cok" },
+      { ...basis(), side_effect_counts: [] },
+      { ...basis(), scenario: "" },
+      { ...basis(), scenario: "../kacis" },
+      { ...basis(), scenario: "a/b" },
+      { ...basis(), scenario: "x".repeat(65) },
+      { ...basis(), scenario: 7 },
+      { ...basis(), attempt: 0 },
+      { ...basis(), attempt: 1000 },
+      { ...basis(), attempt: 1.5 },
+      { ...basis(), attempt: "2" },
+      { ...basis(), step_signature: "" },
+      { ...basis(), step_signature: "x".repeat(129) },
+      { ...basis(), step_signature: 7 },
+    ]
+    for (const raw of bad) expect(normalizeEnvelope(raw).ok).toBe(false)
+  })
+
+  test("senaryo/imza maske-önce-cap ile taşınır (gizli-şekil sızmaz)", () => {
+    const masked = normalizeEnvelope({ ...basis(), scenario: "gece", step_signature: "token=hunter2" })
+    expect(masked.ok).toBe(true)
+    if (masked.ok) {
+      expect(masked.envelope.scenario).toBe("gece")
+      expect(masked.envelope.step_signature).toBe("token=***")
+      expect(JSON.stringify(masked.envelope)).not.toContain("hunter2")
+    }
+  })
+
+  test("tazelik yeni alanları yoksayar (ortogonal)", () => {
+    const out = applyFreshness([
+      basis(),
+      { ...basis(), at: "2026-10-09T09:00:00.000Z", side_effect: "attempted", side_effect_counts: { attempted: 2 }, scenario: "gece", attempt: 2, step_signature: "x" },
+    ])
+    expect(out.map((line) => line.status)).toEqual(["confirmed", "confirmed"])
+  })
+})
+
+describe("M-B kod haritası (runner/fixture/body/provider_contract + legacy eşdeğer)", () => {
+  const rawBasis = {
+    stage: "build",
+    status: "confirmed",
+    proof: { ok: true },
+    at: "2026-10-09T08:00:00.000Z",
+    by: "runner",
+    runtime: { port: 8080, cwd: "/repo/svc", provenance_rev: "rev1" },
+  }
+
+  test("dört yeni slot aynen geçer", () => {
+    const normalized = normalizeEnvelope({ ...rawBasis, code: { runner: "r1", fixture: "f1", body: "s1", provider_contract: "pc1" } })
+    expect(normalized.ok).toBe(true)
+    if (normalized.ok) {
+      expect(normalized.envelope.code).toEqual({ runner: "r1", fixture: "f1", body: "s1", provider_contract: "pc1" })
+    }
+  })
+
+  test("legacy eşdeğer eşlenir (script_hash→body, checkout_rev→runner)", () => {
+    const normalized = normalizeEnvelope({ ...rawBasis, code: { script_hash: "s1", checkout_rev: "r1" } })
+    expect(normalized.ok).toBe(true)
+    if (normalized.ok) expect(normalized.envelope.code).toEqual({ runner: "r1", body: "s1" })
+  })
+
+  test("aynı slot iki adla gelirse satır bozuktur (fail-closed, sessiz-kazanım yok)", () => {
+    for (const code of [
+      { script_hash: "s1", body: "s1" },
+      { script_hash: "s1", body: "s2" },
+      { checkout_rev: "r1", runner: "r1" },
+      { checkout_rev: "r1", runner: "r2" },
+    ]) {
+      expect(normalizeEnvelope({ ...rawBasis, code }).ok).toBe(false)
+    }
+  })
+
+  test("farklı slotlar karışık adla taşınabilir (çakışma yok)", () => {
+    const normalized = normalizeEnvelope({ ...rawBasis, code: { script_hash: "s1", runner: "r1" } })
+    expect(normalized.ok).toBe(true)
+    if (normalized.ok) expect(normalized.envelope.code).toEqual({ runner: "r1", body: "s1" })
+  })
+
+  test("gizli-şekilli slot fail-safe maskelenir (***)", () => {
+    const normalized = normalizeEnvelope({ ...rawBasis, code: { body: "token=hunter2-abcdef1234", runner: "r1" } })
+    expect(normalized.ok).toBe(true)
+    if (normalized.ok) {
+      expect(normalized.envelope.code).toEqual({ runner: "r1", body: "***" })
+      expect(JSON.stringify(normalized.envelope)).not.toContain("hunter2")
+    }
+  })
+
+  test("disiplinsiz slot satırı bozar (uzun/boş/şekilsiz)", () => {
+    const bad: unknown[] = [
+      { ...rawBasis, code: { body: "x".repeat(65) } },
+      { ...rawBasis, code: { runner: "" } },
+      { ...rawBasis, code: { fixture: 42 } },
+      { ...rawBasis, code: { provider_contract: "x".repeat(65) } },
+      { ...rawBasis, code: { script_hash: "x".repeat(65) } },
+      { ...rawBasis, code: { bilinmeyen: 1 } },
+    ]
+    for (const raw of bad) expect(normalizeEnvelope(raw).ok).toBe(false)
+  })
+
+  test("legacy-yeni aynı değer: tazelik confirmed-kararlı (eşdeğer-kararlılık)", () => {
+    const oldBasis = normalizeEnvelope({ ...rawBasis, code: { script_hash: "s1", checkout_rev: "r1" } })
+    const newSame = normalizeEnvelope({ ...rawBasis, at: "2026-10-09T09:00:00.000Z", code: { runner: "r1", body: "s1" } })
+    expect(oldBasis.ok).toBe(true)
+    expect(newSame.ok).toBe(true)
+    if (!oldBasis.ok || !newSame.ok) return
+    expect(applyFreshness([oldBasis.envelope, newSame.envelope]).map((line) => line.status)).toEqual(["confirmed", "confirmed"])
+  })
+
+  test("tek-taraflı kod kaybı → script_hash (kod-harita uyuşmazlığı)", () => {
+    const runtimeOnly = normalizeEnvelope({ ...rawBasis, runtime: { port: 1 } })
+    expect(runtimeOnly.ok).toBe(true)
+    if (!runtimeOnly.ok) return
+    // Tek-taraflı kod kaybı: bazda kod var, satırda yok → kod-harita uyuşmazlığı.
+    const out = applyFreshness([basis(), runtimeOnly.envelope])
+    expect(out[1]).toMatchObject({ status: "stale", stale_reason: "script_hash" })
   })
 })

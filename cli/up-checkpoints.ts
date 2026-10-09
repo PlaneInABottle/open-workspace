@@ -68,6 +68,118 @@ const STALE_TR: Record<string, string> = {
   missing_basis: "missing_basis",
 }
 
+/** M-A (#2): yan-etki Türkçe sözcüğü. Eksik (`undefined`) ≡ `unknown`
+ * → `bilinmiyor` (uyarısız). Ham İngilizce enum asla render edilmez. */
+const SIDE_EFFECT_TR: Record<string, string> = {
+  none: "yok",
+  attempted: "denendi",
+  confirmed: "onaylandı",
+  unknown: "bilinmiyor",
+}
+
+const sideEffectWord = (envelope: EvidenceEnvelope): string =>
+  SIDE_EFFECT_TR[envelope.side_effect ?? "unknown"] ?? "bilinmiyor"
+
+/** Zarf bayrak satırı (Türkçe, yorum yok; sayımlar render-only passthrough). */
+export const formatSideEffectLine = (envelope: EvidenceEnvelope): string => {
+  const parts = [`yan-etki: ${envelope.stage} (${sideEffectWord(envelope)}`]
+  const counts: string[] = []
+  if (envelope.side_effect_counts?.attempted !== undefined) counts.push(`denenen: ${envelope.side_effect_counts.attempted}`)
+  if (envelope.side_effect_counts?.confirmed !== undefined) counts.push(`onaylanan: ${envelope.side_effect_counts.confirmed}`)
+  return counts.length > 0 ? `${parts[0]}, ${counts.join(", ")})` : `${parts[0]})`
+}
+
+/** M-A (#2): reconcile-öncesi-retry ipucu (kilitli metin; düğme/otomatik
+ * eylem yok — salt-okunur öneri). */
+export const RETRY_HINT = "tekrar-öncesi: ow reconcile --check"
+
+/** Aynı stage'de `attempted` sonrası `confirmed` yoksa doğrulanmamış
+ * sayılır (dosya sırası = zaman sırası). */
+export const isAttemptedUnconfirmed = (envelopes: EvidenceEnvelope[], index: number): boolean => {
+  const envelope = envelopes[index]
+  if (envelope.side_effect !== "attempted") return false
+  for (let i = index + 1; i < envelopes.length; i += 1) {
+    if (envelopes[i].stage === envelope.stage && envelopes[i].side_effect === "confirmed") return false
+  }
+  return true
+}
+
+/** Herhangi bir zarf doğrulanmamış-deneme taşıyorsa ipucu gerekir (tek satır). */
+export const needsRetryHint = (envelopes: EvidenceEnvelope[]): boolean =>
+  envelopes.some((_, index) => isAttemptedUnconfirmed(envelopes, index))
+
+/** M-A (#3): koşu-adı sonek ayrıştırması (`<senaryo>-attempt<N>` /
+ * `<senaryo>-deneme<N>`, N 1..999). Açık alanlar her zaman kazanır;
+ * ayrıştırma yalnızca yedektir. */
+export const parseAttemptSuffix = (run: string): { scenario: string; attempt: number } | null => {
+  const match = /^(.*)-(?:attempt|deneme)(\d{1,3})$/.exec(run)
+  if (!match) return null
+  const scenario = match[1]
+  const attempt = Number.parseInt(match[2], 10)
+  if (scenario.length === 0 || !Number.isInteger(attempt) || attempt < 1 || attempt > 999) return null
+  return { scenario, attempt }
+}
+
+export type LineageOf = { scenario: string | null; attempt: number | null }
+
+/** Soy-çözümü (alan-bazında açık-kazanır): açık `scenario`/`attempt`
+ * varsa o; yoksa koşu-adı soneği; ikisi de yoksa sahipsiz (düz, grupsuz). */
+export const lineageOf = (envelope: EvidenceEnvelope, run: string): LineageOf => {
+  const fallback = parseAttemptSuffix(run)
+  return {
+    scenario: envelope.scenario ?? fallback?.scenario ?? null,
+    attempt: envelope.attempt ?? fallback?.attempt ?? null,
+  }
+}
+
+const STATUS_WORD: Record<string, string> = {
+  confirmed: "doğrulandı",
+  not_observed: "gözlenmedi",
+  stale: "bayat",
+}
+
+const leafWords = (envelopes: EvidenceEnvelope[], index: number): string => {
+  const envelope = envelopes[index]
+  const words = [STATUS_WORD[envelope.status] ?? envelope.status]
+  if (isAttemptedUnconfirmed(envelopes, index)) words.push("doğrulanmadı")
+  return words.join(", ")
+}
+
+/** M-A (#3): `senaryo → deneme → stage` ağacı. Sahipsiz satırlar ağaca
+ * girmez (düz listede kalır — gruplama yok). Kilitli sözcükler: `senaryo`,
+ * `deneme`, `doğrulanmadı` (yalnızca doğrulanmamış-deneme yaprağında). */
+export const formatAttemptTree = (run: string, envelopes: EvidenceEnvelope[]): string[] => {
+  const byScenario = new Map<string, { attempts: Map<number, number[]>; flat: number[] }>()
+  envelopes.forEach((envelope, index) => {
+    const { scenario, attempt } = lineageOf(envelope, run)
+    if (scenario === null) return
+    let group = byScenario.get(scenario)
+    if (!group) {
+      group = { attempts: new Map(), flat: [] }
+      byScenario.set(scenario, group)
+    }
+    if (attempt === null) group.flat.push(index)
+    else {
+      const bucket = group.attempts.get(attempt) ?? []
+      bucket.push(index)
+      group.attempts.set(attempt, bucket)
+    }
+  })
+  const lines: string[] = []
+  for (const [scenario, group] of byScenario) {
+    lines.push(`senaryo: ${scenario}`)
+    for (const attempt of [...group.attempts.keys()].sort((a, b) => a - b)) {
+      for (const index of group.attempts.get(attempt) as number[]) {
+        lines.push(`  deneme ${attempt}: ${envelopes[index].stage} (${leafWords(envelopes, index)})`)
+      }
+    }
+    for (const index of group.flat) {
+      lines.push(`  ${envelopes[index].stage} (${leafWords(envelopes, index)})`)
+    }
+  }
+  return lines
+}
+
 /** Zarf insan satırı (Türkçe, yorum yok). */
 export const formatEnvelopeLine = (envelope: EvidenceEnvelope): string => {
   if (envelope.status === "confirmed") return `doğrulandı: ${envelope.stage} (${envelope.at})`
@@ -174,6 +286,7 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
     return 0
   }
   for (const envelope of view.envelopes) console.log(formatEnvelopeLine(envelope))
+  for (const envelope of view.envelopes) console.log(formatSideEffectLine(envelope))
   console.log(view.last_verified ? `son doğrulanmış: ${view.last_verified.stage} (${view.last_verified.at})` : "son doğrulanmış: yok")
   if (view.first_gap) {
     const why =
@@ -184,5 +297,7 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
   }
   const actionSource = view.first_gap ?? view.envelopes[view.envelopes.length - 1]
   if (actionSource.safe_next_action !== undefined) console.log(`sonraki: ${singleLine(actionSource.safe_next_action)}`)
+  if (needsRetryHint(view.envelopes)) console.log(RETRY_HINT)
+  for (const line of formatAttemptTree(view.run, view.envelopes)) console.log(line)
   return 0
 }

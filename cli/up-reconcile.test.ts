@@ -15,7 +15,7 @@ import {
   waitResult,
   writeRequest,
 } from "./up-requests"
-import { diffService, maskCmdShape, reconcileOne, runReconcileCheck } from "./up-reconcile"
+import { diffService, formatDrift, maskCmdShape, reconcileOne, runReconcileCheck } from "./up-reconcile"
 import { mergePreservingSettled, processServiceRequest, runSupervised, type LiveUnit } from "./up-supervisor"
 import { ensureUpStateDir, isLivePid, readLstart, readSupervisorState, upPaths } from "./up-state"
 
@@ -155,11 +155,6 @@ describe("mergePreservingSettled union (B1)", () => {
       lstart: "x",
       startedAt: "ilk",
       lstartUnknown: true as const,
-      logsPid: 11,
-      logsLstart: "eski-kuyruk",
-      portConflict: true as const,
-      envNames: ["A"],
-      dependsOn: ["db"],
     }
     const merged = mergePreservingSettled([prior], [
       { name: "a", pid: 2, lstart: "y", startedAt: "yeniden" },
@@ -195,6 +190,20 @@ describe("mergePreservingSettled union (B1)", () => {
     )
     expect(JSON.stringify(merged[0])).not.toContain("hunter2")
     expect(merged[0].cmd).toBe("run --token ***")
+  })
+
+  test("M-C: artifactDigests aynı-kimlikte korunur, respawn'da düşer (sahte-drift yok)", () => {
+    const prior = {
+      name: "a",
+      pid: 1,
+      lstart: "x",
+      startedAt: "ilk",
+      artifactDigests: { "api.jar": "a1b2c3d4e5" },
+    }
+    const same = mergePreservingSettled([prior], [{ name: "a", pid: 1, lstart: "x", startedAt: "yeni" }])
+    expect(same[0].artifactDigests).toEqual({ "api.jar": "a1b2c3d4e5" })
+    const respawned = mergePreservingSettled([prior], [{ name: "a", pid: 2, lstart: "y", startedAt: "yeniden" }])
+    expect(respawned[0].artifactDigests).toBeUndefined()
   })
 })
 
@@ -790,6 +799,212 @@ describe("runReconcileCheck çıkışları", () => {
       expect(io.logs.join("\n")).toContain("eksik: a → ow up a")
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M-C artifact-stale çekirdeği (saf)", () => {
+  const liveBase = { liveness: "live" as const, listening: undefined, portOwners: null as number[] | null }
+
+  const exp = () => parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
+  const run = { name: "api", pid: 1, lstart: "l", startedAt: "t", cmd: "sleep 30" }
+
+  test("uyuşmazlık → artifact-stale (kilitli şablon)", () => {
+    const drift = reconcileOne({
+      name: "api",
+      expected: exp(),
+      running: run,
+      ...liveBase,
+      artifacts: { declared: { "api.jar": "a1b2c3d4e5" }, recorded: { "api.jar": "ffffffffff" } },
+    })
+    expect(drift?.kind).toBe("artifact-stale")
+    expect(drift).toMatchObject({ service: "api", expected: { artifact: "api.jar" }, hint: "yeniden-derle + ow restart api" })
+    expect(formatDrift(drift!)).toBe("derleme-eski: api (api.jar değişti) → yeniden-derle + ow restart api")
+    // Tam-digest satırda yok (indirgenmiş tel).
+    expect(JSON.stringify(drift)).not.toContain("a1b2c3d4e5")
+    expect(JSON.stringify(drift)).not.toContain("ffffffffff")
+  })
+
+  test("eşleşme + kayıtsızlık drift üretmez (kayıt çağıranın işi)", () => {
+    const same = reconcileOne({
+      name: "api",
+      expected: exp(),
+      running: run,
+      ...liveBase,
+      artifacts: { declared: { "api.jar": "a1b2c3d4e5" }, recorded: { "api.jar": "a1b2c3d4e5" } },
+    })
+    expect(same).toBeNull()
+    const unrecorded = reconcileOne({
+      name: "api",
+      expected: exp(),
+      running: run,
+      ...liveBase,
+      artifacts: { declared: { "api.jar": "a1b2c3d4e5" }, recorded: {} },
+    })
+    expect(unrecorded).toBeNull()
+  })
+
+  test("haritasız girdi eski davranış (null, port-yabancı sırası korunur)", () => {
+    expect(reconcileOne({ name: "api", expected: exp(), running: run, ...liveBase })).toBeNull()
+  })
+})
+
+describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
+  const probedService = "services:\n  api:\n    cmd: sleep 30\n    readiness: {probe: [./hazir.sh], timeout: 10s, needsPort: false}\n"
+
+  const startProbedLive = async (): Promise<{ root: string; file: string; stop: () => void; done: Promise<number> }> => {
+    const root = await tempRoot()
+    const file = join(root, "ow.yaml")
+    await writeFile(file, probedService, "utf8")
+    const paths = upPaths(root)
+    await ensureUpStateDir(paths.stateDir)
+    const keeper = spawnSleep(60)
+    const keeperLstart = (await readLstart(keeper.pid))!
+    await writeFile(paths.lockFile, JSON.stringify({ pid: keeper.pid, lstart: keeperLstart, startedAt: new Date().toISOString() }), "utf8")
+    let stopFlag = false
+    const done = runSupervised(parseUpFile(probedService).services, {
+      rootDir: root,
+      stateFile: paths.supervisorFile,
+      requestsDir: paths.requestsDir,
+      owFile: file,
+      onLine: () => undefined,
+      shouldStop: () => stopFlag,
+    })
+    await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services.length === 1)
+    return { root, file, stop: () => {
+      stopFlag = true
+    }, done }
+  }
+
+  const fakeProbe = (checks: { name: string; ok: boolean; path?: string; digest?: string }[]) => async () => ({
+    ok: true,
+    note: "hazır",
+    checks,
+    timedOut: false,
+    code: 0,
+  })
+
+  const DIGEST_1 = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+  const DIGEST_2 = "ffffffffffffffffffffffffffffffffffffffff"
+
+  test("kayıt-gözlem: ilk tur drift yok + ham kayıt, ikinci tur tek derleme-eski", async () => {
+    const live = await startProbedLive()
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await runReconcileCheck({
+          rootDir: live.root,
+          file: live.file,
+          json: false,
+          probe: true,
+          runProbeFn: fakeProbe([{ name: "mod", ok: true, path: "/opt/svc/api.jar", digest: DIGEST_1 }]),
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.logs.join("\n")).not.toContain("derleme-eski")
+      // Kayıt-gözlem: durum dosyasına basename-anahtar + ham digest (tek yazar supervisor).
+      await waitFor(async () =>
+        (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["api.jar"] === DIGEST_1,
+      )
+      // İkinci tur: digest döndü → tek kilitli drift satırı, exit 1; tam-yol/tam-digest satırda yok.
+      const io2 = captureIo()
+      let code2 = -1
+      try {
+        code2 = await runReconcileCheck({
+          rootDir: live.root,
+          file: live.file,
+          json: false,
+          probe: true,
+          runProbeFn: fakeProbe([{ name: "mod", ok: true, path: "/opt/svc/api.jar", digest: DIGEST_2 }]),
+        })
+      } finally {
+        io2.restore()
+      }
+      expect(code2).toBe(1)
+      const out = io2.logs.join("\n")
+      expect(out).toContain("derleme-eski: api (api.jar değişti) → yeniden-derle + ow restart api")
+      expect(out).not.toContain(DIGEST_1)
+      expect(out).not.toContain(DIGEST_2)
+      expect(out).not.toContain("/opt/svc")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("--json katkımsal anahtarlar (indirgenmiş kısa-8, ham yok)", async () => {
+    const live = await startProbedLive()
+    try {
+      const runCheck = (digest: string, json: boolean) => {
+        const io = captureIo()
+        return (async () => {
+          try {
+            return {
+              code: await runReconcileCheck({
+                rootDir: live.root,
+                file: live.file,
+                json,
+                probe: true,
+                runProbeFn: fakeProbe([{ name: "mod", ok: true, path: "/opt/svc/api.jar", digest }]),
+              }),
+              out: io.logs.join("\n"),
+            }
+          } finally {
+            io.restore()
+          }
+        })()
+      }
+      await runCheck(DIGEST_1, false)
+      await waitFor(async () =>
+        (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["api.jar"] === DIGEST_1,
+      )
+      const second = await runCheck(DIGEST_2, true)
+      expect(second.code).toBe(1)
+      expect(second.out).not.toContain(DIGEST_1)
+      expect(second.out).not.toContain(DIGEST_2)
+      const payload = JSON.parse(second.out) as {
+        artifactDigests: Record<string, Record<string, string>>
+        artifactStale: { service: string; artifact: string }[]
+      }
+      expect(payload.artifactDigests).toEqual({ api: { "api.jar": DIGEST_1.slice(0, 8) } })
+      expect(payload.artifactStale).toEqual([{ service: "api", artifact: "api.jar" }])
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("düşmanca yol: mutlak-yol sızmaz (kayıt + insan + tel basename)", async () => {
+    const live = await startProbedLive()
+    try {
+      const io = captureIo()
+      try {
+        await runReconcileCheck({
+          rootDir: live.root,
+          file: live.file,
+          json: false,
+          probe: true,
+          runProbeFn: fakeProbe([{ name: "h", ok: true, path: "/etc/shadow/gizli.jar", digest: DIGEST_1 }]),
+        })
+      } finally {
+        io.restore()
+      }
+      const out = io.logs.join("\n")
+      expect(out).not.toContain("/etc/shadow")
+      await waitFor(async () =>
+        (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["gizli.jar"] === DIGEST_1,
+      )
+      const state = (await readSupervisorState(upPaths(live.root).supervisorFile))!
+      expect(JSON.stringify(state.services.find((svc) => svc.name === "api")?.artifactDigests)).not.toContain("/etc/shadow")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
     }
   })
 })

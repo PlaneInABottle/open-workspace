@@ -1,0 +1,3 @@
+{"stage":"build","status":"confirmed","proof":"derlendi","at":"2026-10-09T08:00:00.000Z","by":"runner","code":{"script_hash":"s1","checkout_rev":"r1"},"runtime":{"port":1},"scenario":"gece","attempt":1}
+{"stage":"test","status":"confirmed","proof":"gecti","at":"2026-10-09T08:10:00.000Z","by":"runner","code":{"script_hash":"s1","checkout_rev":"r1"},"runtime":{"port":1},"scenario":"gece","attempt":2,"side_effect":"attempted"}
+{"stage":"deploy","status":"not_observed","proof":"olculmedi","at":"2026-10-09T08:20:00.000Z","by":"runner"}

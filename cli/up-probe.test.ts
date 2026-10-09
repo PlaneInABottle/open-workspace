@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { findFirstJsonObject, parseProbeContract, PROBE_NOTE_MAX_CHARS, runProbe } from "./up-probe"
+import { artifactBase, declaredArtifactDigests, isArtifactBase, isArtifactDigest, findFirstJsonObject, parseProbeContract, PROBE_NOTE_MAX_CHARS, reduceArtifacts, runProbe, shortDigest } from "./up-probe"
 
 const specOf = (probe: string[]) => ({ probe, timeout: "10s" as const, needsPort: true })
 
@@ -31,6 +31,75 @@ describe("parseProbeContract", () => {
       ready: true,
       checks: [],
     })
+  })
+
+  test("M-C kimlik: path/digest şekil-sıkı alınır, bozuk alan düşer girdi kalır", () => {
+    const contract = parseProbeContract(
+      '{"ready": true, "checks": [' +
+        '{"name": "a", "ok": true, "path": "/opt/svc/api.jar", "digest": "a1b2c3d4e5"},' +
+        '{"name": "b", "ok": true, "path": ""},' +
+        '{"name": "c", "ok": true, "path": 7, "digest": "zzzz"},' +
+        '{"name": "d", "ok": false, "path": "/opt/svc/old.jar", "digest": "zz"}' +
+        "]}",
+    )
+    expect(contract?.checks).toEqual([
+      { name: "a", ok: true, path: "/opt/svc/api.jar", digest: "a1b2c3d4e5" },
+      { name: "b", ok: true },
+      { name: "c", ok: true },
+      { name: "d", ok: false, path: "/opt/svc/old.jar" },
+    ])
+    // Aşırı-uzun path düşer (girdi yaşar).
+    const long = parseProbeContract(`{"ready": true, "checks": [{"name": "a", "ok": true, "path": "/${"p".repeat(600)}", "digest": "a1b2c3d4e5"}]}`)
+    expect(long?.checks).toEqual([{ name: "a", ok: true, digest: "a1b2c3d4e5" }])
+  })
+})
+
+describe("M-C yapıt indirgeme (basename + kısa-8, ≤32 + sayaç)", () => {
+  test("ok-girdiler basename→kısa-8 listelenir, tam-yol taşınmaz", () => {
+    const reduced = reduceArtifacts([
+      { name: "a", ok: true, path: "/opt/svc/api.jar", digest: "a1b2c3d4e5f6" },
+      { name: "b", ok: false, path: "/opt/svc/old.jar", digest: "bbbbbbbbbb" },
+      { name: "c", ok: true, path: "/opt/svc/nodigest.jar" },
+    ])
+    expect(reduced).toEqual({ shown: [{ base: "api.jar", digest: "a1b2c3d4" }], rest: 0 })
+  })
+
+  test("33 girdi: 32 gösterilir, kalan sayılır (sıralı-deterministik)", () => {
+    const checks = Array.from({ length: 33 }, (_, i) => ({
+      name: `s${i}`,
+      ok: true,
+      path: `/opt/s${String(i).padStart(2, "0")}.jar`,
+      digest: "a1b2c3d4e5",
+    }))
+    const reduced = reduceArtifacts(checks)
+    expect(reduced.shown).toHaveLength(32)
+    expect(reduced.rest).toBe(1)
+    expect(reduced.shown[0]).toEqual({ base: "s00.jar", digest: "a1b2c3d4" })
+  })
+
+  test("düşmanca basename maskelenir, tam-yol asla çıkmaz", () => {
+    expect(artifactBase("/etc/shadow/x.jar")).toBe("x.jar")
+    expect(isArtifactDigest("a1b2c3")).toBe(false)
+    expect(isArtifactDigest("a1b2c3d")).toBe(true)
+    expect(isArtifactDigest("zz")).toBe(false)
+    expect(isArtifactBase("")).toBe(false)
+    expect(isArtifactBase("a/b")).toBe(false)
+    expect(isArtifactBase("..")).toBe(false)
+    expect(isArtifactBase("api.jar")).toBe(true)
+    expect(shortDigest("a1b2c3d4e5f6")).toBe("a1b2c3d4")
+    const hostile = reduceArtifacts([{ name: "h", ok: true, path: "/gizli/token=hunter2.jar", digest: "a1b2c3d4e5" }])
+    expect(JSON.stringify(hostile)).not.toContain("hunter2")
+    expect(JSON.stringify(hostile)).not.toContain("/gizli")
+  })
+
+  test("beyan haritası: ok + tam-şekil girdiler (tam-digest, bellek-içi)", () => {
+    expect(
+      declaredArtifactDigests([
+        { name: "a", ok: true, path: "/opt/svc/api.jar", digest: "a1b2c3d4e5" },
+        { name: "b", ok: false, path: "/opt/svc/old.jar", digest: "bbbbbbbbbb" },
+        { name: "c", ok: true, path: "/opt/svc/nodigest.jar" },
+      ]),
+    ).toEqual({ "api.jar": "a1b2c3d4e5" })
   })
 })
 

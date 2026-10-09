@@ -261,6 +261,24 @@ soft bütçe — son başlayan probe tek-timeout aşabilir; aşımda
 kaydedilir (`lastReadiness`, pid-doğrulanmış); `ps --explain` tanım +
 sonucu gösterir, çalıştırmaz.
 
+### Probe kod-kimliği + derleme-eski drift'i (M-C)
+
+Probe sözleşmesi `checks[]` girdilerine katkısal `path?` (çözümlenmiş modül
+yolu, 1..512ch) + `digest?` (hex 7..128ch) taşır; bozuk alan düşer, girdi
+yaşar (sözleşme-fatalı yok). `reconcile --check --probe` ok-girdilerin
+`basename(path) → digest` beyanını kayıtlı `artifactDigests` haritasıyla
+karşılaştırır (canlı servis): uyuşmazlık → `derleme-eski: <svc> (<base>
+değişti) → yeniden-derle + ow restart <svc>` (kilitli şablon; exit 1,
+diğer drift'lerle aynı); kayıtsız basename → kayıt-gözlem (istek-kanalıyla
+tek-yazar supervisor birleştirir; drift/uyarı yok). Harita servis-başı
+≤200 girdi (cap); respawn'da diriltilmez (ölü pid'in derlemesi yeni pid'e
+bulaşmaz). Tel/insan YALNIZCA basename + kısa-8 indirgenmiş görür (≤32
+gösterilir, kalan sayılır); tam-yol/tam-digest/probe-argv asla DOM/HAR/
+log/tel'e çıkmaz (durum dosyası ham tutar). `--json` katkısal
+`artifactDigests` (kısaltılmış) + `artifactStale` anahtarları verir.
+`ps --explain` kayıtlı haritayı `derleme: <base>@<kısa-8> (+N daha)`
+satırında gösterir.
+
 ### Evidence zarfı + checkpoint konvensiyonu (P2-A)
 
 Runner (projeye ait) doğrulanmış adımlarını satır-başı JSON zarflar olarak
@@ -268,22 +286,63 @@ Runner (projeye ait) doğrulanmış adımlarını satır-başı JSON zarflar ola
 ≤256KB/≤500 satır — aşımda runner en-eskiden budar); ow yalnızca okur ve
 gösterir, asla yazmaz/budamaz. Zarf `{stage, status
 confirmed|not_observed|stale, proof, at, by, code?, runtime?,
-safe_next_action?}` taşır; `proof` 8KB cap + secret-maske ile, `code`/
+safe_next_action?, side_effect? (none|attempted|confirmed|unknown),
+side_effect_counts? ({attempted?, confirmed?} 0..999999), scenario?,
+attempt? (1..999), step_signature? (1..128ch), code? ({runner?, fixture?,
+body?, provider_contract?} — her slot 1..64ch)}` taşır; `proof` 8KB cap + secret-maske ile, `code`/
 `runtime` ikisi de yoksa zarf `stale (missing_basis)` olur (tek taraflı
-kayıp ilgili alanın adıyla bayatlar), baz dosyadaki ilk (en-erken yazılmış)
-aynı stage'in confirmed satırıdır (script_hash → checkout_rev → runtime sırasıyla).
+kayıp kod-harita uyuşmazlığı sayılır), baz dosyadaki ilk (en-erken yazılmış)
+aynı stage'in confirmed satırıdır: 4 kod-slotu sabit sırada (runner →
+fixture → body → provider_contract) karşılaştırılır, herhangi bir kod-slotu
+farkı enum-sabit `stale (script_hash)` olur (kod-harita uyuşmazlığı; yeni
+`stale_reason` yok), sonra runtime. Legacy `script_hash`/`checkout_rev`
+okumada kabul edilir (`script_hash→body`, `checkout_rev→runner`); aynı slot
+iki adla gelirse satır bozuktur (fail-closed, sessiz-kazanım yok). Her slot
+1..64ch `revField` disiplinindedir (gizli-şekilli `***` maskelenir, uzun
+satırı bozar).
 
 `ow checkpoints list [--json]` koşuları (ad + zarf sayısı + özet + son
 `at`) listeler; `ow checkpoints show <run> [--json]` satırları
-`doğrulandı/gözlenmedi/bayat` dilinde render eder, kapanışta `son
+`doğrulandı/gözlenmedi/bayat` dilinde render eder, her zarf için bir
+`yan-etki: <stage> (yok|denendi|onaylandı|bilinmiyor[, denenen: N][, onaylanan: M])`
+bayrak satırı ekler, kapanışta `son
 doğrulanmış` + `ilk eksik` + runner'ın `sonraki` passthrough'unu gösterir
-(yorum katılmaz). Dosya yoksa exit 1, bozuk satırlar `bozuk-satır: N
+(yorum katılmaz). Eksik `side_effect` ≡ `bilinmiyor` (uyarısız);
+sayımlar render-only'dir (ow hesaplamaz). Aynı stage'de `attempted`
+sonrası `confirmed` yoksa tek satırlık kilitli ipucu basılır:
+`tekrar-öncesi: ow reconcile --check` (düğme/otomatik eylem yok).
+Soy (`scenario` 1..64ch RUN_NAME_PATTERN-şekilli, `attempt` 1..999 tamsayı,
+`step_signature` 1..128ch opak dize — üçü de katkısal-isteğe-bağlı;
+bozuk değer satırı bozar) `senaryo: <ad>` → `deneme <N>: <stage> (<durum>[,
+doğrulanmadı])` ağacında gruplanır: açık alanlar kazanır, yoksa koşu-adı
+soneki (`-attempt<N>`/`-deneme<N>`) yedektir, ikisi de yoksa satır sahipsiz
+kalır (düz listede, asla gruplanmaz). Tazelik bu alanları yoksayar
+(ortogonal). Dosya yoksa exit 1, bozuk satırlar `bozuk-satır: N
 (atlandı)` ile atlanır, geçersiz run adı exit 2. Canlı exec
 (probe/health/git/lsof) bu yollarda yoktur; ow `proof` içeriğini
 yorumlamaz.
 
-### Preflight kapısı (P2-B, salt-okunur)
+### Mechanical failure list (M-D, read-only)
 
+`ow failures [--since 1h|24h|7d] [--json]` lists repeat failure classes
+across every retained checkpoint run. Candidates are post-freshness
+non-confirmed envelopes, optionally filtered by envelope `at`
+(`--since` outside the locked set is a usage error, exit 2). Buckets use
+strictly the runner-declared tuple `(stage, status, stale_reason,
+step_signature)` — a missing step forms its own bucket and renders
+as `-` in human output (`step: null` in `--json`, so a literal
+runner-declared `"-"` step stays distinguishable); nothing else decides
+the bucket (no message scan, no inference). The two-attempt rule lives
+here, never in `show`: a `(scenario, stage)` partition renders only with
+2+ non-confirmed occurrences (explicit lineage fields win, run-name
+suffix is the fallback, unattributed lines partition under no scenario);
+singletons fold into one fixed line, `tekrar-yok: <n> tekil bulgu
+listelenmedi`. Empty output is `bulgu yok`. Exit is always 0. The command
+never executes, writes, or prunes (bounded file reads only). `--json`
+returns additive English keys `{groups: [{stage, status, stale_reason,
+step, count}], singletons}`.
+
+### Preflight kapısı (P2-B, salt-okunur)
 `ow preflight [--json] [--probe] [--file ow.yaml]` runner `prepare`
 öncesi tek kapıdır: `reconcile --check` diffleri + canlı servislerde
 beklenen/çalışan config kimliği (provenance lensi) + state'teki

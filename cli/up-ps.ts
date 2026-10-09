@@ -15,6 +15,7 @@ import { readSupervisorState, upPaths } from "./up-state"
 import type { UpServiceState } from "./up-state"
 import { decodeUtf8Fatal, parseUpFile, type UpService } from "./up-schema"
 import { maskCmdShape } from "./up-reconcile"
+import { reduceArtifactMap } from "./up-probe"
 import type { Provenance } from "./up-provenance"
 
 export type PsStatus = "running" | "exited" | "stopped" | "unknown"
@@ -300,6 +301,9 @@ export type Explanation = {
   neden: string
   /** M3 readiness: masked definition + last-known result (never executed). */
   readiness: ExplainReadiness
+  /** M-C derleme kimliği (kayıtlı haritadan indirgenmiş: maskeli-basename +
+   * kısa-8, sıralı ilk 32 + sayaç; tam-yol/tam-digest asla). */
+  artifacts: { shown: { base: string; digest: string }[]; rest: number }
 }
 
 export type ServiceExplanation = { service: string; explanation: Explanation }
@@ -415,7 +419,7 @@ export const explainServices = (opts: {
             needsPort: spec.needsPort,
             last: readRecordedReadiness(rec),
           }
-    return { service: name, explanation: { expected, running, diffs, provenance, neden, readiness } }
+    return { service: name, explanation: { expected, running, diffs, provenance, neden, readiness, artifacts: reduceArtifactMap(rec?.artifactDigests) } }
   })
 }
 
@@ -466,6 +470,10 @@ export const formatExplanation = (item: ServiceExplanation): string[] => {
     lines.push(`  çalışan: ${parts.join(" ")}`)
   }
   for (const diff of explanation.diffs) lines.push(`  fark: ${diff}`)
+  if (explanation.artifacts.shown.length > 0) {
+    const chips = explanation.artifacts.shown.map((entry) => `${entry.base}@${entry.digest}`).join(", ")
+    lines.push(`  derleme: ${chips}${explanation.artifacts.rest > 0 ? ` (+${explanation.artifacts.rest} daha)` : ""}`)
+  }
   lines.push(`  neden: ${explanation.neden}`)
   return lines
 }

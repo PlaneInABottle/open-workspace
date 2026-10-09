@@ -296,7 +296,7 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
     ],
   });
   // Latest-run checkpoint file: basis confirmed, same-basis confirmed,
-  // changed-rev confirmed (→ stale checkout_rev), then a hostile gap.
+  // changed-rev confirmed (→ stale script_hash: M-B kod-harita uyuşmazlığı), then a hostile gap.
   const revA = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
   const revB = 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5';
   const dir = join(f.root, '.ow', 'checkpoints');
@@ -370,11 +370,11 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
   assert.equal(snapshot.checkpoints.stages.length, 4);
   assert.deepEqual(snapshot.checkpoints.summary, { confirmed: 2, stale: 1, notObserved: 1 });
   assert.equal(snapshot.checkpoints.stages[2].status, 'stale');
-  assert.equal(snapshot.checkpoints.stages[2].staleReason, 'checkout_rev');
+  assert.equal(snapshot.checkpoints.stages[2].staleReason, 'script_hash');
   assert.equal(snapshot.checkpoints.lastVerified?.stage, 'test');
   // first_gap = son confirmed sonrasındaki ilk non-confirmed (stale build).
   assert.equal(snapshot.checkpoints.firstGap?.stage, 'build');
-  assert.equal(snapshot.checkpoints.firstGap?.staleReason, 'checkout_rev');
+  assert.equal(snapshot.checkpoints.firstGap?.staleReason, 'script_hash');
   assert.ok(snapshot.checkpoints.safeNextAction && !snapshot.checkpoints.safeNextAction.includes('hunter2'));
   assert.ok(snapshot.checkpoints.safeNextAction.includes('***'));
   assert.ok(snapshot.warnings.some(warning => warning.includes('bozuk satır')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
@@ -720,4 +720,173 @@ test('D3 same run name in two roots: newest-wins for ?run= and default, runs ded
   const explicitEmpty = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=demo`)).json() as { checkpoints: CheckpointWire; runs: string[] };
   assert.equal(explicitEmpty.checkpoints, null);
   assert.deepEqual(explicitEmpty.runs, ['demo']);
+});
+
+test('M-A side_effect/lineage mirror: normalize lockstep, hostile corrupt, freshness ignores', () => {
+  const base = { stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner' };
+  const good = normalizeCheckpointEnvelope({
+    ...base, side_effect: 'attempted', side_effect_counts: { attempted: 2 },
+    scenario: 'gece', attempt: 2, step_signature: 'test-imza',
+  });
+  assert.equal(good.ok, true);
+  if (!good.ok) return;
+  assert.equal(good.envelope.sideEffect, 'attempted');
+  assert.deepEqual(good.envelope.sideEffectCounts, { attempted: 2 });
+  assert.equal(good.envelope.scenario, 'gece');
+  assert.equal(good.envelope.attempt, 2);
+  assert.equal(good.envelope.stepSignature, 'test-imza');
+  // Eksik alanlar geçer (tel aynası: null/s tanımsız, render bilinmiyor).
+  const bare = normalizeCheckpointEnvelope(base);
+  assert.equal(bare.ok, true);
+  if (!bare.ok) return;
+  assert.equal(bare.envelope.sideEffect, null);
+  // Hostile: CLI ile aynı fail-closed kümesi.
+  const bad: unknown[] = [
+    { ...base, side_effect: 'maybe' },
+    { ...base, side_effect: 42 },
+    { ...base, side_effect_counts: { attempted: 1000000 } },
+    { ...base, side_effect_counts: { confirmed: -1 } },
+    { ...base, side_effect_counts: { attempted: 1.5 } },
+    { ...base, scenario: '../kacis' },
+    { ...base, scenario: '' },
+    { ...base, attempt: 0 },
+    { ...base, attempt: 1000 },
+    { ...base, step_signature: '' },
+    { ...base, step_signature: 'x'.repeat(129) },
+  ];
+  for (const raw of bad) assert.equal(normalizeCheckpointEnvelope(raw).ok, false);
+});
+
+test('M-A P3 mirror: stage flags + retryHint, freshness ignores new fields', () => {
+  const mk = (raw: Record<string, unknown>) => normalizeCheckpointEnvelope({
+    stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner',
+    code: { script_hash: 's1', checkout_rev: 'r1' }, runtime: { port: 1, cwd: '/r' }, ...raw,
+  });
+  const first = mk({ side_effect: 'attempted', scenario: 'gece', attempt: 1 });
+  const second = mk({ at: '2026-10-09T11:00:00.000Z', side_effect: 'attempted', scenario: 'gece', attempt: 2 });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) return;
+  const record = { name: 'dev', state: 'down', services: [] } as unknown as EnvironmentRecord;
+  const snapshot = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    checkpoint: { run: 'gece-attempt2', envelopes: [first.envelope, second.envelope], runs: ['gece-attempt2'] },
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  // Tazelik yeni alanları yoksayar: iki zarf da confirmed kalır.
+  assert.equal(snapshot.checkpoints?.stages[1].status, 'confirmed');
+  assert.equal(snapshot.checkpoints?.stages[0].sideEffect, 'attempted');
+  assert.equal(snapshot.checkpoints?.stages[1].scenario, 'gece');
+  assert.equal(snapshot.checkpoints?.stages[1].attempt, 2);
+  // Doğrulanmamış deneme → retry ipucu bayrağı.
+  assert.equal(snapshot.checkpoints?.retryHint, true);
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('hunter2'));
+});
+
+test('M-B code map mirror: 4 slots, legacy alias, conflict corrupt, freshness code-map mismatch', () => {
+  const base = { stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', runtime: { port: 1, cwd: '/r' } };
+  const full = normalizeCheckpointEnvelope({ ...base, code: { runner: 'r1', fixture: 'f1', body: 's1', provider_contract: 'pc1' } });
+  assert.equal(full.ok, true);
+  if (!full.ok) return;
+  assert.equal(full.envelope.checkoutRev, 'r1');
+  assert.equal(full.envelope.fixture, 'f1');
+  assert.equal(full.envelope.scriptHash, 's1');
+  assert.equal(full.envelope.providerContract, 'pc1');
+  // Legacy eşdeğer aynı slotlara eşlenir.
+  const legacy = normalizeCheckpointEnvelope({ ...base, code: { script_hash: 's1', checkout_rev: 'r1' } });
+  assert.equal(legacy.ok, true);
+  if (!legacy.ok) return;
+  assert.equal(legacy.envelope.scriptHash, 's1');
+  assert.equal(legacy.envelope.checkoutRev, 'r1');
+  // Çakışma + disiplinsiz slot → corrupt (fail-closed).
+  const bad: unknown[] = [
+    { ...base, code: { script_hash: 's1', body: 's1' } },
+    { ...base, code: { checkout_rev: 'r1', runner: 'r1' } },
+    { ...base, code: { body: 'x'.repeat(65) } },
+    { ...base, code: { runner: '' } },
+    { ...base, code: { fixture: 42 } },
+    { ...base, code: { bilinmeyen: 1 } },
+  ];
+  for (const raw of bad) assert.equal(normalizeCheckpointEnvelope(raw).ok, false);
+  // Gizli-şekilli slot fail-safe maskelenir.
+  const masked = normalizeCheckpointEnvelope({ ...base, code: { body: 'token=hunter2-abcdef1234' } });
+  assert.equal(masked.ok, true);
+  if (!masked.ok) return;
+  assert.equal(masked.envelope.scriptHash, '***');
+});
+
+test('M-B P3 freshness: legacy-stable, mixed old/new single divergence, all-absent missing_basis', () => {
+  const mk = (raw: Record<string, unknown>) => normalizeCheckpointEnvelope({
+    stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner',
+    code: { script_hash: 's1', checkout_rev: 'r1' }, runtime: { port: 1, cwd: '/r' }, ...raw,
+  });
+  const basis = mk({});
+  const sameNewNames = mk({ at: '2026-10-09T11:00:00.000Z', code: { runner: 'r1', body: 's1' } });
+  const diverged = mk({ at: '2026-10-09T12:00:00.000Z', code: { runner: 'r1', fixture: 'f1', body: 's2', provider_contract: 'pc1' } });
+  assert.equal(basis.ok, true);
+  assert.equal(sameNewNames.ok, true);
+  assert.equal(diverged.ok, true);
+  if (!basis.ok || !sameNewNames.ok || !diverged.ok) return;
+  const record = { name: 'dev', state: 'down', services: [] } as unknown as EnvironmentRecord;
+  const snapshot = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    checkpoint: { run: 'harita', envelopes: [basis.envelope, sameNewNames.envelope, diverged.envelope], runs: ['harita'] },
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  // Legacy-yeni aynı değer kararlı; ilk sapmada tek script_hash-bayat.
+  assert.deepEqual(snapshot.checkpoints?.stages.map(stage => stage.status), ['confirmed', 'confirmed', 'stale']);
+  assert.equal(snapshot.checkpoints?.stages[2].staleReason, 'script_hash');
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('hunter2'));
+});
+
+test('M-C P4 artifacts: recorded map reduced basename+short8, full path/digest never on wire', () => {
+  const record = { name: 'dev', state: 'down', services: [] } as unknown as EnvironmentRecord;
+  const snapshot = buildCoordinatorSnapshot({
+    record,
+    status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
+    portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
+    checkpoint: null,
+    supervisor: [{
+      name: 'api',
+      artifactDigests: {
+        'api.jar': 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+        'token=hunter2.jar': 'ffffffffffffffffffffffffffffffffffffffff',
+      },
+    }],
+    producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
+  });
+  const entry = snapshot.explanation?.entries.find(item => item.service === 'api');
+  assert.ok(entry);
+  assert.deepEqual(entry.artifacts, [
+    { base: 'api.jar', digest: 'a1b2c3d4' },
+    { base: 'token=***', digest: 'ffffffff' },
+  ]);
+  assert.equal(entry.artifactRest, 0);
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'), 'full digest must not reach the wire');
+  assert.ok(!wire.includes('hunter2'), 'hostile basename must not reach the wire');
+});
+
+test('M-C supervisor record: hostile artifact map shape-strict, invalid entries dropped', () => {
+  const rec = normalizeSupervisorService({
+    name: 'api',
+    artifactDigests: {
+      'api.jar': 'a1b2c3d4e5',
+      '../kacis': 'a1b2c3d4e5',
+      'kisa': 'zz',
+      'sayi': 42,
+      '': 'a1b2c3d4e5',
+    },
+  });
+  assert.ok(rec);
+  assert.deepEqual(rec?.artifactDigests, { 'api.jar': 'a1b2c3d4e5' });
+  const badMap = normalizeSupervisorService({ name: 'api', artifactDigests: ['x'] });
+  assert.ok(badMap);
+  assert.equal(badMap?.artifactDigests, undefined);
 });

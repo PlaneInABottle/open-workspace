@@ -170,6 +170,14 @@ export interface CoordinatorCheckpointStage {
   staleReason: string | null;
   /** Zarf kayıt saati (stage yaşı kaynağı). */
   at: string;
+  /** M-A (#2): ham İngilizce bayrak (`null` ≡ eksik → UI `bilinmiyor`). */
+  sideEffect: string | null;
+  sideEffectAttempted: number | null;
+  sideEffectConfirmed: number | null;
+  /** M-A (#3): soy (ikisi de `null` → sahipsiz, ağaç-dışı). */
+  scenario: string | null;
+  attempt: number | null;
+  stepSignature: string | null;
 }
 
 export interface CoordinatorCheckpoints {
@@ -183,6 +191,9 @@ export interface CoordinatorCheckpoints {
   firstGap: { stage: string; status: CheckpointStageStatus; staleReason: string | null; at: string } | null;
   /** Salt-metin öneri (butona bağlanmaz). */
   safeNextAction: string | null;
+  /** M-A (#2): doğrulanmamış-deneme varsa true → UI kilitli
+   * `tekrar-öncesi: ow reconcile --check` metnini gösterir (eylem yok). */
+  retryHint: boolean;
 }
 
 export interface CoordinatorRevision {
@@ -214,6 +225,10 @@ export interface CoordinatorExplanationEntry {
   revRecorded: boolean;
   diffs: string[];
   note: string;
+  /** M-C derleme kimliği (kayıtlı haritadan indirgenmiş: maskeli-basename +
+   * kısa-8, sıralı ilk 32; tam-yol/tam-digest tele asla çıkmaz). */
+  artifacts: { base: string; digest: string }[];
+  artifactRest: number;
 }
 
 export type ScenarioVerdict = 'pass' | 'stale' | 'skipped' | 'uncovered' | 'unverified';
@@ -277,6 +292,13 @@ const ENVELOPE_BY = new Set(['runner', 'ow-preflight', 'ow-reconcile', 'ow-probe
 const STALE_REASONS = new Set(['script_hash', 'checkout_rev', 'runtime', 'missing_basis']);
 const SAFE_NEXT_ACTION_MAX = 512;
 const REV_MAX_CHARS = 64;
+// M-A (#2/#3) cap'leri — CLI `cli/up-evidence.ts` kilidiyle birebir.
+const SIDE_EFFECTS = new Set(['none', 'attempted', 'confirmed', 'unknown']);
+const SIDE_EFFECT_COUNT_MAX = 999999;
+const SCENARIO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const ATTEMPT_MIN = 1;
+const ATTEMPT_MAX = 999;
+const STEP_SIGNATURE_MAX = 128;
 
 export interface ParsedCheckpointEnvelope {
   stage: string;
@@ -284,8 +306,18 @@ export interface ParsedCheckpointEnvelope {
   staleReason: string | null;
   safeNextAction: string | null;
   at: string;
+  /**
+   * M-B (#5) kod-haritası: wire anahtarları SABİT (`checkoutRev` = runner
+   * slotu, `scriptHash` = body slotu; legacy `checkout_rev`/`script_hash`
+   * okumada buraya eşlenir, telde asla yazılmaz). Yeni slotlar `fixture` +
+   * `providerContract`. Dördü de tanımsız + runtime tanımsız →
+   * `missing_basis`; herhangi bir kod-slotu uyuşmazlığı `script_hash`
+   * bayatlatır (kod-harita uyuşmazlığı; enum sabit).
+   */
   checkoutRev?: string;
   scriptHash?: string;
+  fixture?: string;
+  providerContract?: string;
   port?: number;
   /**
    * Tam çözümlenmiş cwd — YALNIZCA tazelik karşılaştırması için iç slot
@@ -294,6 +326,18 @@ export interface ParsedCheckpointEnvelope {
    */
   cwdFull?: string;
   provenanceRev?: string;
+  /**
+   * M-A (#2/#3) tel aynası (CLI `cli/up-evidence.ts` kilidiyle birebir):
+   * `side_effect`→`sideEffect`, `side_effect_counts`→`sideEffectCounts`,
+   * `scenario`→`scenario`, `attempt`→`attempt`,
+   * `step_signature`→`stepSignature`. Eksik `side_effect` wire'da `null`
+   * taşınır (render `bilinmiyor`). Tazelik bu alanları yoksayar (ortogonal).
+   */
+  sideEffect: string | null;
+  sideEffectCounts: { attempted?: number; confirmed?: number } | null;
+  scenario: string | null;
+  attempt: number | null;
+  stepSignature: string | null;
 }
 
 function revField(value: unknown): string | undefined {
@@ -331,6 +375,11 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
     staleReason: status === 'stale' ? (reason as string) : null,
     safeNextAction: null,
     at: dict['at'] as string,
+    sideEffect: null,
+    sideEffectCounts: null,
+    scenario: null,
+    attempt: null,
+    stepSignature: null,
   };
   if (typeof dict['safe_next_action'] === 'string') {
     const text = maskSecrets(dict['safe_next_action'] as string);
@@ -341,11 +390,38 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
   if (dict['code'] !== undefined) {
     if (typeof dict['code'] !== 'object' || dict['code'] === null || Array.isArray(dict['code'])) return { ok: false };
     const code = dict['code'] as Record<string, unknown>;
-    const scriptHash = revField(code['script_hash']);
-    const checkoutRev = revField(code['checkout_rev']);
-    if (scriptHash !== undefined) envelope.scriptHash = scriptHash;
-    if (checkoutRev !== undefined) envelope.checkoutRev = checkoutRev;
-    if (scriptHash === undefined && checkoutRev === undefined && Object.keys(code).length > 0) return { ok: false };
+    // M-B (#5): 4 slot + legacy eşdeğer (CLI `cli/up-evidence.ts` kilidiyle
+    // birebir: script_hash→body, checkout_rev→runner; aynı slot iki adla
+    // gelirse satır bozuktur; present-ama-disiplinsiz değer satırı bozar).
+    const slot = (key: string): { present: boolean; value: string | undefined } => {
+      const raw = code[key];
+      if (raw === undefined) return { present: false, value: undefined };
+      return { present: true, value: revField(raw) };
+    };
+    const runner = slot('runner');
+    const fixture = slot('fixture');
+    const body = slot('body');
+    const providerContract = slot('provider_contract');
+    const legacyHash = slot('script_hash');
+    const legacyRev = slot('checkout_rev');
+    if ((legacyHash.present && body.present) || (legacyRev.present && runner.present)) return { ok: false };
+    const resolve = (fresh: { present: boolean; value: string | undefined }, legacy: { present: boolean; value: string | undefined }): string | undefined | null => {
+      const present = fresh.present || legacy.present;
+      const value = fresh.present ? fresh.value : legacy.value;
+      if (present && value === undefined) return null;
+      return value;
+    };
+    const runnerValue = resolve(runner, legacyRev);
+    const fixtureValue = resolve(fixture, { present: false, value: undefined });
+    const bodyValue = resolve(body, legacyHash);
+    const providerContractValue = resolve(providerContract, { present: false, value: undefined });
+    if (runnerValue === null || fixtureValue === null || bodyValue === null || providerContractValue === null) return { ok: false };
+    let known = 0;
+    if (runnerValue !== undefined) { envelope.checkoutRev = runnerValue; known += 1; }
+    if (fixtureValue !== undefined) { envelope.fixture = fixtureValue; known += 1; }
+    if (bodyValue !== undefined) { envelope.scriptHash = bodyValue; known += 1; }
+    if (providerContractValue !== undefined) { envelope.providerContract = providerContractValue; known += 1; }
+    if (known === 0 && Object.keys(code).length > 0) return { ok: false };
   }
   if (dict['runtime'] !== undefined) {
     if (typeof dict['runtime'] !== 'object' || dict['runtime'] === null || Array.isArray(dict['runtime'])) return { ok: false };
@@ -357,22 +433,70 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
     if (provenanceRev !== undefined) { envelope.provenanceRev = provenanceRev; known += 1; }
     if (known === 0 && Object.keys(runtime).length > 0) return { ok: false };
   }
+  // M-A (#2): yan-etki bayrağı — geçersiz enum satırı bozar (asla zorlama).
+  if (dict['side_effect'] !== undefined) {
+    if (typeof dict['side_effect'] !== 'string' || !SIDE_EFFECTS.has(dict['side_effect'] as string)) return { ok: false };
+    envelope.sideEffect = dict['side_effect'] as string;
+  }
+  // M-A (#2): sayaçlar render-only'dir (ow hesaplamaz); aralık-dışı /
+  // tamsayı-dışı / şekilsiz değer satırı bozar.
+  if (dict['side_effect_counts'] !== undefined) {
+    const counts = dict['side_effect_counts'];
+    if (typeof counts !== 'object' || counts === null || Array.isArray(counts)) return { ok: false };
+    const table = counts as Record<string, unknown>;
+    const picked: { attempted?: number; confirmed?: number } = {};
+    for (const key of ['attempted', 'confirmed'] as const) {
+      if (table[key] !== undefined) {
+        if (typeof table[key] !== 'number' || !Number.isInteger(table[key]) || (table[key] as number) < 0 || (table[key] as number) > SIDE_EFFECT_COUNT_MAX) {
+          return { ok: false };
+        }
+        picked[key] = table[key] as number;
+      }
+    }
+    if (Object.keys(picked).length > 0) envelope.sideEffectCounts = picked;
+    else if (Object.keys(table).length > 0) return { ok: false };
+  }
+  // M-A (#3): soy — senaryo RUN_NAME_PATTERN şekli, deneme 1..999 tamsayı.
+  if (dict['scenario'] !== undefined) {
+    if (typeof dict['scenario'] !== 'string' || !SCENARIO_PATTERN.test(dict['scenario'] as string)) return { ok: false };
+    envelope.scenario = maskSecrets(dict['scenario'] as string);
+  }
+  if (dict['attempt'] !== undefined) {
+    if (typeof dict['attempt'] !== 'number' || !Number.isInteger(dict['attempt']) || (dict['attempt'] as number) < ATTEMPT_MIN || (dict['attempt'] as number) > ATTEMPT_MAX) {
+      return { ok: false };
+    }
+    envelope.attempt = dict['attempt'] as number;
+  }
+  // M-A (+M-D): adım imzası 1..128ch opak dize (maske-önce-cap).
+  if (dict['step_signature'] !== undefined) {
+    if (typeof dict['step_signature'] !== 'string' || (dict['step_signature'] as string).length === 0 || (dict['step_signature'] as string).length > STEP_SIGNATURE_MAX) {
+      return { ok: false };
+    }
+    const masked = maskSecrets(dict['step_signature'] as string);
+    envelope.stepSignature = masked.length <= STEP_SIGNATURE_MAX ? masked : `${masked.slice(0, STEP_SIGNATURE_MAX - '…[kesildi]'.length)}…[kesildi]`;
+  }
   return { ok: true, envelope };
 }
 
 function applyCheckpointFreshness(envelopes: ParsedCheckpointEnvelope[]): ParsedCheckpointEnvelope[] {
+  // M-A notu: sideEffect/sideEffectCounts/scenario/attempt/stepSignature
+  // tazeliğe ortogonaldir (burada yoksayılır — CLI `applyFreshness` aynası).
+  // M-B (#5): 4 kod-slotu sabit sırada (runner → fixture → body →
+  // provider_contract); herhangi bir kod-slotu uyuşmazlığı enum-sabit
+  // `script_hash` bayatlatır (kod-harita uyuşmazlığı).
   const basisByStage = new Map<string, ParsedCheckpointEnvelope>();
   for (const envelope of envelopes) {
     if (envelope.status === 'confirmed' && !basisByStage.has(envelope.stage)) basisByStage.set(envelope.stage, envelope);
   }
   return envelopes.map(envelope => {
     if (envelope.status !== 'confirmed') return { ...envelope };
-    if (envelope.scriptHash === undefined && envelope.checkoutRev === undefined && envelope.port === undefined && envelope.cwdFull === undefined && envelope.provenanceRev === undefined) {
+    if (envelope.scriptHash === undefined && envelope.checkoutRev === undefined && envelope.fixture === undefined && envelope.providerContract === undefined && envelope.port === undefined && envelope.cwdFull === undefined && envelope.provenanceRev === undefined) {
       return { ...envelope, status: 'stale' as const, staleReason: 'missing_basis' };
     }
     const basis = basisByStage.get(envelope.stage) as ParsedCheckpointEnvelope;
-    if (basis.scriptHash !== envelope.scriptHash) return { ...envelope, status: 'stale' as const, staleReason: 'script_hash' };
-    if (basis.checkoutRev !== envelope.checkoutRev) return { ...envelope, status: 'stale' as const, staleReason: 'checkout_rev' };
+    if (basis.checkoutRev !== envelope.checkoutRev || basis.fixture !== envelope.fixture || basis.scriptHash !== envelope.scriptHash || basis.providerContract !== envelope.providerContract) {
+      return { ...envelope, status: 'stale' as const, staleReason: 'script_hash' };
+    }
     if (basis.port !== envelope.port || basis.cwdFull !== envelope.cwdFull || basis.provenanceRev !== envelope.provenanceRev) {
       return { ...envelope, status: 'stale' as const, staleReason: 'runtime' };
     }
@@ -394,6 +518,9 @@ export interface SupervisorProvenanceRecord {
   dirty?: boolean;
   recordedAt?: string;
   exitCode?: number;
+  /** M-C probe-beyanlı derleme kimliği (durum-dosyasından ham basename →
+   * tam-digest; tele indirgenmiş taşınır). */
+  artifactDigests?: Record<string, string>;
   // NOT: `cwdBase`/`lastReadiness` bilerek yok — P4 beklenen/çalışan
   // environmentStatus + spawn rev'inden kurulur; supervisor cwd'si ve
   // lastReadiness kaydı render edilmez. D3 (P5 + a11y) ikisini de istemez
@@ -725,6 +852,12 @@ function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoin
     status: envelope.status,
     staleReason: envelope.staleReason,
     at: envelope.at,
+    sideEffect: envelope.sideEffect,
+    sideEffectAttempted: envelope.sideEffectCounts?.attempted ?? null,
+    sideEffectConfirmed: envelope.sideEffectCounts?.confirmed ?? null,
+    scenario: envelope.scenario,
+    attempt: envelope.attempt,
+    stepSignature: envelope.stepSignature,
   }));
   let confirmed = 0;
   let stale = 0;
@@ -749,6 +882,13 @@ function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoin
     ? { stage: maskSecrets(firstGapRaw.stage), status: firstGapRaw.status, staleReason: firstGapRaw.staleReason, at: firstGapRaw.at }
     : null;
   const actionSource = firstGapRaw ?? fresh[fresh.length - 1];
+  // M-A (#2): doğrulanmamış-deneme kuralı (CLI `needsRetryHint` aynası:
+  // aynı stage'de attempted sonrası confirmed yoksa ipucu).
+  let retryHint = false;
+  for (let i = 0; i < fresh.length && !retryHint; i += 1) {
+    if (fresh[i].sideEffect !== 'attempted') continue;
+    retryHint = !fresh.slice(i + 1).some(later => later.stage === fresh[i].stage && later.sideEffect === 'confirmed');
+  }
   return {
     run: source.run,
     runs: source.runs,
@@ -757,6 +897,7 @@ function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoin
     lastVerified,
     firstGap,
     safeNextAction: actionSource?.safeNextAction ?? null,
+    retryHint,
   };
 }
 
@@ -828,6 +969,8 @@ function buildExplanation(
     else if (running.status === 'ready') note = 'çalışıyor, bilinen sorun yok';
     else note = `canlı durum ${running.status} — diff satırlarına bak`;
     const rev = rec?.rev;
+    // M-C: kayıtlı derleme haritası indirgenmiş taşınır (basename + kısa-8).
+    const reduced = reduceArtifactMap(rec?.artifactDigests);
     return {
       service: maskSecrets(name),
       expected,
@@ -841,6 +984,8 @@ function buildExplanation(
       revRecorded: rev !== undefined,
       diffs,
       note: maskSecrets(note),
+      artifacts: reduced.shown,
+      artifactRest: reduced.rest,
     };
   });
 
@@ -1248,6 +1393,31 @@ export async function readSupervisorRecords(roots: string[]): Promise<{ records:
   return { records: [...merged.values()], warnings };
 }
 
+const ARTIFACT_BASE_PATTERN = /^[^/\\]+$/;
+const ARTIFACT_DIGEST_PATTERN = /^[0-9a-fA-F]{7,128}$/;
+
+/** M-C kayıtlı-harita girişi seçimi (CLI `pickArtifactEntries` aynası:
+ * şekil-sıkı, bozuk girdi düşer; basename ≤512ch, `..`/`.` yok). */
+function pickArtifactEntries(raw: unknown): Record<string, string> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [base, digest] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof base !== 'string' || base.length === 0 || base.length > 512) continue;
+    if (!ARTIFACT_BASE_PATTERN.test(base) || base === '.' || base === '..') continue;
+    if (typeof digest !== 'string' || !ARTIFACT_DIGEST_PATTERN.test(digest)) continue;
+    out[base] = digest;
+  }
+  return out;
+}
+
+/** M-C indirgenmiş görünüm (CLI `reduceArtifactMap` aynası: maskeli
+ * basename + kısa-8, sıralı ilk 32 + sayaç; tam-yol/tam-digest tele çıkmaz). */
+function reduceArtifactMap(map: Record<string, string> | undefined): { shown: { base: string; digest: string }[]; rest: number } {
+  const bases = Object.keys(map ?? {}).sort();
+  const shown = bases.slice(0, 32).map(base => ({ base: maskSecrets(base), digest: (map as Record<string, string>)[base].slice(0, 8) }));
+  return { shown, rest: Math.max(0, bases.length - shown.length) };
+}
+
 /** Saf supervisor-kayıt normalizasyonu (testler hostile rev'i buradan sokar). */
 export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRecord | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
@@ -1271,6 +1441,14 @@ export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRe
     }
     if (typeof prov['recordedAt'] === 'string' && Number.isFinite(Date.parse(prov['recordedAt'] as string))) {
       record.recordedAt = prov['recordedAt'] as string;
+    }
+  }
+  // M-C: derleme haritası şekil-sıkı alınır (bozuk harita düşer, kayıt yaşar;
+  // bozuk girdiler düşer, geçerli yaşar).
+  if (dict['artifactDigests'] !== undefined) {
+    if (typeof dict['artifactDigests'] === 'object' && dict['artifactDigests'] !== null && !Array.isArray(dict['artifactDigests'])) {
+      const picked = pickArtifactEntries(dict['artifactDigests']);
+      if (Object.keys(picked).length > 0) record.artifactDigests = picked;
     }
   }
   return record;

@@ -267,7 +267,7 @@ describe("ps --explain CLI", () => {
       expect(payload.services.map((svc) => svc.name)).toEqual(["a"])
       expect(payload.explanations).toHaveLength(1)
       const explanation = payload.explanations[0].explanation
-      expect(Object.keys(explanation).sort()).toEqual(["diffs", "expected", "neden", "provenance", "readiness", "running"])
+      expect(Object.keys(explanation).sort()).toEqual(["artifacts", "diffs", "expected", "neden", "provenance", "readiness", "running"])
       expect(JSON.stringify(payload)).not.toContain("hunter2")
       expect(JSON.stringify(explanation.provenance)).not.toContain("hunter2")
     } finally {
@@ -597,5 +597,79 @@ describe("merge: provenance respawn'da düşer", () => {
       [{ name: "a", pid: 1, lstart: "x", startedAt: "t2" }],
     )
     expect(same[0].provenance).toMatchObject({ checkout: { rev: "eski" } })
+  })
+})
+
+describe("M-C explain derleme kimliği (basename + kısa-8)", () => {
+  test("kayıtlı harita indirgenmiş listelenir (≤32 + sayaç)", () => {
+    const digests: Record<string, string> = { "api.jar": "a1b2c3d4e5f6", "extra.jar": "ffffffffffff" }
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30" }],
+      views: [liveView("a", 11)],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", artifactDigests: digests })],
+      snapshotOk: true,
+    })
+    expect(items[0].explanation.artifacts.shown).toEqual([
+      { base: "api.jar", digest: "a1b2c3d4" },
+      { base: "extra.jar", digest: "ffffffff" },
+    ])
+    expect(items[0].explanation.artifacts.rest).toBe(0)
+    const lines = formatExplanation(items[0])
+    expect(lines.join("\n")).toContain("derleme: api.jar@a1b2c3d4, extra.jar@ffffffff")
+    expect(lines.join("\n")).not.toContain("a1b2c3d4e5f6")
+  })
+
+  test("33 kayıt: 32 + sayaç; kayıtsız: satır yok", () => {
+    const digests: Record<string, string> = Object.fromEntries(
+      Array.from({ length: 33 }, (_, i) => [`s${String(i).padStart(2, "0")}.jar`, "a1b2c3d4e5"]),
+    )
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30" }],
+      views: [liveView("a", 11)],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", artifactDigests: digests })],
+      snapshotOk: true,
+    })
+    expect(items[0].explanation.artifacts.shown).toHaveLength(32)
+    expect(items[0].explanation.artifacts.rest).toBe(1)
+    expect(formatExplanation(items[0]).join("\n")).toContain("(+1 daha)")
+    const bare = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30" }],
+      views: [liveView("a", 11)],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30" })],
+      snapshotOk: true,
+    })
+    expect(bare[0].explanation.artifacts).toEqual({ shown: [], rest: 0 })
+    expect(formatExplanation(bare[0]).join("\n")).not.toContain("derleme:")
+  })
+
+  test("JSON katkımsal artifacts taşır (indirgenmiş)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [{ name: "a", pid: 1, lstart: "", startedAt: "t", artifactDigests: { "api.jar": "a1b2c3d4e5f6" } }],
+      })
+      const io = capture()
+      try {
+        expect(await runPsExplain({ rootDir: root, file, json: true })).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as {
+        explanations: { explanation: { artifacts: { shown: { base: string; digest: string }[]; rest: number } } }[]
+      }
+      expect(payload.explanations[0].explanation.artifacts).toEqual({ shown: [{ base: "api.jar", digest: "a1b2c3d4" }], rest: 0 })
+      expect(io.out.join("\n")).not.toContain("a1b2c3d4e5f6")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

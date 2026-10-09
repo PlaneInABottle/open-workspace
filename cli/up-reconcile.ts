@@ -96,6 +96,7 @@ export type DriftKind =
   | "config-farkli"
   | "lstart-uyusmazligi"
   | "port-yabanci"
+  | "artifact-stale"
 
 export type ReconcileDrift = {
   service: string
@@ -117,6 +118,10 @@ export type ReconcileInput = {
   listening: boolean | undefined
   /** `lsof` best-effort port-sahibi pid'leri; null = ölçülemedi. */
   portOwners: number[] | null
+  /** M-C derleme kimliği: probe-beyanlı (basename → tam-digest) vs kayıtlı
+   * harita. Canlılık/ok-geçidi çağırandadır (çekirdek salt karşılaştırır);
+   * kayıtsız basename drift üretmez (kayıt-gözlem çağıranın işi). */
+  artifacts?: { declared: Record<string, string>; recorded: Record<string, string> }
 }
 
 /** Saf drift çekirdeği: I/O yok, enjekte girdilerle test edilir. */
@@ -171,6 +176,25 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   if (Object.keys(diffs).length > 0) {
     return { service: name, kind: "config-farkli", expected: diffs, running: { pid: running.pid }, hint: `ow restart ${name}` }
   }
+  // M-C artifact-stale: canlı + uyumlu serviste probe-beyanlı digest ile
+  // kayıtlı harita çelişirse (sıralı ilk basename, deterministik). Digest
+  // karşılaştırması hex-dışıduyarlıdır (küçük-harfe indirgenir); tel/insan
+  // YALNIZCA basename görür (tam-digest expected/running'e girmez).
+  if (input.artifacts !== undefined) {
+    const { declared, recorded } = input.artifacts
+    for (const base of Object.keys(declared).sort()) {
+      const seen = recorded[base]
+      if (seen !== undefined && seen.toLowerCase() !== declared[base].toLowerCase()) {
+        return {
+          service: name,
+          kind: "artifact-stale",
+          expected: { artifact: base },
+          running: { pid: running.pid },
+          hint: `yeniden-derle + ow restart ${name}`,
+        }
+      }
+    }
+  }
   if (
     expected.port !== undefined &&
     input.listening === true &&
@@ -218,10 +242,18 @@ const DRIFT_TR: Record<DriftKind, string> = {
   "config-farkli": "config-farklı",
   "lstart-uyusmazligi": "lstart-uyuşmazlığı",
   "port-yabanci": "port-yabancı",
+  "artifact-stale": "derleme-eski",
 }
 
-export const formatDrift = (drift: ReconcileDrift): string =>
-  `${DRIFT_TR[drift.kind]}: ${drift.service} → ${drift.hint}`
+/** Kilitli insan şablonu (M-C): `derleme-eski: <svc> (<base> değişti) →
+ * yeniden-derle + ow restart <svc>` (öneri-metni; düğme/otomatik eylem yok). */
+export const formatDrift = (drift: ReconcileDrift): string => {
+  if (drift.kind === "artifact-stale") {
+    const base = (drift.expected as Record<string, unknown> | undefined)?.["artifact"]
+    return `derleme-eski: ${drift.service} (${typeof base === "string" ? base : "?"} değişti) → yeniden-derle + ow restart ${drift.service}`
+  }
+  return `${DRIFT_TR[drift.kind]}: ${drift.service} → ${drift.hint}`
+}
 
 /** M3 probe bütçesi (M1 N3): toplam ≤60s SOFT duvar — son başlayan probe
  * bütçeyi tek-timeout kadar aşabilir (koşan probe yarıda kesilmez);
@@ -277,6 +309,9 @@ export const runReconcileCheck = async (opts: {
   const running = state?.services ?? []
   const names = [...new Set([...expected.map((svc) => svc.name), ...running.map((svc) => svc.name)])].sort()
   const drifts: ReconcileDrift[] = []
+  // M-C: çekirdek girdileri saklanır (probe-sonrası artifact-geçidi aynı
+  // anlık-girdiyle ikinci kez çalışır — deterministik, yeniden-ölçüm yok).
+  const kernelInputs = new Map<string, { exp: UpService | null; run: UpServiceState | null; liveness: Liveness; listening: boolean | undefined; owners: number[] | null }>()
   for (const name of names) {
     const exp = expected.find((svc) => svc.name === name) ?? null
     const run = running.find((svc) => svc.name === name) ?? null
@@ -300,8 +335,8 @@ export const runReconcileCheck = async (opts: {
     }
     const drift = reconcileOne({ name, expected: exp, running: run, liveness, listening, portOwners: owners })
     if (drift) drifts.push(drift)
+    kernelInputs.set(name, { exp, run, liveness, listening, owners })
   }
-  const inSync = drifts.length === 0
   // M2 revision witness (B4 point b: explicit `--check` one-shot, best
   // effort): recorded rev per service + live checkout rev. Display-only —
   // drift/exit/keys unchanged (`revisions` is additive). ow.yaml carries
@@ -347,13 +382,18 @@ export const runReconcileCheck = async (opts: {
   // satırları zaten kapsar). Kayıt: canlı kilit varsa istek-kanalıyla
   // (tek yazar supervisor), yoksa atlanır (rapor korunur).
   let readiness: ReconcileReadiness[] = []
+  // M-C derleme-kimliği: probe-beyanlı (basename → tam-digest) vs kayıtlı
+  // harita. Uyuşmazlık (canlı + ok-girdi) → artifact-stale drift;
+  // kayıtsız basename → kayıt-gözlem (istek-kanalı, driftsiz/uyarısız).
+  const artifactStale: { service: string; artifact: string }[] = []
+  let artifactJson: Record<string, Record<string, string>> | null = null
   if (opts.probe === true) {
-    const { runProbeJob } = await import("./up-probe")
+    const { runProbeJob, declaredArtifactDigests, reduceArtifactMap } = await import("./up-probe")
     const { resolve: resolvePath } = await import("node:path")
     const runProbeFn = opts.runProbeFn ?? runProbeJob
     const deadline = Date.now() + (opts.probeBudgetMs ?? RECONCILE_PROBE_BUDGET_MS)
     const measured: ReconcileReadiness[] = []
-    const toRecord: { service: string; pid: number; ok: boolean; note: string }[] = []
+    const toRecord: { service: string; pid: number; ok: boolean; note: string; artifacts?: Record<string, string> }[] = []
     for (const name of names) {
       const exp = expected.find((svc) => svc.name === name) ?? null
       const run = running.find((svc) => svc.name === name) ?? null
@@ -375,11 +415,49 @@ export const runReconcileCheck = async (opts: {
         env: { ...process.env, ...exp.env, OW_SERVICE: name },
       }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "çalıştırılamadı", timedOut: false, code: null }))
       measured.push({ service: name, ok: outcome.ok, note: outcome.note })
-      toRecord.push({ service: name, pid: run.pid, ok: outcome.ok, note: outcome.note })
+      const declared = declaredArtifactDigests(outcome.checks)
+      const recorded = run.artifactDigests ?? {}
+      const unrecorded: Record<string, string> = {}
+      for (const [base, digest] of Object.entries(declared)) {
+        if (recorded[base] === undefined) unrecorded[base] = digest
+      }
+      toRecord.push({
+        service: name,
+        pid: run.pid,
+        ok: outcome.ok,
+        note: outcome.note,
+        ...(Object.keys(unrecorded).length > 0 ? { artifacts: unrecorded } : {}),
+      })
+      if (Object.keys(declared).length > 0 && !drifts.some((drift) => drift.service === name)) {
+        const prev = kernelInputs.get(name)
+        if (prev?.run) {
+          const artifactDrift = reconcileOne({
+            name,
+            expected: prev.exp,
+            running: prev.run,
+            liveness: prev.liveness,
+            listening: prev.listening,
+            portOwners: prev.owners,
+            artifacts: { declared, recorded },
+          })
+          if (artifactDrift?.kind === "artifact-stale") {
+            drifts.push(artifactDrift)
+            artifactStale.push({ service: name, artifact: ((artifactDrift.expected as Record<string, unknown> | undefined)?.["artifact"] as string) })
+          }
+        }
+      }
     }
     readiness = measured
     await recordReadinessResults(opts.rootDir, opts.file, toRecord, opts.json)
+    // JSON teli: kayıtlı haritalar (indirgenmiş kısa-8) + bu tur driftleri.
+    const recordedJson: Record<string, Record<string, string>> = {}
+    for (const svc of running) {
+      if (svc.artifactDigests === undefined) continue
+      recordedJson[svc.name] = Object.fromEntries(reduceArtifactMap(svc.artifactDigests).shown.map((entry) => [entry.base, entry.digest]))
+    }
+    artifactJson = recordedJson
   }
+  const inSync = drifts.length === 0
   const readinessLines = readiness.map((entry) =>
     entry.ok
       ? `readiness: ${entry.service} hazır`
@@ -388,7 +466,15 @@ export const runReconcileCheck = async (opts: {
         : `readiness: ${entry.service} hazır-değil (${entry.note})`,
   )
   if (opts.json) {
-    console.log(JSON.stringify({ reconcile: { inSync, drifts }, revisions, ...(opts.probe === true ? { readiness } : {}) }))
+    console.log(
+      JSON.stringify({
+        reconcile: { inSync, drifts },
+        revisions,
+        ...(opts.probe === true ? { readiness } : {}),
+        // M-C katkımsal tel (indirgenmiş kısa-8; ham digest tele çıkmaz).
+        ...(opts.probe === true ? { artifactDigests: artifactJson ?? {}, artifactStale } : {}),
+      }),
+    )
   } else if (inSync) {
     console.log(`uyumlu: ${expected.length} servis (${expected.map((svc) => svc.name).join(", ")})`)
   } else {
@@ -406,7 +492,7 @@ export const runReconcileCheck = async (opts: {
 export const recordReadinessResults = async (
   rootDir: string,
   file: string,
-  results: { service: string; pid: number; ok: boolean; note: string }[],
+  results: { service: string; pid: number; ok: boolean; note: string; artifacts?: Record<string, string> }[],
   json: boolean,
 ): Promise<void> => {
   if (results.length === 0) return
@@ -424,7 +510,13 @@ export const recordReadinessResults = async (
         (async () => {
           try {
             const nonce = await writeRequest(paths.requestsDir, "readiness", result.service, file, {
-              readiness: { pid, ok: result.ok, note: result.note, at },
+              readiness: {
+                pid,
+                ok: result.ok,
+                note: result.note,
+                at,
+                ...(result.artifacts === undefined ? {} : { artifacts: result.artifacts }),
+              },
             })
             await waitResult(paths.requestsDir, nonce)
           } catch {

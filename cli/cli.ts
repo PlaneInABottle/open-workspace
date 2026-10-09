@@ -30,7 +30,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "scenarios"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "scenarios", "failures"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
@@ -76,6 +76,7 @@ export const helpText = (): string =>
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
     "  checkpoints list [--file] [--json]  kayıtlı kanıt koşuları (salt-okunur)",
     "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
+    "  failures [--since 1h|24h|7d] [--file] [--json]  yinelenen bulgular (salt-okunur, mekanik)",
     "  preflight [--file] [--json] [--probe]  salt-okunur kapı (mutasyon yok; geçemezse çıkış 1)",
     "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 şema doğrulama (çalıştırma yok)",
     "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
@@ -657,7 +658,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -1010,6 +1011,16 @@ export const run = async (argv: string[]): Promise<number> => {
         return 2
       }
       return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
+    }
+    if (command === "failures") {
+      // M-D: read-only mechanical finding list — no exec/prune, always
+      // exit 0 (usage errors exit 2). --since outside the locked set is 2.
+      if (positional !== undefined) {
+        console.error("ow: failures konumsal argüman almaz")
+        return 2
+      }
+      const { runFailures } = await import("./up-failures")
+      return runFailures({ rootDir, since: flags["--since"], json })
     }
     if (command === "preflight") {
       // P2-B: salt-okunur kapı — spawn/stop/restart/probe/health/git/lsof
