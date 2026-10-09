@@ -71,8 +71,7 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   flagged service waits for HTTP 2xx on `127.0.0.1:<port><path>` after TCP;
   others stay TCP-only. Unknown service, slash-less path, `--health`
   without `--wait`/`-d`, or with `--check` → exit 2.
-- Readiness = TCP-accept, not HTTP/app health (`ps` `listening` key likewise)
-  unless `--health` opts a service into the HTTP 2xx gate.
+- Readiness = TCP-accept (HTTP/app health only via `--health`); `readiness: {probe: [...], timeout: 10s}` runs project probes in `up -d --wait`/`reconcile --probe` (argv-only, masked, budgeted; `--health` conflicts exit 2).
 - Spring notes: `/` 404 is NORMAL — wait on `/actuator/health`. TCP≈ready
   ports need no flag. Prefer `ow restart <svc>` over `ow down && ow up -d`
   (no `sleep 4`; single-service restart leaves healthy services untouched).
@@ -81,11 +80,9 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   everywhere (143-ish) — expected, not an error.
 - `ow reconcile --check` reports drift without changing anything:
   `eksik|fazla|durmuş|config-farklı|lstart-uyuşmazlığı|port-yabancı` plus the
-  suggested `ow up/restart/down <svc>` command (exit 0 in sync, 1 on drift;
-  since M2, recorded-vs-live rev lines are informational).
-  `--probe` is not implemented yet (M3).
-- `ow ps --explain [svc]` shows expected shapes vs running (recorded
-  provenance + snapshot) with `fark:`/`neden:` lines; never executes beyond `ps(1)`+TCP.
+  suggested `ow up/restart/down <svc>` command (exit 0 in sync, 1 on drift; rev lines informational).
+  `--probe` runs project probes one-shot (budgeted); never in `ps`.
+- `ow ps --explain [svc]`: expected shapes vs running + `fark:`/`neden:`; recorded only, never executes.
 - State is repo-local (`<root>/.ow/`); every pid is `lstart`-guarded, so a
   recycled pid is reported unknown, never signaled.
 - Port conflicts warn and still spawn, never reassign.
@@ -114,13 +111,13 @@ Turkish human lines; stable English `--json` keys (old keys never change, new ke
 | komut | zarf |
 |---|---|
 | `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` yalnız `depends_on` varsa) |
-| `up -d --wait --json` | `{ready, services[] ({name, port, status, waitedSec, exitCode?, healthPath?}), noPort[], note?}` |
+| `up -d --wait --json` | `{ready, services[] ({name, port?, status, waitedSec, exitCode?, healthPath?, readiness?}), noPort[], note?}` |
 | `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` yalnız başarısızlıkta) |
 | `down [--rm]`, `down <svc> --json` | `{stopped[] ({name, stopped, note}), warnings[]}` |
 | `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
 | `logs --json` | `{service, lines[]}` |
-| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[]}` |
-| `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, neden}})}` |
+| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[], readiness[] (yalnız --probe ile)}` |
+| `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, neden, readiness}})}` |
 | `preflight --json` | `{pass, gates[] ({name: reconcile\|provenance\|readiness, pass, detail}), missing[], envelopes[]}` |
 | `doctor --json` | `{checks[] ({name, ok, detail})}` (çıkışa `up`/`trace` katılmaz) |
 
@@ -158,12 +155,8 @@ ow doctor                                          # trace open/closed + span co
 
 ## Working with logs and traces (best practices)
 
-- Run from anywhere under the workspace root — readers (`ps`/`logs`/`trace`/
-  `doctor`/`down`) walk upward to the nearest `.ow/`; explicit `--file`
-  always wins; `ow up` creates state in cwd only.
-- Start narrow, widen on demand: `--service`/`--since`/`--tail`/`--grep`
-  first, full dump never. `--full` and `--show-fails` are the expensive
-  ones — check counts first (see Budgets).
+- Readers walk upward to the nearest `.ow/`; explicit `--file` wins; `ow up` stays in cwd.
+- Start narrow (`--service`/`--since`/`--tail`/`--grep`); `--full`/`--show-fails` are expensive — check counts first.
 - Prefer `--json` when piping into further analysis (stable English keys).
 - Join the two worlds by traceId: `ow trace <id>` for timing across services,
   `ow logs --grep <traceId>` for values (once apps log it).

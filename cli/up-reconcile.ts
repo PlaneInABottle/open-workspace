@@ -1,11 +1,11 @@
 /** M1 salt-okunur reconcile: beklenen (ow.yaml) vs çalışan (state+lstart)
  * drift raporu. Asla mutasyon yapmaz (tanık çizgisi) — yalnızca açık
  * `ow up/restart/down <svc>` komutları önerir. exit 0 ok / 1 drift / 2 kullanım.
- * Probe çalıştırmaz (M3'e ait): tanım + son sonuç gösterilmez, yalnızca
- * `--probe` bayrağı M3'e ait olduğu için exit 2 ile reddedilir.
- * N3 bütçe notu: probe yokken ölçülmedi; toplam ≤60s sınırı M3'te uygulanır. */
+ * M3 `--probe` fazı: tanımlı probe'lar istemci-tarafı one-shot çalışır
+ * (canlı+kayıtlı servisler, toplam ≤60s soft bütçe); sonuçlar `readiness:`
+ * satırları olarak eklenir, çıkışı değiştirmez (drift'e göre). */
 
-import { parseUpFile, type UpService } from "./up-schema"
+import { parseUpFile, PROBE_TIMEOUT_MS, type UpService } from "./up-schema"
 import { decodeUtf8Fatal } from "./up-schema"
 import { readLstart, readSupervisorState, upPaths, type UpServiceState } from "./up-state"
 import { tcpListening } from "./up-net"
@@ -223,8 +223,28 @@ const DRIFT_TR: Record<DriftKind, string> = {
 export const formatDrift = (drift: ReconcileDrift): string =>
   `${DRIFT_TR[drift.kind]}: ${drift.service} → ${drift.hint}`
 
-/** Salt-okunur `reconcile --check` koşusu: exit 0 sync / 1 drift / 2 kullanım. */
-export const runReconcileCheck = async (opts: { rootDir: string; file: string; json: boolean }): Promise<number> => {
+/** M3 probe bütçesi (M1 N3): toplam ≤60s SOFT duvar — son başlayan probe
+ * bütçeyi tek-timeout kadar aşabilir (koşan probe yarıda kesilmez);
+ * aşımda kalan servis `ölçülmedi(timeout-bütçesi)` raporlanır, exit yine
+ * drift'e göredir. */
+export const RECONCILE_PROBE_BUDGET_MS = 60_000
+
+export type ReconcileReadiness = { service: string; ok: boolean; note: string }
+
+/** Salt-okunur `reconcile --check` koşusu: exit 0 sync / 1 drift / 2 kullanım.
+ * `--probe` ile tanımlı probe'lar istemci-tarafı one-shot çalışır (canlı
+ * supervisor'da kayıtlı-canlı servisler); sonuçlar drift raporuna
+ * `readiness:` satırları olarak eklenir, çıkışı değiştirmez. */
+export const runReconcileCheck = async (opts: {
+  rootDir: string
+  file: string
+  json: boolean
+  probe?: boolean
+  /** Enjekte probe çalıştırıcı (default gerçek `runProbe`; testler sahte). */
+  runProbeFn?: import("./up-probe").ProbeFn
+  /** Toplam probe bütçesi (default 60s; testler küçültür). */
+  probeBudgetMs?: number
+}): Promise<number> => {
   let text: string
   try {
     const { readFileSync } = await import("node:fs")
@@ -319,8 +339,56 @@ export const runReconcileCheck = async (opts: { rootDir: string; file: string; j
     if (entry.recordedRev !== undefined) return `rev: ${entry.service} ${revMark(entry.recordedRev, entry.recordedDirty)} (kayıtlı; canlı okunamadı)`
     return `rev: ${entry.service} ${revMark(entry.liveRev as string, entry.liveDirty)} (yalnızca canlı; kayıt yok)`
   })
+  if (!opts.json) {
+    for (const line of revLines) console.log(line)
+  }
+  // M3 `--probe` fazı: drift'ten bağımsız salt-okunur ölçüm. Yalnızca
+  // kayıtlı-CANLI + tanımlı servisler (ölü/bilinmeyen atlanır — drift
+  // satırları zaten kapsar). Kayıt: canlı kilit varsa istek-kanalıyla
+  // (tek yazar supervisor), yoksa atlanır (rapor korunur).
+  let readiness: ReconcileReadiness[] = []
+  if (opts.probe === true) {
+    const { runProbeJob } = await import("./up-probe")
+    const { resolve: resolvePath } = await import("node:path")
+    const runProbeFn = opts.runProbeFn ?? runProbeJob
+    const deadline = Date.now() + (opts.probeBudgetMs ?? RECONCILE_PROBE_BUDGET_MS)
+    const measured: ReconcileReadiness[] = []
+    const toRecord: { service: string; pid: number; ok: boolean; note: string }[] = []
+    for (const name of names) {
+      const exp = expected.find((svc) => svc.name === name) ?? null
+      const run = running.find((svc) => svc.name === name) ?? null
+      if (exp?.readiness === undefined || run === undefined) continue
+      let live = false
+      if (run.exitCode === undefined && run.lstart !== "") {
+        const current = await readLstart(run.pid)
+        live = current !== null && current === run.lstart
+      }
+      if (!live) continue
+      if (Date.now() > deadline) {
+        measured.push({ service: name, ok: false, note: "ölçülmedi: timeout-bütçesi" })
+        continue
+      }
+      const outcome = await runProbeFn({
+        probe: exp.readiness.probe,
+        timeoutMs: PROBE_TIMEOUT_MS[exp.readiness.timeout],
+        cwd: exp.cwd === undefined ? opts.rootDir : resolvePath(opts.rootDir, exp.cwd),
+        env: { ...process.env, ...exp.env, OW_SERVICE: name },
+      }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "çalıştırılamadı", timedOut: false, code: null }))
+      measured.push({ service: name, ok: outcome.ok, note: outcome.note })
+      toRecord.push({ service: name, pid: run.pid, ok: outcome.ok, note: outcome.note })
+    }
+    readiness = measured
+    await recordReadinessResults(opts.rootDir, opts.file, toRecord, opts.json)
+  }
+  const readinessLines = readiness.map((entry) =>
+    entry.ok
+      ? `readiness: ${entry.service} hazır`
+      : entry.note.startsWith("ölçülmedi:")
+        ? `readiness: ${entry.service} ölçülmedi (timeout-bütçesi)`
+        : `readiness: ${entry.service} hazır-değil (${entry.note})`,
+  )
   if (opts.json) {
-    console.log(JSON.stringify({ reconcile: { inSync, drifts }, revisions }))
+    console.log(JSON.stringify({ reconcile: { inSync, drifts }, revisions, ...(opts.probe === true ? { readiness } : {}) }))
   } else if (inSync) {
     console.log(`uyumlu: ${expected.length} servis (${expected.map((svc) => svc.name).join(", ")})`)
   } else {
@@ -328,6 +396,45 @@ export const runReconcileCheck = async (opts: { rootDir: string; file: string; j
   }
   if (!opts.json) {
     for (const line of revLines) console.log(line)
+    for (const line of readinessLines) console.log(line)
   }
   return inSync ? 0 : 1
+}
+
+/** Probe verdict kayıtları (B1-temiz: canlı kilit → istek-kanalı; kilit
+ * yoksa sessiz atlanır). Ack kaybı yalnızca uyarır, verdict'i bozmaz. */
+export const recordReadinessResults = async (
+  rootDir: string,
+  file: string,
+  results: { service: string; pid: number; ok: boolean; note: string }[],
+  json: boolean,
+): Promise<void> => {
+  if (results.length === 0) return
+  const { classifyLock, readSupervisorState, upPaths } = await import("./up-state")
+  const { writeRequest, waitResult } = await import("./up-requests")
+  try {
+    const paths = upPaths(rootDir)
+    if ((await classifyLock(paths.lockFile)).kind !== "live") return
+    const state = await readSupervisorState(paths.supervisorFile)
+    const pending: Promise<unknown>[] = []
+    for (const result of results) {
+      const pid = state?.services.find((entry) => entry.name === result.service)?.pid ?? result.pid
+      const at = new Date().toISOString()
+      pending.push(
+        (async () => {
+          try {
+            const nonce = await writeRequest(paths.requestsDir, "readiness", result.service, file, {
+              readiness: { pid, ok: result.ok, note: result.note, at },
+            })
+            await waitResult(paths.requestsDir, nonce)
+          } catch {
+            if (!json) console.error(`uyarı: readiness kaydı doğrulanamadı: ${result.service}`)
+          }
+        })(),
+      )
+    }
+    await Promise.all(pending)
+  } catch {
+    // best-effort: verdict her durumda raporlanmıştır
+  }
 }

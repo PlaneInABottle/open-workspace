@@ -6,9 +6,9 @@
 
 import { readSupervisorState, upPaths } from "./up-state"
 
-export type ReadyTarget = { name: string; port: number; healthPath?: string }
+export type ReadyTarget = { name: string; port?: number; healthPath?: string }
 export type ReadyStatus = "ready" | "timeout" | "exited"
-export type ReadyResult = { name: string; port: number; status: ReadyStatus; waitedSec: number; exitCode?: number; healthPath?: string }
+export type ReadyResult = { name: string; port?: number; status: ReadyStatus; waitedSec: number; exitCode?: number; healthPath?: string }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 

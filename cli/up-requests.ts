@@ -5,7 +5,8 @@
  * The supervisor (sole writer) scans FIFO, executes, persists itself,
  * deletes the request, and leaves the result for the client to collect.
  * Request names `up-<svc>.<pid>.<nonce>.json` /
- * `restart-<svc>.<pid>.<nonce>.json` / `down-<svc>.<pid>.<nonce>.json`;
+ * `restart-<svc>.<pid>.<nonce>.json` / `down-<svc>.<pid>.<nonce>.json` /
+ * `readiness-<svc>.<pid>.<nonce>.json` (M3 verdict recording);
  * results live in `requests/results/<nonce>.json`. All writes are
  * tmp+rename atomic. A client that sees no result within the window exits
  * 1 (`istek yanıtsız`) and never assumes a half-spawn. */
@@ -13,7 +14,18 @@
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
-export type ServiceAction = "up" | "restart" | "down"
+export type ServiceAction = "up" | "restart" | "down" | "readiness"
+
+/** Readiness observation payload (M3): the probed pid plus the verdict.
+ * The supervisor records it only when the pid still matches the live
+ * unit (stale results are dropped, never merged). */
+export type ReadinessOutcome = {
+  /** Supervisor-recorded pid the probe verdict belongs to. */
+  pid: number
+  ok: boolean
+  note?: string
+  at: string
+}
 
 export type ServiceRequest = {
   action: ServiceAction
@@ -23,8 +35,11 @@ export type ServiceRequest = {
   pid: number
   at: string
   /** Absolute ow.yaml path the supervisor re-parses (client never inlines
-   * config: the file stays the single source of truth). */
+   * config: the file stays the single source of truth). Unused by the
+   * `readiness` action (outcome travels in-body). */
   file: string
+  /** Present only on `readiness` requests (client-observed verdict). */
+  readiness?: ReadinessOutcome
 }
 
 export type ServiceResult = {
@@ -34,7 +49,7 @@ export type ServiceResult = {
   ok: boolean
   /** Machine-stable outcome: `started` | `already-running` | `restarted` |
    * `stopped` | `already-stopped` | `refused` | `unknown-service` |
-   * `invalid-config`. */
+   * `invalid-config` | `recorded` | `stale`. */
   code: string
   /** Turkish human line (already formatted for stdout/stderr). */
   message: string
@@ -57,7 +72,7 @@ export const requestFileName = (action: ServiceAction, service: string, pid: num
 export const resultFileName = (nonce: string): string => `${nonce}.json`
 
 export const parseRequestFileName = (file: string): { action: ServiceAction; service: string; pid: number; nonce: string } | null => {
-  const match = /^(up|restart|down)-([A-Za-z0-9_-]{1,64})\.(\d+)\.([A-Za-z0-9_-]{1,64})\.json$/.exec(file)
+  const match = /^(up|restart|down|readiness)-([A-Za-z0-9_-]{1,64})\.(\d+)\.([A-Za-z0-9_-]{1,64})\.json$/.exec(file)
   if (!match) return null
   return { action: match[1] as ServiceAction, service: match[2], pid: Number(match[3]), nonce: match[4] }
 }
@@ -72,11 +87,26 @@ const atomicWriteJson = async (path: string, value: unknown): Promise<void> => {
   }
 }
 
-/** Client-side: write the request atomically, return the nonce to wait on. */
-export const writeRequest = async (requestsDir: string, action: ServiceAction, service: string, file: string): Promise<string> => {
+/** Client-side: write the request atomically, return the nonce to wait on.
+ * `extra` carries action-specific payloads (M3 `readiness` outcome). */
+export const writeRequest = async (
+  requestsDir: string,
+  action: ServiceAction,
+  service: string,
+  file: string,
+  extra?: { readiness?: ReadinessOutcome },
+): Promise<string> => {
   await mkdir(join(requestsDir, "results"), { recursive: true, mode: 0o700 })
   const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-  const request: ServiceRequest = { action, service, nonce, pid: process.pid, at: new Date().toISOString(), file }
+  const request: ServiceRequest = {
+    action,
+    service,
+    nonce,
+    pid: process.pid,
+    at: new Date().toISOString(),
+    file,
+    ...(extra?.readiness === undefined ? {} : { readiness: extra.readiness }),
+  }
   await atomicWriteJson(join(requestsDir, requestFileName(action, service, process.pid, nonce)), request)
   return nonce
 }

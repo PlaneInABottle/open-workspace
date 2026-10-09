@@ -1,0 +1,496 @@
+/** M3 probe çalıştırıcı: timeout/invalid-JSON/nonzero/secret-maske +
+ * sözleşme parse. Supervisor'a girmez (istemci-tarafı one-shot). */
+
+import { describe, expect, test } from "bun:test"
+
+import { findFirstJsonObject, parseProbeContract, PROBE_NOTE_MAX_CHARS, runProbe } from "./up-probe"
+
+const specOf = (probe: string[]) => ({ probe, timeout: "10s" as const, needsPort: true })
+
+describe("findFirstJsonObject", () => {
+  test("log-ön-ekli çıktıda ilk objeyi yakalar", () => {
+    expect(findFirstJsonObject('booting...\n{"ready": true}\ntrailing')).toBe('{"ready": true}')
+    expect(findFirstJsonObject("düz yazı")).toBeNull()
+    expect(findFirstJsonObject('{"a": {"b": "}"}}')).toBe('{"a": {"b": "}"}}')
+  })
+})
+
+describe("parseProbeContract", () => {
+  test("geçerli sözleşme + kırpma + checks filtresi", () => {
+    expect(parseProbeContract('{"ready": true, "note": "ok", "checks": [{"name": "a", "ok": true}]}')).toEqual({
+      ready: true,
+      note: "ok",
+      checks: [{ name: "a", ok: true }],
+    })
+    expect(parseProbeContract('{"ready": false}')).toEqual({ ready: false })
+    expect(parseProbeContract('{"ready": "evet"}')).toBeNull()
+    expect(parseProbeContract('{"note": "x"}')).toBeNull()
+    const long = parseProbeContract(`{"ready": true, "note": "${"n".repeat(300)}"}`)
+    expect(long?.note?.length).toBe(PROBE_NOTE_MAX_CHARS)
+    expect(parseProbeContract('{"ready": true, "checks": [{"name": "a"}, {"name": "b", "ok": "x"}, 7]}')).toEqual({
+      ready: true,
+      checks: [],
+    })
+  })
+})
+
+describe("runProbe", () => {
+  const env = { ...process.env }
+
+  test("hazır: exit 0 + geçerli JSON + ready:true", async () => {
+    const outcome = await runProbe({ spec: specOf(["echo", '{"ready": true, "note": "smoke-ok"}']), cwd: "/tmp", env })
+    expect(outcome).toMatchObject({ ok: true, note: "smoke-ok", timedOut: false, code: 0 })
+  })
+
+  test("nonzero çıkış hazır-değil sayılır (not + kod raporlanır)", async () => {
+    const outcome = await runProbe({ spec: specOf(["false"]), cwd: "/tmp", env })
+    expect(outcome.ok).toBe(false)
+    expect(outcome.note).toContain("çıkış kodu 1")
+    expect(outcome.code).toBe(1)
+  })
+
+  test("geçersiz JSON hazır-değil (stdout ham basılmaz)", async () => {
+    const outcome = await runProbe({ spec: specOf(["echo", "düz yazi"]), cwd: "/tmp", env })
+    expect(outcome.ok).toBe(false)
+    expect(outcome.note).toContain("geçersiz JSON")
+  })
+
+  test("timeout: TEK-PID kill + torun-notu, exit beklenmez", async () => {
+    const outcome = await runProbe({ spec: specOf(["sleep", "30"]), cwd: "/tmp", env, timeoutMs: 200 })
+    expect(outcome.timedOut).toBe(true)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.note).toContain("zaman aşımı")
+    expect(outcome.note).toContain("artakalan-torun-olabilir")
+  })
+
+  test("secret-maske: stdout/stderr/not maskeli, ham argv rapora girmez", async () => {
+    const outcome = await runProbe({ spec: specOf(["echo", '{"ready": false, "note": "token=hunter2"}']), cwd: "/tmp", env })
+    expect(outcome.ok).toBe(false)
+    expect(outcome.note).not.toContain("hunter2")
+    expect(outcome.note).toContain("token=***")
+    const errCase = await runProbe({
+      spec: specOf([process.execPath, "-e", 'console.error("password=hunter2"); process.exit(3)']),
+      cwd: "/tmp",
+      env,
+    })
+    expect(errCase.ok).toBe(false)
+    expect(errCase.note).not.toContain("hunter2")
+  })
+
+  test("env mirası + OW_SERVICE taşınır (değer çıktıda maskeli)", async () => {
+    const bun = process.execPath
+    const okCase = await runProbe({
+      spec: specOf([bun, "-e", "console.log(JSON.stringify({ready: true, note: process.env.OW_SERVICE}))"]),
+      cwd: "/tmp",
+      env: { ...process.env, OW_SERVICE: "api" },
+    })
+    expect(okCase).toMatchObject({ ok: true, note: "api" })
+    const masked = await runProbe({
+      spec: specOf([bun, "-e", 'console.log(JSON.stringify({ready: false, note: "token=" + process.env.S3CR3T}))']),
+      cwd: "/tmp",
+      env: { ...process.env, S3CR3T: "hunter2" },
+    })
+    expect(masked.ok).toBe(false)
+    expect(masked.note).not.toContain("hunter2")
+  })
+
+  test("stdout cap 64KB (kesik çıktı geçersiz sayılır)", async () => {
+    const outcome = await runProbe({
+      spec: specOf([process.execPath, "-e", 'let s=""; for (let i = 0; i < 70000; i++) s += "p"; console.log(s)']),
+      cwd: "/tmp",
+      env,
+    })
+    expect(outcome.ok).toBe(false)
+  })
+
+  test("hedef-dışı ağa dokunmaz, komut aynen çalışır (B2 beyan)", async () => {
+    const outcome = await runProbe({ spec: specOf(["echo", '{"ready": true}']), cwd: "/tmp", env })
+    expect(outcome.ok).toBe(true)
+  })
+})
+
+describe("wait/reconcile/explain bağlama (M3 integration)", () => {
+  const FIXTURES = new URL("./parity-fixtures/", import.meta.url).pathname
+
+  const tempRoot = async (): Promise<string> => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    return mkdtemp(join(tmpdir(), "ow-m3-"))
+  }
+
+  const capture = (): { out: string[]; err: string[]; restore: () => void } => {
+    const out: string[] = []
+    const err: string[] = []
+    const origLog = console.log
+    const origError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    return { out, err, restore: () => {
+      console.log = origLog
+      console.error = origError
+    } }
+  }
+
+  test("TCP-UP-probe-DOWN: wait exit 1 + hazır-değil", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const { readLstart } = await import("./up-state")
+    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempRoot()
+    const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+    try {
+      const lstart = (await readLstart(sleeper.pid))!
+      const { upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [{ name: "api", pid: sleeper.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port: holder.port }],
+      })
+      const services = parseUpFile(
+        `services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], timeout: 10s}\n`,
+      ).services
+      const io = capture()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 3000, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.out.join("\n")).toContain("hazır değil: api (probe: kapali)")
+    } finally {
+      try {
+        sleeper.kill("SIGKILL")
+      } catch {
+        // gone
+      }
+      holder.stop(true)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("TCP-UP-probe-DOWN JSON: readiness ok:false", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const { readLstart } = await import("./up-state")
+    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempRoot()
+    const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+    try {
+      const lstart = (await readLstart(sleeper.pid))!
+      const { upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [{ name: "api", pid: sleeper.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port: holder.port }],
+      })
+      const services = parseUpFile(
+        `services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], timeout: 10s}\n`,
+      ).services
+      const io = capture()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 3000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean; services: { readiness?: { kind: string; ok: boolean } }[] }
+      expect(payload.ready).toBe(false)
+      expect(payload.services[0].readiness).toMatchObject({ kind: "probe", ok: false })
+    } finally {
+      try {
+        sleeper.kill("SIGKILL")
+      } catch {
+        // gone
+      }
+      holder.stop(true)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("needsPort:false portsuz servis probe ile beklenir (noPort'a düşmez)", async () => {
+    const { waitForUpReady } = await import("./cli")
+    const { parseUpFile } = await import("./up-schema")
+    const root = await tempRoot()
+    try {
+      const services = parseUpFile("services:\n  worker:\n    cmd: ./work\n    readiness: {probe: [./ready.sh], needsPort: false}\n").services
+      let calls = 0
+      const io = capture()
+      let code = -1
+      try {
+        code = await waitForUpReady({
+          rootDir: root,
+          services,
+          timeoutMs: 3000,
+          json: true,
+          runProbeFn: async () => {
+            calls += 1
+            return { ok: true, note: "is-kuyrugu-bos", timedOut: false, code: 0 }
+          },
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(calls).toBeGreaterThan(0)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean; services: { port?: number; readiness?: object }[]; noPort: string[] }
+      expect(payload.ready).toBe(true)
+      expect(payload.noPort).toEqual([])
+      expect(payload.services[0]).not.toHaveProperty("port")
+      expect(payload.services[0].readiness).toMatchObject({ kind: "probe", ok: true })
+    } finally {
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("probe+--health çakışması exit 2 (N5)", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { run } = await import("./cli")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  api:\n    cmd: sleep 30\n    port: 8901\n    readiness: {probe: [./x.sh]}\n", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["up", "-d", "--wait", "5s", "--health", "api=/h", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain("çakışıyor: api")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--check --json: readiness maskeli-şekil, ham cmd sızmaz (B3)", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { run } = await import("./cli")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(
+        file,
+        "services:\n  api:\n    cmd: run --token hunter2\n    port: 8901\n    readiness: {probe: [./x.sh, --token, hunter2]}\n",
+        "utf8",
+      )
+      const io = capture()
+      try {
+        expect(await run(["up", "--check", "--json", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.out.join("\n")).not.toContain("hunter2")
+      const payload = JSON.parse(io.out.join("\n")) as { services: { cmd?: unknown; readiness?: { probe?: unknown } }[] }
+      expect(payload.services[0].cmd).toBe("run --token ***")
+      expect(payload.services[0].readiness?.probe).toBe("./x.sh --token ***")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("reconcile --probe: drift + readiness satırları, çıkış drift'e göre", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { readLstart, upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(
+        file,
+        `services:\n  a:\n    cmd: sleep 30\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], needsPort: false}\n`,
+        "utf8",
+      )
+      const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+      try {
+        const lstart = (await readLstart(sleeper.pid))!
+        const paths = upPaths(root)
+        await ensureUpStateDir(paths.stateDir)
+        await writeSupervisorState(paths.supervisorFile, {
+          version: 1,
+          startedAt: new Date().toISOString(),
+          services: [{ name: "a", pid: sleeper.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30" }],
+        })
+        const { runReconcileCheck } = await import("./up-reconcile")
+        const io = capture()
+        let code = -1
+        try {
+          code = await runReconcileCheck({ rootDir: root, file, json: false, probe: true })
+        } finally {
+          io.restore()
+        }
+        expect(code).toBe(0)
+        expect(io.out.join("\n")).toContain("readiness: a hazır-değil (kapali)")
+        const io2 = capture()
+        try {
+          expect(await runReconcileCheck({ rootDir: root, file, json: true, probe: true })).toBe(0)
+        } finally {
+          io2.restore()
+        }
+        const payload = JSON.parse(io2.out.join("\n")) as { reconcile: { inSync: boolean }; readiness: { service: string; ok: boolean }[] }
+        expect(payload.reconcile.inSync).toBe(true)
+        expect(payload.readiness).toEqual([{ service: "a", ok: false, note: "kapali" }])
+      } finally {
+        try {
+          sleeper.kill("SIGKILL")
+        } catch {
+          // gone
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("reconcile probe bütçesi: takılan + kalan ölçülmedi", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { readLstart, upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n    readiness: {probe: [./x.sh], needsPort: false}\n  b:\n    cmd: sleep 30\n    readiness: {probe: [./y.sh], needsPort: false}\n", "utf8")
+      const mk = () => Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+      const pa = mk()
+      const pb = mk()
+      try {
+        const la = (await readLstart(pa.pid))!
+        const lb = (await readLstart(pb.pid))!
+        const paths = upPaths(root)
+        await ensureUpStateDir(paths.stateDir)
+        await writeSupervisorState(paths.supervisorFile, {
+          version: 1,
+          startedAt: new Date().toISOString(),
+          services: [
+            { name: "a", pid: pa.pid, lstart: la, startedAt: new Date().toISOString(), cmd: "sleep 30" },
+            { name: "b", pid: pb.pid, lstart: lb, startedAt: new Date().toISOString(), cmd: "sleep 30" },
+          ],
+        })
+        let calls = 0
+        const { runReconcileCheck } = await import("./up-reconcile")
+        const io = capture()
+        let code = -1
+        try {
+          code = await runReconcileCheck({
+            rootDir: root,
+            file,
+            json: false,
+            probe: true,
+            probeBudgetMs: 30,
+            runProbeFn: async () => {
+              calls += 1
+              await new Promise((resolveSleep) => setTimeout(resolveSleep, 40))
+              return { ok: true, note: "gec", timedOut: false, code: 0 }
+            },
+          })
+        } finally {
+          io.restore()
+        }
+        expect(code).toBe(0)
+        expect(calls).toBe(1)
+        expect(io.out.join("\n")).toContain("readiness: b ölçülmedi (timeout-bütçesi)")
+      } finally {
+        for (const proc of [pa, pb]) {
+          try {
+            proc.kill("SIGKILL")
+          } catch {
+            // gone
+          }
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("readiness kaydı: canlı supervisor merge eder, eski pid düşer", async () => {
+    const { writeFile, rm, readFile } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { readLstart, upPaths, ensureUpStateDir, readSupervisorState } = await import("./up-state")
+    const { runSupervised, processServiceRequest } = await import("./up-supervisor")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n    readiness: {probe: [./x.sh], needsPort: false}\n", "utf8")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const keeper = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" })
+      try {
+        const keeperLstart = (await readLstart(keeper.pid))!
+        await writeFile(paths.lockFile, JSON.stringify({ pid: keeper.pid, lstart: keeperLstart, startedAt: new Date().toISOString() }), "utf8")
+        const { parseUpFile } = await import("./up-schema")
+        const text = await readFile(file, "utf8")
+        let stopFlag = false
+        const done = runSupervised(parseUpFile(text).services, {
+          rootDir: root,
+          stateFile: paths.supervisorFile,
+          requestsDir: paths.requestsDir,
+          owFile: file,
+          onLine: () => undefined,
+          shouldStop: () => stopFlag,
+        })
+        const waitFor = async (cond: () => Promise<boolean>): Promise<void> => {
+          const start = Date.now()
+          for (;;) {
+            if (await cond()) return
+            if (Date.now() - start > 8000) throw new Error("zaman aşımı")
+            await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
+          }
+        }
+        await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services.length === 1)
+        const { writeRequest, waitResult } = await import("./up-requests")
+        const live = (await readSupervisorState(paths.supervisorFile))!
+        const nonce = await writeRequest(paths.requestsDir, "readiness", "a", file, {
+          readiness: { pid: live.services[0].pid, ok: false, note: "kapali", at: new Date().toISOString() },
+        })
+        const result = await waitResult(paths.requestsDir, nonce)
+        expect(result).toMatchObject({ ok: true, code: "recorded" })
+        const after = (await readSupervisorState(paths.supervisorFile))!
+        expect(after.services[0].lastReadiness).toMatchObject({ ok: false, note: "kapali", kind: "probe" })
+        // Eski pid'li verdict düşer (stale), state'e dokunmaz.
+        const stale = await processServiceRequest(
+          {
+            rootDir: root,
+            owFile: file,
+            units: [],
+            children: [],
+            tails: [],
+            retiring: new Set(),
+            spawnUnit: async () => undefined,
+            persist: async () => undefined,
+          },
+          { action: "readiness", service: "a", nonce: "n", pid: 1, at: new Date().toISOString(), file, readiness: { pid: 999999, ok: true, note: "x", at: new Date().toISOString() } },
+        )
+        expect(stale).toMatchObject({ ok: false, code: "stale" })
+        stopFlag = true
+        await done
+      } finally {
+        try {
+          keeper.kill("SIGKILL")
+        } catch {
+          // gone
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

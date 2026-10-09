@@ -266,6 +266,29 @@ export type ExplainRunning = {
   cwd?: string
 } | null
 
+/** M3 readiness görünümü: tanım (maskeli) + son bilinen sonuç (kayıtlı
+ * `lastReadiness`; hoşgörülü okuma — şekilsizse `ölçülmedi`). Explain
+ * probe ÇALIŞTIRMAZ (tanım + kayıt render eder). */
+export type ExplainReadiness = {
+  defined: boolean
+  probe?: string
+  timeout?: string
+  needsPort?: boolean
+  last: { ok: boolean; note?: string; at?: string } | null
+}
+
+const readRecordedReadiness = (rec: UpServiceState | undefined): ExplainReadiness["last"] => {
+  const raw = (rec as unknown as Record<string, unknown> | undefined)?.["lastReadiness"]
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null
+  const dict = raw as Record<string, unknown>
+  if (typeof dict["ok"] !== "boolean") return null
+  return {
+    ok: dict["ok"] as boolean,
+    ...(typeof dict["note"] === "string" ? { note: dict["note"] as string } : {}),
+    ...(typeof dict["at"] === "string" ? { at: dict["at"] as string } : {}),
+  }
+}
+
 export type Explanation = {
   expected: ExplainExpected
   running: ExplainRunning
@@ -275,6 +298,8 @@ export type Explanation = {
   provenance: Provenance | null
   /** Single Turkish reason line (human `neden:` body, no prefix). */
   neden: string
+  /** M3 readiness: masked definition + last-known result (never executed). */
+  readiness: ExplainReadiness
 }
 
 export type ServiceExplanation = { service: string; explanation: Explanation }
@@ -379,7 +404,18 @@ export const explainServices = (opts: {
     else if (view?.status === "running" && rec.port !== undefined) neden = "UP ama /endpoint yok → readiness tanımsız, M3 probe ekleyin"
     else if (view?.status === "running") neden = "çalışıyor (port tanımsız, TCP beklenmez)"
     else neden = "çalışıyor, bilinen sorun yok"
-    return { service: name, explanation: { expected, running, diffs, provenance, neden } }
+    const spec = exp?.readiness
+    const readiness: ExplainReadiness =
+      spec === undefined
+        ? { defined: false, last: readRecordedReadiness(rec) }
+        : {
+            defined: true,
+            probe: maskCmdShape([...spec.probe]) ?? "",
+            timeout: spec.timeout,
+            needsPort: spec.needsPort,
+            last: readRecordedReadiness(rec),
+          }
+    return { service: name, explanation: { expected, running, diffs, provenance, neden, readiness } }
   })
 }
 
@@ -398,6 +434,16 @@ export const formatExplanation = (item: ServiceExplanation): string[] => {
       ...(explanation.expected.envNames === undefined ? [] : [`env=[${explanation.expected.envNames.join(", ")}]`]),
     ]
     lines.push(`  beklenen: ${parts.length > 0 ? parts.join(" ") : "-"}`)
+  }
+  const readiness = explanation.readiness
+  if (readiness.defined) {
+    const last =
+      readiness.last === null
+        ? "ölçülmedi"
+        : readiness.last.ok
+          ? `hazır (${readiness.last.at ?? "?"})`
+          : `hazır-değil (${readiness.last.note ?? "hazır değil"})`
+    lines.push(`  hazırlık: ${readiness.probe} (${readiness.timeout}) → ${last}`)
   }
   if (explanation.running === null) {
     lines.push("  çalışan: yok (kayıt yok)")

@@ -24,6 +24,37 @@ export type UpService = {
    * dependency only sorts earlier in spawn order. Plain enumerable: names
    * are not secrets, so `up --check --json` shows them and errors name them. */
   dependsOn?: readonly string[]
+  /** Project-defined readiness probe (M3, additive): single-line inline
+   * flow-map only (`readiness: {probe: [...], timeout: 10s}`). Non-enumerable
+   * like `env`: the raw argv may carry secrets — listings render only the
+   * masked shape, never the raw argv. */
+  readiness?: UpReadiness
+}
+
+/** M3 readiness definition: mandatory argv probe (≤16 parts, ≤512B each,
+ * no shell), optional timeout pin, order-only TCP gate flag. */
+export type UpReadiness = {
+  probe: readonly string[]
+  timeout: "5s" | "10s" | "30s"
+  needsPort: boolean
+}
+
+export const PROBE_TIMEOUT_MS: Record<UpReadiness["timeout"], number> = { "5s": 5000, "10s": 10000, "30s": 30000 }
+
+const PROBE_MAX_PARTS = 16
+const PROBE_MAX_PART_BYTES = 512
+// POSIX shell ailesi (argv[0] bunlara eşitse probe bir shell binary'sidir
+// ve `-c` ile shell-semantiği kazanır — Bun.spawn kendisi yorumlamaz).
+// powershell|cmd REDDEDİLDİ (gerekçe): platform macOS+Linux (POSIX,
+// ROADMAP'ta Windows deferred); genişlerse liste gözden geçirilir.
+const SHELL_ARGV0: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh"])
+
+/** Shell-binary tespiti: path basename + lowercase + `.exe` sıyırma
+ * (`/bin/sh`, `Sh`, `sh.exe` hepsi yakalanır; POSIX'te ters-bölü dosya
+ * adıdır, ayraç sayılmaz). */
+export const isShellArgv0 = (argv0: string): boolean => {
+  const base = argv0.split("/").pop() ?? argv0
+  return SHELL_ARGV0.has(base.toLowerCase().replace(/\.exe$/, ""))
 }
 
 /** Flat `trace:` block (`enabled`, `port` only). Absent block → undefined
@@ -234,6 +265,62 @@ const parseEnvValue = (node: YamlNode | undefined, serviceName: string): Readonl
 const asString = (value: YamlNode | undefined): string | null =>
   typeof value === "string" ? value : null
 
+/** `readiness: {probe: [...], timeout: 10s, needsPort: true}` — M3, YALNIZCA
+ * tek-satır inline flow-map (N1: blok-map yazımı subset-YAML 3. düzey
+ * yasağına takılır — parse hatası, exit 2). `probe` zorunlu argv listesi
+ * (shell yok); `timeout` 5s|10s|30s (default 10s); `needsPort` default true
+ * ve portsuz serviste şema hatasıdır. Ham argv state'e değil, yalnızca
+ * çalıştırıcıya gider (listelemeler maskeli-şekil gösterir). */
+const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: number | undefined, warnings: UpWarning[]): UpReadiness | undefined => {
+  if (node === undefined) return undefined
+  if (typeof node !== "object" || Array.isArray(node)) {
+    throw new UpSchemaError(0, `${serviceName}: readiness satır-içi harita olmalı (ör. readiness: {probe: [./hazir.sh], timeout: 10s})`)
+  }
+  const fields = node as Record<string, YamlNode>
+  for (const key of Object.keys(fields)) {
+    if (!["probe", "timeout", "needsPort"].includes(key)) {
+      warnings.push({ line: 0, message: `${serviceName}: readiness içinde bilinmeyen alan yoksayıldı: ${key}` })
+    }
+  }
+  const probeRaw = fields["probe"]
+  if (!Array.isArray(probeRaw) || probeRaw.length === 0) {
+    throw new UpSchemaError(0, `${serviceName}: readiness probe listesi olmalı (ör. probe: [./hazir.sh, --local])`)
+  }
+  if (probeRaw.length > PROBE_MAX_PARTS) {
+    throw new UpSchemaError(0, `${serviceName}: readiness probe en fazla ${PROBE_MAX_PARTS} parça olabilir`)
+  }
+  const probe = [...probeRaw]
+  for (const part of probe) {
+    if (typeof part !== "string") throw new UpSchemaError(0, `${serviceName}: readiness probe parçaları metin olmalı`)
+    if (Buffer.byteLength(part, "utf8") > PROBE_MAX_PART_BYTES) {
+      throw new UpSchemaError(0, `${serviceName}: readiness probe parçası en fazla ${PROBE_MAX_PART_BYTES} bayt olabilir`)
+    }
+  }
+  if (isShellArgv0(probe[0])) {
+    throw new UpSchemaError(0, `${serviceName}: readiness probe shell ile başlayamaz (argv listesi verin, sh -c yok)`)
+  }
+  let timeout: UpReadiness["timeout"] = "10s"
+  if (fields["timeout"] !== undefined) {
+    const raw = fields["timeout"]
+    if (raw !== "5s" && raw !== "10s" && raw !== "30s") {
+      throw new UpSchemaError(0, `${serviceName}: readiness timeout 5s|10s|30s olmalı`)
+    }
+    timeout = raw
+  }
+  let needsPort = true
+  if (fields["needsPort"] !== undefined) {
+    const raw = fields["needsPort"]
+    if (raw !== "true" && raw !== "false") {
+      throw new UpSchemaError(0, `${serviceName}: readiness needsPort true/false olmalı`)
+    }
+    needsPort = raw === "true"
+  }
+  if (needsPort && port === undefined) {
+    throw new UpSchemaError(0, `${serviceName}: readiness needsPort açıkken port tanımlı değil (port ekleyin ya da needsPort: false yazın)`)
+  }
+  return { probe, timeout, needsPort }
+}
+
 const REQUIRED_ENV_MAX_NAMES = 32
 
 const SERVICE_NAME = /^[A-Za-z0-9_-]{1,64}$/
@@ -442,8 +529,9 @@ export const parseUpFile = (text: string): UpFile => {
     const env = parseEnvValue(fields["env"], name)
     const requiredEnv = parseRequiredEnv(fields["required-env"], name)
     const dependsOn = parseDependsOn(fields["depends_on"], name)
+    const readiness = parseReadiness(fields["readiness"], name, port, warnings)
     for (const key of Object.keys(fields)) {
-      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env", "required-env", "depends_on"].includes(key)) {
+      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env", "required-env", "depends_on", "readiness"].includes(key)) {
         warnings.push({ line: 0, message: `${name}: bilinmeyen alan yoksayıldı: ${key}` })
       }
     }
@@ -451,6 +539,7 @@ export const parseUpFile = (text: string): UpFile => {
     if (env !== undefined) Object.defineProperty(service, "env", { value: env, enumerable: false })
     if (requiredEnv !== undefined) Object.defineProperty(service, "requiredEnv", { value: requiredEnv, enumerable: false })
     if (dependsOn !== undefined) service.dependsOn = dependsOn
+    if (readiness !== undefined) Object.defineProperty(service, "readiness", { value: readiness, enumerable: false })
     services.push(service)
   }
   // Order-only sequencing resolves here (the single choke point: every `up`

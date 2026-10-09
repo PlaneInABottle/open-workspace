@@ -24,7 +24,8 @@ import {
 import { doctor, formatDoctor } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./trace-cli"
-import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, subsetNestingHint } from "./up-schema"
+import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, PROBE_TIMEOUT_MS, subsetNestingHint } from "./up-schema"
+import { isSecretFlagToken, maskCmdShape, maskSecretToken } from "./up-reconcile"
 import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
@@ -69,7 +70,7 @@ export const helpText = (): string =>
   "                                tek servis (up <ad>): canlı supervisora istekle eklenir, sağlıklılar etkilenmez",
     "  restart <servis> [--file]   canlı supervisorda tek servisi yeniden başlat (kilit yoksa çıkış 2)",
     "  down [servis] [--file] [--rm]  servisleri durdur (--rm yalnız toplu down ile; tek serviste çıkış 2)",
-    "  reconcile --check [--json] [--file]  salt-okunur drift raporu (mutasyon yok; çıkış 1 drift, 0 uyumlu)",
+    "  reconcile --check [--json] [--probe] [--file]  salt-okunur drift raporu (mutasyon yok; çıkış 1 drift, 0 uyumlu)",
     "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
     "  ps --explain [servis] [--file] [--json]  beklenen/çalışan tanık görünümü (salt-okunur)",
     "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
@@ -202,56 +203,152 @@ export const upStateDir = (rootDir: string): string => join(rootDir, ".ow")
  * declared `port` accepts a TCP connection, a service exits, or the window
  * elapses. A service named in `health` additionally waits for HTTP 2xx on
  * `http://127.0.0.1:<port><yol>` after its TCP gate (unflagged services keep
- * pure TCP). Exit 0 only when all declared ports are ready; services without
- * a port are named but not waited on (nothing to probe). JSON mirrors the
- * trace/ps English-key discipline, with `healthPath` echoed per flagged
- * service (additive: `ready/services/noPort` untouched). */
+ * pure TCP). M3: a service with a `readiness:` definition additionally runs
+ * its project probe (argv-only, one-shot per throttle window) after its TCP
+ * gate (or directly when `needsPort: false`); a failing probe keeps the
+ * target pending until the window elapses (no retry/restart outside the
+ * wait itself). Exit 0 only when all waited targets are ready; portless
+ * services without a probe are named but not waited on (nothing to probe).
+ * JSON mirrors the trace/ps English-key discipline, with `healthPath`
+ * echoed per flagged service and an additive per-service `readiness`
+ * envelope (`{kind: tcp|http-health|probe, ok, note?, waitedSec}`); existing
+ * keys (`ready/services/noPort`) are untouched. */
+export type WaitReadiness = { kind: "tcp" | "http-health" | "probe"; ok: boolean; note?: string; waitedSec: number }
+
 export const waitForUpReady = async (opts: {
   rootDir: string
   services: UpService[]
   timeoutMs: number
   json: boolean
   health?: Record<string, string>
+  /** Injected project-probe runner (default: real `runProbe`). Tests pass a
+   * fake; the throttle below bounds how often it fires per target. */
+  runProbeFn?: import("./up-probe").ProbeFn
 }): Promise<number> => {
   const { exitedServices, waitForReady } = await import("./up-ready")
   const { httpHealthOk, tcpListening } = await import("./up-net")
+  const { runProbeJob } = await import("./up-probe")
+  const { resolve: resolvePath } = await import("node:path")
+  const runProbeFn = opts.runProbeFn ?? runProbeJob
   const health = opts.health ?? {}
+  const byName = new Map(opts.services.map((svc) => [svc.name, svc]))
   const targets = opts.services
-    .filter((svc) => svc.port !== undefined)
+    .filter((svc) => svc.port !== undefined || svc.readiness !== undefined)
     .map((svc) => ({
       name: svc.name,
-      port: svc.port as number,
+      ...(svc.port === undefined ? {} : { port: svc.port }),
       ...(health[svc.name] === undefined ? {} : { healthPath: health[svc.name] }),
     }))
-  const noPort = opts.services.filter((svc) => svc.port === undefined).map((svc) => svc.name)
+  const noPort = opts.services.filter((svc) => svc.port === undefined && svc.readiness === undefined).map((svc) => svc.name)
   if (targets.length === 0) {
     if (opts.json) console.log(JSON.stringify({ ready: true, services: [], noPort, note: "port tanımlı servis yok" }))
     else console.log("beklenecek port yok (servislerde port tanımlı değil)")
     return 0
   }
+  // Per-target probe tracker (N6: probe-function composition — the loop in
+  // up-ready.ts is untouched). Project probes fire at most once per 2s per
+  // target (a 500ms spawn loop would drown the project script otherwise);
+  // TCP/health keep their every-poll cadence.
+  const track = new Map<string, { tcpOk: boolean; probe?: { ran: boolean; ok: boolean; note: string; at: number } }>()
+  const tracked = (name: string): { tcpOk: boolean; probe?: { ran: boolean; ok: boolean; note: string; at: number } } => {
+    let entry = track.get(name)
+    if (!entry) {
+      entry = { tcpOk: false }
+      track.set(name, entry)
+    }
+    return entry
+  }
   const results = await waitForReady({
     targets,
     timeoutMs: opts.timeoutMs,
     probe: async (target) => {
-      if (!(await tcpListening(target.port))) return false
+      const svc = byName.get(target.name)
+      const st = tracked(target.name)
+      const needTcp = target.port !== undefined && (svc?.readiness === undefined || svc.readiness.needsPort)
+      if (needTcp && !(await tcpListening(target.port as number))) return false
+      st.tcpOk = true
       const path = health[target.name]
-      if (path === undefined) return true
-      return httpHealthOk(target.port, path)
+      if (path !== undefined) return httpHealthOk(target.port as number, path)
+      const spec = svc?.readiness
+      if (spec === undefined) return true
+      if (st.probe !== undefined && Date.now() - st.probe.at < 2000) return st.probe.ok
+      const outcome = await runProbeFn({
+        probe: spec.probe,
+        timeoutMs: PROBE_TIMEOUT_MS[spec.timeout],
+        cwd: svc?.cwd === undefined ? opts.rootDir : resolvePath(opts.rootDir, svc.cwd),
+        env: { ...process.env, ...svc?.env, OW_SERVICE: target.name },
+      }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "çalıştırılamadı", timedOut: false, code: null }))
+      st.probe = { ran: true, ok: outcome.ok, note: outcome.note, at: Date.now() }
+      return outcome.ok
     },
     exited: () => exitedServices(opts.rootDir),
   })
+  const readinessOf = (result: { name: string; status: string; waitedSec: number }): WaitReadiness | undefined => {
+    const svc = byName.get(result.name)
+    const st = track.get(result.name)
+    if (health[result.name] !== undefined) {
+      return { kind: "http-health", ok: result.status === "ready", waitedSec: result.waitedSec }
+    }
+    if (svc?.readiness === undefined) {
+      if (result.status === "exited") return undefined
+      return { kind: "tcp", ok: result.status === "ready", waitedSec: result.waitedSec }
+    }
+    if (st?.probe !== undefined) return { kind: "probe", ok: st.probe.ok && result.status === "ready", note: st.probe.note, waitedSec: result.waitedSec }
+    return { kind: "probe", ok: false, note: "ölçülmedi", waitedSec: result.waitedSec }
+  }
   const ready = results.every((result) => result.status === "ready")
-  const where = (result: { port: number; healthPath?: string }): string =>
-    result.healthPath === undefined ? `:${result.port}` : `:${result.port}${result.healthPath}`
+  const where = (result: { port?: number; healthPath?: string }): string =>
+    result.port === undefined ? "" : result.healthPath === undefined ? `:${result.port}` : `:${result.port}${result.healthPath}`
+  const withReadiness = results.map((result) => {
+    const readiness = readinessOf(result)
+    return { ...result, ...(readiness === undefined ? {} : { readiness }) }
+  })
   if (opts.json) {
-    console.log(JSON.stringify({ ready, services: results, noPort }))
+    console.log(JSON.stringify({ ready, services: withReadiness, noPort }))
   } else {
-    for (const result of results) {
-      if (result.status === "ready") console.log(`hazır: ${result.name} ${where(result)} (${result.waitedSec}sn)`)
+    for (const result of withReadiness) {
+      const readiness = (result as { readiness?: WaitReadiness }).readiness
+      if (result.status === "ready") console.log(`hazır: ${result.name}${where(result)} (${result.waitedSec}sn)`)
       else if (result.status === "exited") console.log(`bitti: ${result.name} (çıkış kodu ${result.exitCode ?? "?"}) — ow logs ${result.name}`)
-      else console.log(`zaman aşımı: ${result.name} ${where(result)} (${result.waitedSec}sn)`)
+      else if (readiness?.kind === "probe") console.log(`hazır değil: ${result.name} (probe: ${readiness.note ?? "hazır değil"})`)
+      else console.log(`zaman aşımı: ${result.name}${where(result)} (${result.waitedSec}sn)`)
     }
     if (noPort.length > 0) console.log(`port tanımsız (beklenmedi): ${noPort.join(", ")}`)
+  }
+  // M3 last-known persistence (B1-clean: request channel, sole writer stays
+  // the supervisor; ack loss only warns, never fails the verdict).
+  const { classifyLock, readSupervisorState, upPaths } = await import("./up-state")
+  const { writeRequest, waitResult } = await import("./up-requests")
+  try {
+    if ((await classifyLock(upPaths(opts.rootDir).lockFile)).kind === "live") {
+      const state = await readSupervisorState(upPaths(opts.rootDir).supervisorFile)
+      const pending: Promise<unknown>[] = []
+      for (const svc of opts.services) {
+        if (svc.readiness === undefined) continue
+        const readiness = readinessOf(results.find((result) => result.name === svc.name) ?? { name: svc.name, status: "timeout", waitedSec: 0 })
+        if (readiness?.kind !== "probe" || readiness.note === "ölçülmedi") continue
+        const pid = state?.services.find((entry) => entry.name === svc.name)?.pid
+        if (pid === undefined) continue
+        const at = new Date().toISOString()
+        const note = readiness.note
+        const ok = readiness.ok
+        pending.push(
+          (async () => {
+            try {
+              const nonce = await writeRequest(upPaths(opts.rootDir).requestsDir, "readiness", svc.name, join(opts.rootDir, "ow.yaml"), {
+                readiness: { pid, ok, ...(note === undefined ? {} : { note }), at },
+              })
+              await waitResult(upPaths(opts.rootDir).requestsDir, nonce)
+            } catch {
+              if (!opts.json) console.error(`uyarı: readiness kaydı doğrulanamadı: ${svc.name}`)
+            }
+          })(),
+        )
+      }
+      await Promise.all(pending)
+    }
+  } catch {
+    // recording is best-effort; the verdict above stands regardless
   }
   return ready ? 0 : 1
 }
@@ -290,6 +387,40 @@ export const parseHealthFlags = (
 
 const flag = (flags: Record<string, string | boolean | string[]>, name: string): string | undefined =>
   typeof flags[name] === "string" ? (flags[name] as string) : undefined
+
+/** `up --check --json` service listings: byte-identical key order to the
+ * raw serialization for clean configs, with B3 masking applied — `cmd` /
+ * `logs` ham basılmaz, `readiness` ham argv değil maskeli-şekil taşır
+ * (`env`/`requiredEnv` non-enumerable kaldığı için zaten görünmez). */
+export const toCheckServicesJson = (services: UpService[]): Record<string, unknown>[] => {
+  const maskCmd = (cmd: string | string[] | undefined): string | string[] | undefined => {
+    if (cmd === undefined) return undefined
+    if (typeof cmd === "string") return maskCmdShape(cmd)
+    let prevFlag = false
+    return cmd.map((part) => {
+      const out = maskSecretToken(part, prevFlag)
+      prevFlag = isSecretFlagToken(part)
+      return out
+    })
+  }
+  return services.map((svc) => ({
+    name: svc.name,
+    ...(svc.cmd === undefined ? {} : { cmd: maskCmd(svc.cmd) }),
+    ...(svc.cwd === undefined ? {} : { cwd: svc.cwd }),
+    ...(svc.port === undefined ? {} : { port: svc.port }),
+    ...(svc.logs === undefined ? {} : { logs: maskCmdShape(svc.logs) }),
+    ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
+    ...(svc.readiness === undefined
+      ? {}
+      : {
+          readiness: {
+            probe: maskCmdShape([...svc.readiness.probe]) ?? "",
+            timeout: svc.readiness.timeout,
+            needsPort: svc.readiness.needsPort,
+          },
+        }),
+  }))
+}
 
 /** M1 single-service client flow over the B1 request channel. Live lock →
  * diff + atomic request + one-shot (10s) result wait; the client never
@@ -665,6 +796,13 @@ export const run = async (argv: string[]): Promise<number> => {
           return 2
         }
       }
+      // N5: tanımlı probe + --health aynı serviste yarışamaz (iki kaynak yok).
+      for (const svc of parsed.services) {
+        if (health[svc.name] !== undefined && svc.readiness !== undefined) {
+          console.error(`ow: --health ile readiness çakışıyor: ${svc.name} (birini seçin)`)
+          return 2
+        }
+      }
       if (flags["--check"] === true) {
         for (const line of formatUpWarnings(parsed.warnings)) warn(line)
         const missing = missingRequiredEnv(parsed.services)
@@ -687,7 +825,7 @@ export const run = async (argv: string[]): Promise<number> => {
             console.log(`depends_on bekletmez (order-only)`)
           }
         } else {
-          console.log(JSON.stringify({ file, services: parsed.services, warnings: parsed.warnings, ...(hasDeps ? { spawnOrder: order } : {}) }))
+          console.log(JSON.stringify({ file, services: toCheckServicesJson(parsed.services), warnings: parsed.warnings, ...(hasDeps ? { spawnOrder: order } : {}) }))
         }
         return 0
       }
@@ -841,12 +979,11 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: reconcile --check ile kullanılır (salt-okunur rapor, mutasyon yok)")
         return 2
       }
-      if (flags["--probe"] === true) {
-        console.error("ow: --probe henüz desteklenmiyor (M3)")
-        return 2
-      }
+      // M3: `--probe` bayraklı reconcile, tanımlı probe'ları istemci-tarafı
+      // one-shot çalıştırır (M1 N3 bütçesi); mutasyon yapmaz, çıkış
+      // drift'e göredir.
       const { runReconcileCheck } = await import("./up-reconcile")
-      return runReconcileCheck({ rootDir, file: yamlForRead, json })
+      return runReconcileCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
     }
     if (command === "checkpoints") {
       // P2-A: runner-yazar/ow-okur; salt-okunur, mutasyon yok, canlı exec yok.

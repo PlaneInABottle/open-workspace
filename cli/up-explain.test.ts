@@ -145,6 +145,55 @@ describe("explainServices (saf)", () => {
     })
     expect(formatExplanation(noRev[0]).join("\n")).toContain("rev=doğrulanamadı(UNVERIFIED)")
   })
+
+  test("readiness tanımı + son-bilinen (maskeli, çalıştırmaz)", () => {
+    const spec = { probe: ["./x.sh", "--token", "hunter2"], timeout: "10s" as const, needsPort: true }
+    const defined = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30", readiness: spec }],
+      views: [liveView("a", 11)],
+      records: [
+        recordOf({
+          name: "a",
+          pid: 11,
+          lstart: "l",
+          startedAt: "t",
+          cmd: "sleep 30",
+          lastReadiness: { ok: true, note: "smoke", at: "2026-10-09T00:00:00.000Z", kind: "probe" },
+        }),
+      ],
+      snapshotOk: true,
+    })
+    expect(defined[0].explanation.readiness).toMatchObject({
+      defined: true,
+      timeout: "10s",
+      needsPort: true,
+      last: { ok: true },
+    })
+    expect(defined[0].explanation.readiness.probe).not.toContain("hunter2")
+    const text = formatExplanation(defined[0]).join("\n")
+    expect(text).toContain("hazırlık:")
+    expect(text).toContain("hazır (2026-10-09T00:00:00.000Z)")
+    expect(text).not.toContain("hunter2")
+    const missing = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30", readiness: spec }],
+      views: [liveView("a", 11)],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30" })],
+      snapshotOk: true,
+    })
+    expect(missing[0].explanation.readiness.last).toBeNull()
+    expect(formatExplanation(missing[0]).join("\n")).toContain("ölçülmedi")
+    const plain = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30" }],
+      views: [liveView("a", 11)],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30" })],
+      snapshotOk: true,
+    })
+    expect(plain[0].explanation.readiness).toMatchObject({ defined: false, last: null })
+    expect(formatExplanation(plain[0]).join("\n")).not.toContain("hazırlık:")
+  })
 })
 
 describe("ps --explain CLI", () => {
@@ -218,7 +267,7 @@ describe("ps --explain CLI", () => {
       expect(payload.services.map((svc) => svc.name)).toEqual(["a"])
       expect(payload.explanations).toHaveLength(1)
       const explanation = payload.explanations[0].explanation
-      expect(Object.keys(explanation).sort()).toEqual(["diffs", "expected", "neden", "provenance", "running"])
+      expect(Object.keys(explanation).sort()).toEqual(["diffs", "expected", "neden", "provenance", "readiness", "running"])
       expect(JSON.stringify(payload)).not.toContain("hunter2")
       expect(JSON.stringify(explanation.provenance)).not.toContain("hunter2")
     } finally {

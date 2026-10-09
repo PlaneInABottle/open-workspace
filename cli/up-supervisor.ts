@@ -9,6 +9,7 @@ import { join, resolve } from "node:path"
 import type { TraceConfig, UpService } from "./up-schema"
 import { decodeUtf8Fatal, parseUpFile } from "./up-schema"
 import { maskCmdShape } from "./up-reconcile"
+import { maskSecrets } from "./up-evidence"
 import type { ExecFn, Provenance } from "./up-provenance"
 import { recordProvenance } from "./up-provenance"
 import { completeRequest, scanRequests, sweepStaleResults, type ServiceRequest, type ServiceResult } from "./up-requests"
@@ -46,6 +47,9 @@ export type LiveUnit = {
   tail: LogTail | undefined
   /** M2 spawn-time provenance (best-effort; absent when recording failed). */
   provenance?: Provenance
+  /** M3 last-known readiness (client-observed probe verdict, merged only
+   * while the probed pid matches the live unit). */
+  lastReadiness?: UpServiceState["lastReadiness"]
 }
 
 /** Live-supervisor execution context for M1 service requests (B1: the
@@ -242,7 +246,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     const state = {
       version: 1,
       startedAt: first?.startedAt ?? now(),
-      services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true, unit.provenance)),
+      services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true, unit.provenance, unit.lastReadiness)),
       ...(build === null ? {} : { build }),
     }
     // Merge-on-write (M3): an exit handler may have persisted behind our
@@ -474,7 +478,8 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
     // new process (resurrected settlement, phantom `lstartUnknown`, a
     // recycled `logsPid`, a `portConflict` that predates the new bind, or
     // `envNames`/`dependsOn` faking a `config-farklı` drift in reconcile,
-    // or `provenance` haunting a new pid with the old process's checkout).
+    // `provenance` haunting a new pid with the old process's checkout, or
+    // `lastReadiness` certifying a process that never passed a probe).
     const staleOnRespawn: ReadonlySet<keyof UpServiceState> = new Set([
       "exitCode",
       "exitedAt",
@@ -486,6 +491,7 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
       "envNames",
       "dependsOn",
       "provenance",
+      "lastReadiness",
     ])
     for (const [key, value] of Object.entries(prior) as [keyof UpServiceState, unknown][]) {
       if ((out as Record<string, unknown>)[key as string] === undefined && value !== undefined) {
@@ -533,7 +539,7 @@ export const persistMerged = async (supervisorFile: string, state: { version: 1;
  * B3: `cmd`/`logsCmd` land masked-shape-only (secret values never reach
  * state); `envNames` carries key names only. Masking is deterministic, so
  * `reconcile --check` can still compare expected vs running shapes. */
-const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false, provenance?: Provenance): UpServiceState => {
+const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false, provenance?: Provenance, lastReadiness?: UpServiceState["lastReadiness"]): UpServiceState => {
   const primary = main ?? tail
   if (!primary) throw new Error(`${svc.name}: izlenecek süreç yok`)
   const maskedCmd = maskCmdShape(svc.cmd)
@@ -556,6 +562,7 @@ const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTa
     ...(envNames === undefined ? {} : { envNames }),
     ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
     ...(provenance === undefined ? {} : { provenance }),
+    ...(lastReadiness === undefined ? {} : { lastReadiness: { ...lastReadiness } }),
   }
 }
 
@@ -734,6 +741,9 @@ const pruneUnitHandles = (ctx: SupervisorCtx, unit: LiveUnit): void => {
     if (index >= 0) ctx.tails.splice(index, 1)
     unit.tail = undefined
   }
+  // A respawned slot starts unsettled: the old readiness verdict belongs to
+  // the dead pid and must never be re-recorded under the new one.
+  unit.lastReadiness = undefined
 }
 
 const unitIsLive = async (unit: LiveUnit): Promise<boolean> => {
@@ -843,6 +853,37 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
     await ctx.persist()
     const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
     return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "restarted", message: `yeniden başlatıldı: ${request.service} (pid ${oldPid} → ${pid})`, pid }
+  }
+  // readiness (M3): merge a client-observed probe verdict into the live
+  // unit's record. Sole-writer discipline holds (only the supervisor
+  // persists); the verdict lands only when the probed pid still matches
+  // the live unit — otherwise it is stale-dropped, never merged.
+  if (request.action === "readiness") {
+    const outcome = request.readiness
+    if (outcome === undefined || !Number.isInteger(outcome.pid) || outcome.pid <= 0 || typeof outcome.ok !== "boolean") {
+      return fail("invalid-config", `ow: bozuk readiness kaydı: ${request.service}`)
+    }
+    const livePid = existing?.main?.proc.pid ?? existing?.tail?.proc.pid
+    if (!existing || livePid !== outcome.pid) {
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "stale", message: `eski sonuç: ${request.service} (pid değişti, kaydedilmedi)` }
+    }
+    const main = existing.main
+    if (main === undefined || main.lstart === "" || !(await isLivePid(main.proc.pid, main.lstart))) {
+      // Logs-only units record the tail pid as main pid too; a tail-only
+      // verdict still counts when its own guard verifies.
+      const tail = existing.tail
+      if (tail === undefined || tail.exit || (tail.lstart ?? "") === "" || !(await isLivePid(tail.proc.pid, tail.lstart)) || tail.proc.pid !== outcome.pid) {
+        return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "stale", message: `eski sonuç: ${request.service} (süreç bitti, kaydedilmedi)` }
+      }
+    }
+    existing.lastReadiness = {
+      ok: outcome.ok,
+      ...(outcome.note === undefined ? {} : { note: maskSecrets(outcome.note).slice(0, 200) }),
+      at: outcome.at,
+      kind: "probe",
+    }
+    await ctx.persist()
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "recorded", message: `kaydedildi: ${request.service} readiness (${outcome.ok ? "hazır" : "hazır-değil"})`, pid: outcome.pid }
   }
   // down: stop only the target, keep its settled record for ps/reconcile.
   if (!existing) {

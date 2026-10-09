@@ -230,15 +230,36 @@ ow ps --explain [servis] [--json]  # beklenen vs çalışan + fark + neden
 ```
 
 Her servis için `beklenen:` (ow.yaml cmd-şekli/cwd/port/env-adları) vs
-`çalışan:` (pid/durum/lstart-hükmü/listen/rev/interpreter) + `fark:`
-satırları + tek `neden:` satırı yazdırır (`UP ama /endpoint yok →
-readiness tanımsız, M3 probe ekleyin` — M3 yokken portlu UP
-servislerde). `--json` additive
+`çalışan:` (pid/durum/lstart-hükmü/listen/cwd/rev/interpreter) +
+`hazırlık:` (probe tanımı + son-bilinen) + `fark:` satırları + tek `neden:`
+satırı yazdırır. `--json` additive
 `{services, explanations: [{service, explanation:
-{expected, running, diffs[], provenance, neden}}]}` verir. `reconcile --check`
+{expected, running, diffs[], provenance, neden, readiness}}]}` verir.
+`reconcile --check`
 ayrıca kayıtlı rev + canlı checkout rev'ini gösterir (`fark: revision
 <eski>→<yeni> (canlı checkout; restart gerekli değil, rapor)` — drift
 değil, çıkış değişmez).
+
+### Proje-tanımlı readiness (M3, istemci-tarafı one-shot, gating yok)
+
+Servis `readiness: {probe: [...], timeout: 10s, needsPort: true}` ile
+keyfi yerel komut tanımlar (tek-satır inline; argv-only, shell yok;
+timeout 5s|10s|30s; `needsPort` portsuzda şema hatası). Probe YALNIZCA
+istemcide çalışır (`up -d --wait`, `reconcile --check --probe`) —
+supervisor asla çalıştırmaz, gating/daemon yok. Sözleşme: stdout'taki ilk
+JSON obje `{ready: bool, note?, checks?}`; `ready:true` + exit 0 +
+timeout-içi + geçerli JSON = hazır, diğer her şey hazır-değil
+(retry/restart yok). Timeout tek-pid kill (torun sızabilir:
+`artakalan-torun-olabilir`); stdout ≤64KB, secret-maske zorunlu.
+`up -d --wait` hedef-başı önce TCP (`needsPort`) sonra probe bekler
+(`hazır değil: <ad> (probe: <not>)`, JSON `readiness: {kind:
+tcp|http-health|probe, ok, note?, waitedSec}`); `reconcile --check
+--probe` drift + `readiness: hazır/hazır-değil` raporlar (toplam ≤60s
+soft bütçe — son başlayan probe tek-timeout aşabilir; aşımda
+`ölçülmedi(timeout-bütçesi)`; çıkış drift'e göre).
+`--health` ile tanımlı probe çakışırsa exit 2. Sonuçlar istek-kanalıyla
+kaydedilir (`lastReadiness`, pid-doğrulanmış); `ps --explain` tanım +
+sonucu gösterir, çalıştırmaz.
 
 ### Evidence zarfı + checkpoint konvensiyonu (P2-A)
 

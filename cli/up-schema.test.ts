@@ -315,3 +315,60 @@ describe("depends_on ordering", () => {
     expect(JSON.parse(JSON.stringify(file.services[1]))).toMatchObject({ name: "a", dependsOn: ["b"] })
   })
 })
+
+describe("readiness definition (M3)", () => {
+  const base = (extra: string): string =>
+    `services:\n  api:\n    cmd: ./gradlew bootRun\n    port: 8901\n${extra}\n`
+
+  test("inline flow-map parses with defaults (timeout 10s, needsPort true)", () => {
+    const file = parseUpFile(base("    readiness: {probe: [./scripts/ready-api.sh, --local]}"))
+    expect(file.services[0].readiness).toEqual({ probe: ["./scripts/ready-api.sh", "--local"], timeout: "10s", needsPort: true })
+  })
+
+  test("explicit timeout + needsPort false without port", () => {
+    const file = parseUpFile("services:\n  worker:\n    cmd: ./work\n    readiness: {probe: [./ready.sh], timeout: 30s, needsPort: false}\n")
+    expect(file.services[0].readiness).toEqual({ probe: ["./ready.sh"], timeout: "30s", needsPort: false })
+  })
+
+  test("raw argv hidden from listings (non-enumerable, B3)", () => {
+    const file = parseUpFile(base("    readiness: {probe: [./x.sh, --token, hunter2]}"))
+    expect(JSON.parse(JSON.stringify(file.services[0]))).not.toHaveProperty("readiness")
+    expect(file.services[0].readiness?.probe).toEqual(["./x.sh", "--token", "hunter2"])
+  })
+
+  test("unknown readiness keys warn, never fail", () => {
+    const file = parseUpFile(base("    readiness: {probe: [./x.sh], retries: 3}"))
+    expect(file.warnings.map((w) => w.message)).toContain("api: readiness içinde bilinmeyen alan yoksayıldı: retries")
+    expect(file.services[0].readiness).toBeDefined()
+  })
+
+  test("schema errors: scalar/block forms, bad probe, bad timeout, shell, portsuz", () => {
+    expect(() => parseUpFile(base("    readiness: ./x.sh"))).toThrow(/satır-içi harita/)
+    expect(() => parseUpFile("services:\n  api:\n    cmd: x\n    port: 1\n    readiness:\n      probe: [./x.sh]\n")).toThrow(/3\. düzey/)
+    expect(() => parseUpFile(base("    readiness: {timeout: 10s}"))).toThrow(/probe listesi/)
+    expect(() => parseUpFile(base("    readiness: {probe: []}"))).toThrow(/probe listesi/)
+    const many = Array.from({ length: 17 }, (_, i) => `a${i}`).join(", ")
+    expect(() => parseUpFile(base(`    readiness: {probe: [${many}]}`))).toThrow(/en fazla 16/)
+    expect(() => parseUpFile(base(`    readiness: {probe: [${"x".repeat(513)}]}`))).toThrow(/512/)
+    expect(() => parseUpFile(base("    readiness: {probe: [sh, -c, echo hi]}"))).toThrow(/shell/)
+    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], timeout: 60s}"))).toThrow(/5s\|10s\|30s/)
+    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], needsPort: evet}"))).toThrow(/true\/false/)
+    expect(() => parseUpFile("services:\n  api:\n    cmd: x\n    readiness: {probe: [./x.sh]}\n")).toThrow(/port tanımlı değil/)
+  })
+
+  test("shell argv0 reddi: path/case/.exe varyantları; powershell|cmd POSIX-dışı ret", () => {
+    const evil = (argv: string): string =>
+      `services:\n  api:\n    cmd: x\n    port: 1\n    readiness: {probe: [${argv}]}\n`
+    for (const bad of ["sh", "/bin/sh", "Sh", "SH", "sh.exe", "SH.EXE", "/usr/bin/bash", "TCSH", "csh", "dash", "fish", "ksh"]) {
+      expect(() => parseUpFile(evil(`${bad}, -c, echo hi`))).toThrow(/shell ile başlayamaz/)
+    }
+    // powershell|cmd şemada shell sayılmaz (gerekçe: POSIX platform,
+    // Windows deferred) — davranış pinli, sessiz değişim yok.
+    expect(parseUpFile(evil("powershell, -c, echo hi")).services[0].readiness).toBeDefined()
+    expect(parseUpFile(evil("cmd, /c, echo hi")).services[0].readiness).toBeDefined()
+    // Normal argv geçer (./ ön-eki, mutlak yol, ters-bölü POSIX dosya adıdır).
+    expect(parseUpFile(evil("./ready.sh, --local")).services[0].readiness).toBeDefined()
+    expect(parseUpFile(evil("/opt/bin/check, --token, x")).services[0].readiness).toBeDefined()
+    expect(parseUpFile(evil("bin\\sh, -c, echo hi")).services[0].readiness).toBeDefined()
+  })
+})

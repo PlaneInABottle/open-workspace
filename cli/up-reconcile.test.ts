@@ -418,17 +418,26 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("reconcile bayraksız exit 2, --probe exit 2", async () => {
+  test("reconcile bayraksız exit 2; --probe bayraksız-probe yolu açar (M3)", async () => {
     const { root, file } = await fixture()
     try {
       expect(await run(["reconcile", "--file", file])).toBe(2)
-      expect(await run(["reconcile", "--check", "--probe", "--file", file])).toBe(2)
+      // Tanımsız servislerde probe yolu boş ölçümle biter: drift var → exit 1.
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["reconcile", "--check", "--probe", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.logs.join("\n")).toContain("eksik: a → ow up a")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("M-C: --probe 6 yolda da exit 2 (sessiz yoksayma yok)", async () => {
+  test("M-C: --probe 6 yolda da exit 2 (sessiz yoksayma yok; reconcile yolu M3'te açık)", async () => {
     const { root, file } = await fixture()
     try {
       const paths = upPaths(root)

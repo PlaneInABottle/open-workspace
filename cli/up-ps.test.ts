@@ -424,7 +424,7 @@ describe("ow up --wait", () => {
       const payload = JSON.parse(lines.join("\n")) as { ready: boolean; services: unknown[] }
       expect(payload.ready).toBe(true)
       expect(payload.services).toEqual([
-        { name: "slow", port: holder.port, status: "ready", waitedSec: expect.any(Number), healthPath: "/health" },
+        { name: "slow", port: holder.port, status: "ready", waitedSec: expect.any(Number), healthPath: "/health", readiness: { kind: "http-health", ok: true, waitedSec: expect.any(Number) } },
       ])
     } finally {
       clearTimeout(timer)

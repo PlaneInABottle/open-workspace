@@ -38,6 +38,15 @@ export type UpServiceState = {
   /** M2 spawn-time provenance (observed/inferred, ham argv yok). Absent on
    * older records and on best-effort recording failure. */
   provenance?: Provenance
+  /** M3 last-known readiness (P2-B tolerant okur; yoksa `not_observed`).
+   * Yalnızca istemci-tarafı probe kayıtları yazar (supervisor asla
+   * çalıştırmaz); respawn'da diriltilmez (aşağıdaki skip-listesi). */
+  lastReadiness?: {
+    ok: boolean
+    note?: string
+    at: string
+    kind?: string
+  }
 }
 
 export type UpSupervisorState = {
