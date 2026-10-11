@@ -93,13 +93,16 @@ describe("provision --check (ready shape)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      // Exactly one line per check + summary.
-      expect(io.out).toHaveLength(5)
+      // Exactly one line per check + M7 additive dataClock block + summary.
+      // (M7 carve-out, gate-blessed: without a clock file the block is the
+      // single `unmeasured` line; exits and old lines are unchanged.)
+      expect(io.out).toHaveLength(6)
       expect(io.out[0]).toMatch(/^ok: envSymlink /)
       expect(io.out[1]).toMatch(/^ok: venv /)
       expect(io.out[2]).toMatch(/^ok: head /)
       expect(io.out[3]).toMatch(/^ok: preflight /)
-      expect(io.out[4]).toBe("provision geçti")
+      expect(io.out[4]).toBe("dataClock: unmeasured (no-file)")
+      expect(io.out[5]).toBe("provision geçti")
       for (const line of io.out) expect(line.startsWith("hazır:")).toBe(false)
     } finally {
       await cleanup()
@@ -116,7 +119,8 @@ describe("provision --check (ready shape)", () => {
         io.restore()
       }
       const payload = JSON.parse(io.out.join("\n")) as Record<string, unknown>
-      expect(Object.keys(payload).sort()).toEqual(["branch", "checks", "human", "missing", "pass", "portBase", "revShort", "root", "rootBase"])
+      // M7 additive key (old keys byte-identical, exits unchanged).
+      expect(Object.keys(payload).sort()).toEqual(["branch", "checks", "dataClock", "human", "missing", "pass", "portBase", "revShort", "root", "rootBase"])
       expect(payload["pass"]).toBe(true)
       expect(payload["portBase"]).toBeNull()
       expect(payload["root"]).toBe(root)
@@ -128,8 +132,9 @@ describe("provision --check (ready shape)", () => {
       expect(checks.every((c) => c.ok)).toBe(true)
       expect(payload["missing"]).toEqual([])
       const human = payload["human"] as string[]
-      expect(human).toHaveLength(5)
-      expect(human[4]).toBe("provision geçti")
+      expect(human).toHaveLength(6)
+      expect(human[4]).toBe("dataClock: unmeasured (no-file)")
+      expect(human[5]).toBe("provision geçti")
     } finally {
       await cleanup()
     }
@@ -374,6 +379,235 @@ describe("NO-WORKTREE-NO-FRICTION (single-root goldens)", () => {
       expect(code).toBe(0)
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("provision data-clock witness (M7)", () => {
+  const CLOCK = {
+    schema_hash: "abc1234",
+    applied_head: "mig001",
+    seed_profile: "dev",
+    seed_rev: "3",
+    db_identity: "maindb",
+    at: "2026-10-09T09:00:00.000Z",
+  }
+
+  const writeClock = async (dir: string, value: unknown): Promise<void> => {
+    await mkdir(join(dir, ".ow"), { recursive: true })
+    await writeFile(join(dir, ".ow", "data-clock.json"), typeof value === "string" ? value : JSON.stringify(value), "utf8")
+  }
+
+  test("fresh clock renders ledger line, exits unchanged", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeClock(root, CLOCK)
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("dataClock: maindb@mig001 (dev/3)")
+      expect(io.out.join("\n")).toContain("db:maindb seed:dev/3 mig:mig001 (root)")
+      const io2 = capture()
+      try {
+        expect(await runProvisionCheck({ rootDir: root, file, json: true, probe: false })).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as { dataClock: { state: string } }
+      expect(payload.dataClock.state).toBe("fresh")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("missing clock renders unmeasured, exits unchanged", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("dataClock: unmeasured (no-file)")
+      const io2 = capture()
+      try {
+        expect(await runProvisionCheck({ rootDir: root, file, json: true, probe: false })).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as { dataClock: { state: string } }
+      expect(payload.dataClock.state).toBe("missing")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("stale clock with newer checkpoints renders stale-ignored, exit unchanged (Q3)", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeClock(root, { ...CLOCK, at: "2026-10-09T08:00:00.000Z" })
+      await mkdir(join(root, ".ow", "checkpoints"), { recursive: true })
+      await writeFile(
+        join(root, ".ow", "checkpoints", "nightly.jsonl"),
+        `${JSON.stringify({ stage: "build", status: "confirmed", proof: { ok: true }, at: "2026-10-09T09:00:00.000Z", by: "runner", code: { script_hash: "h1", checkout_rev: "r1" }, runtime: { port: 1 } })}\n`,
+        "utf8",
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("(stale-ignored)")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("oversize clock renders unmeasured(data-clock-oversize), exit unchanged", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeClock(root, `{"schema_hash": "${"x".repeat(5000)}"}`)
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("dataClock: unmeasured (data-clock-oversize)")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("collision advisory for shared db_identity across scopes", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeClock(root, CLOCK)
+      await mkdir(join(root, "sub", ".ow"), { recursive: true })
+      await writeFile(join(root, "sub", ".ow", "data-clock.json"), JSON.stringify({ ...CLOCK, seed_rev: "9" }), "utf8")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n  b:\n    cmd: sleep 30\n    cwd: sub\n", "utf8")
+      const io = capture()
+      try {
+        await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(io.out.join("\n")).toContain("collision-warning: maindb in two checkouts")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("env_file missing exits 2 names-only; present file never read", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeFile(
+        join(root, "ow.scenarios.yaml"),
+        "version: 1\nscenarios:\n  cart:\n    services: [a]\n    probes: [{id: p, argv: [./x.sh]}]\n    env_file: missing.env\n",
+        "utf8",
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain("missing.env")
+      await writeFile(join(root, "missing.env"), "SECRET=hunter2\n", "utf8")
+      const io2 = capture()
+      let code2 = -1
+      try {
+        code2 = await runProvisionCheck({ rootDir: root, file, json: true, probe: false })
+      } finally {
+        io2.restore()
+      }
+      expect(code2).toBe(0)
+      const io3 = capture()
+      try {
+        await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io3.restore()
+      }
+      const everything = `${io2.out.join("\n")}\n${io2.err.join("\n")}\n${io3.out.join("\n")}\n${io3.err.join("\n")}`
+      expect(everything).not.toContain("hunter2")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("scenario data mismatch warns UNVERIFIED, exit unchanged", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeClock(root, CLOCK)
+      await writeFile(
+        join(root, "ow.scenarios.yaml"),
+        "version: 1\nscenarios:\n  cart:\n    services: [a]\n    probes: [{id: p, argv: [./x.sh]}]\n    data: {seed_rev: 99}\n",
+        "utf8",
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("data mismatch: seed_rev (UNVERIFIED)")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test("hostile identities masked everywhere; NEVER-list holds over new files", async () => {
+    const { root, file, cleanup } = await readyFixture()
+    try {
+      await writeClock(root, {
+        ...CLOCK,
+        db_identity: "token=hunter2",
+        seed_profile: "carrier",
+        seed_rev: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+      })
+      const io = capture()
+      try {
+        await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      const io2 = capture()
+      try {
+        await runProvisionCheck({ rootDir: root, file, json: true, probe: false })
+      } finally {
+        io2.restore()
+      }
+      const everything = `${io.out.join("\n")}\n${io.err.join("\n")}\n${io2.out.join("\n")}\n${io2.err.join("\n")}`
+      expect(everything).not.toContain("hunter2")
+      expect(everything).not.toContain("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")
+      const { readFile } = await import("node:fs/promises")
+      const { fileURLToPath } = await import("node:url")
+      const cliDir = join(fileURLToPath(new URL(".", import.meta.url)))
+      for (const source of [await readFile(join(cliDir, "up-data-clock.ts"), "utf8"), await readFile(join(cliDir, "up-provision.ts"), "utf8")]) {
+        expect(source).not.toMatch(/Bun\.spawn|spawn\s*\(|exec\s*\(|child_process/)
+        expect(source).not.toMatch(/from\s+["'](pg|mysql2?|sqlite3|nodemailer|amqplib|kafkajs|ioredis|bullmq?)["']/)
+        expect(source).not.toMatch(/DROP\s|TRUNCATE|DELETE\s+FROM|sendMail|enqueue|createConnection|fetch\s*\(|http\.request/)
+        expect(source).not.toMatch(/[^_a-zA-Z]migrate\s*\(|[^_a-zA-Z]seed\s*\(|\.migrate\b|\.seed\b/)
+      }
+    } finally {
+      await cleanup()
     }
   })
 })

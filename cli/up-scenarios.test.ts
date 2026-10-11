@@ -1,5 +1,5 @@
-/** Senaryo validatoru: v1 şema (çalıştırma YOK, probe KOŞMAZ). Salt-okunur:
- * parse+validate + services-referans kontrolü. */
+/** Scenario validator: v1 schema (never runs, probes never execute). Read-only:
+ * parse+validate + services-reference check. */
 
 import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -45,7 +45,7 @@ const TRUCK = [
 ].join("\n")
 
 describe("parseScenarios (truck-approval fixture)", () => {
-  test("geçerli dosya parse-ok (şekil + default timeout)", async () => {
+  test("valid file parses ok (shape + default timeout)", async () => {
     const { readFile } = await import("node:fs/promises")
     const text = await readFile(join(FIXTURES, "scenarios-truck.yaml"), "utf8")
     const parsed = parseScenarios(text)
@@ -63,37 +63,37 @@ describe("parseScenarios (truck-approval fixture)", () => {
     ])
   })
 
-  test("timeout yoksa 10s defaultlanır", () => {
+  test("missing timeout defaults to 10s", () => {
     const parsed = parseScenarios("version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n")
     expect(parsed.scenarios[0].probes).toEqual([{ id: "p", argv: ["./x.sh"], timeout: "10s" }])
   })
 
-  test("tek skaler liste sayılır; bilinmeyen alan warn-only", () => {
+  test("single scalar counts as list; unknown field warn-only", () => {
     const parsed = parseScenarios(
       "version: 1\nscenarios:\n  a:\n    services: api\n    probes: [{id: p, argv: [./x.sh], extra: 1}]\n    tuhaf: 1\n",
     )
     expect(parsed.scenarios[0].services).toEqual(["api"])
-    expect(parsed.warnings.map((warning) => warning.message)).toContain("a: bilinmeyen alan yoksayıldı: tuhaf")
-    expect(parsed.warnings.map((warning) => warning.message)).toContain("a: probe içinde bilinmeyen alan yoksayıldı: extra")
+    expect(parsed.warnings.map((warning) => warning.message)).toContain("a: unknown field ignored: tuhaf")
+    expect(parsed.warnings.map((warning) => warning.message)).toContain("a: unknown field ignored inside probe: extra")
   })
 })
 
-describe("parseScenarios negatif matrisi (exit 1 sınıfı)", () => {
+describe("parseScenarios negative matrix (exit 1 class)", () => {
   const cases: [string, string][] = [
-    ["kötü senaryo adı", "version: 1\nscenarios:\n  KÖTÜ_AD!:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n"],
-    ["kötü probe id", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: KÖTÜ!, argv: [./x.sh]}]\n"],
-    ["argv >16 parça", `version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [${Array.from({ length: 17 }, (_, i) => `a${i}`).join(", ")}]}]\n`],
-    ["argv parçası >512B", `version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [${"x".repeat(513)}]}]\n`],
+    ["bad scenario name", "version: 1\nscenarios:\n  BAD_NAME!:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n"],
+    ["bad probe id", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: BAD!, argv: [./x.sh]}]\n"],
+    ["argv over 16 parts", `version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [${Array.from({ length: 17 }, (_, i) => `a${i}`).join(", ")}]}]\n`],
+    ["argv part over 512B", `version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [${"x".repeat(513)}]}]\n`],
     ["shell argv", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [sh, -c, echo hi]}]\n"],
-    ["timeout dışı", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh], timeout: 60s}]\n"],
-    ["version dışı", "version: 2\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n"],
-    ["version yok", "scenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n"],
-    ["scenarios harita değil", "version: 1\nscenarios: []\n"],
-    ["boş scenarios", "version: 1\nscenarios:\n"],
-    ["services yok", "version: 1\nscenarios:\n  a:\n    probes: [{id: p, argv: [./x.sh]}]\n"],
-    ["probes yok", "version: 1\nscenarios:\n  a:\n    services: [api]\n"],
-    ["argv yok", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p}]\n"],
-    ["probe harita değil", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [duz-yazi]\n"],
+    ["off-list timeout", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh], timeout: 60s}]\n"],
+    ["off-list version", "version: 2\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n"],
+    ["missing version", "scenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n"],
+    ["scenarios not a map", "version: 1\nscenarios: []\n"],
+    ["empty scenarios", "version: 1\nscenarios:\n"],
+    ["missing services", "version: 1\nscenarios:\n  a:\n    probes: [{id: p, argv: [./x.sh]}]\n"],
+    ["missing probes", "version: 1\nscenarios:\n  a:\n    services: [api]\n"],
+    ["missing argv", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p}]\n"],
+    ["probe not a map", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [duz-yazi]\n"],
   ]
   for (const [label, text] of cases) {
     test(label, () => {
@@ -101,7 +101,7 @@ describe("parseScenarios negatif matrisi (exit 1 sınıfı)", () => {
     })
   }
 
-  test("CLI: şema hatası exit 1", async () => {
+  test("CLI: schema error exit 1", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.scenarios.yaml")
@@ -114,21 +114,21 @@ describe("parseScenarios negatif matrisi (exit 1 sınıfı)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.err.join("\n")).toContain("geçersiz senaryo dosyası")
+      expect(io.err.join("\n")).toContain("invalid scenarios file")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 })
 
-describe("services-referans warn (fail değil)", () => {
-  test("bilinmeyen servis + bilinmeyen boundaries → warn + UNVERIFIED, exit 0", async () => {
+describe("services-reference warn (never fails)", () => {
+  test("unknown service + unknown boundaries → warn + UNVERIFIED, exit 0", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.scenarios.yaml")
       await writeFile(
         file,
-        "version: 1\nscenarios:\n  a:\n    services: [api, hayalet]\n    boundaries: [local, uzay]\n    probes: [{id: p, argv: [./x.sh]}]\n",
+        "version: 1\nscenarios:\n  a:\n    services: [api, ghost]\n    boundaries: [local, outer-space]\n    probes: [{id: p, argv: [./x.sh]}]\n",
         "utf8",
       )
       await writeFile(join(root, "ow.yaml"), OW_YAML, "utf8")
@@ -140,10 +140,10 @@ describe("services-referans warn (fail değil)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.err.join("\n")).toContain("a: bilinmeyen servis: hayalet (UNVERIFIED)")
-      expect(io.err.join("\n")).toContain("a: bilinmeyen boundaries: uzay (UNVERIFIED)")
-      expect(io.out.join("\n")).toContain("UNVERIFIED: a: bilinmeyen servis: hayalet")
-      expect(io.out.join("\n")).toContain("UNVERIFIED: a: bilinmeyen boundaries: uzay")
+      expect(io.err.join("\n")).toContain("a: unknown service: ghost (UNVERIFIED)")
+      expect(io.err.join("\n")).toContain("a: unknown boundaries: outer-space (UNVERIFIED)")
+      expect(io.out.join("\n")).toContain("UNVERIFIED: a: unknown service: ghost")
+      expect(io.out.join("\n")).toContain("UNVERIFIED: a: unknown boundaries: outer-space")
       const io2 = capture()
       try {
         expect(await run(["scenarios", "--check", "--file", file, "--json"])).toBe(0)
@@ -158,15 +158,15 @@ describe("services-referans warn (fail değil)", () => {
     }
   })
 
-  test("ow.yaml okunamazsa tüm referanslar UNVERIFIED (fail değil)", () => {
+  test("unreadable ow.yaml marks all references UNVERIFIED (never fails)", () => {
     const parsed = parseScenarios(TRUCK)
     const refs = validateReferences(parsed, null)
     expect(refs.unverifiedServices).toEqual(["truck-approval:api"])
   })
 })
 
-describe("subset blok-map: satırlı hata + hint", () => {
-  test("--check exit 1 + satır + tek-satır örnek", async () => {
+describe("subset block-map: line-numbered error + hint", () => {
+  test("--check exit 1 + line + single-line example", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.scenarios.yaml")
@@ -225,7 +225,11 @@ describe("sentinel (secret-asla)", () => {
 })
 
 describe("exit matrisi", () => {
-  test("geçerli truck → 0; dosya yok → 1; kullanım → 2", async () => {
+  // M1 C-break carve-out (sole justified exception): the legacy `local`
+  // value now dual-reads with a mapping warning to `real-read-only`; the
+  // `legacy-boundary` line below is the deliberate golden update in this file
+  // (the single byte-identical exception in the program).
+  test("valid truck → 0 (+1 legacy warning); missing file → 1; usage → 2", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.scenarios.yaml")
@@ -237,7 +241,8 @@ describe("exit matrisi", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("senaryo: truck-approval (1 servis, 1 probe)")
+      expect(io.out.join("\n")).toContain("scenario: truck-approval (1 services, 1 probes)")
+      expect(io.err.join("\n")).toContain("legacy-boundary: local → real-read-only (warning)")
       const io2 = capture()
       let code = -1
       try {
@@ -246,12 +251,274 @@ describe("exit matrisi", () => {
         io2.restore()
       }
       expect(code).toBe(1)
-      expect(io2.err.join("\n")).toContain("senaryo dosyası yok")
+      expect(io2.err.join("\n")).toContain("scenario file missing")
       expect(await run(["scenarios", "--file", file])).toBe(2)
       expect(await run(["scenarios", "--check", "fazla", "--file", file])).toBe(2)
       expect(await run(["scenarios", "--check", "--file", file, "--probe"])).toBe(2)
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M1 boundaries taxonomy (C break)", () => {
+  const LEGACY_MAP: [string, string][] = [
+    ["real", "real-state-changing"],
+    ["local", "real-read-only"],
+    ["captured-response", "subscribed"],
+    ["fake", "unverified"],
+    ["test", "unverified"],
+  ]
+
+  const writePair = async (root: string, scenarios: string): Promise<string> => {
+    const file = join(root, "ow.scenarios.yaml")
+    await writeFile(file, scenarios, "utf8")
+    await writeFile(join(root, "ow.yaml"), OW_YAML, "utf8")
+    return file
+  }
+
+  test("legacy 5-value dual-read: 5 legacy-boundary warns, exit 0, mapped normalize", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writePair(
+        root,
+        "version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [real, local, captured-response, fake, test]\n    probes: [{id: p, argv: [./x.sh]}]\n",
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["scenarios", "--check", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const err = io.err.join("\n")
+      for (const [legacy, mapped] of LEGACY_MAP) {
+        expect(err).toContain(`legacy-boundary: ${legacy} → ${mapped} (warning)`)
+      }
+      expect(err.split("legacy-boundary").length - 1).toBe(5)
+      expect(io.out.join("\n")).not.toContain("UNVERIFIED")
+      const io2 = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as {
+        scenarios: { boundaries: string[] }[]
+        warnings: { message: string }[]
+        boundariesNormalized: { scenario: string; boundaries: string[] }[]
+        boundaryWarnings: string[]
+      }
+      // Old key raw (unchanged); new key normalized.
+      expect(payload.scenarios[0].boundaries).toEqual(["real", "local", "captured-response", "fake", "test"])
+      expect(payload.boundariesNormalized).toEqual([
+        { scenario: "a", boundaries: ["real-state-changing", "real-read-only", "subscribed", "unverified", "unverified"] },
+      ])
+      expect(payload.boundaryWarnings).toHaveLength(5)
+      expect(payload.warnings.map((warning) => warning.message).join("\n")).toContain("legacy-boundary")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("repeated legacy value warns once per file", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writePair(
+        root,
+        "version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [local]\n    probes: [{id: p, argv: [./x.sh]}]\n  b:\n    services: [api]\n    boundaries: [local, real]\n    probes: [{id: p, argv: [./x.sh]}]\n",
+      )
+      const io = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const err = io.err.join("\n")
+      expect(err.split("legacy-boundary: local → real-read-only (warning)").length - 1).toBe(1)
+      expect(err.split("legacy-boundary").length - 1).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("new-taxonomy file: exit 0, zero warnings", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writePair(
+        root,
+        'version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [real-read-only, real-state-changing, network-deny, subscribed, unverified, blocked:"maintenance work"]\n    probes: [{id: p, argv: [./x.sh]}]\n',
+      )
+      const io = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.err.join("\n")).toBe("")
+      const io2 = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as {
+        boundariesNormalized: { scenario: string; boundaries: string[] }[]
+        boundaryWarnings: string[]
+        warnings: unknown[]
+      }
+      expect(payload.boundariesNormalized).toEqual([
+        {
+          scenario: "a",
+          boundaries: [
+            "real-read-only",
+            "real-state-changing",
+            "network-deny",
+            "subscribed",
+            "unverified",
+            "blocked:maintenance work",
+          ],
+        },
+      ])
+      expect(payload.boundaryWarnings).toEqual([])
+      expect(payload.warnings).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("unknown/empty value → unverified + UNVERIFIED warning, exit 0 (never silent/failing)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writePair(
+        root,
+        'version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [outer-space, ""]\n    probes: [{id: p, argv: [./x.sh]}]\n',
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["scenarios", "--check", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.err.join("\n")).toContain("a: unknown boundaries: outer-space (UNVERIFIED)")
+      expect(io.err.join("\n")).toContain("(UNVERIFIED)")
+      expect(io.out.join("\n")).toContain("UNVERIFIED: a: unknown boundaries: outer-space")
+      const io2 = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as {
+        boundariesNormalized: { scenario: string; boundaries: string[] }[]
+      }
+      expect(payload.boundariesNormalized).toEqual([{ scenario: "a", boundaries: ["unverified", "unverified"] }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("reasonless/empty/long blocked → schema error exit 1; quoted reason valid", async () => {
+    const root = await tempRoot()
+    try {
+      for (const boundaries of ["[blocked]", '[blocked:""]', `[blocked:${"x".repeat(129)}]`]) {
+        const file = await writePair(
+          root,
+          `version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: ${boundaries}\n    probes: [{id: p, argv: [./x.sh]}]\n`,
+        )
+        const io = capture()
+        let code = -1
+        try {
+          code = await run(["scenarios", "--check", "--file", file])
+        } finally {
+          io.restore()
+        }
+        expect(code).toBe(1)
+        expect(io.err.join("\n")).toContain("invalid scenarios file")
+        expect(io.err.join("\n")).toContain("blocked")
+      }
+      const quoted = await writePair(
+        root,
+        'version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [blocked:"reason, with comma 1"]\n    probes: [{id: p, argv: [./x.sh]}]\n',
+      )
+      const io = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", quoted])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.err.join("\n")).toBe("")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile boundary values never leak through the real validation path (masked)", async () => {
+    const root = await tempRoot()
+    const hex40 = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+    const bearerBody = "AbCdefGh0123456789._~-plus-xyz123456789"
+    try {
+      const file = await writePair(
+        root,
+        `version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [token=hunter2, ${hex40}, carrier Bearer ${bearerBody}, blocked:"token=hunter2"]\n    probes: [{id: p, argv: [./x.sh]}]\n`,
+      )
+      const io = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = `${io.out.join("\n")}\n${io.err.join("\n")}`
+      expect(text).not.toContain("hunter2")
+      expect(text).not.toContain(hex40)
+      expect(text).not.toContain(bearerBody)
+      const io2 = capture()
+      try {
+        expect(await run(["scenarios", "--check", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const json = io2.out.join("\n")
+      expect(json).not.toContain("hunter2")
+      expect(json).not.toContain(hex40)
+      expect(json).not.toContain(bearerBody)
+      expect(json).toContain("boundariesNormalized")
+      expect(json).toContain("boundaryWarnings")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M7 scenario data + env_file schema (validated-only)", () => {
+  test("data block parses with known keys; env_file parses as names-only reference", async () => {
+    const { parseScenarios } = await import("./up-scenarios")
+    const parsed = parseScenarios(
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    data: {db_identity: maindb, seed_rev: 3}\n    env_file: conf.env\n",
+    )
+    expect(parsed.scenarios[0].data).toEqual({ db_identity: "maindb", seed_rev: "3" })
+    expect(parsed.scenarios[0].env_file).toBe("conf.env")
+    expect(parsed.warnings).toEqual([])
+  })
+
+  test("unknown data keys warn-only; malformed data/env_file fail closed", async () => {
+    const { parseScenarios } = await import("./up-scenarios")
+    const warned = parseScenarios(
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    data: {db_identity: maindb, future_key: 1}\n",
+    )
+    expect(warned.scenarios[0].data).toEqual({ db_identity: "maindb" })
+    expect(warned.warnings.map((warning) => warning.message).join("\n")).toContain("unknown data key")
+    for (const body of [
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    data: {db_identity: [maindb]}\n",
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    data: {db_identity: x}\n".replace("db_identity: x", `db_identity: ${"y".repeat(65)}`),
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    env_file: /abs/path.env\n",
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    env_file: ../escape.env\n",
+      "version: 1\nscenarios:\n  cart:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    env_file: \n",
+    ]) {
+      expect(() => parseScenarios(body)).toThrow()
     }
   })
 })

@@ -11,15 +11,27 @@
  * `note`/`missing`/`human` string passes through `maskSecrets()`. Notes
  * truncate past 200 chars + `…[kesildi]`. */
 
-import { lstat, readFile, readlink } from "node:fs/promises"
-import { basename, join, resolve } from "node:path"
+import { lstat, readFile, readlink, stat } from "node:fs/promises"
+import { basename, isAbsolute, join, resolve } from "node:path"
 
 import { decodeUtf8Fatal, parseUpFile, type UpService } from "./up-schema"
 import { readLstart, readSupervisorState, upPaths, type UpServiceState } from "./up-state"
-import { evaluatePreflight, measureTcpPorts, PREFLIGHT_BUDGET_MS, PREFLIGHT_PER_SERVICE_MS, type TcpCheck } from "./up-preflight"
+import { evaluatePreflight, measureTcpPorts, PREFLIGHT_BUDGET_MS, PREFLIGHT_PER_SERVICE_MS, readEnvelopeContext, type TcpCheck } from "./up-preflight"
 import { CHECKPOINTS_DIR_NAME, isValidRunName, readCheckpointFile, viewOf } from "./up-checkpoints"
 import { maskSecrets, TRUNCATION_MARK, type EvidenceEnvelope } from "./up-evidence"
 import type { Liveness } from "./up-reconcile"
+import { parseScenarios, SCENARIOS_FILE_NAME } from "./up-scenarios"
+import {
+  dataWireOf,
+  findCollisions,
+  formatDataClock,
+  formatLedgerChip,
+  parseDataClock,
+  readDataClockFile,
+  readScopeClock,
+  selectDataState,
+  type DataClockData,
+} from "./up-data-clock"
 
 export type ProvisionCheckName = "envSymlink" | "venv" | "head" | "preflight"
 export type ProvisionCheck = { name: ProvisionCheckName; ok: boolean; note: string }
@@ -36,6 +48,19 @@ export type ProvisionResult = {
   human: string[]
   /** Reserved seam, ALWAYS null (no reader; future source needs a plan amendment). */
   portBase: null
+  /** M7 additive data-clock witness (never gates: absent from `checks`
+   * and `pass` by construction). */
+  dataClock: {
+    state: "fresh" | "stale-ignored" | "missing" | "oversize" | "invalid"
+    identity: string | null
+    head: string | null
+    profile: string | null
+    seedRev: string | null
+    at: string | null
+    ledger: { scope: string; identity: string; seed: string; migration: string }[]
+    collisions: string[]
+    mismatches: string[]
+  }
 }
 
 const NOTE_MAX_CHARS = 200
@@ -204,10 +229,11 @@ const REMEDY: Record<ProvisionCheckName, string> = {
 }
 
 /** `ow provision --check [--file] [--json] [--probe]`: exit 0 all-ok / 1
- * any-fail. Human lines Turkish, frozen shape: one line per check
- * (`ok: <ad> …` / `eksik: <ad> … → …`) + summary (`provision geçti` /
- * `provision eksik: N`) — never `hazır:`. JSON English keys frozen
- * (`{pass,root,rootBase,revShort,branch,checks,missing,human,portBase}`;
+ * any-fail / 2 declared-env-file-missing. Human check lines keep their
+ * frozen shape; the M7 additive data-clock block (line, ledger chips,
+ * advisories — never gating) lands before the summary line, which stays
+ * last. JSON English keys frozen + additive M7 `dataClock`
+ * (`{pass,root,rootBase,revShort,branch,checks,missing,human,portBase,dataClock}`;
  * `portBase` ALWAYS null). Writes nothing. */
 export const runProvisionCheck = async (opts: {
   rootDir: string
@@ -218,6 +244,29 @@ export const runProvisionCheck = async (opts: {
 }): Promise<number> => {
   const root = resolve(opts.rootDir)
   const rootBase = basename(root)
+  // Scenario-declared env files (M7, names-only): presence validated here,
+  // contents never read. A declared-but-missing file refuses upfront.
+  let scenarios: { name: string; env_file: string | null; data: Record<string, string> | null }[] = []
+  try {
+    const raw = await readFile(join(root, SCENARIOS_FILE_NAME), "utf8")
+    scenarios = parseScenarios(raw).scenarios
+  } catch {
+    scenarios = []
+  }
+  for (const scenario of scenarios) {
+    if (scenario.env_file === null) continue
+    let present = false
+    try {
+      const info = await stat(join(root, scenario.env_file))
+      present = info.isFile()
+    } catch {
+      present = false
+    }
+    if (!present) {
+      console.error(`ow: env file missing: ${maskSecrets(scenario.env_file)} (declared by ${scenario.name})`)
+      return 2
+    }
+  }
   const [env, venv, head, gate] = await Promise.all([
     checkEnvSymlink(root),
     checkVenv(root),
@@ -240,6 +289,73 @@ export const runProvisionCheck = async (opts: {
   )
   const pass = checks.every((check) => check.ok)
   const summary = maskSecrets(pass ? "provision geçti" : `provision eksik: ${checks.filter((check) => !check.ok).length}`)
+  // M7 data-clock witness (advisory only — never feeds `pass`/`missing`).
+  // Root file drives the dataClock line; service-cwd files feed the ledger
+  // and collision scan. Everything here is presence/shape witnessing.
+  const clockOutcome = await readDataClockFile(join(root, ".ow", "data-clock.json"))
+  const rootParsed = "bytes" in clockOutcome
+    ? parseDataClock(clockOutcome.bytes)
+    : "oversize" in clockOutcome
+      ? { ok: false as const, reason: "oversize" }
+      : null
+  let expectedServices: UpService[] = []
+  try {
+    expectedServices = parseUpFile(decodeUtf8Fatal(await readFile(opts.file))).services
+  } catch {
+    expectedServices = []
+  }
+  const scopes: { scope: string; data: DataClockData }[] = []
+  if (rootParsed !== null && rootParsed.ok) scopes.push({ scope: "root", data: rootParsed.data })
+  for (const svc of expectedServices) {
+    if (svc.cwd === undefined || isAbsolute(svc.cwd) || svc.cwd.split("/").includes("..")) continue
+    const sub = await readScopeClock(join(root, svc.cwd), svc.name)
+    if (sub !== null) scopes.push(sub)
+  }
+  let newestAt: number | null = null
+  try {
+    for (const envelope of await readEnvelopeContext(upPaths(root).stateDir)) {
+      const ms = Date.parse(envelope.at)
+      if (Number.isFinite(ms) && (newestAt === null || ms > newestAt)) newestAt = ms
+    }
+  } catch {
+    newestAt = null
+  }
+  const read = selectDataState(rootParsed, newestAt)
+  const mismatches: string[] = []
+  if (rootParsed !== null && rootParsed.ok) {
+    for (const scenario of scenarios) {
+      if (scenario.data === null) continue
+      for (const [key, value] of Object.entries(scenario.data)) {
+        if (rootParsed.data[key] !== undefined && rootParsed.data[key] !== value) {
+          mismatches.push(`${scenario.name}: data mismatch: ${key} (UNVERIFIED)`)
+        }
+      }
+    }
+  }
+  const collisions = findCollisions(scopes)
+  const wire = read.state === "fresh" || read.state === "stale-ignored" ? dataWireOf(read.data) : null
+  const dataClock = {
+    state: read.state,
+    identity: wire?.db_identity ?? null,
+    head: wire?.applied_head ?? null,
+    profile: wire?.seed_profile ?? null,
+    seedRev: wire?.seed_rev ?? null,
+    at: wire?.at ?? null,
+    ledger: scopes.map((entry) => ({
+      scope: entry.scope,
+      identity: maskSecrets(entry.data.db_identity),
+      seed: `${maskSecrets(entry.data.seed_profile)}/${maskSecrets(entry.data.seed_rev)}`,
+      migration: maskSecrets(entry.data.applied_head),
+    })),
+    collisions: collisions.map((id) => maskSecrets(id)),
+    mismatches: [...mismatches],
+  }
+  const dataHuman = [
+    formatDataClock(read),
+    ...scopes.map((entry) => formatLedgerChip(entry.scope, entry.data)),
+    ...collisions.map((id) => `collision-warning: ${maskSecrets(id)} in two checkouts`),
+    ...mismatches,
+  ]
   const result: ProvisionResult = {
     pass,
     root,
@@ -248,14 +364,14 @@ export const runProvisionCheck = async (opts: {
     branch: head.branch,
     checks,
     missing,
-    human: [...human, summary],
+    human: [...human, ...dataHuman, summary],
     portBase: null,
+    dataClock,
   }
   if (opts.json) {
     console.log(JSON.stringify(result))
   } else {
-    for (const line of human) console.log(line)
-    console.log(summary)
+    for (const line of result.human) console.log(line)
   }
   return pass ? 0 : 1
 }

@@ -198,6 +198,27 @@ export interface CoordinatorScenarios {
   error: string | null;
 }
 
+/** Readiness-strip chip: masked boundary name + rolled-up cell verdict. */
+export type BoundaryChipStatus = 'pass' | 'stale' | 'skipped' | 'uncovered' | 'unverified';
+export interface CoordinatorBoundaryChip {
+  boundary: string;
+  status: BoundaryChipStatus;
+}
+
+/** Readiness-strip last-run line: selected run id, last verified time
+ * (null when nothing verified), and the all-green verdict. */
+export interface CoordinatorLastRun {
+  id: string;
+  at: string | null;
+  pass: boolean;
+}
+
+/** Readiness-strip gate line: preflight pass + missing entries. */
+export interface CoordinatorReadinessGate {
+  pass: boolean;
+  missing: string[];
+}
+
 /** Ownership ledger row: read-only identity per registered root +
  * lock + recorded services. Missing `worktrees` is the "no record" branch. */
 export interface CoordinatorWorktreeEntry {
@@ -225,6 +246,11 @@ export interface CoordinatorSnapshot {
    * error'lu nesne (hata kutusu).
    */
   scenarios: CoordinatorScenarios | null;
+  /** Readiness strip (M8, additive-optional): absent without a bound
+   * scenarios file - the strip renders the `unmeasured` placeholder. */
+  boundaryList?: CoordinatorBoundaryChip[];
+  lastRun?: CoordinatorLastRun | null;
+  readinessGate?: CoordinatorReadinessGate | null;
   /** Ownership ledger — absence is the "no record" branch (single-root wire). */
   worktrees?: CoordinatorWorktreeEntry[];
   warnings: string[];

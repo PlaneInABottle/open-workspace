@@ -267,6 +267,28 @@ export interface CoordinatorExplanation {
   revisions: CoordinatorRevision[];
 }
 
+/** Readiness-strip chip: boundary name (masked wire value) + rolled-up
+ * cell verdict across matrix rows. */
+export type BoundaryChipStatus = 'pass' | 'stale' | 'skipped' | 'uncovered' | 'unverified';
+export interface CoordinatorBoundaryChip {
+  boundary: string;
+  status: BoundaryChipStatus;
+}
+
+/** Readiness-strip last-run line: selected run id, last verified time
+ * (null when nothing verified), and the all-green verdict. */
+export interface CoordinatorLastRun {
+  id: string;
+  at: string | null;
+  pass: boolean;
+}
+
+/** Readiness-strip gate line: preflight pass + missing entries. */
+export interface CoordinatorReadinessGate {
+  pass: boolean;
+  missing: string[];
+}
+
 export interface CoordinatorSnapshot {
   reconcile: CoordinatorReconcile;
   readiness: CoordinatorReadinessEntry[];
@@ -286,6 +308,12 @@ export interface CoordinatorSnapshot {
    * Bozuk dosya: error'lu nesne (hata kutusu; diğer paneller sağlam).
    */
   scenarios: CoordinatorScenarios | null;
+  /** Readiness strip (M8, additive-optional): present only when a
+   * scenarios file is bound (null file keeps the wire byte-identical).
+   * Absent sections render the strip `unmeasured` placeholder, never crash. */
+  boundaryList?: CoordinatorBoundaryChip[];
+  lastRun?: CoordinatorLastRun | null;
+  readinessGate?: CoordinatorReadinessGate | null;
   /** Ownership ledger (additive-optional): carried only when >1 root is
    * registered; absent from single-root snapshots.
    * Absence is the "no record" branch in the UI (old readers skip it). */
@@ -784,6 +812,41 @@ export function normalizeScenarios(text: string): { scenarios: ParsedScenario[];
   return { scenarios, warnings: fileWarnings };
 }
 
+/** Boundary rollup (pure): worst cell verdict per column, with
+ * non-covering cells sorting below real verdicts. */
+function rollupBoundaryStatus(cells: ScenarioVerdict[]): BoundaryChipStatus {
+  const rank: Record<ScenarioVerdict, number> = { stale: 4, unverified: 3, skipped: 2, uncovered: 1, pass: 0 };
+  let status: BoundaryChipStatus = 'pass';
+  let covered = false;
+  for (const verdict of cells) {
+    if (verdict === 'uncovered') continue;
+    covered = true;
+    if (rank[verdict] > rank[status]) status = verdict;
+  }
+  return covered ? status : 'uncovered';
+}
+
+/** Readiness-strip sections (M8, pure): derived from already-built
+ * aggregates - no new reads. Boundary chips roll up matrix verdicts;
+ * last-run binds the selected checkpoint run (null without checkpoints);
+ * the gate mirrors preflight pass + missing (already masked upstream). */
+function buildReadinessStrip(
+  checkpoints: CoordinatorCheckpoints | null,
+  scenarios: CoordinatorScenarios,
+  missing: string[],
+): { boundaryList: CoordinatorBoundaryChip[]; lastRun: CoordinatorLastRun | null; readinessGate: CoordinatorReadinessGate } {
+  const boundaryList = scenarios.columns.map(column => ({
+    boundary: column,
+    status: rollupBoundaryStatus(scenarios.rows.map(row => row.cells[column] ?? 'skipped')),
+  }));
+  const lastRun = checkpoints === null ? null : {
+    id: checkpoints.run,
+    at: checkpoints.lastVerified?.at ?? null,
+    pass: checkpoints.summary.stale === 0 && checkpoints.summary.notObserved === 0,
+  };
+  return { boundaryList, lastRun, readinessGate: { pass: missing.length === 0, missing: [...missing] } };
+}
+
 function buildScenarios(
   record: EnvironmentRecord,
   checkpoint: CheckpointSource | null,
@@ -1164,14 +1227,17 @@ export function buildCoordinatorSnapshot(input: {
     missing.push(maskSecrets(line));
   }
 
+  const scenarios = buildScenariosSection(input.record, input.checkpoint ?? null, input.scenarioRead ?? null);
+  const scopedCheckpoints = buildCheckpoints(input.checkpoint ?? null);
   return {
     reconcile: { inSync: drifts.length === 0, drifts },
     readiness,
     explanation: buildExplanation(input.record, input.status, input.checkpoint ?? null, input.supervisor ?? null),
     preflight: { pass: missing.length === 0, gates, missing },
-    checkpoints: buildCheckpoints(input.checkpoint ?? null),
-    scenarios: buildScenariosSection(input.record, input.checkpoint ?? null, input.scenarioRead ?? null),
+    checkpoints: scopedCheckpoints,
+    scenarios,
     runs: input.runs ?? [],
+    ...(scenarios === null ? {} : buildReadinessStrip(scopedCheckpoints, scenarios, missing)),
     ...(input.worktreeLedger === undefined ? {} : { worktrees: input.worktreeLedger.rows }),
     warnings,
     meta: {

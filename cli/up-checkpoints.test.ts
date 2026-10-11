@@ -2,7 +2,7 @@
  * Salt-okunur (ow yazmaz/budamaz); canlı exec yok. */
 
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -526,6 +526,38 @@ describe("konumsal gramer korunur", () => {
         io.restore()
       }
       expect(io.err.join("\n")).toContain("beklenmeyen argüman: b")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M7 envelope data passthrough (opaque, read-only)", () => {
+  test("data object survives the read path verbatim; malformed data drops, envelope lives", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ow-m7-"))
+    try {
+      await mkdir(join(root, ".ow", "checkpoints"), { recursive: true })
+      const good = JSON.stringify({
+        stage: "build",
+        status: "confirmed",
+        proof: { ok: true },
+        at: "2026-10-09T08:00:00.000Z",
+        by: "runner",
+        data: { revField: "r1", "freshness-ignores": true },
+      })
+      const bad = JSON.stringify({
+        stage: "test",
+        status: "confirmed",
+        proof: { ok: true },
+        at: "2026-10-09T08:05:00.000Z",
+        by: "runner",
+        data: ["not", "an", "object"],
+      })
+      await writeFile(join(root, ".ow", "checkpoints", "nightly.jsonl"), `${good}\n${bad}\n`, "utf8")
+      const read = await readCheckpointFile(join(root, ".ow", "checkpoints", "nightly.jsonl"))
+      expect(read.envelopes).toHaveLength(2)
+      expect(read.envelopes[0].data).toEqual({ revField: "r1", "freshness-ignores": true })
+      expect(read.envelopes[1].data).toBeUndefined()
     } finally {
       await rm(root, { recursive: true, force: true })
     }

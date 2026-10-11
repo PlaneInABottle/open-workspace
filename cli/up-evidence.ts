@@ -29,7 +29,13 @@ export type EvidenceEnvelope = {
   attempt?: number
   /** M-A (+M-D fails-verb grup anahtarı): opak adım imzası. */
   step_signature?: string
+  /** M7 data-clock witness: opaque runner-declared object (conventional
+   * keys `revField`, `freshness-ignores`; `ow` never interprets values). */
+  data?: Record<string, unknown>
 }
+
+/** M7 envelope data cap (telemetry bound; over-capacity drops the field). */
+export const DATA_EVIDENCE_MAX_BYTES = 4 * 1024
 
 /** Cap'ler (üst sınırlar planda sabit; altı implementere bırakıldı — aynen alındı). */
 export const PROOF_MAX_CHARS = 8192
@@ -243,6 +249,21 @@ export const normalizeEnvelope = (raw: unknown): { ok: true; envelope: EvidenceE
     }
     if (Object.keys(picked).length > 0) envelope.side_effect_counts = picked
     else if (Object.keys(counts).length > 0) return { ok: false }
+  }
+  // M7 data-clock witness: opaque `data` object (runner-declared; `ow`
+  // never interprets it). Non-object or over-capacity content drops the
+  // field while the envelope lives (telemetry-tolerant, M-C precedent).
+  if (dict["data"] !== undefined) {
+    const raw = dict["data"] as unknown
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      let size = 0
+      try {
+        size = Buffer.byteLength(JSON.stringify(raw), "utf8")
+      } catch {
+        size = DATA_EVIDENCE_MAX_BYTES + 1
+      }
+      if (size <= DATA_EVIDENCE_MAX_BYTES) envelope.data = raw as Record<string, unknown>
+    }
   }
   // M-A (#3): soy — senaryo RUN_NAME_PATTERN şekli, deneme 1..999 tamsayı.
   if (dict["scenario"] !== undefined) {

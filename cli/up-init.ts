@@ -8,11 +8,12 @@
  * `parseUpFile` + `missingRequiredEnv` and reported (reuse, don't
  * reimplement validation). */
 
-import { lstat, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import { formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
 import { OTEL_ENDPOINT, TRACE_DEFAULT_PORT } from "./trace-store"
+import { parseScenarios, SCENARIOS_FILE_NAME } from "./up-scenarios"
 
 /** Shared OTLP env body; java/python differ by one leading fragment only. */
 const OTEL_BASE_ENV = (service: string): string =>
@@ -135,7 +136,7 @@ const uniqueServiceName = (base: string, taken: Set<string>): string => {
 
 const cappedEnvNames = (names: string[], notes: string[]): string[] => {
   if (names.length <= REQUIRED_ENV_CAP) return names
-  notes.push(`required-env listesi ${REQUIRED_ENV_CAP} ile sınırlandırıldı`)
+  notes.push(`required-env list capped at ${REQUIRED_ENV_CAP}`)
   return names.slice(0, REQUIRED_ENV_CAP)
 }
 
@@ -241,7 +242,7 @@ const detectJava = async (
   const gradle = entries.filter((name) => name === "build.gradle" || name === "build.gradle.kts").sort()[0]
   const buildFile = gradle ?? (entries.includes("pom.xml") ? "pom.xml" : undefined)
   if (buildFile === undefined) return null
-  if (gradle !== undefined && entries.includes("pom.xml")) notes.push("pom.xml atlandı (build.gradle kullanıldı)")
+  if (gradle !== undefined && entries.includes("pom.xml")) notes.push("pom.xml skipped (build.gradle used)")
   const buildText = (await readCapped(join(rootDir, buildFile))) ?? ""
   const spring = SPRING_MARKER.test(stripBuildComments(buildText))
   const isGradle = buildFile.startsWith("build.gradle")
@@ -250,7 +251,7 @@ const detectJava = async (
   const systemCmd = isGradle ? "gradle" : "mvn"
   const task = isGradle ? "bootRun" : "spring-boot:run"
   if (!spring) {
-    notes.push(`${isGradle ? "gradle" : "maven"} derlemesi bulundu ama Spring işareti yok — çalıştırma komutu çıkarılamadı`)
+    notes.push(`${isGradle ? "gradle" : "maven"} build found but no Spring marker — no runnable command`)
     return null
   }
   const cmd = (await isExecutableFile(join(rootDir, wrapper))) ? `${wrapperCmd} ${task}` : `${systemCmd} ${task}`
@@ -316,7 +317,7 @@ const detectPython = async (
     else if (entries.includes("app.py")) entry = "app.py"
   }
   if (entry === null) {
-    notes.push("python projesi bulundu ama giriş noktası ([project.scripts]/main.py/app.py) yok — servis eklenmedi")
+    notes.push("python project found but no entry point ([project.scripts]/main.py/app.py) — service skipped")
     return null
   }
   const base = entry.endsWith(".py") ? (uv ? `uv run python ${entry}` : `python ${entry}`) : uv ? `uv run ${entry}` : entry
@@ -343,12 +344,12 @@ const detectNode = async (
       scripts = (parsed as Record<string, { scripts: Record<string, unknown> }>)["scripts"] as Record<string, unknown>
     }
   } catch {
-    notes.push("package.json okunamadı — atlandı")
+    notes.push("package.json unreadable — skipped")
     return null
   }
   const picked = typeof scripts["dev"] === "string" && scripts["dev"] !== "" ? "dev" : typeof scripts["start"] === "string" && scripts["start"] !== "" ? "start" : null
   if (picked === null) {
-    notes.push("package.json bulundu ama çalıştırma scripti (dev/start) yok — servis eklenmedi")
+    notes.push("package.json found but no run script (dev/start) — service skipped")
     return null
   }
   // Vite ports attach ONLY to vite-driven scripts: an unrelated `vite.config.*`
@@ -368,7 +369,7 @@ const detectNode = async (
       }
     }
   } else if (viteConfigs.length > 0) {
-    notes.push(`vite.config.* bulundu ama ${picked} scripti vite kullanmıyor — port eklenmedi`)
+    notes.push(`vite.config.* found but ${picked} script does not use vite — port skipped`)
   }
   return {
     name: uniqueServiceName("web", taken),
@@ -386,8 +387,8 @@ const detectCompose = async (rootDir: string, entries: string[]): Promise<string
     const services = [...text.matchAll(COMPOSE_SERVICE_LINE)].map((match) => match[1]).slice(0, 8)
     notes.push(
       services.length > 0
-        ? `${name} (${services.join(", ")}) dışarıda — ow yönetmez`
-        : `${name} bulundu — içindeki servisler ow tarafından yönetilmez`,
+        ? `${name} (${services.join(", ")}) external — ow does not manage it`
+        : `${name} found — ow does not manage its services`,
     )
   }
   return notes
@@ -426,7 +427,7 @@ const tracedCmd = (service: InitService): string => {
 export const renderInitYaml = (detection: InitDetection, opts: { tracing: boolean }): string => {
   const lines: string[] = []
   if (detection.skipped.length > 0) {
-    lines.push("# ow init notları (dosyaya yazılmayan zayıf sinyaller):")
+    lines.push("# ow init notes (weak signals, not written to the file):")
     for (const note of detection.skipped) lines.push(`# - ${note}`)
   }
   if (opts.tracing) lines.push(`trace:\n  port: ${TRACE_DEFAULT_PORT}`)
@@ -445,11 +446,83 @@ export const renderInitYaml = (detection: InitDetection, opts: { tracing: boolea
 /** Test seam for the L4 validate-before-write order proof: production passes
  * nothing and gets `renderInitYaml`; tests may inject a faulty renderer to
  * force a validation failure and assert the disk was untouched. */
-export type InitRenderInject = { renderYaml?: (detection: InitDetection, opts: { tracing: boolean }) => string }
+export type InitRenderInject = {
+  renderYaml?: (detection: InitDetection, opts: { tracing: boolean }) => string
+  renderScenarios?: (detection: InitDetection) => string
+}
+
+/** First-scenario default name (the scenario-name question's default answer). */
+export const INIT_DEFAULT_SCENARIO = "first-scenario"
+
+/** INERT marker (exact): `ow scenarios --check` passes the file while the
+ * M6 singular runner refuses it until real probes are uncommented. */
+export const INIT_INERT_MARKER = "# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented"
+
+/** Inert placeholder probe: keeps `--check` green without executable
+ * meaning. `true` prints no JSON, so even an unmarked run would fail
+ * closed (never false-green) - but the marker refuses first. */
+const INIT_INERT_PROBE = "{id: inert, argv: [true]}"
+
+/** Scaffold `ow.scenarios.yaml`: version + one INERT scenario over the
+ * detected services (new-taxonomy default boundary, commented real probes,
+ * quoted blocked example in the commented matrix). Pure render; the caller
+ * validates with the real `parseScenarios` before touching disk. */
+export const renderScenariosYaml = (detection: InitDetection): string => {
+  const names = detection.services.map((service) => service.name)
+  const first = detection.services[0]
+  const ported = detection.services.find((service) => service.port !== undefined)
+  const lines: string[] = [
+    INIT_INERT_MARKER,
+    "version: 1",
+    "scenarios:",
+    `  ${INIT_DEFAULT_SCENARIO}:`,
+    `    services: [${names.join(", ")}]`,
+    "    boundaries: [real-read-only]",
+  ]
+  if (ported?.port !== undefined) lines.push(`    targets: [http://127.0.0.1:${ported.port}/]`)
+  if (first !== undefined) {
+    lines.push(`    # probes: [{id: ready, argv: [./scripts/ready-${first.name}.sh], timeout: 10s}]`)
+  }
+  lines.push(`    probes: [${INIT_INERT_PROBE}]`)
+  lines.push(`    checkpoints: [${names.map((name) => `${name}-ready`).join(", ")}]`)
+  lines.push("# Boundary matrix (M1 new taxonomy — uncomment one per scenario):")
+  lines.push("#   real-read-only | real-state-changing | network-deny | subscribed | blocked:\"<reason>\" | unverified")
+  lines.push("#   (legacy real/local/fake/captured-response/test dual-read with a warning)")
+  return `${lines.join("\n")}\n`
+}
+
+/** Bounded question catalog (<=6 fixed kinds, `question:`-prefixed checklist, never
+ * interactive): cwd/port confirms per service, required-env names once,
+ * boundary default + scenario name once, tracing opt-in when off. Free-text
+ * answers may only ever fill names/ports, never commands (no answer
+ * mechanism exists in this milestone - the catalog freezes the surface). */
+const initQuestions = (detection: InitDetection, opts: { tracing: boolean }): string[] => {
+  const out: string[] = []
+  for (const service of detection.services) {
+    out.push(`question: is the working directory (cwd) correct for ${service.name}? If not, fix it in ow.yaml.`)
+  }
+  for (const service of detection.services) {
+    if (service.port !== undefined) {
+      out.push(`question: is port ${service.port} correct for ${service.name}? If not, fix it in ow.yaml.`)
+    }
+  }
+  const requiredNames = [...new Set(detection.services.flatMap((service) => service.requiredEnv))]
+  if (requiredNames.length > 0) {
+    out.push(`question: are the required variables (${requiredNames.join(", ")}) defined in the environment?`)
+  }
+  out.push("question: is the boundary default real-read-only suitable? If not, change it in ow.scenarios.yaml.")
+  out.push(`question: is the scenario name ${INIT_DEFAULT_SCENARIO} suitable? If not, change it in ow.scenarios.yaml.`)
+  if (opts.tracing !== true) {
+    out.push("question: enable tracing? If so, re-run with --tracing.")
+  }
+  return out
+}
 
 export const runInit = async (options: InitOptions, inject?: InitRenderInject): Promise<InitResult> => {
   const rootDir = options.rootDir
   const yamlPath = join(rootDir, "ow.yaml")
+  const scenariosPath = join(rootDir, SCENARIOS_FILE_NAME)
+  const replayKeepPath = join(rootDir, ".ow", "replay", ".gitkeep")
   let rootOk = false
   try {
     const info = await lstat(rootDir)
@@ -458,75 +531,121 @@ export const runInit = async (options: InitOptions, inject?: InitRenderInject): 
     rootOk = false
   }
   if (!rootOk) {
-    return { code: 2, stdout: "", stderr: `ow: dizin bulunamadı: ${rootDir}` }
+    return { code: 2, stdout: "", stderr: `ow: directory not found: ${rootDir}` }
   }
   const detection = await detectRepo(rootDir)
   if (detection.services.length > MAX_SERVICES) {
-    return { code: 2, stdout: "", stderr: `ow: ${detection.services.length} servis bulundu, en fazla ${MAX_SERVICES} destekleniyor` }
+    return { code: 2, stdout: "", stderr: `ow: found ${detection.services.length} services, at most ${MAX_SERVICES} supported` }
   }
   if (detection.services.length === 0) {
     const notes = [...detection.skipped, ...detection.compose]
     const honest =
       detection.compose.length > 0
-        ? "çalıştırılabilir servis tanınmadı, boş iskelet yazılmadı"
-        : "hiçbir şey tanınmadı, boş iskelet yazılmadı"
+        ? "no runnable service recognized, no empty skeleton written"
+        : "nothing recognized, no empty skeleton written"
     return { code: 0, stdout: [...notes, honest].join("\n"), stderr: "" }
   }
-  let existed = false
+  let yamlExisted = false
   try {
     await readFile(yamlPath, "utf8")
-    existed = true
+    yamlExisted = true
   } catch {
-    existed = false
+    yamlExisted = false
   }
-  if (existed && options.force !== true) {
-    return { code: 2, stdout: "", stderr: "ow: ow.yaml zaten var — üzerine yazmak için --force kullanın" }
+  let scenariosExisted = false
+  try {
+    await readFile(scenariosPath, "utf8")
+    scenariosExisted = true
+  } catch {
+    scenariosExisted = false
   }
-  // Validate BEFORE touching disk (L4): render → parse → only then backup +
-  // write. A validation failure leaves the original file and creates no .bak.
+  if ((yamlExisted || scenariosExisted) && options.force !== true) {
+    const existing = [
+      ...(yamlExisted ? ["ow.yaml"] : []),
+      ...(scenariosExisted ? [SCENARIOS_FILE_NAME] : []),
+    ].join(", ")
+    return { code: 2, stdout: "", stderr: `ow: ${existing} already exists — use --force to overwrite` }
+  }
+  // Validate BEFORE touching disk (L4, both files): render -> parse -> only
+  // then backups + writes. A validation failure leaves both originals and
+  // creates no .bak and no .gitkeep.
   const renderYaml = inject?.renderYaml ?? renderInitYaml
   const text = renderYaml(detection, { tracing: options.tracing === true })
   let parsed: ReturnType<typeof parseUpFile>
   try {
     parsed = parseUpFile(text)
   } catch (error) {
-    return { code: 2, stdout: "", stderr: `ow: geçersiz iskelet: ${error instanceof Error ? error.message : String(error)}` }
+    return { code: 2, stdout: "", stderr: `ow: invalid skeleton: ${error instanceof Error ? error.message : String(error)}` }
   }
-  if (existed) {
+  const renderScenarios = inject?.renderScenarios ?? renderScenariosYaml
+  const scenariosText = renderScenarios(detection)
+  try {
+    parseScenarios(scenariosText)
+  } catch (error) {
+    return { code: 2, stdout: "", stderr: `ow: invalid scenarios skeleton: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  try {
+    await mkdir(join(rootDir, ".ow", "replay"), { recursive: true, mode: 0o700 })
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: `ow: cannot open .ow/replay: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  if (yamlExisted) {
     const backup = join(rootDir, "ow.yaml.bak")
     await unlink(backup).catch(() => undefined)
     await rename(yamlPath, backup)
   }
+  if (scenariosExisted) {
+    const backup = `${scenariosPath}.bak`
+    await unlink(backup).catch(() => undefined)
+    await rename(scenariosPath, backup)
+  }
   try {
     await writeFile(yamlPath, text, { encoding: "utf8" })
   } catch (error) {
-    return { code: 1, stdout: "", stderr: `ow: ow.yaml yazılamıyor: ${error instanceof Error ? error.message : String(error)}` }
+    return { code: 1, stdout: "", stderr: `ow: cannot write ow.yaml: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  try {
+    await writeFile(scenariosPath, scenariosText, { encoding: "utf8" })
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: `ow: cannot write ${SCENARIOS_FILE_NAME}: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  try {
+    await writeFile(replayKeepPath, "", { encoding: "utf8" })
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: `ow: cannot write .ow/replay/.gitkeep: ${error instanceof Error ? error.message : String(error)}` }
   }
   const missing = missingRequiredEnv(parsed.services)
   const missingNames = [...new Set(missing.flatMap((entry) => entry.vars))]
   const validity =
     missingNames.length === 0
-      ? `ow.yaml geçerli: ${parsed.services.length} servis, eksik gerekli değişken yok`
-      : `ow.yaml geçerli: ${parsed.services.length} servis, ${missingNames.length} eksik gerekli değişken: ${missingNames.join(", ")}`
+      ? `ow.yaml valid: ${parsed.services.length} services, no missing required vars`
+      : `ow.yaml valid: ${parsed.services.length} services, ${missingNames.length} missing required vars: ${missingNames.join(", ")}`
   const checklist: string[] = []
   for (const note of detection.skipped) checklist.push(note)
   for (const service of detection.services) {
-    if (service.port === undefined) checklist.push(`${service.name}: port bulunamadı — gerekirse port: N ekleyin`)
+    if (service.port === undefined) checklist.push(`${service.name}: port not found — add port: N if needed`)
   }
   const requiredNames = [...new Set(detection.services.flatMap((service) => service.requiredEnv))]
-  if (requiredNames.length > 0) checklist.push(`gerekli değişkenler doldurulmadan up çalışmaz: ${requiredNames.join(", ")}`)
+  if (requiredNames.length > 0) checklist.push(`up will not run until required vars are set: ${requiredNames.join(", ")}`)
   const hasJava = detection.services.some((service) => service.kind === "java")
   if (options.tracing === true && hasJava) {
     checklist.push("mkdir -p .ow/otel && curl -L -o .ow/otel/opentelemetry-javaagent.jar https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar")
   }
   for (const line of detection.compose) checklist.push(line)
   if (detection.services.some((service) => service.kind === "node")) {
-    checklist.push("web izlemesi kod ister — env yetmez; tracing.ts tarifine bakın (cli/README.md)")
+    checklist.push("web tracing needs code — env is not enough; see the tracing.ts recipe (cli/README.md)")
   }
   const stderrLines = formatUpWarnings(parsed.warnings)
   return {
     code: 0,
-    stdout: [`yazıldı: ${yamlPath} (${parsed.services.length} servis: ${parsed.services.map((s) => s.name).join(", ")})`, validity, ...checklist].join("\n"),
+    stdout: [
+      `wrote: ${yamlPath} (${parsed.services.length} services: ${parsed.services.map((s) => s.name).join(", ")})`,
+      validity,
+      ...checklist,
+      `wrote: ${scenariosPath} (1 scenario: ${INIT_DEFAULT_SCENARIO} — INERT)`,
+      `wrote: ${replayKeepPath}`,
+      ...initQuestions(detection, { tracing: options.tracing === true }),
+    ].join("\n"),
     stderr: stderrLines.join("\n"),
   }
 }

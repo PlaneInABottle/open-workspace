@@ -1,7 +1,7 @@
-/** P2-B preflight: salt-okunur kapı (mutasyon yok, gating yok). M2/M3
- * land etmedi: provenance = canlı-config lensi, readiness = kayıtlı
- * lastReadiness (+ `--probe` one-shot TCP). Canlı exec yalnızca enjekte
- * TCP sayacı üzerinden doğrulanır. */
+/** P2-B preflight: read-only gate (no mutation, no gating). M2/M3
+ * unlanded: provenance = live-config lens, readiness = recorded
+ * lastReadiness (+ `--probe` one-shot TCP). Live exec verified only via
+ * the injected TCP counter. */
 
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -88,8 +88,8 @@ const STALE_RUN = [
   `{"stage":"build","status":"confirmed","proof":{"ok":true},"at":"2026-10-09T09:00:00.000Z","by":"runner","code":{"script_hash":"h2","checkout_rev":"r1"},"runtime":{"port":1}}`,
 ].join("\n") + "\n"
 
-describe("measureTcpPorts (bütçe)", () => {
-  test("açık port true, kapalı false", async () => {
+describe("measureTcpPorts (budget)", () => {
+  test("open port true, closed false", async () => {
     const srv = Bun.serve({ port: 0, fetch: () => new Response("ok") })
     ownedServers.push(srv)
     const open = await measureTcpPorts({ ports: [srv.port] })
@@ -99,7 +99,7 @@ describe("measureTcpPorts (bütçe)", () => {
     expect(closed.get(srv.port)).toBe(false)
   })
 
-  test("takılan yoklama bütçeye takılır (ölçülmedi), kalan çağrılmaz", async () => {
+  test("hanging probe hits the budget (unmeasured), rest uncalled", async () => {
     let calls = 0
     const hanging = async (_port: number): Promise<boolean> => {
       calls += 1
@@ -112,10 +112,10 @@ describe("measureTcpPorts (bütçe)", () => {
   })
 })
 
-describe("evaluatePreflight (saf kompozisyon)", () => {
+describe("evaluatePreflight (pure composition)", () => {
   const liveOf = (names: string[]): Map<string, "live"> => new Map(names.map((name) => [name, "live" as const]))
 
-  test("kayıtlı-hazır + canlı TCP → pass", () => {
+  test("recorded-ready + live TCP → pass", () => {
     const running = [{ name: "a", pid: 1, lstart: "l", startedAt: "t", cmd: "sleep 30", port: 1, lastReadiness: { ok: true } } as unknown as UpServiceState]
     const result = evaluatePreflight({
       expected: [{ name: "a", cmd: "sleep 30", port: 1 }],
@@ -126,10 +126,11 @@ describe("evaluatePreflight (saf kompozisyon)", () => {
     })
     expect(result.pass).toBe(true)
     expect(result.missing).toEqual([])
-    expect(result.gates.map((gate) => gate.pass)).toEqual([true, true, true])
+    // M2 4th gate (boundary): appended LAST - old 3 gates keep shape/order.
+    expect(result.gates.map((gate) => gate.pass)).toEqual([true, true, true, true])
   })
 
-  test("TCP kapalı → port-kapalı; ölçülmedi → ölçülmedi", () => {
+  test("TCP closed → port-closed; unmeasured → unmeasured", () => {
     const base = {
       expected: [{ name: "a", cmd: "sleep 30", port: 1 }],
       running: [{ name: "a", pid: 1, lstart: "l", startedAt: "t", cmd: "sleep 30", port: 1, lastReadiness: { ok: true } } as unknown as UpServiceState],
@@ -138,14 +139,14 @@ describe("evaluatePreflight (saf kompozisyon)", () => {
     }
     const closed = evaluatePreflight({ ...base, tcpResults: new Map([[1, false]]) })
     expect(closed.pass).toBe(false)
-    expect(closed.missing).toContain("readiness:a:port-kapalı")
+    expect(closed.missing).toContain("readiness:a:port-closed")
     const unmeasured = evaluatePreflight({ ...base, tcpResults: new Map([[1, "unmeasured"]]) })
     expect(unmeasured.pass).toBe(false)
-    expect(unmeasured.missing).toContain("readiness:a:ölçülmedi")
+    expect(unmeasured.missing).toContain("readiness:a:unmeasured")
   })
 })
 
-describe("preflight CLI (fixture kompozisyon)", () => {
+describe("preflight CLI (fixture composition)", () => {
   const fixture = async (yaml: string): Promise<{ root: string; file: string }> => {
     const root = await tempRoot()
     const file = join(root, "ow.yaml")
@@ -153,7 +154,7 @@ describe("preflight CLI (fixture kompozisyon)", () => {
     return { root, file }
   }
 
-  test("sync+fresh → pass/exit 0 (insan + json)", async () => {
+  test("sync+fresh → pass/exit 0 (human + json)", async () => {
     const { root, file } = await fixture("services:\n  a:\n    cmd: sleep 30\n  b:\n    cmd: sleep 30\n")
     const a = await sleeper()
     const b = await sleeper()
@@ -171,7 +172,9 @@ describe("preflight CLI (fixture kompozisyon)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.out.join("\n")).toContain("hazır: ortam kapıdan geçti")
+      expect(io.out.join("\n")).toContain("ready: environment passed preflight")
+      // M2 parity: without new files the human line is byte-identical.
+      expect(io.out).toEqual(["ready: environment passed preflight"])
       const io2 = capture()
       try {
         expect(await run(["preflight", "--file", file, "--json"])).toBe(0)
@@ -185,7 +188,8 @@ describe("preflight CLI (fixture kompozisyon)", () => {
         envelopes: unknown[]
       }
       expect(payload.pass).toBe(true)
-      expect(payload.gates.map((gate) => gate.name)).toEqual(["reconcile", "provenance", "readiness"])
+      // M2 4th gate (boundary): additive - old 3 gates byte-identical in shape.
+      expect(payload.gates.map((gate) => gate.name)).toEqual(["reconcile", "provenance", "readiness", "boundary"])
       expect(payload.gates.every((gate) => gate.pass)).toBe(true)
       expect(payload.missing).toEqual([])
       expect(payload.envelopes).toHaveLength(2)
@@ -220,7 +224,7 @@ describe("preflight CLI (fixture kompozisyon)", () => {
     }
   })
 
-  test("stale zarf → exit 1 + bayat missing (reconcile temizken)", async () => {
+  test("stale envelope → exit 1 + stale missing (reconcile clean)", async () => {
     const { root, file } = await fixture("services:\n  a:\n    cmd: sleep 30\n")
     const a = await sleeper()
     try {
@@ -245,18 +249,18 @@ describe("preflight CLI (fixture kompozisyon)", () => {
       } finally {
         io2.restore()
       }
-      expect(io2.out.join("\n")).toContain("bayat: build (neden: script_hash)")
+      expect(io2.out.join("\n")).toContain("stale: build (reason: script_hash)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("readiness-false → exit 1 hazır-değil; yokluk Q1 ölçülmedi ile düşer", async () => {
+  test("readiness-false → exit 1 not-ready; absence drops via Q1 unmeasured", async () => {
     const { root, file } = await fixture("services:\n  a:\n    cmd: sleep 30\n")
     const a = await sleeper()
     try {
       await writeState(root, [
-        { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: false, note: "prob kapalı" } },
+        { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: false, note: "probe closed" } },
       ])
       const io = capture()
       let code = -1
@@ -266,7 +270,7 @@ describe("preflight CLI (fixture kompozisyon)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect((JSON.parse(io.out.join("\n")) as { missing: string[] }).missing).toContain("readiness:a:hazır-değil")
+      expect((JSON.parse(io.out.join("\n")) as { missing: string[] }).missing).toContain("readiness:a:not-ready")
       await writeState(root, [{ name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30" }])
       const io2 = capture()
       try {
@@ -274,13 +278,13 @@ describe("preflight CLI (fixture kompozisyon)", () => {
       } finally {
         io2.restore()
       }
-      expect((JSON.parse(io2.out.join("\n")) as { missing: string[] }).missing).toContain("readiness:a:ölçülmedi")
+      expect((JSON.parse(io2.out.join("\n")) as { missing: string[] }).missing).toContain("readiness:a:unmeasured")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("bayraksız sahte-yoklama çağrılmaz (exec-sıfır kanıtı)", async () => {
+  test("flagless fake-probe never called (zero-exec proof)", async () => {
     const srv = Bun.serve({ port: 0, fetch: () => new Response("ok") })
     ownedServers.push(srv)
     const { root, file } = await fixture(`services:\n  a:\n    cmd: sleep 30\n    port: ${srv.port}\n`)
@@ -308,7 +312,7 @@ describe("preflight CLI (fixture kompozisyon)", () => {
     }
   })
 
-  test("--probe: açık TCP sayılır, kapalı düşürür", async () => {
+  test("--probe: open TCP counts, closed drops", async () => {
     const srv = Bun.serve({ port: 0, fetch: () => new Response("ok") })
     ownedServers.push(srv)
     const { root, file } = await fixture(`services:\n  a:\n    cmd: sleep 30\n    port: ${srv.port}\n`)
@@ -338,20 +342,20 @@ describe("preflight CLI (fixture kompozisyon)", () => {
         io2.restore()
       }
       expect(code).toBe(1)
-      expect(io2.out.join("\n")).toContain("hazır-değil: a (port kapalı)")
+      expect(io2.out.join("\n")).toContain("not-ready: a (port closed)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("TCP-açık/probe-kapalı: kayıtlı ret canlı TCP'yi yener, yoklama çalışmaz", async () => {
+  test("TCP-open/probe-closed: recorded rejection beats live TCP, no probing", async () => {
     const srv = Bun.serve({ port: 0, fetch: () => new Response("ok") })
     ownedServers.push(srv)
     const { root, file } = await fixture(`services:\n  a:\n    cmd: sleep 30\n    port: ${srv.port}\n`)
     const a = await sleeper()
     try {
       await writeState(root, [
-        { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", port: srv.port, lastReadiness: { ok: false, note: "prob kapalı" } },
+        { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", port: srv.port, lastReadiness: { ok: false, note: "probe closed" } },
       ])
       let calls = 0
       const io = capture()
@@ -372,18 +376,18 @@ describe("preflight CLI (fixture kompozisyon)", () => {
       }
       expect(code).toBe(1)
       expect(calls).toBe(0)
-      expect(io.out.join("\n")).toContain("hazır-değil: a (prob kapalı)")
+      expect(io.out.join("\n")).toContain("not-ready: a (probe closed)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("sentinel: kayıtnotu maskeli, hunter2 yok", async () => {
+  test("sentinel: record-note masked, no hunter2", async () => {
     const { root, file } = await fixture("services:\n  a:\n    cmd: sleep 30\n")
     const a = await sleeper()
     try {
       await writeState(root, [
-        { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: false, note: "token=hunter2 ile giris basarisiz" } },
+        { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: false, note: "token=hunter2 login failed" } },
       ])
       const io = capture()
       try {
@@ -399,13 +403,13 @@ describe("preflight CLI (fixture kompozisyon)", () => {
         io2.restore()
       }
       expect(io2.out.join("\n")).not.toContain("hunter2")
-      expect(io2.out.join("\n")).toContain("hazır-değil: a (token=*** ile giris basarisiz)")
+      expect(io2.out.join("\n")).toContain("not-ready: a (token=*** login failed)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("bozuk supervisor.json: exit 1, çökme yok", async () => {
+  test("corrupt supervisor.json: exit 1, no crash", async () => {
     const { root, file } = await fixture("services:\n  a:\n    cmd: sleep 30\n")
     try {
       const paths = upPaths(root)
@@ -419,14 +423,14 @@ describe("preflight CLI (fixture kompozisyon)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.err.join("\n")).toContain("supervisor.json bozuk")
+      expect(io.err.join("\n")).toContain("supervisor.json corrupt")
       expect((JSON.parse(io.out.join("\n")) as { pass: boolean }).pass).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("kullanım: konumsal + --detach exit 2", async () => {
+  test("usage: positional + --detach exit 2", async () => {
     const { root, file } = await fixture("services:\n  a:\n    cmd: echo hi\n")
     try {
       expect(await run(["preflight", "x", "--file", file])).toBe(2)

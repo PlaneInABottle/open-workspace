@@ -1191,3 +1191,119 @@ test('M2 caps: advisories truncate at 10 lines, ledger at 20 rows', async t => {
     for (const root of roots) await rm(root, { recursive: true, force: true });
   }
 });
+
+test('M8 strip wire: boundary rollup + last-run + gate, scrubbed shapes only', async t => {
+  const f = await fixture(t);
+  await f.service.register('Strip', [f.root]);
+  await f.service.environmentSet('Strip', {
+    name: 'dev',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  await mkdir(join(f.root, '.ow', 'checkpoints'), { recursive: true });
+  const line = (entry: unknown) => JSON.stringify(entry);
+  await writeFile(join(f.root, '.ow', 'checkpoints', 'demo.jsonl'), [
+    line({ stage: 'ok-stage', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 'aa11bb22cc33dd44ee55ff66', checkout_rev: 'r1' } }),
+    line({ stage: 'old-stage', status: 'confirmed', proof: 'ok', at: '2026-10-09T11:00:00.000Z', by: 'runner', code: { script_hash: 'aa11bb22cc33dd44ee55ff66', checkout_rev: 'r1' } }),
+    line({ stage: 'old-stage', status: 'confirmed', proof: 'ok', at: '2026-10-09T12:00:00.000Z', by: 'runner', code: { script_hash: 'ff66ee55dd44cc33bb22aa11', checkout_rev: 'r1' } }),
+  ].join('\n'));
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh, --token, hunter2]}]',
+    '    checkpoints: [ok-stage]',
+    '  rollout:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: healthy, argv: [./y.sh]}]',
+    '    checkpoints: [old-stage]',
+    '  sneak:',
+    '    services: [api]',
+    '    boundaries: [token=hunter2]',
+    '    probes: [{id: quiet, argv: [./z.sh]}]',
+    '    checkpoints: []',
+    '',
+  ].join('\n'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Strip/coordinator?environment=dev`)).json() as {
+    scenarios: { columns: string[] } | null;
+    boundaryList?: Array<{ boundary: string; status: string }>;
+    lastRun?: { id: string; at: string | null; pass: boolean } | null;
+    readinessGate?: { pass: boolean; missing: string[] } | null;
+  };
+  const wire = JSON.stringify(snapshot);
+  assert.ok(!wire.includes('hunter2'), 'hostile boundary/argv must not reach the wire');
+  assert.ok(!wire.includes('--token'), 'probe argv must not reach the strip wire');
+  assert.ok(!wire.includes('./x.sh'), 'probe argv must not reach the strip wire');
+  assert.ok(!wire.includes('aa11bb22cc33dd44ee55ff66'), 'full digests must not reach the strip wire');
+  assert.ok(!wire.includes('ff66ee55dd44cc33bb22aa11'), 'rotated digests must not reach the strip wire');
+
+  assert.ok(snapshot.scenarios);
+  assert.deepEqual(snapshot.boundaryList, [
+    { boundary: 'local', status: 'stale' },
+    { boundary: 'token=***', status: 'unverified' },
+  ]);
+  assert.deepEqual(snapshot.lastRun, { id: 'demo', at: '2026-10-09T11:00:00.000Z', pass: false });
+  assert.equal(typeof snapshot.readinessGate?.pass, 'boolean');
+  assert.ok(Array.isArray(snapshot.readinessGate?.missing));
+});
+
+test('M8 strip wire absent without scenarios file (byte-identical, no crash)', async t => {
+  const f = await fixture(t);
+  await f.service.register('Bare', [f.root]);
+  await f.service.environmentSet('Bare', {
+    name: 'dev',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Bare/coordinator?environment=dev`)).json() as Record<string, unknown>;
+  assert.equal(snapshot['scenarios'], null);
+  assert.ok(!('boundaryList' in snapshot), 'no strip content without scenarios');
+  assert.ok(!('lastRun' in snapshot), 'no strip content without scenarios');
+  assert.ok(!('readinessGate' in snapshot), 'no strip content without scenarios');
+});
+
+test('M8 strip wire: scenarios present without checkpoints keeps lastRun null', async t => {
+  const f = await fixture(t);
+  await f.service.register('Nocheck', [f.root]);
+  await f.service.environmentSet('Nocheck', {
+    name: 'dev',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Nocheck/coordinator?environment=dev`)).json() as {
+    boundaryList?: Array<{ boundary: string; status: string }>;
+    lastRun?: { id: string; at: string | null; pass: boolean } | null;
+    readinessGate?: { pass: boolean; missing: string[] } | null;
+  };
+  assert.deepEqual(snapshot.boundaryList, [{ boundary: 'local', status: 'skipped' }]);
+  assert.equal(snapshot.lastRun, null);
+  assert.equal(typeof snapshot.readinessGate?.pass, 'boolean');
+});

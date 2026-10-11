@@ -7,6 +7,11 @@ The observer hooks that feed it live in the opencode plugin directory
 (`~/.config/opencode/opencode-plugins/shell-observer/` — `index.ts` +
 `shell-observer-core.ts` only); every other CLI source lives here.
 
+Agent skill entry points: `skills/ow/SKILL.md` (pointer) →
+`skills/ow-runtime/SKILL.md` (supervision/readiness) +
+`skills/ow-scenarios/SKILL.md` (scenarios/evidence); generated client
+packs live under `plugins/`.
+
 ## Bun-only
 
 `cli/` runs **only** under bun. Sources use `bun:sqlite`, `Bun.spawn`,
@@ -364,33 +369,197 @@ Runner reçetesi (docs-only, kod yok): runner `prepare` ilk satırında `ow
 preflight --json` çağırır; `pass:false` ise işi başlatmaz, `missing[]`'i
 aynen loglar; ow tarafında retry/öneri üretilmez.
 
-### Senaryo şeması (salt-okunur doğrulama)
+### Scenario schema (read-only validation)
 
-`ow.yaml` şişmez: senaryolar ayrı dosyada (`<root>/ow.scenarios.yaml`,
-`version: 1`) durur, ow onları ÇALIŞTIRMAZ — yalnızca şemayı doğrular
-(`ow scenarios --check [--json] [--file]`). Her senaryo ow.yaml servis
-adlarına referans verir (yoksa warn + UNVERIFIED, fail değil), boundaries
-enumu dışına çıkarsa aynı sınıftır; targets/checkpoints opak stringdir (ağ
-politikası yok, secret-maske var); her probe `{id, argv (≤16 parça, parça
-≤512B, shell yok), timeout (5s|10s|30s, default 10s)}` taşır:
+`ow.yaml` stays lean: scenarios live in a separate file
+(`<root>/ow.scenarios.yaml`, `version: 1`) that ow validates but never
+RUNS (`ow scenarios --check [--json] [--file]`). Each scenario
+references ow.yaml service names (unknown names warn as UNVERIFIED,
+never fail); boundaries follow the M1 taxonomy (`real-read-only |
+real-state-changing | network-deny | subscribed | blocked:<reason> |
+unverified`), legacy values dual-read with a warning (never fail);
+targets/checkpoints are opaque strings (no network policy,
+secret-masked); each probe carries `{id, argv (at most 16 parts, at
+most 512B each, no shell), timeout (5s|10s|30s, default 10s)}`:
 
 ```yaml
 version: 1
 scenarios:
   truck-approval:
     services: [api]
-    boundaries: [local]
+    boundaries: [real-read-only]
     targets: [http://127.0.0.1:8901/approval]
     probes: [{id: ready, argv: [./scripts/ready-approval.sh, --local], timeout: 10s}]
     checkpoints: [approval-ready]
 ```
 
-Çıkış: 0 ok (warn'la da 0), 1 şema hatası, 2 kullanım; dosya yoksa exit 1
-(`senaryo dosyası yok` — `--check` doğrulama fiilidir, yanlış yolda sessiz
-geçmez). `--json` additive `{file, scenarios: [{name, services,
-boundaries, targets, probes: [{id, argvShape, timeout}], checkpoints}],
-warnings}` verir (argv HAM basılmaz, maskeli-şekil). Subset-YAML tek-satır
-kuralı geçerlidir: blok-map yazımı satırlı hata + inline örnek verir.
+Legacy mapping (unconditional dual-read, one warning per value per file
+`legacy-boundary: <v> → <m> (warning)`): `real→real-state-changing`,
+`local→real-read-only`, `captured-response→subscribed`, `fake→unverified`,
+`test→unverified`. `network-deny` is new-only (no legacy source).
+Unknown/empty values fall to `unverified` with an `unknown boundaries:
+<v> (UNVERIFIED)` warning (never a failure, never silent). `blocked`
+cannot stand alone — `blocked:<1..128-char reason>` is required (e.g.
+`blocked:"maintenance work"`; quoting is mandatory for reasons with
+commas), otherwise a schema error (exit 1).
+
+Exits: 0 ok (even with warnings), 1 schema error, 2 usage; a missing
+file is exit 1 (`scenario file missing` — `--check` is a validation
+verb, never silently passing a wrong path). `--json` is additive
+`{file, scenarios: [{name, services, boundaries, targets, probes:
+[{id, argvShape, timeout}], checkpoints}], boundariesNormalized:
+[{scenario, boundaries}], boundaryWarnings[], warnings}` (raw argv
+never prints, masked shape only; `boundaries` holds raw file values,
+the normalized view lives in `boundariesNormalized`). Subset-YAML
+single-line rule: block-map style fails naming the line with an inline
+example.
+
+### Readiness (boundary-witnessed readiness)
+
+Open port ≠ ready, health-200 ≠ ready: port/health green alone is never
+readiness evidence — teach `ow readiness`, not sleep/curl loops.
+`ow readiness [--json] [--probe] [--file]` is a read-only full preflight
+composition (4 gates: reconcile/provenance/readiness + boundary) plus a
+digest/migration report; it never RUNS probes (`--probe` is one-shot
+loopback TCP on declared ports only, ≤60s total budget).
+
+The boundary gate (`boundary:`-prefixed, fail-closed) matches scenario
+`real-read-only | real-state-changing | subscribed` claims against recorded
+evidence (lastReadiness/digest-identity/confirmed checkpoints); an
+unbacked claim fails the gate with `boundary:<name>:<reason>`. `unverified`,
+`network-deny`, `blocked:*`, and unknown services never fail it
+(M1 warn-only preserved). A record older than its process yields
+`boundary:<name>:stale-record` (stale); an unreadable scenarios file yields
+`boundary:scenario-file:unreadable` (fail-closed).
+
+Known-false-green catalog (fires on positive evidence only — silent data
+passes silently, the healthy family stays green):
+
+| kind | signal | human line |
+|---|---|---|
+| `stale-jar` | recorded digest identity ≠ fresh declaration (same basename) | `derleme-eski: <name> (<base> değişti)` — renders via the shared drift formatter, converging to `stale-build:` in E1 |
+| `origin-403` | 403 in a recorded note (origin gate, not down) | `origin-suspect: <name> (…)` |
+| `msw-vite-trap` | `msw`/mock-service-worker marker in cmd, or `vite preview` (frozen build) | `mock-traffic: <name> (…)` |
+| `v5-confusion` | non-v1 ow.yaml `version:` (v1 assumed) | `version-confusion: <name> (…)` |
+
+Exits: 0 ready, 1 missing/stale/false-green, 2 usage or invalid ow.yaml.
+`--json` is additive `{ready, missing[], stale[], falseGreens[] ({kind,
+service, hint}), gates[]}` (English keys; full digests and raw paths never
+reach the wire — basename + short-8). Human output adds a
+`build: <name> <base>@<short8>` + `migration: <name> (history recorded|history missing)` report to
+the gate lines (when data exists; otherwise the single
+`ready: readiness passed` line).
+
+### Replay store, record, contract check
+
+Deterministic scenarios ship with a recorded contract. `ow record
+<scenario> [--file]` captures one deterministic scenario's declared
+probes once (bounded one-shot exec of declared argv only — nothing
+else runs) into `.ow/replay/<boundary>/<hash>.jsonl`, one JSON object
+per line: line 0 is the provenance envelope, the rest are probe
+outcomes. Store discipline: per-file `0600`, ≤256KB / ≤500 lines
+(oldest-first trim by the writer, atomic tmp+rename). The envelope
+carries `{checkout, head, interpreter, runnerHash, at, scenario?,
+attempt?}` — `runnerHash` is the digest of the record-side runner
+inputs (the declared probe set) at record time; a record missing any
+of the first four fails closed (`provenance-missing`, exit 1). Stored
+outcomes keep digests, masked shapes, and scrubbed notes — raw argv,
+raw stdout, and absolute paths never land in the store (digest inputs
+live in memory only). `replayedFrom` is always null on capture; it is
+the SOLE replay-linkage mechanism (a linkage-absent record reads as
+live). The `X-Ow-Replay` header is future-HTTP-only and never travels
+on probe transport. Checkpoints and data-clock files are
+runner-written — `ow` writes replay only, never checkpoints.
+
+State-changing boundaries are never replayed: `real-state-changing`
+and `blocked:*` refuse with exit 2 naming the boundary, on both
+verbs. Unknown scenario names, unverified-only scenarios, and missing
+files fail closed without writing.
+
+`ow contract check [--json] [--file]` is the ship-order gate: it
+recomputes each deterministic scenario's definition digest and
+compares it to the recorded contract hash. Exits: 0 match, 1
+digest-mismatch (`contract-mismatch:`) or unknown hash
+(`unknown-record:`, never a silent pass), 2 usage or a
+state-changing scenario in scope. `--json` is additive `{pass,
+compared[] ({scenario, hash, match, detail}), missing[]}` (English
+keys; full digests never render — short-8 plus the verdict).
+
+The scrubber runs BEFORE the cap everywhere on this path: shared B3
+value masking (`Bearer`/JWT/provider tokens, `key=value`, ≥32-hex)
+plus CWD-absolute paths folding to `<root>`; only then are notes
+capped. `ow` probes never execute app code beyond declared probe argv
+(the bounded one-shot class already used by `reconcile --probe`).
+
+### Data-clock witness (runner-written evidence)
+
+Freshness without database access. The runner writes
+`<root>/.ow/data-clock.json` (≤4KB, keys `schema_hash`, `applied_head`,
+`seed_profile`, `seed_rev`, `db_identity`, `at` — each a tight 1..64ch
+whitespace-free string); `ow provision --check` renders one additive
+`dataClock:` line and never gates on it: `dataClock:
+<db_identity>@<applied_head> (<seed_profile>/<seed_rev>)` when the
+clock is at least as new as the newest checkpoint evidence, the same
+line with a `(stale-ignored)` suffix when older (advisory only — stale
+data never fails the run), or `dataClock: unmeasured (<reason>)` with
+`no-file`, `data-clock-oversize`, or `invalid` when unreadable. Checkpoints
+carry an opaque `data` object (`revField`, `freshness-ignores` by
+convention; `ow` never interprets values) that survives the read path
+verbatim. Scenarios may declare a `data:` block (known keys validated,
+unknown keys warn) whose mismatches against the clock warn as
+`data mismatch: <key> (UNVERIFIED)` without changing exits, plus an
+`env_file:` names-only reference (relative in-project path; provision
+validates presence and never reads contents — a declared-but-missing
+file is exit 2 naming the file, values never reach wire, state, or
+replay). The ledger prints one chip line per scope that has a clock
+(root first, then service `cwd` scopes):
+`db:<identity> seed:<profile>/<rev> mig:<head> (<scope>)`; two scopes
+sharing an identity add `collision-warning: <id> in two checkouts`
+(advisory only). All rendered identities are secret-masked; DSNs and
+credentials must stay out of these fields (shape discipline plus
+masking, enforced by hostile tests).
+
+### Narrowed deterministic scenario run
+
+`ow scenario run <name> [--json] [--file ow.scenarios.yaml] [--run <id>]
+[--off-local]` runs one deterministic scenario through five strictly
+ordered phases — `setup → run → assert → restore → report` — as a
+facade over existing read paths plus bounded probe exec. `ow` spawns
+ONLY declared probe argv (same ≤16-part/≤512B/no-shell/timeout/cap
+limits as validation; masked shapes in output); restore execution is
+runner-side, never spawned by `ow`.
+
+Schema additions (all additive, validated at parse; unknown fields
+still warn-only): `mode: local|off-local` (default `local`),
+`restore: {argv, timeout?}` (probe limits, validated never spawned),
+`assert:` inline-map list, `triggers:`/`queue:`/`webhook:` (opaque,
+`queue` must name a declared probe), `deps:` (`mode` per entry),
+`proxies:`/`apiMode:`/`browser:`/`viewport:`/`seed:`/`artifact:`
+(opaque track fields). Explicit non-goal keys (`fault|soak|load-test|
+schedul*|deploy*`) fail closed at parse; the runner maps them to
+exit 2.
+
+Phases: setup validates (INERT marker → exit 2 `INERT: <file>`;
+unknown scenario, off-local without `--off-local`, out-of-scope
+boundary, missing restore, unreadable run → exit 2; tampered or
+unrecorded contract → exit 1 via the shared contract verdict, probes
+never run); run executes declared probes sequentially with a
+wall-clock; assert evaluates `negative` (expects failure),
+`readback-by-consumer` (ready consumer probe plus a confirmed
+checkpoint stage), `call-count` (exact envelope count per stage),
+`budget` (wall ms within limit); restore ALWAYS runs the runner
+(try/finally, even after assert failure) and renders the masked
+restore shape plus outcome (`restored:` or `restore-failed:` suffix);
+report prints the verdict. Exits: 0 pass / 1 assert-or-restore
+failure / 2 usage-or-refusal. `--json` is additive `{scenario,
+phases: [{name, ok, detail}], restored, contract: {pass}, report}`.
+
+Checkpoint selection for reads: `--run <id>` names the run, otherwise
+the latest run (max envelope time) wins; reads come from
+`.ow/checkpoints/*.jsonl` (tolerant per file). Time follows the
+wall-clock only; `OW_TIME_OFFSET` stays a runner-side convention that
+`ow` never reads. Load testing stays project-tool owned and witnessed
+through `ps`/`logs` — never an `ow` surface.
 
 ### Spring tarifi (uyku/curl yerine)
 
@@ -420,6 +589,24 @@ adds the `trace:` block and per-service OTel `env:` (single-line flow maps);
 the generated file is re-validated in-process before reporting. `--force`
 keeps a single backup (`ow.yaml.bak`, overwritten each time) — accepted
 single-generation behavior, not a rotation.
+
+Init v2 also scaffolds `ow.scenarios.yaml` (first scenario INERT — every
+real `argv:` line commented, one `{id: inert, argv: [true]}` placeholder
+probe keeping `ow scenarios --check` green) plus `.ow/replay/.gitkeep`.
+The scenarios file opens with the exact marker
+`# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented`
+(the M6 singular runner will refuse marked files with exit 2 — pending; today the verb does not exist); its commented
+boundary matrix lists the M1 new taxonomy, with the `blocked:` example
+quoted (`blocked:"<reason>"` — an unquoted reason is a fail-closed parse
+risk). The scenarios text is re-validated in-process with the real
+`parseScenarios` before either file is written, and an existing
+`ow.scenarios.yaml` gets the same single-`.bak` rule
+(`ow.scenarios.yaml.bak`, overwritten). Init prints a bounded question
+catalog (fixed `soru:` strings, never interactive): service-cwd confirm,
+port confirm, required-env names, boundary default (`real-read-only`),
+scenario name (`ilk-senaryo`), tracing opt-in. Init writes at most the two
+yaml files plus `.gitkeep` — it never edits `package.json`/CI/imports,
+never installs anything, never spawns app code.
 
 State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.

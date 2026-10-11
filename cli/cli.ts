@@ -30,12 +30,12 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "provision", "scenarios", "failures"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "readiness", "provision", "scenarios", "failures", "record", "contract", "scenario"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -78,8 +78,12 @@ export const helpText = (): string =>
     "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
     "  failures [--since 1h|24h|7d] [--file] [--json]  yinelenen bulgular (salt-okunur, mekanik)",
     "  preflight [--file] [--json] [--probe]  salt-okunur kapı (mutasyon yok; geçemezse çıkış 1)",
+    "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
   "  provision --check [--file] [--json] [--probe]  çalışma-alanı checklist'i (.env symlink + .venv + HEAD + ön-kapı; salt-okunur, çıkış 0 geçti / 1 eksik)",
     "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 şema doğrulama (çalıştırma yok)",
+    "  record <scenario> [--file]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
+    "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
+    "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory)",
     "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
   "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
@@ -141,7 +145,12 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     }
     // P2-A: only `checkpoints` takes a second positional (`show <run>`);
     // every other surface keeps the pre-existing usage error (same text).
-    if (command === "checkpoints") {
+    // M5 note: `record <run-name>` and `contract check` ride the first
+    // positional (sessionID) slot with dispatch-side validation below, so
+    // this rule needs no change - a second positional stays a usage error.
+    // M6: `scenario run <name>` follows the `checkpoints show <run>` shape:
+    // subverb in the sessionID slot, target in extra.
+    if (command === "checkpoints" || command === "scenario") {
       extra.push(arg)
       continue
     }
@@ -601,7 +610,8 @@ export const run = async (argv: string[]): Promise<number> => {
   }
   const { command, sessionID: positional, flags } = parsed
   // P2-A: extra positionals belong only to `checkpoints show <run>`.
-  if (command !== "checkpoints" && parsed.extra.length > 0) {
+  // M6: plus `scenario run <name>` (same subverb-plus-target shape).
+  if (command !== "checkpoints" && command !== "scenario" && parsed.extra.length > 0) {
     console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
     console.error(helpText())
     return 2
@@ -659,7 +669,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "readiness" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures" || command === "record" || command === "contract" || command === "scenario") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -1041,6 +1051,23 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runPreflight } = await import("./up-preflight")
       return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
     }
+    if (command === "readiness") {
+      // M2: boundary-witnessed readiness - full preflight composition
+      // (4 gates) + digest/migration report. Read-only; `--probe` is
+      // one-shot loopback TCP on declared ports only (M1 N3 budget).
+      if (positional !== undefined) {
+        console.error("ow: readiness takes no positional arguments")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} cannot be used with readiness`)
+          return 2
+        }
+      }
+      const { runReadiness } = await import("./up-preflight")
+      return runReadiness({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
+    }
     if (command === "provision") {
       // Worktree checklist: witness-only, never gates up/ps/reconcile/
       // preflight (those paths are untouched). `--check` required, bare
@@ -1083,6 +1110,78 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runScenariosCheck, SCENARIOS_FILE_NAME } = await import("./up-scenarios")
       const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
       return runScenariosCheck({ file: scenariosFile, rootDir, json })
+    }
+    if (command === "record") {
+      // M5: run-name-singular capture - the positional names the scenario.
+      // Human-only output (no `--json` on this verb); probes run bounded
+      // one-shot, nothing else executes. (Second positionals never reach
+      // here: rejected globally above.)
+      if (positional === undefined) {
+        console.error("ow: use as record <scenario-name> [--file] (single positional)")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--json"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} cannot be used with record`)
+          return 2
+        }
+      }
+      const { runRecord } = await import("./up-replay")
+      const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
+      return runRecord({ rootDir, file: scenariosFile, runName: positional })
+    }
+    if (command === "contract") {
+      // M5: digest-compare + ship-order gate. `check` is the only second
+      // word (first-positional slot); pure witness, no exec on this verb.
+      if (positional !== "check") {
+        console.error("ow: use as contract check [--file] [--json]")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} cannot be used with contract`)
+          return 2
+        }
+      }
+      const { runContractCheck } = await import("./up-contract")
+      const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
+      return runContractCheck({ rootDir, file: scenariosFile, json })
+    }
+    if (command === "scenario") {
+      // M6: narrowed deterministic run — `run` subverb in the sessionID
+      // slot, scenario name in extra (checkpoints-shape precedent). Runner
+      // owns restore exec; `ow` spawns declared probes only.
+      if (positional !== "run" || parsed.extra.length !== 1) {
+        console.error("ow: use as scenario run <name> [--file] [--json] [--run <id>] [--off-local]")
+        return 2
+      }
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--tracing", "--force"]) {
+        if (flags[unsupported] !== undefined) {
+          console.error(`ow: ${unsupported} cannot be used with scenario run`)
+          return 2
+        }
+      }
+      const runId = flag(flags, "--run")
+      if (runId !== undefined) {
+        const { isValidRunName } = await import("./up-checkpoints")
+        if (!isValidRunName(runId)) {
+          console.error(`ow: invalid run id: ${runId}`)
+          return 2
+        }
+      }
+      const { runScenarioRun } = await import("./up-scenario-run")
+      const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
+      return runScenarioRun({
+        rootDir,
+        file: scenariosFile,
+        name: parsed.extra[0],
+        runId,
+        offLocal: flags["--off-local"] === true,
+        json,
+      })
     }
     if (command === "ps") {
       if (flags["--explain"] === true) {

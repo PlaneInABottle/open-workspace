@@ -44,13 +44,30 @@ function yanEtkiSozcugu(sideEffect: string | null): string {
 /** M-A (#2): kilitli retry metni (salt-metin; düğme/bağlantı yok). */
 const RETRY_HINT_TR = 'tekrar-öncesi: ow reconcile --check';
 
-const BOUNDARY_TR: Record<string, string> = {
-  real: 'gerçek',
-  local: 'yerel',
-  fake: 'sahte',
-  'captured-response': 'kayıtlı yanıt',
+/** M1 boundary taxonomy: new-enum English labels + legacy dual-read
+ * labels (old columns may still arrive). `blocked:<reason>` matches by
+ * prefix; anything unknown falls back to `unknown` (no raw column name
+ * leaks into the DOM, no blank/broken cells). */
+const BOUNDARY_EN: Record<string, string> = {
+  'real-read-only': 'real read-only',
+  'real-state-changing': 'real state-changing',
+  'network-deny': 'network deny',
+  subscribed: 'subscribed',
+  blocked: 'blocked',
+  unverified: 'unverified',
+  real: 'real',
+  local: 'local',
+  fake: 'fake',
+  'captured-response': 'captured response',
   test: 'test',
 };
+
+function boundaryLabel(column: string): string {
+  const hit = BOUNDARY_EN[column];
+  if (hit !== undefined) return hit;
+  if (column.startsWith('blocked:')) return BOUNDARY_EN.blocked;
+  return 'unknown';
+}
 
 const VERDICT_TR: Record<Exclude<ScenarioVerdict, 'uncovered'>, string> = {
   pass: 'geçti',
@@ -319,6 +336,8 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
 
           <PreflightPanel snapshot={data} />
 
+          <ReadinessStrip snapshot={data} />
+
           <CheckpointPanel checkpoints={data.checkpoints} runs={data.runs ?? cachedRuns} run={run} onRunChange={setRun} />
 
           <ProvenancePanel explanation={data.explanation} readiness={data.readiness} />
@@ -332,6 +351,60 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
       )}
       {openDrift && <DiffModal drift={openDrift} onClose={closeDrift} />}
     </section>
+  );
+}
+
+/**
+ * Readiness strip: compact read-only summary inside the coordinator view
+ * (no panel/route/fetch of its own - data arrives with the snapshot).
+ * Three fixed zones: boundary chips, last-run line, gate line. Missing
+ * wire sections render the `unmeasured` placeholder, never a crash.
+ * Stale evidence (old snapshot or a stale boundary) dims the strip.
+ */
+function ReadinessStrip({ snapshot }: { snapshot: CoordinatorSnapshot }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, [snapshot]);
+
+  const { boundaryList, lastRun, readinessGate } = snapshot;
+  if (boundaryList === undefined || lastRun === undefined || readinessGate === undefined || readinessGate === null) {
+    return (
+      <article aria-labelledby="readiness-strip-heading" className="mt-4 border-t border-border pt-4">
+        <h3 id="readiness-strip-heading" className="text-sm font-semibold">Readiness strip</h3>
+        <p className="mt-2 text-sm text-muted-foreground">unmeasured — no readiness data bound.</p>
+      </article>
+    );
+  }
+
+  const producedAtMs = Date.parse(snapshot.meta.producedAt);
+  const staleSnapshot = Number.isFinite(producedAtMs) && nowMs - producedAtMs > 60_000;
+  const staleEvidence = boundaryList.some(entry => entry.status === 'stale');
+  const stale = staleSnapshot || staleEvidence;
+
+  return (
+    <article aria-labelledby="readiness-strip-heading" className={`mt-4 border-t border-border pt-4${stale ? ' opacity-60' : ''}`}>
+      <h3 id="readiness-strip-heading" className="text-sm font-semibold">Readiness strip</h3>
+      {stale && <p role="status" className="mt-1 text-xs text-muted-foreground">stale evidence</p>}
+      <ul aria-label="Boundaries" className="mt-2 flex flex-wrap gap-1.5">
+        {boundaryList.map(entry => (
+          <li key={entry.boundary} className="flex items-center gap-1.5">
+            <Badge variant="outline" className="gap-1">{boundaryLabel(entry.boundary)}</Badge>
+            <span className="text-xs text-muted-foreground">{entry.status}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {lastRun === null
+          ? <span className="font-medium">Last run: no record</span>
+          : <span className="font-medium">Last run: {lastRun.id}{lastRun.at ? ` · ${lastRun.at}` : ''} · {lastRun.pass ? 'pass' : 'fail'}</span>}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {readinessGate.pass
+          ? <span className="font-medium text-success">Readiness gate: pass</span>
+          : <span className="font-medium text-warning">Readiness gate: fail ({readinessGate.missing.length} missing)</span>}
+      </p>
+    </article>
   );
 }
 
@@ -869,7 +942,7 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
                 <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Senaryo</th>
                 {scenarios.columns.map(column => (
                   <th key={column} scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">
-                    {BOUNDARY_TR[column] ?? column}
+                    {boundaryLabel(column)}
                   </th>
                 ))}
               </tr>

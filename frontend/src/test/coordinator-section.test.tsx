@@ -274,26 +274,26 @@ function scenarioed(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSn
     runs: ['yeni', 'eski'],
     scenarios: {
       file: 'ow.scenarios.yaml',
-      columns: ['local', 'real', 'uydurma'],
+      columns: ['local', 'real', 'xyz-unknown'],
       rows: [
         {
-          name: 'sepet',
+          name: 'cart',
           services: ['api'],
           unverifiedServices: [],
-          probes: [{ id: 'hazir', timeout: '10s' }],
-          checkpoints: ['onay'],
-          cells: { local: 'pass', real: 'uncovered', uydurma: 'unverified' },
+          probes: [{ id: 'ready', timeout: '10s' }],
+          checkpoints: ['approval'],
+          cells: { local: 'pass', real: 'uncovered', 'xyz-unknown': 'unverified' },
         },
         {
-          name: 'odeme',
-          services: ['api', 'yabanci'],
-          unverifiedServices: ['yabanci'],
-          probes: [{ id: 'saglik', timeout: '5s' }],
-          checkpoints: ['dagitim'],
-          cells: { local: 'uncovered', real: 'stale', uydurma: 'skipped' },
+          name: 'payment',
+          services: ['api', 'foreign'],
+          unverifiedServices: ['foreign'],
+          probes: [{ id: 'healthy', timeout: '5s' }],
+          checkpoints: ['rollout'],
+          cells: { local: 'uncovered', real: 'stale', 'xyz-unknown': 'skipped' },
         },
       ],
-      warnings: ['sepet: bilinmeyen alan yoksayıldı: not'],
+      warnings: ['cart: unknown field ignored: note'],
       error: null,
     },
     ...overrides,
@@ -301,29 +301,62 @@ function scenarioed(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSn
 }
 
 describe('CoordinatorSection scenarios', () => {
-  it('renders the matrix as a scoped table with Turkish verdicts and no run action', async () => {
+  it('renders the matrix as a scoped table with verdict badges and no run action', async () => {
     render(<CoordinatorSection api={apiReturning(scenarioed())} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Koordinatör' });
     const table = await within(section).findByRole('table', { name: /Senaryo matrisi/ });
     expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent))
-      .toEqual(['Senaryo', 'yerel', 'gerçek', 'uydurma']);
-    expect(within(table).getByRole('rowheader', { name: /sepet/ })).toBeInTheDocument();
+      // M1: unknown columns show `unknown`, never the raw name.
+      .toEqual(['Senaryo', 'local', 'real', 'unknown']);
+    expect(within(table).getByRole('rowheader', { name: /cart/ })).toBeInTheDocument();
     expect(within(table).getByText('geçti')).toBeInTheDocument();
     expect(within(table).getByText('bayat')).toBeInTheDocument();
     expect(within(table).getByText('atlandı')).toBeInTheDocument();
     expect(within(table).getByText('doğrulanamadı')).toBeInTheDocument();
     expect(within(table).getByText('? doğrulanamadı')).toBeInTheDocument();
-    // Ham İngilizce enumlar kullanıcıya dönük metinde görünmez.
+    // Raw English enum keys never leak into user-facing text (boundary
+    // headers render spaced labels; verdict badges render Turkish until E1-b).
     const tableText = table.textContent ?? '';
-    for (const raw of ['local', 'real', 'captured-response', 'pass', 'stale', 'skipped', 'uncovered', 'unverified', 'not_observed']) {
+    for (const raw of ['captured-response', 'pass', 'stale', 'skipped', 'uncovered', 'unverified', 'not_observed']) {
       expect(tableText).not.toContain(raw);
     }
-    // Probe id'leri görünür, çalıştırma denetimi yok: hücreler salt-metin.
-    expect(within(table).getByText(/1 probe \(hazir\)/)).toBeInTheDocument();
+    // Probe ids render, no run control: cells are plain text.
+    expect(within(table).getByText(/1 probe \(ready\)/)).toBeInTheDocument();
     expect(within(table).queryByRole('button')).not.toBeInTheDocument();
     expect(within(table).queryByRole('link')).not.toBeInTheDocument();
-    // Bölüm uyarı şeridi matristen sonra gelir (odak sırası).
-    expect(within(section).getByText('sepet: bilinmeyen alan yoksayıldı: not')).toBeInTheDocument();
+    // Section warning strip comes after the matrix (focus order).
+    expect(within(section).getByText('cart: unknown field ignored: note')).toBeInTheDocument();
+  });
+
+  it('renders M1 boundary labels in English with unknown fallback for unknown columns', async () => {
+    const columns = ['real-read-only', 'real-state-changing', 'network-deny', 'subscribed', 'blocked:maintenance', 'unverified', 'xyz-unknown'];
+    const cells: Record<string, 'pass'> = {};
+    for (const column of columns) cells[column] = 'pass';
+    render(<CoordinatorSection api={apiReturning(scenarioed({
+      scenarios: {
+        file: 'ow.scenarios.yaml',
+        columns,
+        rows: [
+          {
+            name: 'cart',
+            services: ['api'],
+            unverifiedServices: [],
+            probes: [{ id: 'ready', timeout: '10s' }],
+            checkpoints: ['approval'],
+            cells,
+          },
+        ],
+        warnings: [],
+        error: null,
+      },
+    }))} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const table = await within(section).findByRole('table', { name: /Senaryo matrisi/ });
+    const headers = within(table).getAllByRole('columnheader').map(cell => cell.textContent);
+    expect(headers)
+      .toEqual(['Senaryo', 'real read-only', 'real state-changing', 'network deny', 'subscribed', 'blocked', 'unverified', 'unknown']);
+    // Headers carry no Turkish: the M1 map renders English labels.
+    expect(headers.join(' ')).not.toMatch(/[çğıöşüÇĞİÖŞÜ]/);
   });
 
   it('shows an explained empty state with a setup link when no file is bound', async () => {
@@ -674,5 +707,81 @@ describe('M2 ownership ledger (read-only list, conditional)', () => {
     rerender(<CoordinatorSection api={apiReturning(snapshot())} workspace="Demo" environment="dev" refreshToken={1} />);
     section = await screen.findByRole('region', { name: 'Koordinatör' });
     expect(within(section).queryByText('Worktree sahipliği')).not.toBeInTheDocument();
+  });
+});
+
+describe('CoordinatorSection readiness strip', () => {
+  function stripped(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSnapshot {
+    return snapshot({
+      scenarios: {
+        file: 'ow.scenarios.yaml',
+        columns: ['real-read-only', 'network-deny'],
+        rows: [],
+        warnings: [],
+        error: null,
+      },
+      boundaryList: [
+        { boundary: 'real-read-only', status: 'pass' },
+        { boundary: 'network-deny', status: 'skipped' },
+      ],
+      lastRun: { id: 'demo', at: new Date().toISOString(), pass: true },
+      readinessGate: { pass: true, missing: [] },
+      ...overrides,
+    });
+  }
+
+  it('renders boundary chips, last-run line, and gate line with data', async () => {
+    render(<CoordinatorSection api={apiReturning(stripped())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const strip = within(section).getByRole('article', { name: 'Readiness strip' });
+    expect(within(strip).getByText('real read-only')).toBeInTheDocument();
+    expect(within(strip).getByText('network deny')).toBeInTheDocument();
+    expect(within(strip).getByText(/Last run: demo/)).toBeInTheDocument();
+    expect(within(strip).getByText('Readiness gate: pass')).toBeInTheDocument();
+    expect(strip.getAttribute('class')).not.toContain('opacity-60');
+  });
+
+  it('renders an unmeasured placeholder without wire sections and never crashes', async () => {
+    render(<CoordinatorSection api={apiReturning(snapshot())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const strip = within(section).getByRole('article', { name: 'Readiness strip' });
+    expect(within(strip).getByText(/unmeasured/)).toBeInTheDocument();
+    expect(within(strip).queryByRole('list')).not.toBeInTheDocument();
+    expect(within(strip).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(strip).queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('dims stale evidence and keeps the failing gate visible', async () => {
+    render(<CoordinatorSection api={apiReturning(stripped({
+      boundaryList: [{ boundary: 'real-read-only', status: 'stale' }],
+      lastRun: null,
+      readinessGate: { pass: false, missing: ['a: down'] },
+    }))} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const strip = within(section).getByRole('article', { name: 'Readiness strip' });
+    expect(strip.getAttribute('class')).toContain('opacity-60');
+    expect(within(strip).getByText('stale evidence')).toBeInTheDocument();
+    expect(within(strip).getByText('Last run: no record')).toBeInTheDocument();
+    expect(within(strip).getByText('Readiness gate: fail (1 missing)')).toBeInTheDocument();
+  });
+
+  it('fetches once per mount with no polling', async () => {
+    const coordinator = vi.fn(async () => stripped());
+    const api = { coordinator } as unknown as ApiClient;
+    const { rerender } = render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
+    await screen.findByRole('article', { name: 'Readiness strip' });
+    expect(coordinator).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(coordinator).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+    rerender(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
+    expect(coordinator).toHaveBeenCalledTimes(1);
+    rerender(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={1} />);
+    await screen.findByRole('article', { name: 'Readiness strip' });
+    expect(coordinator).toHaveBeenCalledTimes(2);
   });
 });
