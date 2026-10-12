@@ -41,6 +41,9 @@ export type BoundaryGateInput = {
   migrationObserved?: Record<string, boolean>
   configVersion?: string
   scenariosUnreadable?: boolean
+  /** M11: probe-only scenarios (no services by decision) — carried into the
+   * gate detail as an explicit vacuity note, never a silent skip. */
+  serviceless?: string[]
 }
 
 export type BoundaryScanInput = {
@@ -201,6 +204,8 @@ export type BoundaryGateDetail = {
   falseGreens: BoundaryFalseGreen[]
   artifacts: Record<string, { shown: { base: string; digest: string }[]; rest: number }>
   migrations: Record<string, boolean>
+  /** M11: present only when probe-only scenarios exist (parity: absent otherwise). */
+  serviceless?: string[]
 }
 
 export const boundaryGateDetail = (

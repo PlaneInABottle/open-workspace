@@ -200,10 +200,15 @@ export const evaluatePreflight = (opts: {
     human.unshift("missing: boundary:scenario-file:unreadable")
   }
   for (const finding of scan.falseGreens) human.push(formatFalseGreen(finding))
-  const detail = boundaryGateDetail(
-    { services: opts.expected, records: opts.running, migrationObserved: opts.boundary?.migrationObserved ?? {} },
-    scan,
-  )
+  const detail: BoundaryGateDetail = {
+    ...boundaryGateDetail(
+      { services: opts.expected, records: opts.running, migrationObserved: opts.boundary?.migrationObserved ?? {} },
+      scan,
+    ),
+    // M11: vacuity note lives in the gate detail (present only when
+    // probe-only scenarios exist — parity holds otherwise).
+    ...((opts.boundary?.serviceless?.length ?? 0) > 0 ? { serviceless: [...(opts.boundary?.serviceless ?? [])] } : {}),
+  }
   gates.push({
     name: "boundary",
     pass:
@@ -301,20 +306,22 @@ export const readBoundaryClaims = async (rootDir: string, flagPath?: string): Pr
   overlayError: string | null
   overlayExit: 1 | 2
   overlay: import("./up-overlay").OverlayInfo | null
+  /** M11: merged scenarios declaring no services (probe-only by decision). */
+  serviceless: string[]
 }> => {
   let text: string
   try {
     const { readFileSync } = await import("node:fs")
     text = decodeUtf8Fatal(readFileSync(join(rootDir, SCENARIOS_FILE_NAME)))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { claims: [], scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay: null }
-    return { claims: [], scenariosUnreadable: true, overlayError: null, overlayExit: 1, overlay: null }
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { claims: [], scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay: null, serviceless: [] }
+    return { claims: [], scenariosUnreadable: true, overlayError: null, overlayExit: 1, overlay: null, serviceless: [] }
   }
   let parsed: { scenarios: { name: string; services: string[]; boundaries: string[] }[] }
   try {
     parsed = parseScenarios(text)
   } catch {
-    return { claims: [], scenariosUnreadable: true, overlayError: null, overlayExit: 1, overlay: null }
+    return { claims: [], scenariosUnreadable: true, overlayError: null, overlayExit: 1, overlay: null, serviceless: [] }
   }
   const { resolveOverlay, OverlayRefusal } = await import("./up-overlay")
   let merged = parsed
@@ -325,15 +332,20 @@ export const readBoundaryClaims = async (rootDir: string, flagPath?: string): Pr
     overlay = resolved.overlay
   } catch (error) {
     if (error instanceof OverlayRefusal) {
-      return { claims: [], scenariosUnreadable: true, overlayError: error.message, overlayExit: error.exit, overlay: null }
+      return { claims: [], scenariosUnreadable: true, overlayError: error.message, overlayExit: error.exit, overlay: null, serviceless: [] }
     }
     throw error
   }
   const claims: BoundaryClaim[] = []
+  const serviceless: string[] = []
   // Claim dedupe: identical scenario/service/boundary triples collapse
   // (a repeated boundary list entry must not double-report downstream).
   const seenClaims = new Set<string>()
   for (const scenario of merged.scenarios) {
+    // M11: no services means no service-bound claims (probe-only by
+    // decision) — recorded as an explicit vacuity note downstream, never
+    // a silent skip.
+    if (scenario.services.length === 0) serviceless.push(scenario.name)
     for (const service of scenario.services) {
       for (const raw of scenario.boundaries) {
         const norm = normalizeBoundary(raw)
@@ -346,7 +358,7 @@ export const readBoundaryClaims = async (rootDir: string, flagPath?: string): Pr
       }
     }
   }
-  return { claims, scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay }
+  return { claims, scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay, serviceless }
 }
 /** `ow preflight [--json] [--probe] [--file]`: exit 0 geçti / 1 eksik / 2
  * kullanım (çağrı yeri). Mutasyon YOK. */
@@ -413,11 +425,17 @@ export const runPreflight = async (opts: {
       claims: claimsInput.claims,
       scenariosUnreadable: claimsInput.scenariosUnreadable,
       configVersion: readConfigVersion(text),
+      serviceless: claimsInput.serviceless,
     },
   })
   const overlay = claimsInput.overlay
   const overlayHuman = overlay !== null && overlay.applied
     ? [`overlay-active: ${overlay.file}`, ...overlay.warnings]
+    : []
+  // M11: vacuous boundary pass is never silent — probe-only scenarios get
+  // an explicit unmeasured-style note on every human branch.
+  const servicelessHuman = claimsInput.serviceless.length > 0
+    ? [`unmeasured: boundary claims (probe-only: ${claimsInput.serviceless.join(", ")})`]
     : []
   if (opts.json) {
     console.log(JSON.stringify({
@@ -432,9 +450,11 @@ export const runPreflight = async (opts: {
   } else if (result.pass) {
     console.log("ready: environment passed preflight")
     for (const line of overlayHuman) console.log(line)
+    for (const line of servicelessHuman) console.log(line)
   } else {
     for (const line of result.human) console.log(line)
     for (const line of overlayHuman) console.log(line)
+    for (const line of servicelessHuman) console.log(line)
   }
   return result.pass ? 0 : 1
 }
@@ -513,6 +533,7 @@ export const runReadiness = async (opts: {
       configVersion: readConfigVersion(text),
       declaredArtifacts: opts.declaredArtifacts,
       migrationObserved: opts.migrationObserved,
+      serviceless: claimsInput.serviceless,
     },
   })
   const boundaryGate = result.gates.find((gate) => gate.name === "boundary")
@@ -520,6 +541,9 @@ export const runReadiness = async (opts: {
   const overlay = claimsInput.overlay
   const overlayHuman = overlay !== null && overlay.applied
     ? [`overlay-active: ${overlay.file}`, ...overlay.warnings]
+    : []
+  const servicelessHuman = claimsInput.serviceless.length > 0
+    ? [`unmeasured: boundary claims (probe-only: ${claimsInput.serviceless.join(", ")})`]
     : []
   if (opts.json) {
     console.log(JSON.stringify({
@@ -537,6 +561,7 @@ export const runReadiness = async (opts: {
   if (result.pass) {
     console.log("ready: readiness passed")
     for (const line of overlayHuman) console.log(line)
+    for (const line of servicelessHuman) console.log(line)
     return 0
   }
   for (const line of result.human) console.log(line)
@@ -548,5 +573,6 @@ export const runReadiness = async (opts: {
     console.log(`migration: ${service} (${observed ? "history recorded" : "history missing"})`)
   }
   for (const line of overlayHuman) console.log(line)
+  for (const line of servicelessHuman) console.log(line)
   return 1
 }

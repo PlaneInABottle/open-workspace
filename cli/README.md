@@ -390,6 +390,16 @@ scenarios:
     checkpoints: [approval-ready]
 ```
 
+Explicit `services: []` is valid and means "no services by decision"
+(probe-only scenarios such as env audits); it still requires at least
+one probe, otherwise a schema error (exit 1) — a scenario that checks
+nothing never goes green by vacuity. A missing `services:` key stays a
+schema error. Readers treat empty services as nothing to bring up:
+no `up`, no service readiness, no service-bound claims; `preflight` /
+`readiness` pass the boundary gate vacuously with an explicit
+`unmeasured: boundary claims (probe-only: <name>)` note (plus a
+`serviceless[]` entry in the gate detail), never a silent skip.
+
 Legacy mapping (unconditional dual-read, one warning per value per file
 `legacy-boundary: <v> → <m> (warning)`): `real→real-state-changing`,
 `local→real-read-only`, `captured-response→subscribed`, `fake→unverified`,

@@ -599,6 +599,44 @@ test('D3 scenarios corrupt: error box payload, other panels alive', async t => {
   assert.ok(snapshot.warnings.some(warning => warning.includes('senaryo bozuk')), `expected a scenarios-corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
 });
 
+test('M11 serviceless row: explicit services [] renders with empty services cell', async t => {
+  const f = await fixture(t);
+  await f.service.register('Coord', [f.root]);
+  await f.service.environmentSet('Coord', {
+    name: 'dev',
+    services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
+  });
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  audit:',
+    '    services: []',
+    '    boundaries: [subscribed]',
+    '    probes: [{id: envcheck, argv: [./scripts/env-audit.sh]}]',
+    '    checkpoints: [env-audited]',
+    '',
+  ].join('\n'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
+    reconcile: { inSync: boolean };
+    scenarios: {
+      file: string; columns: string[];
+      rows: Array<{ name: string; services: string[]; unverifiedServices: string[]; cells: Record<string, string> }>;
+      warnings: string[]; error: string | null;
+    } | null;
+  };
+  assert.equal(snapshot.reconcile.inSync, true);
+  assert.ok(snapshot.scenarios);
+  assert.equal(snapshot.scenarios.error, null);
+  const audit = snapshot.scenarios.rows.find(row => row.name === 'audit');
+  assert.ok(audit);
+  assert.deepEqual(audit.services, []);
+  assert.deepEqual(audit.unverifiedServices, []);
+});
+
 test('D3 ?run=: explicit selection, fallback with warning, runs list', async t => {
   const f = await fixture(t);
   await f.service.register('Coord', [f.root]);

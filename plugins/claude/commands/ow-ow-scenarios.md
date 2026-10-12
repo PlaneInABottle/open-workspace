@@ -39,6 +39,12 @@ scenarios:
     checkpoints: [approval-ready]
 ```
 
+Explicit `services: []` means no services by decision (probe-only);
+it still needs ≥1 probe or it is a schema error, and a missing
+`services:` key stays a schema error. Readers bring nothing up for
+empty services; the boundary gate passes vacuously with a probe-only
+note, never a silent skip.
+
 Exits: 0 ok (even with warnings), 1 schema error, 2 usage; a missing
 file is exit 1 (a `--check` must never silently pass a wrong path).
 `--json` is additive (`boundariesNormalized[]` +
@@ -56,17 +62,17 @@ workspace root or pass `--file`; a sibling checkout does not inherit
 the root file automatically.)
 
 When contexts need different fakes (worktree A fakes COMIS, worktree B
-uses the real endpoint), do NOT fork the base file. The layering is
-**planned (M9) and not implemented yet** — do not use it today:
-shared rows stay in `ow.scenarios.yaml`; context-local rows *would*
-go in `<root>/.ow/boundaries.local.yaml` (conventional, disposable,
-never committed); an explicit `--boundaries <path>` *would* win for a
-single invocation; precedence *would* be flag > local > base, with
-every merged row source-tagged. None of `--boundaries`, the local
-overlay file, precedence, or source tags exist in the shipped `ow`;
-`--boundaries` is currently an unknown option (exit 2). Until M9
-lands, keep per-context rows out of the base file and note them in
-the worktree handoff instead.
+uses the real endpoint), do NOT fork the base file. Put context-local
+rows in `<root>/.ow/boundaries.local.yaml` (conventional, disposable,
+never committed); an explicit `--boundaries <path>` overrides it for a
+single invocation. Precedence is flag > local > base, and a scenario's
+overlay boundary list replaces the base list wholesale (never a union).
+`ow` only reads overlays and never writes them; invalid values warn as
+UNVERIFIED rather than refuse. `--boundaries` is accepted by
+`scenarios`, `preflight`, `readiness`, `provision`, `record`,
+`contract`, `scenario run` and `scenario env` only; other commands exit
+2. Keep shared rows in the base file and note worktree-only rows in the
+worktree handoff.
 
 Scaffolded files (`ow init`) are INERT: the exact header
 `# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented`,
@@ -91,7 +97,7 @@ on `pass:false` it does not start the job and logs `missing[]`
 verbatim (reports only). `--probe` adds budgeted one-shot loopback
 TCP. No retries or suggestions are generated ow-side. The boundary
 gate (`boundary:`-prefixed entries) and the known-false-green catalog
-live in `skills/ow-runtime/SKILL.md`.
+live in the `ow-runtime` skill.
 
 ## Scenario run
 
@@ -133,10 +139,13 @@ merged matrix (flag > local > base) read-only; refusals mirror the
 run gates (unknown scenario / INERT → exit 2, missing file → exit 1);
 key collisions refuse exit 1 (`duplicate env key:`).
 
-## Data clock (pending M7)
+## Data clock (read-only witness)
 
-- Data-clock witnessing (`.ow/data-clock.json`, ledger chips,
-  collision advisories) does not exist yet
-  (docs/workspace-program.plan.md M7). Nothing here connects to a
-  database, runs migrations, or reads credentials — that stays
-  explicitly out of scope.
+- The runner writes `<root>/.ow/data-clock.json` (4KB cap); `ow` only
+  reads it for presence and shape and renders it as a masked line in
+  `readiness` and `provision --check` (`dataClock:` line and the
+  `dataClock` JSON block). It never gates `pass` or `missing` and never
+  writes the file.
+- `ow` never connects to a database, runs migrations, or reads
+  credentials. Freshness is the wall-clock comparison only; any
+  database-level check belongs to the runner.

@@ -10,15 +10,16 @@ dev-service supervision. Read-only; it never changes sessions, files,
 or the database. Run it as `ow` from anywhere (via `/setup-ow`
 install, or `ow` on PATH).
 
-Detail skills (read the one matching the task):
-- `skills/ow-runtime/SKILL.md` — service supervision and readiness:
+Detail skills (load the one matching the task by its skill name; they
+are installed beside this one and do not resolve as relative paths):
+- `ow-runtime` — service supervision and readiness:
   `up/down/restart/ps/logs`, `reconcile`, provenance, `preflight`,
-  `readiness`, `init`/`provision`, replay/contract recipes (pending),
+  `readiness`, `init`/`provision`, `record`/`contract` replay recipes,
   `trace` and tracing setup.
-- `skills/ow-scenarios/SKILL.md` — scenarios and evidence:
-  `ow.scenarios.yaml` schema and boundary enum, `checkpoints`,
-  `failures`, the preflight runner recipe, `scenario run` and
-  data-clock recipes (pending).
+- `ow-scenarios` — scenarios and evidence:
+  `ow.scenarios.yaml` schema and boundary enum, the local boundary
+  overlay, `scenario env`, `checkpoints`, `failures`, the preflight
+  runner recipe, `scenario run` and the read-only data-clock witness.
 
 ## Sessions (quick reference)
 

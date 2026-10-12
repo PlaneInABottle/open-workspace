@@ -834,8 +834,10 @@ export function normalizeScenarios(text: string): { scenarios: ParsedScenario[];
       }
       throw new Error(`invalid scenario file: ${what} must be text or a list`);
     };
+    if (fields['services'] === undefined) throw new Error(`invalid scenario file: ${name}: services required`);
     const services = asList(fields['services'], `${name}: services`);
-    if (services.length === 0) throw new Error(`invalid scenario file: ${name}: services required`);
+    // M11 mirror: explicit `services: []` is valid (no services by
+    // decision); probes stay required below, so vacuity still fails closed.
     const rawBoundaries = asList(fields['boundaries'], `${name}: boundaries`);
     // M1 dual-read: legacy maps before classification (one legacy-boundary
     // warning per value); known values normalize, unknown stays raw for

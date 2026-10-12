@@ -379,6 +379,31 @@ describe('CoordinatorSection scenarios', () => {
     expect(within(section).queryByRole('table', { name: /Scenario matrix/ })).not.toBeInTheDocument();
   });
 
+  it('renders a serviceless row with an empty services cell and no crash', async () => {
+    render(<CoordinatorSection api={apiReturning(scenarioed({
+      scenarios: {
+        file: 'ow.scenarios.yaml',
+        columns: ['subscribed'],
+        rows: [
+          {
+            name: 'audit',
+            services: [],
+            unverifiedServices: [],
+            probes: [{ id: 'envcheck', timeout: '10s' }],
+            checkpoints: ['env-audited'],
+            cells: { subscribed: 'skipped' },
+          },
+        ],
+        warnings: [],
+        error: null,
+      },
+    }))} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Coordinator' });
+    const table = await within(section).findByRole('table', { name: /Scenario matrix/ });
+    expect(within(table).getByRole('rowheader', { name: /audit/ })).toBeInTheDocument();
+    expect(within(table).getByText(/1 probe \(envcheck\)/)).toBeInTheDocument();
+  });
+
   it('nudges a stale matrix with age inside a status region', async () => {
     const old = new Date(Date.now() - 5 * 60_000).toISOString();
     render(<CoordinatorSection api={apiReturning(scenarioed({ meta: { producedAt: old, snapshotId: 'a3f9c1d2', environment: 'dev' } }))} workspace="Demo" environment="dev" refreshToken={0} />);

@@ -391,8 +391,12 @@ export const parseScenarios = (text: string): ScenariosFile => {
         warnings.push({ line: 0, message: `${name}: unknown field ignored: ${key}` })
       }
     }
+    if (fields["services"] === undefined) {
+      throw schemaError(`${name}: services required (at least one ow.yaml service name)`)
+    }
     const services = asStringList(fields["services"], `${name}: services`)
-    if (services.length === 0) throw schemaError(`${name}: services required (at least one ow.yaml service name)`)
+    // M11: explicit `services: []` is valid (no services by decision).
+    // Probes stay required below, so a vacuous scenario still fails closed.
     const boundaries = asStringList(fields["boundaries"], `${name}: boundaries`)
     for (const boundary of boundaries) assertBlockedShape(boundary, name)
     const targets = asStringList(fields["targets"], `${name}: targets`)
