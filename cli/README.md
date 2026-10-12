@@ -325,6 +325,20 @@ kalır (düz listede, asla gruplanmaz). Tazelik bu alanları yoksayar
 (probe/health/git/lsof) bu yollarda yoktur; ow `proof` içeriğini
 yorumlamaz.
 
+`ow checkpoints diff <runA> <runB> [--json]` compares two runs in an
+envelope-by-stage table (read-only, no mutation/spawn): one
+`diff: <stage> (<statusA> -> <statusB>)` line per stage plus only the
+changed `proof:` (masked + root-folded 80-char head) and `digest:`
+(short-8) cells; one-sided stages render as `missing`. Identical runs
+print a single line (`identical: <runA> == <runB> (<n> stages)`).
+`--json` is additive `{runA, runB, identical, rows: [{stage, statusA,
+statusB, staleReasonA, staleReasonB, proofHeadA, proofHeadB, digestA,
+digestB, changed}], skipped: {runA, runB}}`. Exits: 0 table shown
+(identical included), 1 missing/unreadable run, 2 usage error. The
+digest covers status, stale reason, proof, code/runtime slots and the
+freshness-orthogonal witness fields (side_effect, counts, scenario,
+attempt, step_signature, data).
+
 ### Mechanical failure list (M-D, read-only)
 
 `ow failures [--since 1h|24h|7d] [--json]` lists repeat failure classes

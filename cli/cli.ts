@@ -45,7 +45,8 @@ export type ParsedArgs = {
    * other value flag holds a single string. */
   flags: Record<string, string | boolean | string[]>
   error: string | null
-  /** Second and later positionals (`checkpoints show <run>`). Any other
+  /** Second and later positionals (`checkpoints show <run> /
+   * `checkpoints diff <runA> <runB>` / `scenario run <name>`). Any other
    * command rejects them with the pre-existing usage error. */
   extra: string[]
 }
@@ -77,6 +78,7 @@ export const helpText = (): string =>
     "  logs [service] [--file] [--tail] [--grep] [--since]  service logs",
     "  checkpoints list [--file] [--json]  recorded evidence runs (read-only)",
     "  checkpoints show <run> [--file] [--json]  shows envelopes as confirmed/stale/not-observed",
+    "  checkpoints diff <runA> <runB> [--file] [--json]  envelope-by-stage status/proof/digest deltas (read-only)",
     "  failures [--since 1h|24h|7d] [--file] [--json]  repeated findings (read-only, mechanical)",
     "  preflight [--file] [--json] [--probe]  read-only gate (no mutation; exit 1 when failing)",
     "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
@@ -614,8 +616,9 @@ export const run = async (argv: string[]): Promise<number> => {
     return 2
   }
   const { command, sessionID: positional, flags } = parsed
-  // P2-A: extra positionals belong only to `checkpoints show <run>`.
-  // M6: plus `scenario run <name>` (same subverb-plus-target shape).
+  // P2-A: extra positionals belong to `checkpoints show <run>` and
+  // `checkpoints diff <runA> <runB>` (M12), plus `scenario run <name>`
+  // (M6, same subverb-plus-target shape).
   // M9: `--boundaries <path>` rides the value-flag slot and is consumed
   // only by the six overlay readers below (scenarios, preflight,
   // readiness, provision, record, contract, scenario); anywhere else it
@@ -1028,9 +1031,9 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: --probe not yet supported (M3)")
         return 2
       }
-      const { runCheckpointsList, runCheckpointsShow } = await import("./up-checkpoints")
-      if (positional === undefined || (positional !== "list" && positional !== "show")) {
-        console.error("ow: checkpoints list|show expected (e.g. ow checkpoints show <run>)")
+      const { runCheckpointsDiff, runCheckpointsList, runCheckpointsShow } = await import("./up-checkpoints")
+      if (positional === undefined || (positional !== "list" && positional !== "show" && positional !== "diff")) {
+        console.error("ow: checkpoints list|show|diff expected (e.g. ow checkpoints show <run>)")
         return 2
       }
       if (positional === "list") {
@@ -1040,13 +1043,24 @@ export const run = async (argv: string[]): Promise<number> => {
         }
         return runCheckpointsList({ rootDir, json })
       }
-      if (parsed.extra.length !== 1) {
+      if (positional === "show") {
+        if (parsed.extra.length !== 1) {
+          console.error(
+            parsed.extra.length === 0 ? "ow: checkpoints show expects a run name (e.g. ow checkpoints show <run>)" : `ow: unexpected argument: ${parsed.extra[1]}`,
+          )
+          return 2
+        }
+        return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
+      }
+      if (parsed.extra.length !== 2) {
         console.error(
-          parsed.extra.length === 0 ? "ow: checkpoints show expects a run name (e.g. ow checkpoints show <run>)" : `ow: unexpected argument: ${parsed.extra[1]}`,
+          parsed.extra.length < 2
+            ? "ow: checkpoints diff expects two run names (e.g. ow checkpoints diff <runA> <runB>)"
+            : `ow: unexpected argument: ${parsed.extra[2]}`,
         )
         return 2
       }
-      return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
+      return runCheckpointsDiff({ rootDir, runA: parsed.extra[0], runB: parsed.extra[1], json })
     }
     if (command === "failures") {
       // M-D: read-only mechanical finding list — no exec/prune, exit 0

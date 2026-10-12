@@ -4,9 +4,10 @@
  * yazmaz). Canlı exec YOK (probe/health/git/lsof çalıştırılmaz). */
 
 import { readdir, readFile, stat } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { join } from "node:path"
 
-import { applyFreshness, normalizeEnvelope, summarizeFresh, type EvidenceEnvelope, type FreshSummary } from "./up-evidence"
+import { applyFreshness, capText, maskSecrets, normalizeEnvelope, summarizeFresh, type EvidenceEnvelope, type FreshSummary } from "./up-evidence"
 import { upPaths } from "./up-state"
 
 export const CHECKPOINTS_DIR_NAME = "checkpoints"
@@ -322,5 +323,209 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
   if (actionSource.safe_next_action !== undefined) console.log(`next: ${singleLine(actionSource.safe_next_action)}`)
   if (needsRetryHint(view.envelopes)) console.log(RETRY_HINT)
   for (const line of formatAttemptTree(view.run, view.envelopes)) console.log(line)
+  return 0
+}
+
+/** M12 `ow checkpoints diff <runA> <runB>`: read-only envelope-by-stage
+ * table (status / proof-head / digest deltas). Runner WRITES both runs,
+ * ow only READS (bounded per-file caps, no spawn, no mutation).
+ * Proof is already secret-masked at read time; heads are masked again +
+ * root-folded before render (masked shapes only — secrets/abs-paths never
+ * reach output). Digests render short-8 (human and JSON alike). */
+
+export const PROOF_HEAD_MAX_CHARS = 80
+
+/** sha256 short-8 (digests travel reduced only, never full). */
+export const shortDigestOf = (value: string): string =>
+  createHash("sha256").update(value, "utf8").digest("hex").slice(0, 8)
+
+/** Root-absolute paths fold to `<root>` (structural canonicalization,
+ * applied AFTER value masking — `up-replay.ts` `foldCwd` mirror kept
+ * local so checkpoints stay free of the replay dependency chain). */
+const foldRootDir = (text: string, rootDir: string): string => {
+  const root = rootDir.endsWith("/") && rootDir.length > 1 ? rootDir.slice(0, -1) : rootDir
+  return text.split(`${root}/`).join("<root>/").split(root).join("<root>")
+}
+
+/** Masked + folded + single-line proof head (cap 80, truncation marked).
+ * Object proofs stringify first; the read path already masked values, so
+ * this second pass is defense-in-depth (idempotent on clean text). */
+export const proofHeadOf = (proof: unknown, rootDir: string): string =>
+  capText(singleLine(foldRootDir(maskSecrets(typeof proof === "string" ? proof : (JSON.stringify(proof) ?? "")), rootDir)), PROOF_HEAD_MAX_CHARS)
+
+/** Render-safe stage label (free text: mask + fold + newline-collapse, so
+ * the one-line-per-stage table holds even for hostile stage names; plain
+ * names pass through). */
+export const diffStageOf = (stage: string, rootDir: string): string =>
+  singleLine(foldRootDir(maskSecrets(stage), rootDir))
+
+/** Digest input: post-freshness envelope subset (stable key order).
+ * Covers status + stale reason + proof + code/runtime slots + the
+ * freshness-orthogonal witness fields (side_effect, side_effect_counts,
+ * scenario, attempt, step_signature, data), so any witness-relevant
+ * change flips the digest. Freshness orthogonality is about status
+ * derivation only — it never exempts a field from diff identity. */
+export const digestInputOf = (envelope: EvidenceEnvelope): string =>
+  JSON.stringify({
+    stage: envelope.stage,
+    status: envelope.status,
+    stale_reason: envelope.status === "stale" ? envelope.stale_reason : null,
+    proof: envelope.proof,
+    code: envelope.code ?? null,
+    runtime: envelope.runtime ?? null,
+    side_effect: envelope.side_effect ?? null,
+    side_effect_counts: envelope.side_effect_counts ?? null,
+    scenario: envelope.scenario ?? null,
+    attempt: envelope.attempt ?? null,
+    step_signature: envelope.step_signature ?? null,
+    data: envelope.data ?? null,
+  })
+
+export type CheckpointDiffRow = {
+  stage: string
+  statusA: string
+  statusB: string
+  staleReasonA: string | null
+  staleReasonB: string | null
+  proofHeadA: string | null
+  proofHeadB: string | null
+  digestA: string | null
+  digestB: string | null
+  changed: boolean
+}
+
+export type CheckpointDiff = {
+  runA: string
+  runB: string
+  identical: boolean
+  rows: CheckpointDiffRow[]
+  skipped: { runA: { corrupt: number; overCap: number }; runB: { corrupt: number; overCap: number } }
+}
+
+const MISSING_WORD = "missing"
+const MISSING_CELL = "-"
+
+/** Locked status word: stale carries its reason (`stale:script_hash`). */
+export const diffStatusWord = (status: string, staleReason: string | null): string =>
+  status === "not_observed" ? "not-observed" : status === "stale" ? `stale:${staleReason ?? "unknown"}` : status
+
+/** Pure fold: two post-freshness envelope lists → stage-union rows
+ * (file order = time: last envelope per stage wins, sorted by stage). */
+export const foldDiff = (envelopesA: EvidenceEnvelope[], envelopesB: EvidenceEnvelope[], rootDir: string): CheckpointDiffRow[] => {
+  const lastA = new Map<string, EvidenceEnvelope>()
+  for (const envelope of envelopesA) lastA.set(envelope.stage, envelope)
+  const lastB = new Map<string, EvidenceEnvelope>()
+  for (const envelope of envelopesB) lastB.set(envelope.stage, envelope)
+  const stages = [...new Set([...lastA.keys(), ...lastB.keys()])].sort()
+  return stages.map((stage) => {
+    const a = lastA.get(stage) ?? null
+    const b = lastB.get(stage) ?? null
+    const row: CheckpointDiffRow = {
+      stage: diffStageOf(stage, rootDir),
+      statusA: a?.status ?? MISSING_WORD,
+      statusB: b?.status ?? MISSING_WORD,
+      staleReasonA: a?.status === "stale" ? (a.stale_reason as string) : null,
+      staleReasonB: b?.status === "stale" ? (b.stale_reason as string) : null,
+      proofHeadA: a ? proofHeadOf(a.proof, rootDir) : null,
+      proofHeadB: b ? proofHeadOf(b.proof, rootDir) : null,
+      digestA: a ? shortDigestOf(digestInputOf(a)) : null,
+      digestB: b ? shortDigestOf(digestInputOf(b)) : null,
+      changed: false,
+    }
+    row.changed = row.statusA !== row.statusB || row.proofHeadA !== row.proofHeadB || row.digestA !== row.digestB
+    return row
+  })
+}
+
+/** Locked human row: always the status delta; proof/digest cells render
+ * only when they differ (unchanged sides repeat the same value). */
+export const formatDiffRow = (row: CheckpointDiffRow): string => {
+  const wordA = row.statusA === MISSING_WORD ? MISSING_WORD : diffStatusWord(row.statusA, row.staleReasonA)
+  const wordB = row.statusB === MISSING_WORD ? MISSING_WORD : diffStatusWord(row.statusB, row.staleReasonB)
+  const parts = [`diff: ${row.stage} (${wordA} -> ${wordB})`]
+  if (row.proofHeadA !== row.proofHeadB) parts.push(`proof: ${row.proofHeadA ?? MISSING_CELL} -> ${row.proofHeadB ?? MISSING_CELL}`)
+  if (row.digestA !== row.digestB) parts.push(`digest: ${row.digestA ?? MISSING_CELL} -> ${row.digestB ?? MISSING_CELL}`)
+  return parts.join(", ")
+}
+
+/** Locked identical line (explicit, never empty output). */
+export const identicalLine = (runA: string, runB: string, stages: number): string =>
+  `identical: ${runA} == ${runB} (${stages} stages)`
+
+/** `ow checkpoints diff <runA> <runB> [--json]`: exit 0 with the table
+ * (identical runs print the identical line), exit 1 when a run is
+ * missing/unreadable/fully-corrupt, exit 2 on invalid names (usage). */
+export const runCheckpointsDiff = async (opts: { rootDir: string; runA: string; runB: string; json: boolean }): Promise<number> => {
+  for (const runName of [opts.runA, opts.runB]) {
+    if (!isValidRunName(runName)) {
+      console.error(`ow: invalid run name: ${runName} (allowed: [A-Za-z0-9_.-], at most 64 characters)`)
+      return 2
+    }
+  }
+  const reads: { run: string; read: CheckpointRead }[] = []
+  for (const runName of [opts.runA, opts.runB]) {
+    let read: CheckpointRead
+    try {
+      await stat(checkpointFile(opts.rootDir, runName))
+      read = await readCheckpointFile(checkpointFile(opts.rootDir, runName))
+    } catch {
+      console.error(`ow: no checkpoint: ${runName}`)
+      return 1
+    }
+    reads.push({ run: runName, read })
+  }
+  // Fully-unreadable run (all lines corrupt/capped) exits 1 like a missing
+  // file — the `show` M-g precedent. Partial skips only warn below.
+  for (const entry of reads) {
+    if (entry.read.envelopes.length === 0 && (entry.read.skipped.corrupt > 0 || entry.read.skipped.overCap > 0)) {
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            runA: opts.runA,
+            runB: opts.runB,
+            identical: false,
+            rows: [],
+            skipped: { runA: reads[0].read.skipped, runB: reads[1].read.skipped },
+          } satisfies CheckpointDiff),
+        )
+      } else {
+        for (const other of reads) {
+          if (other.read.skipped.corrupt > 0) console.error(`corrupt-line: ${other.run}: ${other.read.skipped.corrupt} (skipped)`)
+          if (other.read.skipped.overCap > 0) {
+            console.error(`skipped(${other.run}: ${other.read.skipped.overCap}): over cap (file read within 500-line/256KB limit)`)
+          }
+        }
+        console.error(`ow: unreadable checkpoint: ${entry.run}`)
+      }
+      return 1
+    }
+  }
+  const viewA = viewOf(opts.runA, reads[0].read)
+  const viewB = viewOf(opts.runB, reads[1].read)
+  const rows = foldDiff(viewA.envelopes, viewB.envelopes, opts.rootDir)
+  const diff: CheckpointDiff = {
+    runA: opts.runA,
+    runB: opts.runB,
+    identical: rows.every((row) => !row.changed),
+    rows,
+    skipped: { runA: reads[0].read.skipped, runB: reads[1].read.skipped },
+  }
+  if (opts.json) {
+    console.log(JSON.stringify(diff))
+    return 0
+  }
+  if (diff.skipped.runA.corrupt > 0) console.error(`corrupt-line: ${opts.runA}: ${diff.skipped.runA.corrupt} (skipped)`)
+  if (diff.skipped.runA.overCap > 0) {
+    console.error(`skipped(${opts.runA}: ${diff.skipped.runA.overCap}): over cap (file read within 500-line/256KB limit)`)
+  }
+  if (diff.skipped.runB.corrupt > 0) console.error(`corrupt-line: ${opts.runB}: ${diff.skipped.runB.corrupt} (skipped)`)
+  if (diff.skipped.runB.overCap > 0) {
+    console.error(`skipped(${opts.runB}: ${diff.skipped.runB.overCap}): over cap (file read within 500-line/256KB limit)`)
+  }
+  if (diff.identical) {
+    console.log(identicalLine(opts.runA, opts.runB, diff.rows.length))
+  } else {
+    for (const row of diff.rows) console.log(formatDiffRow(row))
+  }
   return 0
 }
