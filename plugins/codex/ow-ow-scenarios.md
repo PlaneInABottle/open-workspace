@@ -46,6 +46,28 @@ file is exit 1 (a `--check` must never silently pass a wrong path).
 Subset-YAML single-line rule: block-map style fails naming the line
 with an inline example.
 
+## Scenario placement and per-context differences
+
+Author scenarios at the workspace root — `<root>/ow.scenarios.yaml`
+next to `ow.yaml`. Do not create per-repo or per-worktree copies;
+one shared matrix per workspace root keeps valuable rows from dying
+with a deleted worktree. (Reachability follows the root: run from the
+workspace root or pass `--file`; a sibling checkout does not inherit
+the root file automatically.)
+
+When contexts need different fakes (worktree A fakes COMIS, worktree B
+uses the real endpoint), do NOT fork the base file. The layering is
+**planned (M9) and not implemented yet** — do not use it today:
+shared rows stay in `ow.scenarios.yaml`; context-local rows *would*
+go in `<root>/.ow/boundaries.local.yaml` (conventional, disposable,
+never committed); an explicit `--boundaries <path>` *would* win for a
+single invocation; precedence *would* be flag > local > base, with
+every merged row source-tagged. None of `--boundaries`, the local
+overlay file, precedence, or source tags exist in the shipped `ow`;
+`--boundaries` is currently an unknown option (exit 2). Until M9
+lands, keep per-context rows out of the base file and note them in
+the worktree handoff instead.
+
 Scaffolded files (`ow init`) are INERT: the exact header
 `# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented`,
 commented real probes, one `{id: inert, argv: [true]}` placeholder
