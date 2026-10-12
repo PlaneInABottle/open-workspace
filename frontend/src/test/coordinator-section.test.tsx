@@ -470,6 +470,91 @@ describe('CoordinatorSection scenarios', () => {
     const scanned = `${document.title} ${text} ${ariaTexts}`.replace(/#\s?[0-9a-fA-F]{8}\b/g, '');
     expect(scanned).not.toMatch(/[0-9a-fA-F]{8,}/);
   });
+
+  it('shows no Source column on old wire without overlay tags (strip untouched)', async () => {
+    render(<CoordinatorSection api={apiReturning(scenarioed())} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const table = await within(section).findByRole('table', { name: /Senaryo matrisi/ });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Senaryo', 'local', 'real', 'unknown']);
+    expect(within(table).queryByText('overlay active:')).not.toBeInTheDocument();
+  });
+
+  it('shows the Source badge column + banner when the overlay applied', async () => {
+    const overlaid = scenarioed({
+      scenarios: {
+        file: 'ow.scenarios.yaml',
+        columns: ['local', 'real'],
+        rows: [
+          {
+            name: 'cart',
+            services: ['api'],
+            unverifiedServices: [],
+            probes: [{ id: 'ready', timeout: '10s' }],
+            checkpoints: ['approval'],
+            cells: { local: 'pass', real: 'uncovered' },
+          },
+          {
+            name: 'payment',
+            services: ['api'],
+            unverifiedServices: [],
+            probes: [{ id: 'healthy', timeout: '5s' }],
+            checkpoints: ['rollout'],
+            cells: { local: 'uncovered', real: 'stale' },
+          },
+        ],
+        warnings: [],
+        error: null,
+        overlayApplied: true,
+        overlayFile: 'boundaries.local.yaml',
+        boundarySources: [
+          { scenario: 'cart', boundary: 'local', source: 'local' },
+        ],
+        overlayError: null,
+      },
+    });
+    render(<CoordinatorSection api={apiReturning(overlaid)} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const table = await within(section).findByRole('table', { name: /Senaryo matrisi/ });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Senaryo', 'local', 'real', 'Source']);
+    const rows = within(table).getAllByRole('row');
+    expect(rows[1].textContent).toContain('local');
+    expect(rows[2].textContent).toContain('base');
+    const banner = within(section).getByRole('status', { name: '' });
+    expect(banner.textContent).toContain('overlay active: boundaries.local.yaml');
+  });
+
+  it('shows the overlay error box while the base matrix still renders', async () => {
+    const refused = scenarioed({
+      scenarios: {
+        file: 'ow.scenarios.yaml',
+        columns: ['local'],
+        rows: [
+          {
+            name: 'cart',
+            services: ['api'],
+            unverifiedServices: [],
+            probes: [{ id: 'ready', timeout: '10s' }],
+            checkpoints: ['approval'],
+            cells: { local: 'pass' },
+          },
+        ],
+        warnings: [],
+        error: null,
+        overlayApplied: false,
+        overlayFile: null,
+        boundarySources: [],
+        overlayError: 'overlay-dangling: ghost (refused)',
+      },
+    });
+    render(<CoordinatorSection api={apiReturning(refused)} workspace="Demo" environment="dev" refreshToken={0} />);
+    const section = await screen.findByRole('region', { name: 'Koordinatör' });
+    const alert = await within(section).findByRole('alert');
+    expect(alert).toHaveTextContent(/Overlay ignored: overlay-dangling: ghost \(refused\)/);
+    expect(await within(section).findByRole('table', { name: /Senaryo matrisi/ })).toBeInTheDocument();
+    expect(within(section).getByText('eşleşiyor')).toBeInTheDocument();
+  });
 });
 
 function flagged(): CoordinatorSnapshot {

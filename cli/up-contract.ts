@@ -50,6 +50,7 @@ export const runContractCheck = async (opts: {
   rootDir: string
   file: string
   json: boolean
+  boundariesFlag?: string
 }): Promise<number> => {
   const { readFileSync } = await import("node:fs")
   let text: string
@@ -70,6 +71,22 @@ export const runContractCheck = async (opts: {
     console.error(`ow: invalid scenarios file: ${error instanceof Error ? error.message : String(error)}`)
     return 1
   }
+  // M9: the gate resolves through the shared overlay helper (flag > local
+  // convention > base); refusals exit here with their guard code.
+  const { resolveOverlay, OverlayRefusal, overlayBannerLine } = await import("./up-overlay")
+  let overlay: import("./up-overlay").OverlayInfo | null = null
+  try {
+    const resolved = await resolveOverlay({ rootDir: opts.rootDir, base: parsed, baseText: text, flagPath: opts.boundariesFlag })
+    parsed = resolved.merged
+    overlay = resolved.overlay
+  } catch (error) {
+    if (error instanceof OverlayRefusal) {
+      console.error(`ow: ${error.message}`)
+      return error.exit
+    }
+    throw error
+  }
+  const banner = overlayBannerLine(overlay)
   // State-changing/blocked anywhere in scope refuses the whole command:
   // a file that cannot be fully gated is never partially blessed.
   for (const scenario of parsed.scenarios) {
@@ -77,6 +94,10 @@ export const runContractCheck = async (opts: {
       const norm = normalizeBoundary(raw)
       if (norm.known && isRefusedBoundary(norm.normalized)) {
         console.error(`ow: no contract: ${scenario.name} (${maskSecrets(norm.normalized)}) — state-changing boundaries are not compared`)
+        if (banner !== null) {
+        if (opts.json) console.error(banner)
+        else console.log(banner)
+      }
         return 2
       }
     }
@@ -106,14 +127,20 @@ export const runContractCheck = async (opts: {
     }
   }
   const pass = compared.every((entry) => entry.match) && missing.length === 0
+  const overlayTags = overlay !== null && overlay.applied
+    ? { overlayApplied: true, overlayFile: overlay.file, boundarySources: overlay.sources, overlayWarnings: overlay.warnings }
+    : {}
+  const overlayBanner = banner !== null ? [banner] : []
   if (opts.json) {
-    console.log(JSON.stringify({ pass, compared, missing }))
+    console.log(JSON.stringify({ pass, compared, missing, ...overlayTags }))
     return pass ? 0 : 1
   }
   if (pass) {
     console.log(`contract: ${compared.length} scenarios match`)
+    for (const line of overlayBanner) console.log(line)
     return 0
   }
   for (const line of human) console.log(line)
+  for (const line of overlayBanner) console.log(line)
   return 1
 }

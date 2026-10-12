@@ -576,7 +576,7 @@ export const toScenariosJson = (file: ScenariosFile): { scenarios: ScenarioJson[
  * `--check` doğrulama fiilidir — yanlış yolda sessiz 0 geçmemeli
  * (`checkpoints list` envanter fiilidir, yokluk orada veridir; burada
  * yokluk doğrulanacak yapıtın yokluğudur). */
-export const runScenariosCheck = async (opts: { file: string; rootDir: string; json: boolean }): Promise<number> => {
+export const runScenariosCheck = async (opts: { file: string; rootDir: string; json: boolean; boundariesFlag?: string }): Promise<number> => {
   const { readFileSync } = await import("node:fs")
   let text: string
   try {
@@ -597,33 +597,62 @@ export const runScenariosCheck = async (opts: { file: string; rootDir: string; j
     if (isSubsetNestingError(error)) console.error(subsetNestingHint)
     return 1
   }
+  // M9 overlay merge hook (post-parse): flag > local convention > base.
+  // Absent overlay returns the base file untouched (byte-identical
+  // outputs); refusals exit here (invalid overlay under `--check` is
+  // exit 1, flag misuse is exit 2).
+  const { resolveOverlay, OverlayRefusal } = await import("./up-overlay")
+  let merged = parsed
+  let overlay: import("./up-overlay").OverlayInfo | null = null
+  try {
+    const resolved = await resolveOverlay({ rootDir: opts.rootDir, base: parsed, baseText: text, flagPath: opts.boundariesFlag })
+    merged = resolved.merged
+    overlay = resolved.overlay
+  } catch (error) {
+    if (error instanceof OverlayRefusal) {
+      console.error(`ow: ${error.message}`)
+      return error.exit
+    }
+    throw error
+  }
   let owYamlText: string | null = null
   try {
     owYamlText = decodeUtf8Fatal(readFileSync(join(opts.rootDir, "ow.yaml")))
   } catch {
     owYamlText = null
   }
-  const refs = validateReferences(parsed, owYamlText)
-  const warnings = [...parsed.warnings, ...refs.warnings]
+  const refs = validateReferences(merged, owYamlText)
+  // `seenLegacy` is scoped across BOTH files: validation runs once over
+  // the merged view, so a legacy value mapped in base never warns again
+  // from the overlay (no double-warn).
+  const warnings = [
+    ...merged.warnings,
+    ...refs.warnings,
+    ...(overlay?.warnings ?? []).map((message) => ({ line: 0, message })),
+  ]
   const warnLines = warnings.map((warning) => (warning.line > 0 ? `warning (line ${warning.line}): ${warning.message}` : `warning: ${warning.message}`))
   const unverified = new Set([...refs.unverifiedServices, ...refs.unverifiedBoundaries])
+  const replaced = new Set(overlay?.replaced ?? [])
   if (opts.json) {
     console.log(JSON.stringify({
       file: opts.file,
-      ...toScenariosJson(parsed),
+      ...toScenariosJson(merged),
       boundariesNormalized: refs.boundariesNormalized.map((entry) => ({
         scenario: entry.scenario,
         boundaries: entry.boundaries.map((boundary) => maskSecrets(boundary)),
       })),
       boundaryWarnings: refs.boundaryWarnings,
       warnings,
+      ...((overlay !== null && overlay.applied)
+        ? { overlayApplied: true, overlayFile: overlay.file, boundarySources: overlay.sources }
+        : {}),
     }))
     return 0
   }
   for (const line of warnLines) console.error(line)
-  for (const scenario of parsed.scenarios) {
+  for (const scenario of merged.scenarios) {
     console.log(
-      `scenario: ${scenario.name} (${scenario.services.length} services, ${scenario.probes.length} probes)`,
+      `scenario: ${scenario.name} (${scenario.services.length} services, ${scenario.probes.length} probes)${replaced.has(scenario.name) ? " [overlay]" : ""}`,
     )
     for (const svc of scenario.services) {
       if (unverified.has(`${scenario.name}:${svc}`)) console.log(`UNVERIFIED: ${scenario.name}: unknown service: ${svc}`)

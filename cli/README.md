@@ -485,6 +485,62 @@ state-changing scenario in scope. `--json` is additive `{pass,
 compared[] ({scenario, hash, match, detail}), missing[]}` (English
 keys; full digests never render — short-8 plus the verdict).
 
+### Overlay boundaries (local convention + explicit flag)
+
+Base scenario boundaries stay in `ow.scenarios.yaml`; a local overlay
+narrows them without touching the base file. Two layers, fixed
+precedence — `--boundaries <path>` flag > `<root>/.ow/boundaries.local.yaml`
+convention > base. An absent overlay (no flag, no convention file) is
+byte-identical to no overlay at all. The user owns overlay files; `ow`
+only reads them (M9 writes nothing — refusals never persist, no `.bak`).
+
+Overlay file shape (`version: 1`, optional `baseDigest:`, per-scenario
+`boundaries:` — REPLACE, never union):
+
+```yaml
+version: 1
+baseDigest: 9f2c41ab # optional pin of the base file digest
+scenarios:
+  truck-approval:
+    boundaries: [network-deny]
+```
+
+Merge rule: an overlay `boundaries:` list replaces the base list
+wholesale per scenario (a two-value base collapses to a one-value
+overlay — never a union). Values still flow through the M1 taxonomy
+(`normalizeBoundary`): unknown values warn `unknown boundaries: <v>
+(UNVERIFIED)` and never refuse. `blocked:` quoting trap: quote reasons
+containing commas (`blocked:"fix, later"`) — an unquoted comma splits
+the flow list (`blocked:fix, later` becomes two entries and the tail
+warns UNVERIFIED).
+
+Guards (exact strings/exits): traversal/absolute `--boundaries` values
+refuse exit 2 echoing the basename only (`overlay-refused: <base>
+(path must be root-relative)`); secret-shaped overlay values refuse
+exit 1 (`overlay-refused: <base> (secret-shaped value)`); an overlay
+naming a scenario absent from base refuses exit 1
+(`overlay-dangling: <scenario> (refused)`); any other invalid overlay
+refuses exit 1 (`overlay-refused: <base> (<reason>)` — under
+`--check` this is the exit-1 path). Overlay files share the replay
+caps (256KB/500 lines, `oversize` refusal). A `baseDigest:` mismatch
+advises `overlay-stale: base changed since <short-8> (warning)` and
+never fails. With git present and no ignore entry, the convention file
+warns `overlay-gitignore-missing: boundaries.local.yaml (warning)`
+(gitless roots stay silent). `--boundaries` outside the six readers
+(scenarios, preflight, readiness, provision, record, contract,
+scenario run) is exit 2, never silently ignored.
+
+Source tags (silent overlays are a bug): human rows sourced from the
+overlay gain an `[overlay]` suffix; `--json` gains `overlayApplied`,
+`overlayFile` (basename only), and `boundarySources[]` (`{scenario,
+boundary, source: base|local|flag}`); provenance-bearing outputs
+(record, contract, scenario run) carry the forgotten-overlay banner
+`overlay-active: <basename>` (+ `overlayApplied:true` in JSON). The
+dashboard follows the same convention path server-side (no flag
+channel exists there — flag-scoped runs render the base convention);
+its matrix gains a Source badge column and an invalid overlay shows an
+error box while the base matrix still renders.
+
 The scrubber runs BEFORE the cap everywhere on this path: shared B3
 value masking (`Bearer`/JWT/provider tokens, `key=value`, ≥32-hex)
 plus CWD-absolute paths folding to `<root>`; only then are notes

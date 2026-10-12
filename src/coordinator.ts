@@ -32,7 +32,7 @@
  * Tam rev wire'da taşınır (kopyala-butonu clipboard payload'ı) ama ASLA
  * render edilmez — DOM/title/aria'da yalnızca kısa-hash (7) görünür.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { lstat, open, readdir, readFile } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { Store, resolveEnvironmentRecord, resolveWorkspaceRecord, type EnvironmentRecord } from './store.js';
@@ -238,6 +238,15 @@ export interface CoordinatorExplanationEntry {
 
 export type ScenarioVerdict = 'pass' | 'stale' | 'skipped' | 'uncovered' | 'unverified';
 
+/** M9 overlay source tag (mirror of the CLI `boundarySources` entries:
+ * per-scenario boundary provenance — `base` or the `local` convention;
+ * there is no flag channel server-side by design). */
+export interface OverlayBoundarySource {
+  scenario: string;
+  boundary: string;
+  source: string;
+}
+
 export interface ScenarioMatrixRow {
   name: string;
   services: string[];
@@ -260,6 +269,15 @@ export interface CoordinatorScenarios {
   warnings: string[];
   /** Bozuk dosya: satırlar boş + neden burada (diğer paneller sağlam). */
   error: string | null;
+  /** M9 overlay source tags (additive-optional): present only when the
+   * local convention applied in at least one root; absent keeps old
+   * readers byte-identical. */
+  overlayApplied?: boolean;
+  overlayFile?: string | null;
+  boundarySources?: OverlayBoundarySource[];
+  /** M9 invalid-overlay box (additive-optional): the base matrix still
+   * renders; the message names the refusal (never a crash). */
+  overlayError?: string | null;
 }
 
 export interface CoordinatorExplanation {
@@ -852,6 +870,7 @@ function buildScenarios(
   checkpoint: CheckpointSource | null,
   parsed: ParsedScenario[],
   fileWarnings: string[],
+  overlay?: { applied: boolean; file: string | null; sources: OverlayBoundarySource[]; error: string | null },
 ): CoordinatorScenarios {
   const knownServices = new Set(record.services.map(service => service.name ?? service.id));
   // Sütunlar: bilinen sıra önce, bilinmeyenler alfabetik (≤16).
@@ -907,7 +926,21 @@ function buildScenarios(
       cells,
     };
   });
-  return { file: SCENARIOS_FILE_NAME, columns: shownColumns, rows, warnings: warnings.map(warning => maskSecrets(warning)), error: null };
+  return {
+    file: SCENARIOS_FILE_NAME,
+    columns: shownColumns,
+    rows,
+    warnings: warnings.map(warning => maskSecrets(warning)),
+    error: null,
+    ...(overlay !== undefined && (overlay.applied || overlay.error !== null)
+      ? {
+        overlayApplied: overlay.applied,
+        overlayFile: overlay.file,
+        boundarySources: overlay.sources,
+        overlayError: overlay.error,
+      }
+      : {}),
+  };
 }
 
 // --- Saf çekirdek (I/O yok; testler hostile fixture enjekte eder) -------------
@@ -1105,13 +1138,27 @@ function buildExplanation(
 function buildScenariosSection(
   record: EnvironmentRecord,
   checkpoint: CheckpointSource | null,
-  read: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[] } | null,
+  read: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[]; overlayApplied?: boolean; overlayFile?: string | null; boundarySources?: OverlayBoundarySource[]; overlayError?: string | null } | null,
 ): CoordinatorScenarios | null {
   if (!read || (read.scenarios === null && read.error === null)) return null;
   if (read.scenarios === null) {
-    return { file: SCENARIOS_FILE_NAME, columns: [], rows: [], warnings: [], error: read.error ?? 'kayıt yok' };
+    return {
+      file: SCENARIOS_FILE_NAME,
+      columns: [],
+      rows: [],
+      warnings: [],
+      error: read.error ?? 'kayıt yok',
+      ...(read.overlayApplied === true || read.overlayError != null
+        ? { overlayApplied: read.overlayApplied === true, overlayFile: read.overlayFile ?? null, boundarySources: read.boundarySources ?? [], overlayError: read.overlayError ?? null }
+        : {}),
+    };
   }
-  return buildScenarios(record, checkpoint, read.scenarios, read.warnings);
+  return buildScenarios(record, checkpoint, read.scenarios, read.warnings, {
+    applied: read.overlayApplied === true,
+    file: read.overlayFile ?? null,
+    sources: read.boundarySources ?? [],
+    error: read.overlayError ?? null,
+  });
 }
 
 export function buildCoordinatorSnapshot(input: {
@@ -1128,7 +1175,7 @@ export function buildCoordinatorSnapshot(input: {
   /** Supervisor spawn-kayıtları (ad ile eşleşir; null/boş → kayıt yok). */
   supervisor?: SupervisorProvenanceRecord[] | null;
   /** Senaryo okuma sonucu (null → dosya yok; error → bozuk-dosya kutusu). */
-  scenarioRead?: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[] } | null;
+  scenarioRead?: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[]; overlayApplied?: boolean; overlayFile?: string | null; boundarySources?: OverlayBoundarySource[]; overlayError?: string | null } | null;
   /** Keşfedilen run adları — checkpoints null iken bile wire'a çıkar. */
   runs?: string[];
   /** serviceId → {rootBase, revShort} identity (additive-optional).
@@ -1785,20 +1832,169 @@ export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRe
 }
 
 /**
+ * M9 overlay second-read (server-side mirror of `cli/up-overlay.ts` —
+ * CLI modules are bun-only, so this path mirrors instead of importing;
+ * behavior parity is pinned by `test/coordinator.test.ts`). Convention
+ * only: `<root>/.ow/boundaries.local.yaml` (no CLI-flag channel
+ * server-side exists — flag-scoped runs render the base convention with
+ * `overlayApplied: false`). Per-scenario boundaries-REPLACE, never
+ * union. Invalid overlays never crash: the base matrix still renders
+ * and the refusal surfaces as `overlayError` (error box). Reads nothing
+ * outside the root, writes nothing.
+ */
+const OVERLAY_LOCAL_FILE = 'boundaries.local.yaml';
+const OVERLAY_MAX_BYTES = 256 * 1024;
+const OVERLAY_MAX_LINES = 500;
+const OVERLAY_BLOCKED_REASON_MAX = 128;
+
+interface RootOverlay {
+  applied: boolean;
+  replacements: Map<string, string[]>;
+  warnings: string[];
+  error: string | null;
+}
+
+const overlayDigestOf = (text: string): string =>
+  createHash('sha256').update(text, 'utf8').digest('hex');
+
+function overlayBlockedReason(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed !== 'blocked' && !trimmed.startsWith('blocked:')) return null;
+  const raw = trimmed === 'blocked' ? '' : trimmed.slice('blocked:'.length).trim();
+  if (raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")))) {
+    return raw.slice(1, -1).trim();
+  }
+  return raw;
+}
+
+async function readRootOverlay(
+  canonicalRoot: string,
+  baseText: string,
+  baseNames: Set<string>,
+): Promise<RootOverlay> {
+  const idle: RootOverlay = { applied: false, replacements: new Map(), warnings: [], error: null };
+  const path = join(canonicalRoot, '.ow', OVERLAY_LOCAL_FILE);
+  if (resolve(path) !== path || !path.startsWith(canonicalRoot + sep)) return idle;
+  let entry;
+  try {
+    entry = await lstat(path);
+  } catch {
+    return idle;
+  }
+  const refused = (reason: string): RootOverlay => ({
+    applied: false,
+    replacements: new Map(),
+    warnings: [],
+    error: `overlay-refused: ${OVERLAY_LOCAL_FILE} (${reason})`,
+  });
+  if (entry.isSymbolicLink()) return refused('symlink not followed');
+  if (!entry.isFile()) return refused('not a file');
+  if (entry.size > OVERLAY_MAX_BYTES) return refused('oversize');
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(path));
+  } catch {
+    return refused('undecodable');
+  }
+  if (text.split('\n').length > OVERLAY_MAX_LINES + 1) return refused('oversize');
+  let doc: Record<string, YamlNode>;
+  try {
+    doc = yamlParseSubset(text);
+  } catch (err) {
+    return refused(`invalid overlay file: ${maskSecrets(err instanceof Error ? err.message : String(err))}`);
+  }
+  const warnings: string[] = [];
+  for (const key of Object.keys(doc)) {
+    if (key !== 'version' && key !== 'scenarios' && key !== 'baseDigest') {
+      warnings.push(`unknown overlay field ignored: ${maskSecrets(key)}`);
+    }
+  }
+  if (doc['version'] !== undefined && doc['version'] !== '1') return refused('unsupported overlay version');
+  const digestRaw = doc['baseDigest'];
+  if (digestRaw !== undefined && (typeof digestRaw !== 'string' || digestRaw.length === 0 || digestRaw.length > 128)) {
+    return refused('invalid baseDigest');
+  }
+  const raw = doc['scenarios'];
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return refused('scenarios map required');
+  const entries = Object.entries(raw as Record<string, YamlNode>);
+  if (entries.length === 0) return refused('no scenarios');
+  if (entries.length > 32) return refused('at most 32 scenarios');
+  const replacements = new Map<string, string[]>();
+  for (const [name, node] of entries) {
+    if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+      return { applied: false, replacements: new Map(), warnings: [], error: `overlay-dangling: ${maskSecrets(name)} (refused)` };
+    }
+    const fields = node as Record<string, YamlNode>;
+    for (const key of Object.keys(fields)) {
+      if (key !== 'boundaries') warnings.push(`${maskSecrets(name)}: unknown overlay field ignored: ${maskSecrets(key)}`);
+    }
+    const listRaw = fields['boundaries'];
+    let list: string[];
+    if (listRaw === undefined) list = [];
+    else if (typeof listRaw === 'string') list = [listRaw];
+    else if (Array.isArray(listRaw) && (listRaw as unknown[]).every(part => typeof part === 'string')) {
+      list = [...(listRaw as string[])];
+    } else {
+      return refused(`invalid boundaries in ${maskSecrets(name)}`);
+    }
+    for (const boundary of list) {
+      if (maskSecrets(boundary) !== boundary) return refused('secret-shaped value');
+      const reason = overlayBlockedReason(boundary);
+      if (reason !== null && (reason.length === 0 || [...reason].length > OVERLAY_BLOCKED_REASON_MAX)) {
+        return refused(`invalid blocked shape in ${maskSecrets(name)}`);
+      }
+    }
+    if (!baseNames.has(name)) {
+      return { applied: false, replacements: new Map(), warnings: [], error: `overlay-dangling: ${maskSecrets(name)} (refused)` };
+    }
+    replacements.set(name, list);
+  }
+  if (typeof digestRaw === 'string' && digestRaw !== overlayDigestOf(baseText)) {
+    warnings.push(`overlay-stale: base changed since ${digestRaw.slice(0, 8)} (warning)`);
+  }
+  try {
+    await lstat(join(canonicalRoot, '.git'));
+    let ignore = '';
+    try {
+      ignore = (await readFile(join(canonicalRoot, '.gitignore'), 'utf8')).slice(0, 64 * 1024);
+    } catch {
+      warnings.push(`overlay-gitignore-missing: ${OVERLAY_LOCAL_FILE} (warning)`);
+    }
+    if (ignore !== '' && !ignore.split('\n').some(line => line.trim() === OVERLAY_LOCAL_FILE || line.includes(OVERLAY_LOCAL_FILE))) {
+      warnings.push(`overlay-gitignore-missing: ${OVERLAY_LOCAL_FILE} (warning)`);
+    }
+  } catch {
+    // Gitless roots stay silent.
+  }
+  return { applied: true, replacements, warnings, error: null };
+}
+
+/**
  * `<root>/ow.scenarios.yaml` bounded salt-okunur senaryo matrisi kaynağı.
  * Kök-dışı/symlink/cap disiplini §0.3 ile aynı; dosya YOKSA sessiz
  * null-kayıt (UI "senaryo dosyası bağlı değil"), bozuksa error kutusu
  * (diğer paneller sağlam). Çok kökte ilk-kazanan adla birleşir.
+ * M9: each root's local overlay convention (`.ow/boundaries.local.yaml`)
+ * applies per-scenario REPLACE before the cross-root merge; an invalid
+ * overlay keeps the base rows and surfaces `overlayError` (error box,
+ * never a crash).
  */
 export async function readScenariosSource(roots: string[]): Promise<{
   scenarios: ParsedScenario[] | null;
   error: string | null;
   warnings: string[];
+  overlayApplied: boolean;
+  overlayFile: string | null;
+  boundarySources: OverlayBoundarySource[];
+  overlayError: string | null;
 }> {
   const warnings: string[] = [];
   const merged = new Map<string, ParsedScenario>();
+  const boundarySources: OverlayBoundarySource[] = [];
   let error: string | null = null;
   let found = false;
+  let overlayApplied = false;
+  let overlayError: string | null = null;
   for (const root of roots) {
     const canonicalRoot = resolve(root);
     const path = join(canonicalRoot, SCENARIOS_FILE_NAME);
@@ -1837,14 +2033,46 @@ export async function readScenariosSource(roots: string[]): Promise<{
       continue;
     }
     for (const warning of parsed.warnings) warnings.push(maskSecrets(warning));
-    for (const scenario of parsed.scenarios) {
-      if (!merged.has(scenario.name)) merged.set(scenario.name, scenario);
-      else warnings.push(maskSecrets(`senaryo yinelendi: ${scenario.name} (${basename(canonicalRoot)})`));
+    // M9 convention second-read (server-side, local file only): REPLACE
+    // this root's scenario boundaries before the cross-root merge.
+    const baseNames = new Set(parsed.scenarios.map(scenario => scenario.name));
+    const overlay = await readRootOverlay(canonicalRoot, text, baseNames);
+    let scoped = parsed.scenarios;
+    if (overlay.error !== null) {
+      if (overlayError === null) overlayError = overlay.error;
+      warnings.push(maskSecrets(overlay.error));
+    } else {
+      for (const warning of overlay.warnings) warnings.push(maskSecrets(warning));
+      if (overlay.applied) {
+        overlayApplied = true;
+        scoped = parsed.scenarios.map(scenario => {
+          const replacement = overlay.replacements.get(scenario.name);
+          return replacement === undefined ? scenario : { ...scenario, boundaries: [...replacement] };
+        });
+        const replaced = new Set(overlay.replacements.keys());
+        for (const scenario of scoped) {
+          if (!replaced.has(scenario.name)) continue;
+          for (const boundary of scenario.boundaries) {
+            boundarySources.push({ scenario: maskSecrets(scenario.name), boundary: maskSecrets(boundary), source: 'local' });
+          }
+        }
+      }
+    }
+    for (const scenario of scoped) {
+      if (!merged.has(scenario.name)) {
+        merged.set(scenario.name, scenario);
+        if (!overlay.replacements.has(scenario.name)) {
+          for (const boundary of scenario.boundaries) {
+            boundarySources.push({ scenario: maskSecrets(scenario.name), boundary: maskSecrets(boundary), source: 'base' });
+          }
+        }
+      } else warnings.push(maskSecrets(`senaryo yinelendi: ${scenario.name} (${basename(canonicalRoot)})`));
     }
   }
-  if (!found && error === null) return { scenarios: null, error: null, warnings };
-  if (merged.size === 0) return { scenarios: null, error: error ?? 'kayıt yok', warnings };
-  return { scenarios: [...merged.values()], error: null, warnings };
+  const overlayFile = overlayApplied ? OVERLAY_LOCAL_FILE : null;
+  if (!found && error === null) return { scenarios: null, error: null, warnings, overlayApplied: false, overlayFile: null, boundarySources: [], overlayError };
+  if (merged.size === 0) return { scenarios: null, error: error ?? 'kayıt yok', warnings, overlayApplied: false, overlayFile: null, boundarySources: [], overlayError };
+  return { scenarios: [...merged.values()], error: null, warnings, overlayApplied, overlayFile, boundarySources, overlayError };
 }
 
 // --- Servis kablosu ------------------------------------------------------------

@@ -34,7 +34,7 @@ const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "rea
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local"])
 
 export type ParsedArgs = {
@@ -87,6 +87,7 @@ export const helpText = (): string =>
     "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
   "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
+    "  --boundaries <path>  overlay file (root-relative; flag wins over .ow/boundaries.local.yaml; scenarios/preflight/readiness/provision/record/contract/scenario-run only)",
     "",
     "genel: --db <yol> --log <yol> --json --help",
     "  --since  pencere: 30m|3h|1d|1w (varsayılan 1d; sessions/show/stuck/reads)",
@@ -611,6 +612,20 @@ export const run = async (argv: string[]): Promise<number> => {
   const { command, sessionID: positional, flags } = parsed
   // P2-A: extra positionals belong only to `checkpoints show <run>`.
   // M6: plus `scenario run <name>` (same subverb-plus-target shape).
+  // M9: `--boundaries <path>` rides the value-flag slot and is consumed
+  // only by the six overlay readers below (scenarios, preflight,
+  // readiness, provision, record, contract, scenario); anywhere else it
+  // is a usage error (exit 2), never a silent no-op.
+  const boundariesFlag = flag(flags, "--boundaries")
+  if (boundariesFlag !== undefined) {
+    const overlayReader =
+      command === "scenarios" || command === "preflight" || command === "readiness" ||
+      command === "provision" || command === "record" || command === "contract" || command === "scenario"
+    if (!overlayReader) {
+      console.error("ow: --boundaries can only be used with scenarios, preflight, readiness, provision, record, contract, scenario run")
+      return 2
+    }
+  }
   if (command !== "checkpoints" && command !== "scenario" && parsed.extra.length > 0) {
     console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
     console.error(helpText())
@@ -1049,7 +1064,7 @@ export const run = async (argv: string[]): Promise<number> => {
         }
       }
       const { runPreflight } = await import("./up-preflight")
-      return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
+      return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
     }
     if (command === "readiness") {
       // M2: boundary-witnessed readiness - full preflight composition
@@ -1066,7 +1081,7 @@ export const run = async (argv: string[]): Promise<number> => {
         }
       }
       const { runReadiness } = await import("./up-preflight")
-      return runReadiness({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
+      return runReadiness({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
     }
     if (command === "provision") {
       // Worktree checklist: witness-only, never gates up/ps/reconcile/
@@ -1087,7 +1102,7 @@ export const run = async (argv: string[]): Promise<number> => {
         }
       }
       const { runProvisionCheck } = await import("./up-provision")
-      return runProvisionCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
+      return runProvisionCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
     }
     if (command === "scenarios") {
       // Senaryo validatoru: salt-okunur (probe koşmaz, exec yok). `--file`
@@ -1109,7 +1124,7 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       const { runScenariosCheck, SCENARIOS_FILE_NAME } = await import("./up-scenarios")
       const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runScenariosCheck({ file: scenariosFile, rootDir, json })
+      return runScenariosCheck({ file: scenariosFile, rootDir, json, boundariesFlag })
     }
     if (command === "record") {
       // M5: run-name-singular capture - the positional names the scenario.
@@ -1129,7 +1144,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runRecord } = await import("./up-replay")
       const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
       const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runRecord({ rootDir, file: scenariosFile, runName: positional })
+      return runRecord({ rootDir, file: scenariosFile, runName: positional, boundariesFlag })
     }
     if (command === "contract") {
       // M5: digest-compare + ship-order gate. `check` is the only second
@@ -1147,7 +1162,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runContractCheck } = await import("./up-contract")
       const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
       const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runContractCheck({ rootDir, file: scenariosFile, json })
+      return runContractCheck({ rootDir, file: scenariosFile, json, boundariesFlag })
     }
     if (command === "scenario") {
       // M6: narrowed deterministic run — `run` subverb in the sessionID
@@ -1181,6 +1196,7 @@ export const run = async (argv: string[]): Promise<number> => {
         runId,
         offLocal: flags["--off-local"] === true,
         json,
+        boundariesFlag,
       })
     }
     if (command === "ps") {

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createApp } from '../src/http.js';
 import { Store } from '../src/store.js';
 import { WorkspaceService } from '../src/workspace.js';
-import { buildCoordinatorSnapshot, buildWorktreeAdvisories, maskSecrets, normalizeCheckpointEnvelope, normalizeSupervisorService, readWorktreeLedger } from '../src/coordinator.js';
+import { buildCoordinatorSnapshot, buildWorktreeAdvisories, maskSecrets, normalizeCheckpointEnvelope, normalizeSupervisorService, readScenariosSource, readWorktreeLedger } from '../src/coordinator.js';
 import { environmentMessages } from '../src/environment.js';
 import { verifyMessages } from '../src/verify.js';
 import type { EnvironmentRecord } from '../src/store.js';
@@ -1306,4 +1306,159 @@ test('M8 strip wire: scenarios present without checkpoints keeps lastRun null', 
   assert.deepEqual(snapshot.boundaryList, [{ boundary: 'local', status: 'skipped' }]);
   assert.equal(snapshot.lastRun, null);
   assert.equal(typeof snapshot.readinessGate?.pass, 'boolean');
+});
+
+test('M9 overlay convention: REPLACE merge + sources + applied tags', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '  other:',
+    '    services: [api]',
+    '    boundaries: [test]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    boundaries: [real]',
+    '',
+  ].join('\n'));
+  const read = await readScenariosSource([f.root]);
+  assert.equal(read.error, null);
+  assert.equal(read.overlayApplied, true);
+  assert.equal(read.overlayFile, 'boundaries.local.yaml');
+  assert.equal(read.overlayError, null);
+  const cart = read.scenarios?.find(scenario => scenario.name === 'cart');
+  assert.ok(cart);
+  assert.deepEqual(cart.boundaries, ['real']);
+  const other = read.scenarios?.find(scenario => scenario.name === 'other');
+  assert.ok(other);
+  assert.deepEqual(other.boundaries, ['test']);
+  assert.ok(read.boundarySources.some(entry => entry.scenario === 'cart' && entry.boundary === 'real' && entry.source === 'local'));
+  assert.ok(read.boundarySources.some(entry => entry.scenario === 'other' && entry.boundary === 'test' && entry.source === 'base'));
+});
+
+test('M9 overlay invalid: base matrix survives + error box, never a crash', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  ghost:',
+    '    boundaries: [real]',
+    '',
+  ].join('\n'));
+  const read = await readScenariosSource([f.root]);
+  assert.ok(read.scenarios && read.scenarios.length === 1, 'base rows survive');
+  assert.deepEqual(read.scenarios[0].boundaries, ['local']);
+  assert.equal(read.overlayApplied, false);
+  assert.ok(read.overlayError?.includes('overlay-dangling: ghost (refused)'));
+  assert.ok(read.warnings.some(warning => warning.includes('overlay-dangling')));
+});
+
+test('M9 overlay secret-smuggle: refused, never leaks', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    boundaries: [token=hunter2]',
+    '',
+  ].join('\n'));
+  const read = await readScenariosSource([f.root]);
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['local']);
+  assert.ok(read.overlayError?.includes('overlay-refused: boundaries.local.yaml (secret-shaped value)'));
+  assert.ok(!JSON.stringify(read).includes('hunter2'), 'secret never reaches the read result');
+});
+
+test('M9 overlay stale-shadow: digest-pin mismatch advises, never fails', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'baseDigest: deadbeef',
+    'scenarios:',
+    '  cart:',
+    '    boundaries: [real]',
+    '',
+  ].join('\n'));
+  const read = await readScenariosSource([f.root]);
+  assert.equal(read.overlayApplied, true);
+  assert.equal(read.overlayError, null);
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['real']);
+  assert.ok(read.warnings.some(warning => warning.includes('overlay-stale: base changed since deadbeef (warning)')));
+});
+
+test('M9 overlay absent: wire carries no overlay keys (byte-identical)', async t => {
+  const f = await fixture(t);
+  await f.service.register('NoOverlay', [f.root]);
+  await f.service.environmentSet('NoOverlay', {
+    name: 'dev',
+    services: [
+      { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+    ],
+  });
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
+  const origin = await app.listen(0);
+  t.after(() => app.close());
+
+  const snapshot = await (await fetch(`${origin}/api/workspaces/NoOverlay/coordinator?environment=dev`)).json() as {
+    scenarios: Record<string, unknown> | null;
+  };
+  assert.ok(snapshot.scenarios);
+  assert.ok(!('overlayApplied' in (snapshot.scenarios as Record<string, unknown>)), 'absent overlay adds no wire keys');
+  assert.ok(!('boundarySources' in (snapshot.scenarios as Record<string, unknown>)), 'absent overlay adds no wire keys');
+  assert.ok(!('overlayError' in (snapshot.scenarios as Record<string, unknown>)), 'absent overlay adds no wire keys');
+  assert.ok(!JSON.stringify(snapshot).includes('overlay'));
 });

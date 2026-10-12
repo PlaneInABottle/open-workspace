@@ -287,23 +287,50 @@ const readConfigVersion = (text: string): string | undefined => {
  * `scenariosUnreadable` flag - the validator verb owns schema errors and
  * legacy warnings, this path only maps raw values through M1
  * `normalizeBoundary` and keeps evidence-demanding known boundaries). */
-const readBoundaryClaims = async (rootDir: string): Promise<{ claims: BoundaryClaim[]; scenariosUnreadable: boolean }> => {
+/** Scenario boundary claims for the boundary gate (tolerant: a missing
+ * scenarios file opts out silently; an unreadable one fails closed via the
+ * `scenariosUnreadable` flag - the validator verb owns schema errors and
+ * legacy warnings, this path only maps raw values through M1
+ * `normalizeBoundary` and keeps evidence-demanding known boundaries).
+ * M9: claims resolve through the same overlay helper as every other
+ * reader (flag > local convention > base); an overlay refusal is carried
+ * as `overlayError` (callers print it and exit — never silent). */
+export const readBoundaryClaims = async (rootDir: string, flagPath?: string): Promise<{
+  claims: BoundaryClaim[]
+  scenariosUnreadable: boolean
+  overlayError: string | null
+  overlayExit: 1 | 2
+  overlay: import("./up-overlay").OverlayInfo | null
+}> => {
   let text: string
   try {
     const { readFileSync } = await import("node:fs")
     text = decodeUtf8Fatal(readFileSync(join(rootDir, SCENARIOS_FILE_NAME)))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { claims: [], scenariosUnreadable: false }
-    return { claims: [], scenariosUnreadable: true }
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { claims: [], scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay: null }
+    return { claims: [], scenariosUnreadable: true, overlayError: null, overlayExit: 1, overlay: null }
   }
   let parsed: { scenarios: { name: string; services: string[]; boundaries: string[] }[] }
   try {
     parsed = parseScenarios(text)
   } catch {
-    return { claims: [], scenariosUnreadable: true }
+    return { claims: [], scenariosUnreadable: true, overlayError: null, overlayExit: 1, overlay: null }
+  }
+  const { resolveOverlay, OverlayRefusal } = await import("./up-overlay")
+  let merged = parsed
+  let overlay: import("./up-overlay").OverlayInfo | null = null
+  try {
+    const resolved = await resolveOverlay({ rootDir, base: parsed, baseText: text, flagPath })
+    merged = resolved.merged
+    overlay = resolved.overlay
+  } catch (error) {
+    if (error instanceof OverlayRefusal) {
+      return { claims: [], scenariosUnreadable: true, overlayError: error.message, overlayExit: error.exit, overlay: null }
+    }
+    throw error
   }
   const claims: BoundaryClaim[] = []
-  for (const scenario of parsed.scenarios) {
+  for (const scenario of merged.scenarios) {
     for (const service of scenario.services) {
       for (const raw of scenario.boundaries) {
         const norm = normalizeBoundary(raw)
@@ -313,7 +340,7 @@ const readBoundaryClaims = async (rootDir: string): Promise<{ claims: BoundaryCl
       }
     }
   }
-  return { claims, scenariosUnreadable: false }
+  return { claims, scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay }
 }
 /** `ow preflight [--json] [--probe] [--file]`: exit 0 geçti / 1 eksik / 2
  * kullanım (çağrı yeri). Mutasyon YOK. */
@@ -325,6 +352,7 @@ export const runPreflight = async (opts: {
   tcpCheck?: TcpCheck
   budgetMs?: number
   perServiceMs?: number
+  boundariesFlag?: string
 }): Promise<number> => {
   let text: string
   try {
@@ -364,7 +392,11 @@ export const runPreflight = async (opts: {
     tcpResults = await measureTcpPorts({ ports, tcpCheck: opts.tcpCheck, budgetMs: opts.budgetMs, perServiceMs: opts.perServiceMs })
   }
   const envelopes = await readEnvelopeContext(paths.stateDir)
-  const claimsInput = await readBoundaryClaims(opts.rootDir)
+  const claimsInput = await readBoundaryClaims(opts.rootDir, opts.boundariesFlag)
+  if (claimsInput.overlayError !== null) {
+    console.error(`ow: ${claimsInput.overlayError}`)
+    return claimsInput.overlayExit
+  }
   const result = evaluatePreflight({
     expected,
     running,
@@ -377,12 +409,26 @@ export const runPreflight = async (opts: {
       configVersion: readConfigVersion(text),
     },
   })
+  const overlay = claimsInput.overlay
+  const overlayHuman = overlay !== null && overlay.applied
+    ? [`overlay-active: ${overlay.file}`, ...overlay.warnings]
+    : []
   if (opts.json) {
-    console.log(JSON.stringify({ pass: result.pass, gates: result.gates, missing: result.missing, envelopes: result.envelopes }))
+    console.log(JSON.stringify({
+      pass: result.pass,
+      gates: result.gates,
+      missing: result.missing,
+      envelopes: result.envelopes,
+      ...((overlay !== null && overlay.applied)
+        ? { overlayApplied: true, overlayFile: overlay.file, boundarySources: overlay.sources, overlayWarnings: overlay.warnings }
+        : {}),
+    }))
   } else if (result.pass) {
     console.log("ready: environment passed preflight")
+    for (const line of overlayHuman) console.log(line)
   } else {
     for (const line of result.human) console.log(line)
+    for (const line of overlayHuman) console.log(line)
   }
   return result.pass ? 0 : 1
 }
@@ -404,6 +450,7 @@ export const runReadiness = async (opts: {
   perServiceMs?: number
   declaredArtifacts?: Record<string, Record<string, string>>
   migrationObserved?: Record<string, boolean>
+  boundariesFlag?: string
 }): Promise<number> => {
   let text: string
   try {
@@ -443,7 +490,11 @@ export const runReadiness = async (opts: {
     tcpResults = await measureTcpPorts({ ports, tcpCheck: opts.tcpCheck, budgetMs: opts.budgetMs, perServiceMs: opts.perServiceMs })
   }
   const envelopes = await readEnvelopeContext(paths.stateDir)
-  const claimsInput = await readBoundaryClaims(opts.rootDir)
+  const claimsInput = await readBoundaryClaims(opts.rootDir, opts.boundariesFlag)
+  if (claimsInput.overlayError !== null) {
+    console.error(`ow: ${claimsInput.overlayError}`)
+    return claimsInput.overlayExit
+  }
   const result = evaluatePreflight({
     expected,
     running,
@@ -460,12 +511,26 @@ export const runReadiness = async (opts: {
   })
   const boundaryGate = result.gates.find((gate) => gate.name === "boundary")
   const detail = (boundaryGate?.detail ?? { stale: [], falseGreens: [], artifacts: {}, migrations: {} }) as BoundaryGateDetail
+  const overlay = claimsInput.overlay
+  const overlayHuman = overlay !== null && overlay.applied
+    ? [`overlay-active: ${overlay.file}`, ...overlay.warnings]
+    : []
   if (opts.json) {
-    console.log(JSON.stringify({ ready: result.pass, missing: result.missing, stale: detail.stale, falseGreens: detail.falseGreens, gates: result.gates }))
+    console.log(JSON.stringify({
+      ready: result.pass,
+      missing: result.missing,
+      stale: detail.stale,
+      falseGreens: detail.falseGreens,
+      gates: result.gates,
+      ...((overlay !== null && overlay.applied)
+        ? { overlayApplied: true, overlayFile: overlay.file, boundarySources: overlay.sources, overlayWarnings: overlay.warnings }
+        : {}),
+    }))
     return result.pass ? 0 : 1
   }
   if (result.pass) {
     console.log("ready: readiness passed")
+    for (const line of overlayHuman) console.log(line)
     return 0
   }
   for (const line of result.human) console.log(line)
@@ -476,5 +541,6 @@ export const runReadiness = async (opts: {
   for (const [service, observed] of Object.entries(detail.migrations)) {
     console.log(`migration: ${service} (${observed ? "history recorded" : "history missing"})`)
   }
+  for (const line of overlayHuman) console.log(line)
   return 1
 }

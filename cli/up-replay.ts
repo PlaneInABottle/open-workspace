@@ -226,6 +226,7 @@ export const runRecord = async (opts: {
   file: string
   runName: string
   probeFn?: ProbeFn
+  boundariesFlag?: string
 }): Promise<number> => {
   const { readFileSync } = await import("node:fs")
   let text: string
@@ -246,21 +247,41 @@ export const runRecord = async (opts: {
     console.error(`ow: invalid scenarios file: ${error instanceof Error ? error.message : String(error)}`)
     return 1
   }
+  // M9: capture resolves through the shared overlay helper (flag > local
+  // convention > base); the merged view feeds lookup, refusal gates, and
+  // store placement identically in every reader.
+  const { resolveOverlay, OverlayRefusal, overlayBannerLine } = await import("./up-overlay")
+  let overlay: import("./up-overlay").OverlayInfo | null = null
+  try {
+    const resolved = await resolveOverlay({ rootDir: opts.rootDir, base: parsed, baseText: text, flagPath: opts.boundariesFlag })
+    parsed = resolved.merged
+    overlay = resolved.overlay
+  } catch (error) {
+    if (error instanceof OverlayRefusal) {
+      console.error(`ow: ${error.message}`)
+      return error.exit
+    }
+    throw error
+  }
+  const banner = overlayBannerLine(overlay)
   const scenario = parsed.scenarios.find((entry) => entry.name === opts.runName)
   if (scenario === undefined) {
     console.error(`ow: scenario not found: ${opts.runName}`)
+    if (banner !== null) console.log(banner)
     return 2
   }
   for (const raw of scenario.boundaries) {
     const norm = normalizeScenarioBoundary(raw)
     if (norm.known && isRefusedBoundary(norm.normalized)) {
       console.error(`ow: no replay: ${scenario.name} (${maskSecrets(norm.normalized)}) — state-changing boundaries are not recorded`)
+      if (banner !== null) console.log(banner)
       return 2
     }
   }
   const location = replayLocation(opts.rootDir, scenario)
   if (location === null) {
     console.error(`ow: no deterministic boundary to record: ${scenario.name}`)
+    if (banner !== null) console.log(banner)
     return 2
   }
   const runProbe = opts.probeFn ?? runProbeJob
@@ -325,5 +346,8 @@ export const runRecord = async (opts: {
     return 1
   }
   console.log(`record: ${scenario.name} (${outcomes.length} probes, ${envelope.contract.hash.slice(0, 8)})`)
+  // M9 forgotten-overlay banner: provenance-bearing output emitted while
+  // an overlay is active names it (absent overlay prints nothing new).
+  if (overlay !== null && overlay.applied) console.log(`overlay-active: ${overlay.file}`)
   return 0
 }

@@ -196,6 +196,20 @@ export interface CoordinatorScenarios {
   warnings: string[];
   /** Bozuk dosya: satırlar boş + neden burada (diğer paneller sağlam). */
   error: string | null;
+  /** M9 overlay source tags (additive-optional): present only when the
+   * local convention applied server-side; absent on old wire. */
+  overlayApplied?: boolean;
+  overlayFile?: string | null;
+  boundarySources?: OverlayBoundarySource[];
+  /** M9 invalid-overlay box (additive-optional): base matrix still renders. */
+  overlayError?: string | null;
+}
+
+/** M9 overlay source tag: per-scenario boundary provenance. */
+export interface OverlayBoundarySource {
+  scenario: string;
+  boundary: string;
+  source: string;
 }
 
 /** Readiness-strip chip: masked boundary name + rolled-up cell verdict. */

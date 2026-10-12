@@ -913,6 +913,15 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
     ? new Date(atMs).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : 'saat bilinmiyor';
 
+  // M9 source-badge column (additive): per-row overlay provenance from
+  // `boundarySources`. Absent on old wire → no column (strip untouched,
+  // old snapshots render byte-identical).
+  const showSource = scenarios.boundarySources !== undefined;
+  const sourceOf = (rowName: string): string => {
+    const hit = scenarios.boundarySources?.find(entry => entry.scenario === rowName);
+    return hit?.source ?? 'base';
+  };
+
   return (
     <article aria-labelledby="koordinator-scenarios-heading" className="mt-4 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -922,6 +931,14 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
           {' · '}{scenarios.rows.length} senaryo, {scenarios.columns.length} sınır
         </p>
       </div>
+      {scenarios.overlayApplied === true && (
+        <p role="status" className="mt-2 text-xs text-muted-foreground">
+          overlay active: {scenarios.overlayFile ?? 'boundaries.local.yaml'} — boundary cells marked below come from the local overlay
+        </p>
+      )}
+      {scenarios.overlayError != null && (
+        <p role="alert" className="mt-2 text-sm text-destructive">Overlay ignored: {scenarios.overlayError}</p>
+      )}
       {staleSnapshot && (
         <div role="status" className="mt-2 text-xs text-muted-foreground">
           <span className="font-medium text-warning">bayat olabilir — Yenile?</span>
@@ -945,6 +962,9 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
                     {boundaryLabel(column)}
                   </th>
                 ))}
+                {showSource && (
+                  <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Source</th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -972,6 +992,11 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
                       <ScenarioCell verdict={row.cells[column] ?? 'skipped'} />
                     </td>
                   ))}
+                  {showSource && (
+                    <td className="py-2 pr-3">
+                      <Badge variant="outline" className="gap-1">{sourceOf(row.name)}</Badge>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

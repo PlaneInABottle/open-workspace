@@ -61,6 +61,12 @@ export type ProvisionResult = {
     collisions: string[]
     mismatches: string[]
   }
+  /** M9 additive overlay source tags (present only when an overlay is
+   * active — absent overlay keeps the JSON byte-identical). */
+  overlayApplied?: boolean
+  overlayFile?: string | null
+  boundarySources?: { scenario: string; boundary: string; source: string }[]
+  overlayWarnings?: string[]
 }
 
 const NOTE_MAX_CHARS = 200
@@ -241,15 +247,31 @@ export const runProvisionCheck = async (opts: {
   json: boolean
   probe: boolean
   tcpCheck?: TcpCheck
+  boundariesFlag?: string
 }): Promise<number> => {
   const root = resolve(opts.rootDir)
   const rootBase = basename(root)
   // Scenario-declared env files (M7, names-only): presence validated here,
   // contents never read. A declared-but-missing file refuses upfront.
+  // M9: declarations resolve through the same overlay helper as every
+  // other reader (flag > local convention > base).
   let scenarios: { name: string; env_file: string | null; data: Record<string, string> | null }[] = []
+  let overlay: import("./up-overlay").OverlayInfo | null = null
   try {
     const raw = await readFile(join(root, SCENARIOS_FILE_NAME), "utf8")
-    scenarios = parseScenarios(raw).scenarios
+    const baseParsed = parseScenarios(raw)
+    const { resolveOverlay, OverlayRefusal } = await import("./up-overlay")
+    try {
+      const resolved = await resolveOverlay({ rootDir: root, base: baseParsed, baseText: raw, flagPath: opts.boundariesFlag })
+      scenarios = resolved.merged.scenarios
+      overlay = resolved.overlay
+    } catch (error) {
+      if (error instanceof OverlayRefusal) {
+        console.error(`ow: ${error.message}`)
+        return error.exit
+      }
+      throw error
+    }
   } catch {
     scenarios = []
   }
@@ -356,6 +378,10 @@ export const runProvisionCheck = async (opts: {
     ...collisions.map((id) => `collision-warning: ${maskSecrets(id)} in two checkouts`),
     ...mismatches,
   ]
+  // M9 source tags (absent overlay adds nothing — byte-identical outputs).
+  const overlayHuman = overlay !== null && overlay.applied
+    ? [`overlay-active: ${overlay.file}`, ...overlay.warnings]
+    : []
   const result: ProvisionResult = {
     pass,
     root,
@@ -364,9 +390,12 @@ export const runProvisionCheck = async (opts: {
     branch: head.branch,
     checks,
     missing,
-    human: [...human, ...dataHuman, summary],
+    human: [...human, ...dataHuman, ...overlayHuman, summary],
     portBase: null,
     dataClock,
+    ...((overlay !== null && overlay.applied)
+      ? { overlayApplied: true, overlayFile: overlay.file, boundarySources: overlay.sources, overlayWarnings: overlay.warnings }
+      : {}),
   }
   if (opts.json) {
     console.log(JSON.stringify(result))
