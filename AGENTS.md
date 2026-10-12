@@ -98,6 +98,7 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 - Mask-before-cap with union parity: hostile corpora must include quoted/JSON/key-position shapes on BOTH persist and serve channels; persist-then-mask never happens. CLI↔server mirrors require cross-parity tests on a shared corpus, not parallel same-shaped fixtures.
 - Global parser flags require cross-verb guards (fail-loud precedent): a flag accepted by one verb must not silently no-op in another.
 - Evidence honesty: fail-before RED per finding; vary hostile fixtures beyond the benign shape (a suite shaped like `service a` proves nothing about `token-check`); reused evidence is labeled, never re-presented as fresh runs.
+- Absence sweeps need a positive control: an empty repo-wide "no X anywhere" result is evidence only after a control probe has hit a known-X file with the same command (seen live: a diacritic-class sweep reported zero while ASCII-spelled Turkish survived; gitignored/hidden paths silently vanish without `--hidden --no-ignore`).
 
 ## Safety and capability boundaries
 
