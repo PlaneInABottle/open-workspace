@@ -29,7 +29,25 @@ export type CheckpointRead = {
  * cap-aşımı (500 satır / 256KB, hangisi önce dolarsa) `skipped` ile
  * sayılır, dosya ASLA değiştirilmez. */
 export const readCheckpointFile = async (file: string): Promise<CheckpointRead> => {
-  const text = await readFile(file, "utf8")
+  // M-j FIFO/hang guard (partial): lstat regular-file-only upfront, then
+  // O_NONBLOCK open + fstat dev/ino pin (cheap TOCTOU narrowing; the
+  // residual parent-dir swap window is documented, not closed — runner
+  // writes are trusted but verified, hostile mounts are out of scope).
+  const { lstat: lstatFile, open: openFile } = await import("node:fs/promises")
+  const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = await import("node:constants")
+  const entry = await lstatFile(file)
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`checkpoint unreadable: ${file}`)
+  const handle = await openFile(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  let text: string
+  try {
+    const pinned = await handle.stat()
+    if (!pinned.isFile() || pinned.dev !== entry.dev || pinned.ino !== entry.ino) {
+      throw new Error(`checkpoint unreadable: ${file}`)
+    }
+    text = await handle.readFile("utf8")
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
   const lines = text.split("\n")
   const totalLines = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length
   const envelopes: EvidenceEnvelope[] = []
@@ -268,6 +286,11 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
   }
   const view = viewOf(opts.run, read)
   warnSkipped(opts.json, view.skipped)
+  // M-g: nothing readable (all lines corrupt/over-cap) exits 1 like a
+  // missing file — "checkpoint empty" exit 0 is reserved for genuinely
+  // empty-but-valid runs. Skipped counts already warned above (or ride
+  // in JSON below); the exit code is the machine signal.
+  const nothingReadable = view.envelopes.length === 0 && (view.skipped.corrupt > 0 || view.skipped.overCap > 0)
   if (opts.json) {
     console.log(
       JSON.stringify({
@@ -279,11 +302,11 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
         skipped: view.skipped,
       }),
     )
-    return 0
+    return nothingReadable ? 1 : 0
   }
   if (view.envelopes.length === 0) {
     console.log(`checkpoint empty: ${opts.run}`)
-    return 0
+    return nothingReadable ? 1 : 0
   }
   for (const envelope of view.envelopes) console.log(formatEnvelopeLine(envelope))
   for (const envelope of view.envelopes) console.log(formatSideEffectLine(envelope))

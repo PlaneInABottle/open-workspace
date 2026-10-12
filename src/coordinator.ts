@@ -818,6 +818,13 @@ export function normalizeScenarios(text: string): { scenarios: ParsedScenario[];
     if (!SCENARIO_NAME_PATTERN.test(name)) throw new Error(`invalid scenario file: invalid scenario name: ${name}`);
     if (typeof node !== 'object' || node === null || Array.isArray(node)) throw new Error(`invalid scenario file: ${name}: scenario map expected`);
     const fields = node as Record<string, YamlNode>;
+    // M-c parity: explicit non-goals reject like the CLI (error box),
+    // never warn-and-render.
+    for (const key of Object.keys(fields)) {
+      if (['fault', 'soak', 'load-test', 'schedul', 'deploy'].some(prefix => key.startsWith(prefix))) {
+        throw new Error(`invalid scenario file: ${name}: non-goal rejected: ${key} (fault/soak/load-test/schedule/deploy are out of scope)`);
+      }
+    }
     for (const key of Object.keys(fields)) {
       if (!['services', 'boundaries', 'targets', 'probes', 'checkpoints'].includes(key)) {
         fileWarnings.push(`${name}: unknown field ignored: ${key}`);
@@ -844,6 +851,18 @@ export function normalizeScenarios(text: string): { scenarios: ParsedScenario[];
     // the unverified cell verdict downstream.
     const seenLegacy = new Set<string>();
     const boundaries = rawBoundaries.map(raw => {
+      // M-c parity: malformed blocked rejects like the CLI (bare `blocked`,
+      // empty reason, or >128 chars is a schema error, never UNVERIFIED).
+      const trimmed = raw.trim();
+      if (trimmed === 'blocked' || trimmed.startsWith('blocked:')) {
+        const reasonRaw = trimmed === 'blocked' ? '' : trimmed.slice('blocked:'.length).trim();
+        const reason = reasonRaw.length >= 2 && ((reasonRaw.startsWith('"') && reasonRaw.endsWith('"')) || (reasonRaw.startsWith("'") && reasonRaw.endsWith("'")))
+          ? reasonRaw.slice(1, -1).trim()
+          : reasonRaw;
+        if (reason.length === 0 || [...reason].length > SCENARIO_BLOCKED_REASON_MAX) {
+          throw new Error(`invalid scenario file: ${name}: blocked:<reason> required (1-128 chars)`);
+        }
+      }
       const norm = normalizeScenarioBoundary(raw);
       if (norm.legacySource !== null && !seenLegacy.has(norm.legacySource)) {
         seenLegacy.add(norm.legacySource);

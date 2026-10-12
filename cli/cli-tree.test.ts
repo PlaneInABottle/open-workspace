@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { helpText, parseArgs, toSessionsJson, toShowJson, toStuckJson } from "./cli"
+import { helpText, parseArgs, run, toSessionsJson, toShowJson, toStuckJson } from "./cli"
 import { buildTree, formatTree, parseSpawnLinks, treeIds } from "./tree"
 import { groupByTask, type EnrichedRecord } from "./join"
 
@@ -190,5 +193,21 @@ describe("tree builder", () => {
     expect(links).toEqual([
       { childSessionID: "ses_clipped_child", agent: "implementer", description: "Add the missing guard", time: links[0].time },
     ])
+  })
+})
+
+describe("LOW-2 scenario-run flags outside scenario run refuse", () => {
+  test("--run on ps exits 2 (never silent)", async () => {
+    expect(await run(["ps", "--run", "x"])).toBe(2)
+  })
+  test("--off-local on up exits 2 (never silent)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ow-low2-"))
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      expect(await run(["up", "--check", "--file", file, "--off-local"])).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

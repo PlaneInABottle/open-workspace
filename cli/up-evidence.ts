@@ -342,6 +342,21 @@ export const applyFreshness = (envelopes: EvidenceEnvelope[]): EvidenceEnvelope[
 
 export type FreshSummary = { confirmed: number; stale: number; not_observed: number }
 
+/** Recency window (M-e/G3): newest envelope per stage by `at` (unparsable
+ * `at` sorts oldest; ties keep first-seen). Gates consume only the
+ * newest per stage — older runs are display-only (checkpoints show/list
+ * read full files directly, unaffected). */
+export const newestEnvelopePerStage = (envelopes: EvidenceEnvelope[]): EvidenceEnvelope[] => {
+  const best = new Map<string, { envelope: EvidenceEnvelope; at: number }>()
+  for (const envelope of envelopes) {
+    const at = Date.parse(envelope.at)
+    const ms = Number.isFinite(at) ? at : Number.NEGATIVE_INFINITY
+    const current = best.get(envelope.stage)
+    if (current === undefined || ms > current.at) best.set(envelope.stage, { envelope, at: ms })
+  }
+  return [...best.values()].map((entry) => entry.envelope)
+}
+
 /** Özet + `last_verified` (dosya-sırasında SON confirmed) + `first_gap`
  * (ondan sonraki İLK non-confirmed; confirmed yoksa ilk satır). */
 export const summarizeFresh = (

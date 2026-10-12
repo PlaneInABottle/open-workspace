@@ -60,7 +60,7 @@ describe("failures boş + kullanım", () => {
       } finally {
         io2.restore()
       }
-      expect(JSON.parse(io2.out.join("\n"))).toEqual({ groups: [], singletons: 0 })
+      expect(JSON.parse(io2.out.join("\n"))).toEqual({ groups: [], singletons: 0, skipped: { corrupt: 0, overCap: 0 } })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -169,7 +169,7 @@ describe("failures mekanik demet", () => {
         groups: { stage: string; status: string; stale_reason: string | null; step: string | null; count: number }[]
         singletons: number
       }
-      expect(Object.keys(payload).sort()).toEqual(["groups", "singletons"])
+      expect(Object.keys(payload).sort()).toEqual(["groups", "singletons", "skipped"])
       expect(payload.groups).toEqual([
         { stage: "build", status: "stale", stale_reason: "script_hash", step: null, count: 2 },
       ])
@@ -360,6 +360,40 @@ describe("failures mekanik-denetim (sınıflandırma yok, exec yok)", () => {
     const source = await readFile(resolve(import.meta.dir, "up-failures.ts"), "utf8")
     for (const pattern of ["spawn", "exec", "unlink", "writeFile", "rename", "child_process", "fork"] as const) {
       expect(source.includes(pattern)).toBe(false)
+    }
+  })
+})
+
+describe("M-g corrupt-only evidence exits 1 (nothing readable)", () => {
+  test("all-corrupt run exits 1 with skipped signal (human + json)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      const { mkdir } = await import("node:fs/promises")
+      await mkdir(join(root, ".ow", "checkpoints"), { recursive: true })
+      await writeFile(join(root, ".ow", "checkpoints", "bozuk.jsonl"), "not-json{{{\nmore-junk{{{\n", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["failures", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.err.join("\n")).toContain("corrupt-line: 2 (skipped)")
+      const io2 = capture()
+      let code2 = -1
+      try {
+        code2 = await run(["failures", "--file", file, "--json"])
+      } finally {
+        io2.restore()
+      }
+      expect(code2).toBe(1)
+      const payload = JSON.parse(io2.out.join("\n")) as { skipped: { corrupt: number; overCap: number } }
+      expect(payload.skipped).toEqual({ corrupt: 2, overCap: 0 })
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

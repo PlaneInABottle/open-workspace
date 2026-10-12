@@ -458,3 +458,57 @@ describe("boundary claim dedupe (no double-report)", () => {
     }
   })
 })
+
+describe("M-e recency window: newest run per stage gates, older display-only", () => {
+  test("historical-stale + later-green for same stage gates green", async () => {
+    const { evaluatePreflight } = await import("./up-preflight")
+    const staleOld = { stage: "build", status: "stale", at: "2026-01-01T00:00:00.000Z" }
+    const greenNew = { stage: "build", status: "confirmed", at: "2026-06-01T00:00:00.000Z" }
+    const base = {
+      expected: [],
+      running: [],
+      liveness: new Map(),
+      boundary: { claims: [], configVersion: "1" },
+    } as never
+    const result = evaluatePreflight({ ...base, envelopes: [staleOld, greenNew] as never })
+    expect(result.pass).toBe(true)
+    const inverted = evaluatePreflight({ ...base, envelopes: [greenNew, staleOld] as never })
+    expect(inverted.pass).toBe(true)
+  })
+
+  test("newestEnvelopePerStage keeps max at per stage, unparsable sorts oldest", async () => {
+    const { newestEnvelopePerStage } = await import("./up-evidence")
+    const envelopes = [
+      { stage: "a", status: "stale", at: "2026-01-01T00:00:00.000Z" },
+      { stage: "a", status: "confirmed", at: "2026-06-01T00:00:00.000Z" },
+      { stage: "b", status: "confirmed", at: "not-a-date" },
+      { stage: "b", status: "stale", at: "2026-03-01T00:00:00.000Z" },
+    ] as never
+    const gated = newestEnvelopePerStage(envelopes)
+    expect(gated).toHaveLength(2)
+    expect(gated.find((e) => (e as { stage: string }).stage === "a")).toMatchObject({ status: "confirmed" })
+    expect(gated.find((e) => (e as { stage: string }).stage === "b")).toMatchObject({ status: "stale" })
+  })
+})
+
+describe("M-f vacuous readiness refuses (never silent pass)", () => {
+  test("readiness with zero services exits 2", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ow-vac-"))
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services: {}\n", "utf8")
+      const { runReadiness } = await import("./up-preflight")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runReadiness({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain("ow: nothing to check")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

@@ -16,7 +16,7 @@ import { completeRequest, scanRequests, sweepStaleResults, type ServiceRequest, 
 import { appendLogLine, flushUpLogs } from "./up-logs"
 import { startTraceReceiver } from "./trace-receiver"
 import { tracePaths } from "./trace-store"
-import { clearLock, classifySupervisorFile, ensureUpStateDir, isLivePid, readLock, readLstart, readOwnBuildSidecar, readSupervisorState, upPaths, writeSupervisorState, ARTIFACT_DIGESTS_MAX } from "./up-state"
+import { clearLock, classifySupervisorFile, ensureUpStateDir, isLivePid, readLock, readLstart, readOwnBuildSidecar, readSupervisorState, upPaths, warnWriteFailed, writeSupervisorState, ARTIFACT_DIGESTS_MAX } from "./up-state"
 import type { UpBuildInfo, UpServiceState } from "./up-state"
 import { pickArtifactEntries } from "./up-probe"
 
@@ -255,7 +255,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     }
     // Merge-on-write (M3): an exit handler may have persisted behind our
     // back; never clobber its settled fields with our older snapshot.
-    await persistMerged(options.stateFile, state).catch(() => undefined)
+    await persistMerged(options.stateFile, state).catch((error) => warnWriteFailed("persist", error instanceof Error ? error.message : String(error)))
   }
   const units: LiveUnit[] = services.map((svc) => ({ svc, main: undefined, tail: undefined }))
   const unitOf = (name: string): LiveUnit | undefined => units.find((unit) => unit.svc.name === name)
@@ -655,7 +655,7 @@ export const downAll = async (rootDir: string, rm = false): Promise<DownOutcome>
     // Merge-on-write (M3): the supervisor may have persisted behind our
     // back; re-read and preserve its newer settlements. Unknown-lstart
     // units are never marked dead here: the guard is blind for them.
-    if (dirty) await persistMerged(paths.supervisorFile, state).catch(() => undefined)
+    if (dirty) await persistMerged(paths.supervisorFile, state).catch((error) => warnWriteFailed("persist", error instanceof Error ? error.message : String(error)))
   }
   await clearLock(paths.lockFile)
   let removedState = false

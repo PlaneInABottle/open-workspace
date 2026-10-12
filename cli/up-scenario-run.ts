@@ -20,7 +20,7 @@ import { checkPreflightGate } from "./up-provision"
 import { CHECKPOINTS_DIR_NAME, isValidRunName, readCheckpointFile, viewOf } from "./up-checkpoints"
 import type { EvidenceEnvelope } from "./up-evidence"
 import { readContractVerdict } from "./up-contract"
-import { INIT_INERT_MARKER } from "./up-init"
+import { hasInertMarker } from "./up-init"
 
 export type AssertResult = { kind: string; ok: boolean; detail: string }
 
@@ -131,8 +131,7 @@ export const runScenarioRun = async (opts: {
     }
     return 1
   }
-  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
-  if (firstLine.trim() === INIT_INERT_MARKER) {
+  if (hasInertMarker(text)) {
     console.error(`INERT: ${opts.file}`)
     return 2
   }

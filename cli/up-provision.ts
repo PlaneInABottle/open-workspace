@@ -16,7 +16,7 @@ import { basename, isAbsolute, join, resolve } from "node:path"
 
 import { decodeUtf8Fatal, parseUpFile, type UpService } from "./up-schema"
 import { readLstart, readSupervisorState, upPaths, type UpServiceState } from "./up-state"
-import { evaluatePreflight, measureTcpPorts, PREFLIGHT_BUDGET_MS, PREFLIGHT_PER_SERVICE_MS, readBoundaryClaims, readEnvelopeContext, type TcpCheck } from "./up-preflight"
+import { evaluatePreflight, measureTcpPorts, PREFLIGHT_BUDGET_MS, PREFLIGHT_PER_SERVICE_MS, readBoundaryClaims, readConfigVersion, readEnvelopeContext, type TcpCheck } from "./up-preflight"
 import { CHECKPOINTS_DIR_NAME, isValidRunName, readCheckpointFile, viewOf } from "./up-checkpoints"
 import { maskSecrets, TRUNCATION_MARK, type EvidenceEnvelope } from "./up-evidence"
 import type { Liveness } from "./up-reconcile"
@@ -236,6 +236,7 @@ export const checkPreflightGate = async (opts: {
     boundary: {
       claims: claimsInput.claims,
       scenariosUnreadable: claimsInput.scenariosUnreadable,
+      configVersion: readConfigVersion(text),
     },
   })
   const missing = [...result.missing]

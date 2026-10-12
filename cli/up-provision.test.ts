@@ -691,3 +691,54 @@ describe("MEDIUM-6 corrupt checkpoint lines invalidate the preflight gate", () =
     }
   })
 })
+
+describe("H-c configVersion agreement: provision gate matches preflight", () => {
+  test("non-v1 ow.yaml surfaces version confusion in both gates", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "version: 5\nservices:\n  a:\n    cmd: sleep 30\n", "utf8")
+      const { runPreflight } = await import("./up-preflight")
+      const io = capture()
+      let preflightCode = -1
+      try {
+        preflightCode = await runPreflight({ rootDir: root, file, json: true, probe: false })
+      } finally {
+        io.restore()
+      }
+      const preflightPayload = JSON.parse(io.out.join("\n")) as { pass: boolean }
+      const io2 = capture()
+      let provisionCode = -1
+      try {
+        provisionCode = await runProvisionCheck({ rootDir: root, file, json: true, probe: false })
+      } finally {
+        io2.restore()
+      }
+      const provisionPayload = JSON.parse(io2.out.join("\n")) as { pass: boolean; missing: string[] }
+      // Same-state agreement: both gates fail on version confusion
+      // (pre-threading, provision passed while preflight failed).
+      expect(preflightPayload.pass).toBe(false)
+      expect(provisionPayload.pass).toBe(false)
+      expect(preflightCode).toBe(provisionCode)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("H-c gate unit: configVersion threads into boundary evaluation", () => {
+  test("version:5 fails an otherwise-passing evaluation; version:1 passes", async () => {
+    const { evaluatePreflight } = await import("./up-preflight")
+    const base = {
+      expected: [{ name: "a", cmd: "sleep 30" }],
+      running: [{ name: "a", pid: 1, lstart: "l", startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: true } }],
+      liveness: new Map([["a", "live"]]),
+      envelopes: [],
+    } as never
+    const bad = evaluatePreflight({ ...base, boundary: { claims: [], configVersion: "5" } })
+    expect(bad.pass).toBe(false)
+    expect(bad.gates.find((gate) => gate.name === "boundary")?.pass).toBe(false)
+    const good = evaluatePreflight({ ...base, boundary: { claims: [], configVersion: "1" } })
+    expect(good.pass).toBe(true)
+  })
+})

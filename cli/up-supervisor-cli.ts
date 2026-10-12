@@ -4,7 +4,7 @@
  * (`detachSupervised`) re-spawns a hidden `__supervise` via nohup and polls
  * for `supervisor.json` (bounded: 3 s). */
 
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -118,6 +118,19 @@ export const superviseShell = (execPath: string, cliPath: string | null, file: s
   return `nohup ${inner} > ${shQuote(outFile)} 2>&1 & echo $!`
 }
 
+/** H-b freshness predicate (exported for tests): a supervisor.json counts
+ * as fresh only when strictly newer than the pre-spawn wall-clock. Strict
+ * `>` (never `>=`) decides mtime-resolution ties fail-closed: on coarse
+ * filesystems a same-tick fresh write may read as stale (slow exit 1),
+ * but a stale file can never read as fresh (no false "started"). */
+export const isFreshSupervisorFile = (path: string, spawnWall: number): boolean => {
+  try {
+    return statSync(path).mtimeMs > spawnWall
+  } catch {
+    return false
+  }
+}
+
 /** Detached supervision: pre-acquire-or-fail, spawn hidden `__supervise`, wait
  * for state, exit 0/1. The parent reserves the lock BEFORE spawning (no
  * spawn-then-poll race: two racing `up --detach` serialize on the exclusive
@@ -155,6 +168,11 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
     abs,
     outFile,
   )
+  // H-b freshness gate: capture the wall-clock BEFORE spawning; the poll
+  // below requires a strictly newer supervisor.json (mtime) via
+  // isFreshSupervisorFile, never mere existence — a stale file from a
+  // previous run must not read as "started".
+  const spawnWall = Date.now()
   const proc = Bun.spawn(["sh", "-c", shell], { stdout: "pipe", stderr: "ignore" })
   const pidText = (await new Response(proc.stdout).text()).trim()
   await proc.exited
@@ -170,7 +188,7 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
   const start = Date.now()
   let seen = false
   while (Date.now() - start < 3000) {
-    if (existsSync(paths.supervisorFile)) {
+    if (isFreshSupervisorFile(paths.supervisorFile, spawnWall)) {
       seen = true
       break
     }

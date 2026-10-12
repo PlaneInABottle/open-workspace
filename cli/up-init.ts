@@ -458,6 +458,19 @@ export const INIT_DEFAULT_SCENARIO = "first-scenario"
  * M6 singular runner refuses it until real probes are uncommented. */
 export const INIT_INERT_MARKER = "# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented"
 
+/** INERT marker scan (M-d): exact marker on any line before the `scenarios:`
+ * key (header block). First-line-only missed markers pushed below by user
+ * comments; whole-file scan risks matching probe-embedded text. All four
+ * refusing verbs (run/record/contract/env) share this helper. */
+export const hasInertMarker = (text: string): boolean => {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim()
+    if (trimmed === INIT_INERT_MARKER) return true
+    if (/^scenarios\s*:/.test(trimmed)) return false
+  }
+  return false
+}
+
 /** Inert placeholder probe: keeps `--check` green without executable
  * meaning. `true` prints no JSON, so even an unmarked run would fail
  * closed (never false-green) - but the marker refuses first. */

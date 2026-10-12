@@ -330,6 +330,12 @@ export const resolveOverlay = async (opts: {
       }
       throw error
     }
+    // M-i self-reference refusal: the flag must not point at the base file
+    // itself (content equality — catches copies too; a self-merge would
+    // falsely claim overlay-active on an identity merge).
+    if (text === opts.baseText) {
+      throw new OverlayRefusal(`overlay-refused: ${display} (must not point at the base file)`, 1)
+    }
     kind = "flag"
   } else {
     const convention = overlayConventionPath(opts.rootDir)

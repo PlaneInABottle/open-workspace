@@ -11,7 +11,8 @@
  * tuple sort. The two-attempt rule lives HERE (never in show): a
  * (scenario, stage) partition renders only with 2+ non-confirmed
  * occurrences; singletons fold into one fixed summary line.
- * Exit is always 0 (usage errors exit 2 at the dispatcher). */
+ * Exit is 0 except when files exist but nothing is readable
+ * (all corrupt/capped → exit 1); usage errors exit 2 at the dispatcher. */
 
 import { readdir } from "node:fs/promises"
 import { join } from "node:path"
@@ -118,7 +119,8 @@ export const formatFailureGroup = (group: FailureTuple): string => {
 
 /** `ow failures [--since <dur>] [--json]`: every retained run is read
  * (bounded per-file caps, corrupt lines counted and skipped — the file
- * is never touched). Empty → `bulgu yok`; always exit 0. */
+ * is never touched). Empty → `no findings`; exit 0 except when files
+ * exist but nothing is readable (exit 1). */
 export const runFailures = async (opts: { rootDir: string; since: string | boolean | undefined; json: boolean }): Promise<number> => {
   const sinceMs = parseFailuresSince(opts.since)
   if (sinceMs === null) {
@@ -158,12 +160,14 @@ export const runFailures = async (opts: { rootDir: string; since: string | boole
   if (overCap > 0 && !opts.json) console.error(`skipped(${overCap}): over cap (file read within 500-line/256KB limit)`)
   const folded = foldFailures(candidates)
   if (opts.json) {
-    console.log(JSON.stringify({ groups: folded.groups, singletons: folded.singletons }))
-    return 0
+    console.log(JSON.stringify({ groups: folded.groups, singletons: folded.singletons, skipped: { corrupt, overCap } }))
+    return candidates.length === 0 && (corrupt > 0 || overCap > 0) && files.length > 0 ? 1 : 0
   }
   if (candidates.length === 0) {
     console.log(NO_FINDINGS)
-    return 0
+    // M-g: files present but nothing readable (all corrupt/capped) exits
+    // 1 — a genuinely empty dir or all-confirmed evidence stays exit 0.
+    return corrupt + overCap > 0 && files.length > 0 ? 1 : 0
   }
   for (const group of folded.groups) console.log(formatFailureGroup(group))
   if (folded.singletons > 0) console.log(singletonLine(folded.singletons))

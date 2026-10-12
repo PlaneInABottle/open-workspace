@@ -175,21 +175,45 @@ export const writeReplayFile = async (path: string, envelope: ReplayEnvelope, li
 /** Bounded read (256KB / 500 lines): absent, over-cap, or malformed
  * content reads as null (fail-closed upstream). Over-cap refuses instead
  * of silent truncate (MEDIUM-5): a capped writer never emits over-cap
- * files, so oversize means tampering or corruption. Envelope
- * completeness is NOT checked here - readers distinguish the unknown-hash
- * case (null) from the provenance-missing case (present). */
+ * files, so oversize means tampering or corruption. M-b self-verifying:
+ * lstat (regular-file-only, no symlink/FIFO) + O_NOFOLLOW|O_NONBLOCK open
+ * + fstat dev/ino pin (TOCTOU swap refuses) + per-line outcomeDigest
+ * recompute (tampered lines refuse). Envelope completeness is NOT checked
+ * here - readers distinguish the unknown-hash case (null) from the
+ * provenance-missing case (present). */
 export const readReplayFile = async (path: string): Promise<{ envelope: ReplayEnvelope; lines: ReplayProbeLine[] } | null> => {
+  const { lstat: lstatFile } = await import("node:fs/promises")
+  const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = await import("node:constants")
+  let entry
+  try {
+    entry = await lstatFile(path)
+  } catch {
+    return null
+  }
+  if (!entry.isFile() || entry.isSymbolicLink()) return null
   let handle
   try {
-    handle = await open(path, "r")
+    handle = await open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
   } catch {
     return null
   }
   try {
-    const buffer = Buffer.alloc(REPLAY_MAX_BYTES + 1024)
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
-    if (bytesRead > REPLAY_MAX_BYTES) return null
-    const text = buffer.subarray(0, bytesRead).toString("utf8")
+    const pinned = await handle.stat()
+    if (!pinned.isFile() || pinned.dev !== entry.dev || pinned.ino !== entry.ino) return null
+    // LOW-8 short-read guard: a single read may return partial bytes;
+    // loop until full, EOF, or cap (oversize still refuses below).
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const buffer = Buffer.alloc(Math.min(64 * 1024, REPLAY_MAX_BYTES + 1024 - total))
+      if (buffer.length === 0) break
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, total)
+      if (bytesRead === 0) break
+      chunks.push(buffer.subarray(0, bytesRead))
+      total += bytesRead
+      if (total > REPLAY_MAX_BYTES) return null
+    }
+    const text = Buffer.concat(chunks).toString("utf8")
     const parts = text.split("\n").filter((part) => part.length > 0)
     if (parts.length === 0) return null
     if (parts.length > REPLAY_MAX_LINES) return null
@@ -203,11 +227,16 @@ export const readReplayFile = async (path: string): Promise<{ envelope: ReplayEn
     if (typeof envelope !== "object" || envelope === null) return null
     const lines: ReplayProbeLine[] = []
     for (const part of raw.slice(1)) {
+      let line: ReplayProbeLine
       try {
-        lines.push(JSON.parse(part) as ReplayProbeLine)
+        line = JSON.parse(part) as ReplayProbeLine
       } catch {
         return null
       }
+      if (typeof line !== "object" || line === null || typeof line.digest !== "string") return null
+      const { digest, ...body } = line
+      if (outcomeDigest(body as Omit<ReplayProbeLine, "digest">) !== digest) return null
+      lines.push(line)
     }
     return { envelope, lines }
   } catch {
@@ -264,9 +293,8 @@ export const runRecord = async (opts: {
   }
   // INERT scaffold refuses like the runner (decision: recording a
   // placeholder contract is meaningless — edit real probes first).
-  const { INIT_INERT_MARKER } = await import("./up-init")
-  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
-  if (firstLine.trim() === INIT_INERT_MARKER) {
+  const { hasInertMarker } = await import("./up-init")
+  if (hasInertMarker(text)) {
     console.error(`INERT: ${opts.file}`)
     return 2
   }

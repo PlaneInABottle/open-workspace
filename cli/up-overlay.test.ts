@@ -927,3 +927,23 @@ describe("CLI raw-echo parity: hostile overlay names sanitize (no path leak)", (
     }
   })
 })
+
+describe("M-i flag pointing at base file refuses (no self-merge)", () => {
+  test("--boundaries ow.scenarios.yaml exits 1 naming self-reference", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writeBase(root)
+      const io = capture()
+      let code = -1
+      try {
+        code = await runScenariosCheck({ file, rootDir: root, json: false, boundariesFlag: "ow.scenarios.yaml" })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.err.join("\n")).toContain("must not point at the base file")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

@@ -16,7 +16,7 @@ import { decodeUtf8Fatal, parseSubsetYaml, parseUpFile, type UpService } from ".
 import { isLivePid, readLstart, readSupervisorState, upPaths, type UpServiceState } from "./up-state"
 import { reconcileOne, type Liveness, type ReconcileDrift } from "./up-reconcile"
 import { tcpListening } from "./up-net"
-import { maskSecrets } from "./up-evidence"
+import { maskSecrets, newestEnvelopePerStage } from "./up-evidence"
 import { CHECKPOINTS_DIR_NAME, isValidRunName, readCheckpointFile, viewOf } from "./up-checkpoints"
 import type { EvidenceEnvelope } from "./up-evidence"
 import {
@@ -91,6 +91,9 @@ export const evaluatePreflight = (opts: {
   const missing: string[] = []
   const human: string[] = []
   const runByName = new Map(opts.running.map((svc) => [svc.name, svc]))
+  // M-e recency window: gate decisions see newest-per-stage only; the
+  // returned envelopes echo the full input (older runs display-only).
+  const gated = newestEnvelopePerStage(opts.envelopes)
 
   // reconcile geçidi: M1 saf çekirdeği, read-only alt-küme (TCP/lsof yok →
   // listening/owners boş; port-yabancı bu geçitte ÜRETİLMEZ, belgeli).
@@ -159,7 +162,7 @@ export const evaluatePreflight = (opts: {
   }
 
   // checkpoint zarfları: bayat/gözlenmedi kapıyı düşürür (fail-closed tanık).
-  for (const envelope of opts.envelopes) {
+  for (const envelope of gated) {
     if (envelope.status === "stale") {
       missing.push(`stale:${envelope.stage}:${envelope.stale_reason}`)
       human.push(`stale: ${envelope.stage} (reason: ${envelope.stale_reason})`)
@@ -182,7 +185,7 @@ export const evaluatePreflight = (opts: {
     services: opts.expected,
     claims: opts.boundary?.claims ?? [],
     records: opts.running,
-    envelopes: opts.envelopes,
+    envelopes: gated,
     declaredArtifacts: opts.boundary?.declaredArtifacts ?? {},
     migrationObserved: opts.boundary?.migrationObserved ?? {},
     configVersion: opts.boundary?.configVersion,
@@ -218,7 +221,7 @@ export const evaluatePreflight = (opts: {
       opts.boundary?.scenariosUnreadable !== true,
     detail,
   })
-  const pass = gates.every((gate) => gate.pass) && !opts.envelopes.some((envelope) => envelope.status !== "confirmed")
+  const pass = gates.every((gate) => gate.pass) && !gated.some((envelope) => envelope.status !== "confirmed")
   return { gates, missing, human, envelopes: opts.envelopes, pass }
 };
 
@@ -278,7 +281,7 @@ export const readEnvelopeContext = async (stateDir: string): Promise<EvidenceEnv
 }
 
 /** Raw ow.yaml `version:` value (tolerant: anything unparsable reads as absent). */
-const readConfigVersion = (text: string): string | undefined => {
+export const readConfigVersion = (text: string): string | undefined => {
   try {
     const raw = parseSubsetYaml(text)["version"]
     return typeof raw === "string" ? raw : undefined
@@ -495,6 +498,12 @@ export const runReadiness = async (opts: {
     expected = parseUpFile(text).services
   } catch (error) {
     console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    return 2
+  }
+  // M-f vacuity refusal: readiness over zero services proves nothing
+  // (exit 2 usage, never a silent pass).
+  if (expected.length === 0) {
+    console.error("ow: nothing to check (ow.yaml declares no services)")
     return 2
   }
   const paths = upPaths(opts.rootDir)

@@ -429,7 +429,7 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
     try {
       const io = capture()
       try {
-        expect(await run(["checkpoints", "show", "bozuk-ma", "--file", file, "--json"])).toBe(0)
+        expect(await run(["checkpoints", "show", "bozuk-ma", "--file", file, "--json"])).toBe(1)
       } finally {
         io.restore()
       }
@@ -500,7 +500,7 @@ describe("M-B kod haritası geçidi (legacy-kararlı + tek-sapma)", () => {
     try {
       const io = capture()
       try {
-        expect(await run(["checkpoints", "show", "bozuk-mb", "--file", file, "--json"])).toBe(0)
+        expect(await run(["checkpoints", "show", "bozuk-mb", "--file", file, "--json"])).toBe(1)
       } finally {
         io.restore()
       }
@@ -558,6 +558,23 @@ describe("M7 envelope data passthrough (opaque, read-only)", () => {
       expect(read.envelopes).toHaveLength(2)
       expect(read.envelopes[0].data).toEqual({ revField: "r1", "freshness-ignores": true })
       expect(read.envelopes[1].data).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M-j checkpoint reader refuses non-regular files (no hang, no follow)", () => {
+  test("symlinked checkpoint file throws (fail-closed upstream)", async () => {
+    const root = await tempRoot()
+    try {
+      const real = join(root, "real.jsonl")
+      await writeFile(real, `${JSON.stringify({ stage: "build", status: "confirmed", proof: { ok: true }, at: "2026-10-09T08:00:00.000Z", by: "runner" })}\n`, "utf8")
+      const { symlink } = await import("node:fs/promises")
+      const link = join(root, "link.jsonl")
+      await symlink(real, link)
+      const { readCheckpointFile } = await import("./up-checkpoints")
+      await expect(readCheckpointFile(link)).rejects.toThrow()
     } finally {
       await rm(root, { recursive: true, force: true })
     }

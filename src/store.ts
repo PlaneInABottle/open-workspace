@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
@@ -163,15 +163,25 @@ export interface AmbiguousNameCandidate {
 export class AmbiguousNameError extends Error {
   readonly candidates: AmbiguousNameCandidate[];
   constructor(candidates: AmbiguousNameCandidate[]) {
-    // Bounded: at most five candidates, labels truncated. The list rides in
-    // the message itself so MCP callers (error-string only) see it too;
-    // HTTP additionally returns the structured candidates array.
+    // Bounded: at most five candidates, labels truncated. The structured
+    // array carries basename-only labels + explicit allowlist fields
+    // (name/rootLabel/createdAt) for HTTP; the message string keeps full
+    // labels so MCP callers (error-string only) can disambiguate.
+    const shortLabel = (label: string): string => {
+      const base = label.length > 0 ? basename(label) : '(no root)';
+      return base.length > 60 ? `${base.slice(0, 57)}...` : base;
+    };
     const listed = candidates.slice(0, 5).map(candidate => ({
+      name: candidate.name,
+      rootLabel: shortLabel(candidate.rootLabel),
+      createdAt: candidate.createdAt,
+    }));
+    const full = candidates.slice(0, 5).map(candidate => ({
       name: candidate.name,
       rootLabel: candidate.rootLabel.length > 60 ? `${candidate.rootLabel.slice(0, 57)}...` : candidate.rootLabel,
       createdAt: candidate.createdAt,
     }));
-    super(`${nameMessages.ambiguous} Candidates: ${listed.map(candidate => `"${candidate.name}" — ${candidate.rootLabel || '(no root)'} — ${candidate.createdAt}`).join(' | ')}`);
+    super(`${nameMessages.ambiguous} Candidates: ${full.map(candidate => `"${candidate.name}" — ${candidate.rootLabel || '(no root)'} — ${candidate.createdAt}`).join(' | ')}`);
     this.name = 'AmbiguousNameError';
     this.candidates = listed;
   }

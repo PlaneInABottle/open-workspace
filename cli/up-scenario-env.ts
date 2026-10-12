@@ -14,7 +14,7 @@ import { join } from "node:path"
 import { decodeUtf8Fatal } from "./up-schema"
 import { normalizeBoundary, parseScenarios, validateReferences } from "./up-scenarios"
 import { maskSecrets } from "./up-evidence"
-import { INIT_INERT_MARKER } from "./up-init"
+import { hasInertMarker } from "./up-init"
 
 /** Closed mode vocabulary (every emitted value is a member — asserted). */
 export const ENV_MODES: ReadonlySet<string> = new Set([
@@ -70,8 +70,7 @@ export const runScenarioEnv = async (opts: {
     }
     return 1
   }
-  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
-  if (firstLine.trim() === INIT_INERT_MARKER) {
+  if (hasInertMarker(text)) {
     console.error(`INERT: ${opts.file}`)
     return 2
   }

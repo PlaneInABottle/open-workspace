@@ -575,3 +575,61 @@ describe("H1 CLI↔server boundary parity (same fixture, identical verdicts)", (
     expect(serverParsed.warnings.some((warning) => warning.includes("legacy-boundary: local → real-read-only (warning)"))).toBe(true)
   })
 })
+
+describe("M-c parity corpus: blocked-shape, non-goal, shell-argv0, unknown-folding agree", () => {
+  test("malformed blocked rejects on both (bare, empty, oversize)", async () => {
+    const server = await import("../src/coordinator")
+    for (const bad of ["blocked", "blocked:", `blocked:${"x".repeat(129)}`]) {
+      const text = `version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [${bad}]\n    probes: [{id: p, argv: [./x.sh]}]\n`
+      expect(() => parseScenarios(text)).toThrow(/blocked:<reason> required/)
+      expect(() => server.normalizeScenarios(text)).toThrow(/blocked:<reason> required/)
+    }
+  })
+
+  test("non-goal keys reject on both", async () => {
+    const server = await import("../src/coordinator")
+    for (const key of ["fault-inject", "soak-test", "load-test", "schedule", "deploy"]) {
+      const text = `version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n    ${key}: [x]\n`
+      expect(() => parseScenarios(text)).toThrow(/non-goal rejected/)
+      expect(() => server.normalizeScenarios(text)).toThrow(/non-goal rejected/)
+    }
+  })
+
+  test("shell argv0 rejects on both", async () => {
+    const server = await import("../src/coordinator")
+    const text = `version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [sh, -c, echo]}]\n`
+    expect(() => parseScenarios(text)).toThrow(/must not start with a shell/)
+    expect(() => server.normalizeScenarios(text)).toThrow(/must not start with a shell/)
+  })
+
+  test("unknown boundaries fold to unverified verdicts on both", async () => {
+    const server = await import("../src/coordinator")
+    const text = `version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [mystery-value]\n    probes: [{id: p, argv: [./x.sh]}]\n`
+    const cliParsed = parseScenarios(text)
+    expect(normalizeBoundary("mystery-value").known).toBe(false)
+    const serverParsed = server.normalizeScenarios(text)
+    expect(serverParsed.scenarios[0].boundaries).toEqual(["mystery-value"])
+    expect(server.normalizeScenarioBoundary("mystery-value").known).toBe(false)
+    expect(cliParsed.scenarios[0].boundaries).toEqual(["mystery-value"])
+  })
+})
+
+describe("M-d vacuity: no-op argv0 warns, INERT header-block scan", () => {
+  test("true/:/exit argv0 warns (never fails)", async () => {
+    const { parseScenarios: parse } = await import("./up-scenarios")
+    for (const argv0 of ["true", ":", "exit"]) {
+      const parsed = parse(`version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [${argv0}]}]\n`)
+      expect(parsed.warnings.some((w) => w.message.includes("no-op probe argv0 (vacuity): p"))).toBe(true)
+    }
+    const clean = parse(`version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p, argv: [./x.sh]}]\n`)
+    expect(clean.warnings.some((w) => w.message.includes("no-op probe argv0"))).toBe(false)
+  })
+
+  test("INERT marker below leading comments still refuses (header-block scan)", async () => {
+    const { hasInertMarker } = await import("./up-init")
+    const { INIT_INERT_MARKER } = await import("./up-init")
+    expect(hasInertMarker(`${INIT_INERT_MARKER}\nversion: 1\nscenarios:\n`)).toBe(true)
+    expect(hasInertMarker(`# user comment\n# another\n${INIT_INERT_MARKER}\nversion: 1\nscenarios:\n`)).toBe(true)
+    expect(hasInertMarker(`version: 1\nscenarios:\n  a:\n    services: [api]\n`)).toBe(false)
+  })
+})

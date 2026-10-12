@@ -291,3 +291,42 @@ describe("INERT scaffold refuses record and contract (runner parity)", () => {
     }
   })
 })
+
+describe("M-b hand-forged runnerHash refuses (definition hash right, runnerHash wrong)", () => {
+  test("tampered runnerHash flips match to mismatch", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS, "utf8")
+      await recordGolden(root, file)
+      const { replayLocation } = await import("./up-replay")
+      const { parseScenarios } = await import("./up-scenarios")
+      const parsed = parseScenarios(SCENARIOS)
+      const location = replayLocation(root, parsed.scenarios[0])
+      if (location === null) throw new Error("expected a replay location")
+      const { readReplayFile } = await import("./up-replay")
+      const stored = await readReplayFile(location.file)
+      if (stored === null) throw new Error("expected a stored record")
+      const forged = {
+        ...stored.envelope,
+        provenance: { ...stored.envelope.provenance, runnerHash: "forged-runner-hash" },
+      }
+      const lines = [JSON.stringify(forged)]
+      for (const line of stored.lines) lines.push(JSON.stringify(line))
+      await writeFile(location.file, `${lines.join("\n")}\n`, "utf8")
+      // NOTE: rewriting the envelope keeps per-line digests valid, so the
+      // reader still parses; the verdict must refuse on runnerHash.
+      const io = capture()
+      let code = -1
+      try {
+        code = await runContractCheck({ rootDir: root, file, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.out.join("\n")).toContain("contract-mismatch: cart")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

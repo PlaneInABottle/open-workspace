@@ -329,3 +329,45 @@ describe("readBuildSidecar", () => {
     }
   })
 })
+
+describe("M-h warnWriteFailed bounded once-per-class", () => {
+  test("repeats collapse to a single line", async () => {
+    const { resetWriteWarns, warnWriteFailed } = await import("./up-state")
+    resetWriteWarns()
+    const err: string[] = []
+    const orig = console.error
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    try {
+      warnWriteFailed("log", "first failure detail")
+      warnWriteFailed("log", "second failure detail")
+      warnWriteFailed("log", "third failure detail")
+    } finally {
+      console.error = orig
+      resetWriteWarns()
+    }
+    expect(err).toEqual(["warning: log write failed (first failure detail)"])
+  })
+})
+
+describe("G9 empty lock lstart classifies unknown (refuse, never reclaim)", () => {
+  test("lock with empty lstart is unknown even when pid is live", async () => {
+    const { classifyLock, upPaths } = await import("./up-state")
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { writeFile, rm } = await import("node:fs/promises")
+    const root = await mkdtemp(join(tmpdir(), "ow-g9-"))
+    try {
+      const paths = upPaths(root)
+      const { mkdir } = await import("node:fs/promises")
+      await mkdir(paths.stateDir, { recursive: true })
+      await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, lstart: "", startedAt: new Date().toISOString() }), "utf8")
+      const status = await classifyLock(paths.lockFile)
+      expect(status.kind).toBe("unknown")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

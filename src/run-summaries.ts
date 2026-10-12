@@ -139,13 +139,26 @@ const maxFailingNames = 20;
 export const maxRecentRunsForLearningSignal = 20;
 const failedRunThresholdForLearningSignal = 3;
 
-/** Mask secret-shaped text while keeping paths and structure readable. */
+/** Mask secret-shaped text while keeping paths and structure readable.
+ * Union of both mask families (H-a): the regex rules below plus the
+ * token-walk rules mirrored from cli/coordinator (secret-flag next-token,
+ * provider prefixes, bare 32+hex). Single choke-point mask for the runs
+ * channel — applied on persist AND on serve (defense in depth for
+ * pre-existing files). */
+const PROVIDER_PREFIX_UNION = /(ghp_[A-Za-z0-9]{8,}|gho_[A-Za-z0-9]{8,}|ghu_[A-Za-z0-9]{8,}|ghs_[A-Za-z0-9]{8,}|sk-(live|test)-[A-Za-z0-9]+|xox[bpas]-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]{8,})/g;
+const BARE_HEX_UNION = /\b[0-9a-fA-F]{32,}\b/g;
+const SECRET_FLAG_UNION = /((?:--|-|)(?:password|passwd|pwd|secret|api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret|bearer|token|credential|private[_-]?key|authorization)\s+)(['"]?)[^\s'";,]+(['"]?)/gi;
+const SECRET_VALUE_UNION = /\b([A-Za-z0-9_.-]+)=([^\s'";,]*?(?:password|passwd|pwd|secret|api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret|bearer|token|credential|private[_-]?key|authorization)[^\s'";,]*)/gi;
 export function maskSecrets(text: string): string {
   return text
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '***')
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '***@***')
     .replace(/Bearer\s+[A-Za-z0-9\-._~+/=]{8,}/gi, 'Bearer ***')
-    .replace(/((?:api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret|secret|password|passwd|pwd|token)\s*[:=]\s*)['"]?[^\s'";,]+/gi, '$1***');
+    .replace(PROVIDER_PREFIX_UNION, '***')
+    .replace(SECRET_FLAG_UNION, '$1$2***$3')
+    .replace(SECRET_VALUE_UNION, '$1=***')
+    .replace(/((['"]?)(?:api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret|secret|password|passwd|pwd|token|bearer|credential|private[_-]?key|authorization)\2\s*[:=]\s*)['"]?(?!Bearer \*\*\*)[^\s'";,]+['"]?/gi, '$1***')
+    .replace(BARE_HEX_UNION, '***');
 }
 
 /** Best-effort failing-test-name extraction across TAP, node:test, jest and mocha shapes. */
@@ -415,7 +428,7 @@ export async function listRecentRuns(homeDirectory: string, workspaceId: string,
       const { failureExcerpt, ...rest } = summary;
       const id = summary.id ?? runIdFromFile(file);
       const source = readSource(summary.source);
-      entries.push({ ...rest, id, source, sourceLabel: sourceLabel(source), excerptPreview: (failureExcerpt ?? '').slice(0, listExcerptLimit), pinnedByNote: pinned.has(id) || pinned.has(runIdFromFile(file)) });
+      entries.push({ ...rest, id, source, sourceLabel: sourceLabel(source), excerptPreview: maskSecrets(failureExcerpt ?? '').slice(0, listExcerptLimit), pinnedByNote: pinned.has(id) || pinned.has(runIdFromFile(file)) });
     } catch {
       continue;
     }

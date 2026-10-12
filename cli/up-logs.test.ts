@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -44,7 +44,7 @@ describe("up-log caps", () => {
       const logsDir = join(root, ".ow", "logs")
       appendLogLine(logsDir, "web", "stdout", `elma:${"x".repeat(20_000)}:kuyruk`)
       await flushUpLogs()
-      const rows = await queryLogs({ logsDir, service: "web" })
+      const rows = (await queryLogs({ logsDir, service: "web" })).rows
       expect(rows).toHaveLength(1)
       expect(Buffer.byteLength(rows[0].line, "utf8")).toBeLessThanOrEqual(UP_LOG_LINE_MAX_BYTES + 32)
       expect(rows[0].line).toContain("…[truncated]…")
@@ -156,7 +156,7 @@ describe("queryLogs", () => {
         `${JSON.stringify({ t: new Date(t0 + 1000).toISOString(), stream: "stdout", line: "ikinci" })}\n`,
         "utf8",
       )
-      const rows = await queryLogs({ logsDir })
+      const rows = (await queryLogs({ logsDir })).rows
       expect(rows.map((row) => `${row.service}:${row.line}`)).toEqual(["a:birinci", "b:ikinci"])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -176,11 +176,11 @@ describe("queryLogs", () => {
         { t: new Date(base - 10_000).toISOString(), stream: "stdout", line: "elma en-taze" },
       ]
       await writeFile(join(logsDir, "m.jsonl"), lines.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8")
-      const grep = await queryLogs({ logsDir, service: "m", grep: "elma" })
+      const grep = (await queryLogs({ logsDir, service: "m", grep: "elma" })).rows
       expect(grep.map((row) => row.line)).toEqual(["elma eski", "elma taze", "elma en-taze"])
-      const since = await queryLogs({ logsDir, service: "m", grep: "elma", sinceMs: 5 * 60_000 })
+      const since = (await queryLogs({ logsDir, service: "m", grep: "elma", sinceMs: 5 * 60_000 })).rows
       expect(since.map((row) => row.line)).toEqual(["elma taze", "elma en-taze"])
-      const tail = await queryLogs({ logsDir, service: "m", grep: "elma", sinceMs: 5 * 60_000, tail: 1 })
+      const tail = (await queryLogs({ logsDir, service: "m", grep: "elma", sinceMs: 5 * 60_000, tail: 1 })).rows
       expect(tail.map((row) => row.line)).toEqual(["elma en-taze"])
       expect(tail[0]).toMatchObject({ service: "m", stream: "stdout" })
     } finally {
@@ -192,12 +192,12 @@ describe("queryLogs", () => {
     const root = await tempRoot()
     try {
       const logsDir = join(root, ".ow", "logs")
-      expect(await queryLogs({ logsDir })).toEqual([])
-      expect(await queryLogs({ logsDir, service: "yok" })).toEqual([])
+      expect((await queryLogs({ logsDir })).rows).toEqual([])
+      expect((await queryLogs({ logsDir, service: "yok" })).rows).toEqual([])
       await ensureUpStateDir(logsDir)
       await writeFile(join(logsDir, "k.jsonl"), 'bozuk satır\n{"t":1}\n{"t":"x","stream":"bogus","line":"y"}\n', "utf8")
-      expect(await queryLogs({ logsDir, service: "k" })).toEqual([])
-      expect(await queryLogs({ logsDir })).toEqual([])
+      expect((await queryLogs({ logsDir, service: "k" })).rows).toEqual([])
+      expect((await queryLogs({ logsDir })).rows).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -220,7 +220,7 @@ describe("logs: sibling lifecycle", () => {
       expect(code).toBe(0)
       expect(lines).toContain("[dis|log] ext1")
       expect(lines).toContain("[dis|log] ext2")
-      const rows = await queryLogs({ logsDir: paths.logsDir, service: "dis" })
+      const rows = (await queryLogs({ logsDir: paths.logsDir, service: "dis" })).rows
       expect(rows.filter((row) => row.stream === "log").map((row) => row.line).sort()).toEqual(["ext1", "ext2"])
       const state = await readSupervisorState(paths.supervisorFile)
       expect(state?.services[0]).toMatchObject({ name: "dis", logsCmd: "echo ext1; echo ext2" })
@@ -252,7 +252,7 @@ describe("logs: sibling lifecycle", () => {
       )
       expect(code).toBe(0)
       expect(lines).toContain("[kardes|stdout] yasiyor")
-      const rows = await queryLogs({ logsDir: paths.logsDir, service: "erken" })
+      const rows = (await queryLogs({ logsDir: paths.logsDir, service: "erken" })).rows
       const events = rows.filter((row) => row.stream === "event")
       expect(events.length).toBeGreaterThanOrEqual(1)
       expect(events.map((row) => row.line).join(" ")).toContain("logs command exited (code=3)")
@@ -278,7 +278,7 @@ describe("logs: sibling lifecycle", () => {
       expect(code).toBe(0)
       expect(lines).toContain("[ana|stdout] disari")
       expect(lines).toContain("[ana|stderr] hata")
-      const rows = await queryLogs({ logsDir: paths.logsDir, service: "ana" })
+      const rows = (await queryLogs({ logsDir: paths.logsDir, service: "ana" })).rows
       expect(rows).toMatchObject([
         { service: "ana", stream: "stdout", line: "disari" },
         { service: "ana", stream: "stderr", line: "hata" },
@@ -347,6 +347,75 @@ describe("ow logs branch", () => {
       expect(await run(["logs", "web", "--file", file, "--tail", "1"])).toBe(0)
       expect(await run(["logs", "web", "--file", file, "--grep", "dunya", "--json"])).toBe(0)
       expect(await run(["logs", "--file", file, "--since", "30m"])).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("M-h log write failures surface (bounded warn)", () => {
+  test("appendLogLine to a file-as-dir warns once and never throws", async () => {
+    const { appendLogLine, flushUpLogs, resetUpLogWriters } = await import("./up-logs")
+    const { resetWriteWarns } = await import("./up-state")
+    const root = await mkdtemp(join(tmpdir(), "ow-mh-"))
+    try {
+      const blocker = join(root, "blocker")
+      await writeFile(blocker, "x", "utf8")
+      resetUpLogWriters()
+      resetWriteWarns()
+      const err: string[] = []
+      const orig = console.error
+      console.error = (...args: unknown[]): void => {
+        err.push(args.map(String).join(" "))
+      }
+      try {
+        appendLogLine(blocker, "svc", "stdout", "hello")
+        appendLogLine(blocker, "svc", "stdout", "world")
+        await flushUpLogs()
+      } finally {
+        console.error = orig
+        resetUpLogWriters()
+        resetWriteWarns()
+      }
+      expect(err.filter((line) => line.includes("warning: log write failed"))).toHaveLength(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("G12 tail-cap omissions surface a notice (never silent)", () => {
+  test("over-tail query returns notice counts (human + json)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ow-g12-"))
+    try {
+      const logsDir = join(root, ".ow", "logs")
+      await mkdir(logsDir, { recursive: true })
+      const lines: string[] = []
+      for (let i = 0; i < 10; i += 1) {
+        lines.push(JSON.stringify({ t: new Date(Date.now() + i * 1000).toISOString(), stream: "stdout", line: `row-${i}` }))
+      }
+      await writeFile(join(logsDir, "web.jsonl"), `${lines.join("\n")}\n`, "utf8")
+      const { queryLogs } = await import("./up-logs")
+      const result = await queryLogs({ logsDir, service: "web", tail: 4 })
+      expect(result.rows).toHaveLength(4)
+      expect(result.omittedRows).toBe(6)
+      expect(result.omittedFiles).toBe(0)
+      const { run } = await import("./cli")
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: sleep 30\n", "utf8")
+      const out: string[] = []
+      const origLog = console.log
+      console.log = (...args: unknown[]): void => {
+        out.push(args.map(String).join(" "))
+      }
+      let code = -1
+      try {
+        code = await run(["logs", "web", "--file", file, "--tail", "4"])
+      } finally {
+        console.log = origLog
+      }
+      expect(code).toBe(0)
+      expect(out.join("\n")).toContain("(omitted: 6 older rows (raise --tail))")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

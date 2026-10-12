@@ -171,8 +171,8 @@ supervisor state. Unknown service names, slash-less paths, port-less
 services, `--health` without `--wait` (or without `-d`), and any `--health`
 with `--check` are usage errors (exit 2, nothing spawns). Services without
 a `port` are named (`port undefined (not waited): ...`)
-but never waited on; with no declared ports at all `up -d --wait` exits 0
-immediately. `--wait` without `-d/--detach` is a usage error (exit 2, nothing
+but never waited on; with no declared ports at all `up -d --wait` refuses
+exit 2 (`ow: nothing to wait for`), never a silent pass. `--wait` without `-d/--detach` is a usage error (exit 2, nothing
 spawns, no `.ow` created), as is any `--wait` combined with `--check`
 (`--check` only validates, never waits). `--json` mirrors the human lines with stable
 English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?, healthPath?}], noPort}`).
@@ -340,10 +340,11 @@ here, never in `show`: a `(scenario, stage)` partition renders only with
 2+ non-confirmed occurrences (explicit lineage fields win, run-name
 suffix is the fallback, unattributed lines partition under no scenario);
 singletons fold into one fixed line, `no-repeat: <n> unique findings
-unlisted`. Empty output is `no findings`. Exit is always 0. The command
+unlisted`. Empty output is `no findings`. Exit is 0 except when files
+exist but nothing is readable (all corrupt/capped → exit 1). The command
 never executes, writes, or prunes (bounded file reads only). `--json`
 returns additive English keys `{groups: [{stage, status, stale_reason,
-step, count}], singletons}`.
+step, count}], singletons, skipped: {corrupt, overCap}}`.
 
 ### Preflight kapısı (P2-B, salt-okunur)
 `ow preflight [--json] [--probe] [--file ow.yaml]` runner `prepare`
@@ -540,7 +541,10 @@ naming a scenario absent from base refuses exit 1
 (`overlay-dangling: <scenario> (refused)`); any other invalid overlay
 refuses exit 1 (`overlay-refused: <base> (<reason>)` — under
 `--check` this is the exit-1 path). Overlay files share the replay
-caps (256KB/500 lines, `oversize` refusal). A `baseDigest:` mismatch
+caps (256KB/500 lines, `oversize` refusal). Reads are symlink-aware
+(lstat + realpath containment + O_NOFOLLOW; accepted tradeoff: a
+parent-dir swap between check and open remains — hostile mounts are
+out of scope, local operator error is the threat model). A `baseDigest:` mismatch
 advises `overlay-stale: base changed since <short-8> (warning)` and
 never fails. With git present and no ignore entry, the convention file
 warns `overlay-gitignore-missing: boundaries.local.yaml (warning)`

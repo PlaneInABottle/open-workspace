@@ -9,7 +9,7 @@
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
-import { ensureUpStateDir } from "./up-state"
+import { ensureUpStateDir, warnWriteFailed } from "./up-state"
 
 export const UP_LOG_MAX_BYTES = 5 * 1024 * 1024
 export const UP_LOG_MAX_LINES = 10_000
@@ -191,7 +191,9 @@ export const createUpLogWriter = (path: string, limits: UpLogWriterLimits = {}) 
     state.scheduled = true
     state.chain = state.chain
       .then(() => flushScheduled())
-      .catch(() => undefined)
+      // M-h: async write failures surface bounded (once per class),
+      // never vanish into the chain.
+      .catch((error: unknown) => warnWriteFailed("log", error instanceof Error ? error.message : String(error)))
       .then(() => {
         state.scheduled = false
         if (state.pending.length > 0) schedule()
@@ -232,8 +234,10 @@ export const appendLogLine = (logsDir: string, service: string, stream: UpLogStr
       sharedWriters.set(path, writer)
     }
     writer.append({ t: new Date().toISOString(), stream, line: truncateLogLine(line) })
-  } catch {
-    // capture must never break supervision
+  } catch (error) {
+    // capture must never break supervision — but silence is a bug (M-h):
+    // bounded once-per-class warn surfaces the failure.
+    warnWriteFailed("log", error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -298,26 +302,33 @@ export type UpLogQuery = {
   sinceMs?: number | null
 }
 
+export type UpLogQueryResult = { rows: UpLogQueryRow[]; omittedRows: number; omittedFiles: number }
+
 /** Newest-first-cap-then-ascending merge: per-file recent rows are merged,
  * filtered (literal substring grep, since window) and the final `tail` rows
- * are returned oldest-first. Missing dir/file → honest empty result. */
-export const queryLogs = async (query: UpLogQuery): Promise<UpLogQueryRow[]> => {
+ * are returned oldest-first. Missing dir/file → honest empty result.
+ * G12: tail-cap and file-cap omissions are counted (never silent) — the
+ * caller renders the notice; corrupt lines stay silent-skipped. */
+export const queryLogs = async (query: UpLogQuery): Promise<UpLogQueryResult> => {
   const tail = Math.min(Math.max(query.tail ?? 200, 1), 5000)
   let files: { service: string; path: string }[]
+  let omittedFiles = 0
   if (query.service !== undefined) {
-    if (!SERVICE_NAME.test(query.service)) return []
+    if (!SERVICE_NAME.test(query.service)) return { rows: [], omittedRows: 0, omittedFiles: 0 }
     files = [{ service: query.service, path: join(query.logsDir, `${query.service}.jsonl`) }]
   } else {
     let entries: string[]
     try {
       entries = await readdir(query.logsDir)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { rows: [], omittedRows: 0, omittedFiles: 0 }
       throw error
     }
-    files = entries
+    const matched = entries
       .filter((entry) => SERVICE_FILE.test(entry))
       .sort()
+    omittedFiles = Math.max(0, matched.length - UP_LOG_MAX_FILES)
+    files = matched
       .slice(0, UP_LOG_MAX_FILES)
       .map((entry) => ({ service: entry.slice(0, -".jsonl".length), path: join(query.logsDir, entry) }))
   }
@@ -336,5 +347,6 @@ export const queryLogs = async (query: UpLogQuery): Promise<UpLogQueryRow[]> => 
     return true
   })
   filtered.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0))
-  return filtered.slice(-tail)
+  const omittedRows = Math.max(0, filtered.length - tail)
+  return { rows: filtered.slice(-tail), omittedRows, omittedFiles }
 }

@@ -401,3 +401,32 @@ describe("INERT scaffold refuses record (runner parity)", () => {
     }
   })
 })
+
+describe("M-b self-verifying replay reader (hand-forged fixtures refuse)", () => {
+  test("tampered line digest reads as null", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "forged.jsonl")
+      const envelope = JSON.stringify({ v: 1, at: "2026-01-01T00:00:00.000Z", scenario: "cart", attempt: 1, boundary: "real-read-only", boundaries: ["real-read-only"], provenance: { checkout: "x", head: "y", interpreter: "z", runnerHash: "w" }, replayedFrom: null, contract: { hash: "h" } })
+      const line = JSON.stringify({ id: "p", argvShape: "./x.sh", timeout: "10s", ok: true, note: "n", checks: [], digest: "wrong-digest-value" })
+      await writeFile(file, `${envelope}\n${line}\n`, "utf8")
+      expect(await readReplayFile(file)).toBeNull()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("symlink and FIFO paths refuse (no hang, no follow)", async () => {
+    const root = await tempRoot()
+    try {
+      const real = join(root, "real.jsonl")
+      await writeFile(real, `${JSON.stringify({ v: 1 })}\n`, "utf8")
+      const { symlink } = await import("node:fs/promises")
+      const link = join(root, "link.jsonl")
+      await symlink(real, link)
+      expect(await readReplayFile(link)).toBeNull()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

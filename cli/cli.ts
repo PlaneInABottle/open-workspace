@@ -26,6 +26,7 @@ import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./trace-cli"
 import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, PROBE_TIMEOUT_MS, subsetNestingHint } from "./up-schema"
 import { isSecretFlagToken, maskCmdShape, maskSecretToken } from "./up-reconcile"
+import { maskSecrets } from "./up-evidence"
 import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
@@ -254,9 +255,11 @@ export const waitForUpReady = async (opts: {
     }))
   const noPort = opts.services.filter((svc) => svc.port === undefined && svc.readiness === undefined).map((svc) => svc.name)
   if (targets.length === 0) {
-    if (opts.json) console.log(JSON.stringify({ ready: true, services: [], noPort, note: "no services with ports" }))
-    else console.log("no ports to wait for (no services declare ports)")
-    return 0
+    // M-f vacuity refusal: nothing to wait on is a caller error (exit 2),
+    // never a silent pass.
+    if (opts.json) console.log(JSON.stringify({ ready: false, services: [], noPort, note: "no targets to wait for" }))
+    else console.error("ow: nothing to wait for (no services declare ports or probes)")
+    return 2
   }
   // Per-target probe tracker (N6: probe-function composition — the loop in
   // up-ready.ts is untouched). Project probes fire at most once per 2s per
@@ -543,7 +546,7 @@ export const runSingleServiceRequest = async (opts: {
  * and `supervisor.json` is never deleted (B5). `--rm` never reaches here
  * (single `down --rm` is exit 2 at the call site). */
 export const runDirectSingleDown = async (rootDir: string, service: string, json: boolean): Promise<number> => {
-  const { classifySupervisorFile, isLivePid, readSupervisorState, upPaths } = await import("./up-state")
+  const { classifySupervisorFile, isLivePid, readSupervisorState, upPaths, warnWriteFailed } = await import("./up-state")
   const { persistMerged, stopOne } = await import("./up-supervisor")
   const paths = upPaths(rootDir)
   const fileStatus = await classifySupervisorFile(paths.supervisorFile)
@@ -573,7 +576,7 @@ export const runDirectSingleDown = async (rootDir: string, service: string, json
     if (fresh && entry && entry.exitCode === undefined && entry.lstart !== "" && !(await isLivePid(entry.pid, entry.lstart))) {
       entry.exitCode = -1
       entry.exitedAt = new Date().toISOString()
-      await persistMerged(paths.supervisorFile, fresh).catch(() => undefined)
+      await persistMerged(paths.supervisorFile, fresh).catch((error) => warnWriteFailed("persist", error instanceof Error ? error.message : String(error)))
     }
   }
   if (!json) {
@@ -626,6 +629,12 @@ export const run = async (argv: string[]): Promise<number> => {
       console.error("ow: --boundaries can only be used with scenarios, preflight, readiness, provision, record, contract, scenario run")
       return 2
     }
+  }
+  // LOW-2: scenario-run flags outside `scenario run` refuse (exit 2), never
+  // a silent no-op on any command (`scenario env` rejects them per-verb below).
+  if ((flags["--run"] !== undefined || flags["--off-local"] === true) && command !== "scenario") {
+    console.error("ow: --run/--off-local work only with scenario run")
+    return 2
   }
   if (command !== "checkpoints" && command !== "scenario" && parsed.extra.length > 0) {
     console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
@@ -890,7 +899,7 @@ export const run = async (argv: string[]): Promise<number> => {
         const { assertNoLiveOrphans } = await import("./up-supervisor")
         await assertNoLiveOrphans(rootDir)
       } catch (error) {
-        console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`ow: ${maskSecrets(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
         return 2
       }
       if (flags["--detach"] === true) {
@@ -989,7 +998,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: restart expects a service name (e.g. ow restart api)")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--run", "--off-local"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with restart`)
           return 2
@@ -1040,8 +1049,9 @@ export const run = async (argv: string[]): Promise<number> => {
       return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
     }
     if (command === "failures") {
-      // M-D: read-only mechanical finding list — no exec/prune, always
-      // exit 0 (usage errors exit 2). --since outside the locked set is 2.
+      // M-D: read-only mechanical finding list — no exec/prune, exit 0
+      // except corrupt-only evidence (exit 1); usage errors exit 2.
+      // --since outside the locked set is 2.
       if (positional !== undefined) {
         console.error("ow: failures takes no positional arguments")
         return 2
@@ -1058,7 +1068,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: preflight takes no positional arguments")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--run", "--off-local"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with preflight`)
           return 2
@@ -1075,7 +1085,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: readiness takes no positional arguments")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--run", "--off-local"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with readiness`)
           return 2
@@ -1096,7 +1106,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: provision --check is required (read-only checklist, no mutation)")
         return 2
       }
-      for (const unsupported of ["--rm", "--wait", "--health", "--detach", "--run", "--off-local"]) {
+      for (const unsupported of ["--rm", "--wait", "--health", "--detach"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with provision`)
           return 2
@@ -1117,7 +1127,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: use scenarios with --check (read-only validation, no runs)")
         return 2
       }
-      for (const unsupported of ["--probe", "--wait", "--health", "--detach", "--rm", "--run", "--off-local"]) {
+      for (const unsupported of ["--probe", "--wait", "--health", "--detach", "--rm"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with scenarios`)
           return 2
@@ -1136,7 +1146,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: use as record <scenario-name> [--file] (single positional)")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--json", "--run", "--off-local"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--json"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with record`)
           return 2
@@ -1154,7 +1164,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: use as contract check [--file] [--json]")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--run", "--off-local"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with contract`)
           return 2
@@ -1224,7 +1234,7 @@ export const run = async (argv: string[]): Promise<number> => {
       try {
         services = await queryPs(rootDir)
       } catch (error) {
-        console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`ow: ${maskSecrets(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
         return 1
       }
       if (!json) {
@@ -1256,22 +1266,28 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error(`ow: unknown service: ${positional}${names.length > 0 ? ` (${names.join(", ")})` : ""}`)
         return 2
       }
-      const { queryLogs } = await import("./up-logs")
-      let rows: Awaited<ReturnType<typeof queryLogs>>
+      const { queryLogs, UP_LOG_MAX_FILES } = await import("./up-logs")
+      let result: Awaited<ReturnType<typeof queryLogs>>
       try {
-        rows = await queryLogs({ logsDir: join(stateDir, "logs"), service: positional, tail, grep, sinceMs })
+        result = await queryLogs({ logsDir: join(stateDir, "logs"), service: positional, tail, grep, sinceMs })
       } catch (error) {
         console.error(`ow: log unreadable: ${error instanceof Error ? error.message : String(error)}`)
         return 1
       }
+      const rows = result.rows
+      // G12 log-omit notice: capped output names what was left out.
+      const omitBits: string[] = []
+      if (result.omittedRows > 0) omitBits.push(`${result.omittedRows} older rows (raise --tail)`)
+      if (result.omittedFiles > 0) omitBits.push(`${result.omittedFiles} service files (cap ${UP_LOG_MAX_FILES})`)
       if (!json) {
         if (rows.length === 0) {
           console.log("no log")
         } else {
           for (const row of rows) console.log(`[${row.service}|${row.stream}] ${row.line}`)
         }
+        if (omitBits.length > 0) console.log(`(omitted: ${omitBits.join("; ")})`)
       } else {
-        console.log(JSON.stringify({ service: positional ?? null, lines: rows }))
+        console.log(JSON.stringify({ service: positional ?? null, lines: rows, omittedRows: result.omittedRows, omittedFiles: result.omittedFiles }))
       }
       return 0
     }

@@ -1008,3 +1008,67 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
     }
   })
 })
+
+describe("G11 revision-stale advisory rides readiness lines (display-only)", () => {
+  test("recorded rev != live rev appends (revision-stale) without changing exit", async () => {
+    const gitCheck = Bun.spawn(["git", "--version"], { stdout: "ignore", stderr: "ignore" })
+    await gitCheck.exited
+    if (gitCheck.exitCode !== 0) {
+      console.log("skipped: git unavailable")
+      return
+    }
+    const root = await tempRoot()
+    let stop = false
+    let done: Promise<number> | null = null
+    try {
+      const git = async (args: string[]): Promise<void> => {
+        const proc = Bun.spawn(["git", ...args], {
+          cwd: root,
+          stdout: "ignore",
+          stderr: "ignore",
+          env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: root },
+        })
+        await proc.exited
+        if (proc.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed`)
+      }
+      await git(["init", "-q"])
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  api:\n    cmd: sleep 30\n    readiness: {probe: [./ready.sh], timeout: 10s, needsPort: false}\n", "utf8")
+      await writeFile(join(root, "v.txt"), "v1\n", "utf8")
+      await git(["add", "-A"])
+      await git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "rev1"])
+      const { upPaths, ensureUpStateDir, readSupervisorState } = await import("./up-state")
+      const { runSupervised } = await import("./up-supervisor")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      done = runSupervised([{ name: "api", cmd: "sleep 30" }], {
+        rootDir: root,
+        stateFile: paths.supervisorFile,
+        onLine: () => undefined,
+        shouldStop: () => stop,
+      })
+      await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services.length === 1)
+      await writeFile(join(root, "v.txt"), "v2\n", "utf8")
+      await git(["add", "-A"])
+      await git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "rev2"])
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await runReconcileCheck({
+          rootDir: root,
+          file,
+          json: false,
+          probe: true,
+          runProbeFn: async () => ({ ok: true, note: "fake-ready", checks: [], timedOut: false, code: 0 }),
+        })
+      } finally {
+        io.restore()
+      }
+      expect(io.logs.join("\n")).toContain("(revision-stale)")
+    } finally {
+      stop = true
+      if (done !== null) await done.catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+})

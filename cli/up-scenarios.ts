@@ -353,6 +353,12 @@ const parseProbe = (raw: string, scenarioName: string, warnings: UpWarning[]): S
     }
   }
   if (SHELL_ARGV0.has(argv[0])) throw schemaError(`${scenarioName}: probe argv must not start with a shell (id: ${id}, give an argv list)`)
+  // M-d vacuity mirror (M11 pattern): known no-op argv0 proves nothing —
+  // explicit warning, never silent, never a failure.
+  const argvBase = argv[0].split("/").pop() ?? argv[0]
+  if (argvBase === "true" || argvBase === ":" || argvBase === "exit") {
+    warnings.push({ line: 0, message: `${scenarioName}: no-op probe argv0 (vacuity): ${id} proves nothing — replace with a readiness check` })
+  }
   const timeoutRaw = map["timeout"]
   let timeout = PROBE_DEFAULT_TIMEOUT
   if (timeoutRaw !== undefined) {

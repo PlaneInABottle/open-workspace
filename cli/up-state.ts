@@ -12,6 +12,21 @@ import type { Provenance } from "./up-provenance"
 
 export const UP_STATE_VERSION = 1
 
+const warnedWriteClasses = new Set<string>()
+/** Bounded write-failure warn (M-h/G7): surfaces persist/log/readiness
+ * write failures instead of vanishing them; at most one line per class
+ * per process so hot paths cannot spam. */
+export const warnWriteFailed = (klass: "persist" | "log" | "readiness", detail: string): void => {
+  if (warnedWriteClasses.has(klass)) return
+  warnedWriteClasses.add(klass)
+  console.error(`warning: ${klass} write failed (${detail})`)
+}
+
+/** Test hygiene: clear warned classes (temp dirs per test). */
+export const resetWriteWarns = (): void => {
+  warnedWriteClasses.clear()
+}
+
 export type UpServiceState = {
   name: string
   pid: number
@@ -327,6 +342,10 @@ export const classifyLock = async (lockFile: string): Promise<LockStatus> => {
   const lock = (await readLock(lockFile)) as UpLock
   const selfCheck = await readLstart(process.pid)
   if (selfCheck === null) return { kind: "unknown", lock, reason: "lstart unreadable, unverifiable" }
+  // G9: an empty lock lstart (spawn-time read failure) is unverifiable,
+  // never stale — stale reclaims, unknown refuses. Reclaiming blind risks
+  // duplicating a live supervisor.
+  if (lock.lstart === "") return { kind: "unknown", lock, reason: "lock lstart empty, unverifiable" }
   const current = await readLstart(lock.pid)
   if (current === null) return { kind: "stale", lock, reason: "no pid" }
   if (current === lock.lstart) return { kind: "live", lock }

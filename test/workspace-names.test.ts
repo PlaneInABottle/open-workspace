@@ -253,3 +253,17 @@ test('end-to-end run addressed only by name keeps receipts intact across a renam
   assert.ok(activity.every(entry => entry.workspaceId === registered.id || entry.workspaceId === null),
     'activity stays keyed by the stable ID across renames');
 });
+
+test('M-a ambiguity candidates: structured array basename-only, message keeps full labels', async () => {
+  const { AmbiguousNameError } = await import('../src/store.js');
+  const error = new AmbiguousNameError([
+    { name: 'api', rootLabel: '/Users/x/proj/backend', createdAt: '2026-01-01' },
+    { name: 'api', rootLabel: '/Users/x/other/backend', createdAt: '2026-01-02' },
+  ]);
+  assert.deepEqual(error.candidates, [
+    { name: 'api', rootLabel: 'backend', createdAt: '2026-01-01' },
+    { name: 'api', rootLabel: 'backend', createdAt: '2026-01-02' },
+  ]);
+  assert.ok(error.message.includes('/Users/x/proj/backend'), 'MCP string keeps full label');
+  assert.ok(!JSON.stringify(error.candidates).includes('/Users/x/'), 'structured array carries no full paths');
+});

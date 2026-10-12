@@ -11,6 +11,7 @@ import { maskSecrets } from "./up-evidence"
 import {
   readReplayFile,
   replayLocation,
+  runnerHashFor,
   scenarioDefinitionHash,
   validateProvenance,
 } from "./up-replay"
@@ -37,8 +38,15 @@ export const readContractVerdict = async (
   const provenance = (stored.envelope as { provenance?: unknown } | null)?.provenance
   if (!validateProvenance(provenance)) return { status: "provenance-bad" }
   const recorded = (stored.envelope.contract as { hash?: unknown } | undefined)?.hash
-  if (recorded === digest) return { status: "match", expected: digest, recorded: digest }
-  return { status: "mismatch", expected: digest, recorded: typeof recorded === "string" ? recorded : "" }
+  if (recorded !== digest) return { status: "mismatch", expected: digest, recorded: typeof recorded === "string" ? recorded : "" }
+  // M-b self-verifying: the stored runnerHash must match a fresh recompute
+  // from the current probes (hand-forged envelopes with a right definition
+  // hash but wrong runnerHash refuse here).
+  const storedRunnerHash = (stored.envelope.provenance as { runnerHash?: unknown } | undefined)?.runnerHash
+  if (storedRunnerHash !== runnerHashFor(scenario.probes)) {
+    return { status: "mismatch", expected: digest, recorded: typeof recorded === "string" ? recorded : "" }
+  }
+  return { status: "match", expected: digest, recorded: digest }
 }
 
 const isRefusedBoundary = (normalized: string): boolean =>
@@ -73,9 +81,8 @@ export const runContractCheck = async (opts: {
   }
   // INERT scaffold refuses like the runner (decision: a placeholder file
   // has no meaningful contract — edit real probes first).
-  const { INIT_INERT_MARKER } = await import("./up-init")
-  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
-  if (firstLine.trim() === INIT_INERT_MARKER) {
+  const { hasInertMarker } = await import("./up-init")
+  if (hasInertMarker(text)) {
     console.error(`INERT: ${opts.file}`)
     return 2
   }

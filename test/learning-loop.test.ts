@@ -282,3 +282,54 @@ test('waste-lesson skill clauses: setup friction first, unmeasured never auto-fl
     assert.ok(skill.includes(required), `learn-from-mistake must cover ${required}`);
   }
 });
+
+test('H-a union mask: hostile corpus masked on persist AND serve (both families)', async t => {
+  const f = await registeredFixture('openworkspace-learning-union-');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const hostile = [
+    'cmd --password hunter2-secret done',
+    'deploy --token abcdefgh12345678 ok',
+    'key ghp_abcdefgh1234567890abcdef pushed',
+    'hash 0123456789abcdef0123456789abcdef recorded',
+    'contact someone@example.com today',
+    'Authorization: Bearer abcdefgh1234',
+    './setup.sh --password "quoted-hunter2" done',
+    '{"token": "json-hunter2"} sent',
+    '{"api_key": "AKIAIOSFODNN7EXAMPLE"} configured',
+    'foo=supersecretvalue stored',
+    'credential=cred-shape-1 set',
+    'authorization=auth-shape-2 set',
+    'private_key=priv-shape-3 set',
+    'bearer=bearer-shape-4 set',
+    '{"credential": "json-cred-5"} sent',
+    '{"authorization": "json-auth-6"} sent',
+  ].join('\n');
+  await persistRunSummary(f.store.directory, {
+    workspaceId: f.workspace.id,
+    scriptName: 'test',
+    outcome: 'failed',
+    durationMs: 100,
+    output: hostile,
+    outputTruncated: false,
+  });
+  const files = (await readdir(join(f.store.directory, 'runs', f.workspace.id))).filter(name => name.endsWith('.json'));
+  assert.equal(files.length, 1);
+  const raw = await readFile(join(f.store.directory, 'runs', f.workspace.id, files[0]), 'utf8');
+  for (const leaked of ['hunter2-secret', 'abcdefgh12345678', 'ghp_abcdefgh1234567890abcdef', '0123456789abcdef0123456789abcdef', 'someone@example.com', 'abcdefgh1234', 'quoted-hunter2', 'json-hunter2', 'AKIAIOSFODNN7EXAMPLE', 'supersecretvalue', 'cred-shape-1', 'auth-shape-2', 'priv-shape-3', 'bearer-shape-4', 'json-cred-5', 'json-auth-6']) {
+    assert.ok(!raw.includes(leaked), `state file must not carry ${leaked}`);
+  }
+  const listed = await listRecentRuns(f.store.directory, f.workspace.id, 5);
+  assert.equal(listed.length, 1);
+  const wire = JSON.stringify(listed);
+  for (const leaked of ['hunter2-secret', 'ghp_abcdefgh1234567890abcdef', '0123456789abcdef0123456789abcdef', 'someone@example.com', 'quoted-hunter2', 'json-hunter2', 'AKIAIOSFODNN7EXAMPLE', 'supersecretvalue', 'cred-shape-1', 'auth-shape-2', 'priv-shape-3', 'bearer-shape-4', 'json-cred-5', 'json-auth-6']) {
+    assert.ok(!wire.includes(leaked), `serve channel must not carry ${leaked}`);
+  }
+});
+
+test('H-a union mask pure units: flag, provider, hex shapes', async () => {
+  assert.equal(maskSecrets('run --password s3cr3t-value now'), 'run --password *** now');
+  assert.equal(maskSecrets('deploy --token abcdefgh12345678 ok'), 'deploy --token *** ok');
+  assert.equal(maskSecrets('push ghp_abcdefgh1234567890abcdef done'), 'push *** done');
+  assert.equal(maskSecrets('id 0123456789abcdef0123456789abcdef end'), 'id *** end');
+  assert.equal(maskSecrets('/plain/path and 42'), '/plain/path and 42');
+});

@@ -7,7 +7,7 @@
 
 import { parseUpFile, PROBE_TIMEOUT_MS, type UpService } from "./up-schema"
 import { decodeUtf8Fatal } from "./up-schema"
-import { readLstart, readSupervisorState, upPaths, type UpServiceState } from "./up-state"
+import { readLstart, readSupervisorState, upPaths, warnWriteFailed, type UpServiceState } from "./up-state"
 import { tcpListening } from "./up-net"
 import { gitCheckout, resolveCwdAbs } from "./up-provenance"
 
@@ -458,13 +458,17 @@ export const runReconcileCheck = async (opts: {
     artifactJson = recordedJson
   }
   const inSync = drifts.length === 0
-  const readinessLines = readiness.map((entry) =>
-    entry.ok
-      ? `readiness: ${entry.service} ready`
+  // G11: revision-stale advisory rides the readiness lines (display-only;
+  // exits/JSON shapes unchanged — JSON consumers read revisions[].match).
+  const revStale = new Set(revisions.filter((entry) => entry.match === false).map((entry) => entry.service))
+  const readinessLines = readiness.map((entry) => {
+    const stale = revStale.has(entry.service) ? " (revision-stale)" : ""
+    return entry.ok
+      ? `readiness: ${entry.service} ready${stale}`
       : entry.note.startsWith("unmeasured:")
-        ? `readiness: ${entry.service} unmeasured (timeout-budget)`
-        : `readiness: ${entry.service} not-ready (${entry.note})`,
-  )
+        ? `readiness: ${entry.service} unmeasured (timeout-budget)${stale}`
+        : `readiness: ${entry.service} not-ready (${entry.note})${stale}`
+  })
   if (opts.json) {
     console.log(
       JSON.stringify({
@@ -519,8 +523,9 @@ export const recordReadinessResults = async (
               },
             })
             await waitResult(paths.requestsDir, nonce)
-          } catch {
-            if (!json) console.error(`warning: readiness record unverified: ${result.service}`)
+          } catch (error) {
+            // M-h: bounded once-per-class (was per-service unbounded).
+            if (!json) warnWriteFailed("readiness", `record unverified: ${result.service} (${error instanceof Error ? error.message : String(error)})`)
           }
         })(),
       )

@@ -563,3 +563,42 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 })
+
+describe("M-f vacuous wait refuses (never silent pass)", () => {
+  test("zero targets exits 2 with refusal (human + json)", async () => {
+    const { waitForUpReady } = await import("./cli")
+    const { parseUpFile } = await import("./up-schema")
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { rm } = await import("node:fs/promises")
+    const root = await mkdtemp(join(tmpdir(), "ow-mf-"))
+    const out: string[] = []
+    const err: string[] = []
+    const origLog = console.log
+    const origError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    try {
+      const services = parseUpFile("services:\n  worker:\n    cmd: ./work\n").services
+      const code = await waitForUpReady({ rootDir: root, services, timeoutMs: 3000, json: false })
+      expect(code).toBe(2)
+      expect(err.join("\n")).toContain("ow: nothing to wait for")
+      out.length = 0
+      err.length = 0
+      const code2 = await waitForUpReady({ rootDir: root, services, timeoutMs: 3000, json: true })
+      expect(code2).toBe(2)
+      const payload = JSON.parse(out.join("\n")) as { ready: boolean; note: string }
+      expect(payload.ready).toBe(false)
+      expect(payload.note).toContain("no targets")
+    } finally {
+      console.log = origLog
+      console.error = origError
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

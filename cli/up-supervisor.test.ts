@@ -970,3 +970,89 @@ describe("supervisor build identity", () => {
     }
   })
 })
+
+describe("H-b detached start freshness gate (no stale-file false-green)", () => {
+  test("unwritable stale supervisor.json never reads as started", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: sleep 30\n", "utf8")
+      const { mkdir } = await import("node:fs/promises")
+      await mkdir(join(root, ".ow", "supervisor.json"), { recursive: true })
+      const out: string[] = []
+      const err: string[] = []
+      const origLog = console.log
+      const origError = console.error
+      console.log = (...args: unknown[]): void => {
+        out.push(args.map(String).join(" "))
+      }
+      console.error = (...args: unknown[]): void => {
+        err.push(args.map(String).join(" "))
+      }
+      let code = -1
+      try {
+        code = await run(["up", "-d", "--file", file])
+      } finally {
+        console.log = origLog
+        console.error = origError
+      }
+      expect(code).not.toBe(0)
+      expect(out.join("\n")).not.toContain("started:")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 15000)
+})
+
+describe("H-b evidence: healthy detached start reports started:", () => {
+  test("isFreshSupervisorFile decides ties fail-closed (same-tick stale, newer fresh, missing false)", async () => {
+    const { isFreshSupervisorFile } = await import("./up-supervisor-cli")
+    const root = await tempRoot()
+    try {
+      const file = join(root, "sup.json")
+      await writeFile(file, "{}", "utf8")
+      const wall = Date.now()
+      const { utimes } = await import("node:fs/promises")
+      const past = new Date(wall - 5000)
+      await utimes(file, past, past)
+      expect(isFreshSupervisorFile(file, wall)).toBe(false)
+      const same = new Date(wall)
+      await utimes(file, same, same)
+      expect(isFreshSupervisorFile(file, wall)).toBe(false)
+      const future = new Date(wall + 5000)
+      await utimes(file, future, future)
+      expect(isFreshSupervisorFile(file, wall)).toBe(true)
+      expect(isFreshSupervisorFile(join(root, "missing.json"), wall)).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("healthy detach reports started: with exit 0 (freshness gate passes live writes)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  web:\n    cmd: sleep 30\n", "utf8")
+      const out: string[] = []
+      const origLog = console.log
+      console.log = (...args: unknown[]): void => {
+        out.push(args.map(String).join(" "))
+      }
+      let code = -1
+      try {
+        code = await run(["up", "-d", "--file", file])
+      } finally {
+        console.log = origLog
+      }
+      expect(code).toBe(0)
+      expect(out.join("\n")).toContain("started:")
+    } finally {
+      try {
+        await run(["down", "--file", join(root, "ow.yaml"), "--rm"])
+      } catch {
+        // cleanup best-effort; rm below reaps the temp dir regardless
+      }
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+})
