@@ -42,9 +42,9 @@ Report only what the output shows, never invent causes. Stuck claims
 need `--stuck` numbers, not impressions. Check counts first, keep
 `--since` narrow; open failures one by one, repeats first.
 
-Output labels (Turkish, quoted verbatim): `görev:` task header,
-`kayıt:` real command, `niyet:` agent sentence, `(sebep:)` /
-`(çıktı:)` on failures. Budgets: success excerpts 2KB stored and
+Output labels (English, quoted verbatim): `task:` task header,
+`record:` real command, `intent:` agent sentence, `(reason:)` /
+`(output:)` on failures. Budgets: success excerpts 2KB stored and
 300 chars shown, failures up to 16KB; 3h of history runs about 150KB.
 
 ## `--json` anahtarları (tek tablo, additive)

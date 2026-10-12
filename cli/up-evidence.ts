@@ -40,7 +40,7 @@ export const DATA_EVIDENCE_MAX_BYTES = 4 * 1024
 /** Cap'ler (üst sınırlar planda sabit; altı implementere bırakıldı — aynen alındı). */
 export const PROOF_MAX_CHARS = 8192
 export const SAFE_NEXT_ACTION_MAX_CHARS = 512
-export const TRUNCATION_MARK = "…[kesildi]"
+export const TRUNCATION_MARK = "…[truncated]"
 /** M-A cap'leri: sayaç 0..999999, senaryo 64ch (RUN_NAME_PATTERN şekli),
  * deneme 1..999, adım-imzası 128ch. */
 export const SIDE_EFFECT_COUNT_MAX = 999999

@@ -595,3 +595,60 @@ describe("additive scenario schema (M6 track fields)", () => {
     }
   })
 })
+
+describe("MEDIUM-6 truncated reads fail-closed", () => {
+  test("call-count fails when checkpoint lines were skipped", () => {
+    const results = evaluateAsserts(
+      [{ kind: "call-count", stage: "approval", count: 2 }],
+      new Map(),
+      [
+        { stage: "approval", status: "confirmed" },
+        { stage: "approval", status: "confirmed" },
+      ] as never,
+      5,
+      { corrupt: 1, overCap: 0 },
+    )
+    expect(results).toEqual([
+      { kind: "call-count", ok: false, detail: "count unreliable: 1 checkpoint lines skipped (corrupt 1, over-cap 0)" },
+    ])
+  })
+})
+
+describe("restore runs even after assert failure (sequential guarantee)", () => {
+  test("failing assert exits 1 AND restore still runs", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      const failing = GREEN.replace("count: 0", "count: 99")
+      await writeFile(file, failing, "utf8")
+      const { runRecord } = await import("./up-replay")
+      const io = capture()
+      try {
+        expect(await runRecord({ rootDir: root, file, runName: "cart", probeFn: async () => okProbe() })).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const { runScenarioRun } = await import("./up-scenario-run")
+      const calls: string[][] = []
+      const io2 = capture()
+      let code = -1
+      try {
+        code = await runScenarioRun({
+          rootDir: root,
+          file,
+          name: "cart",
+          json: false,
+          probeFn: async () => okProbe(),
+          runner: restoringRunner(calls),
+        })
+      } finally {
+        io2.restore()
+      }
+      expect(code).toBe(1)
+      expect(calls).toEqual([["./restore.sh"]])
+      expect(io2.out.join("\n")).toContain("restored: cart")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

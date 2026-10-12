@@ -342,3 +342,62 @@ describe("replay hostile corpus (real exec path)", () => {
     }
   })
 })
+
+describe("MEDIUM-5 over-cap replay files refuse (never silent truncate)", () => {
+  test("over-line-cap file reads as null", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "big.jsonl")
+      const envelope = JSON.stringify({ v: 1 })
+      const lines = [envelope]
+      for (let i = 0; i < REPLAY_MAX_LINES; i += 1) lines.push(JSON.stringify({ id: `p${i}` }))
+      await writeFile(file, `${lines.join("\n")}\n`, "utf8")
+      expect(await readReplayFile(file)).toBeNull()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("over-byte-cap file reads as null", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "big.jsonl")
+      const envelope = JSON.stringify({ v: 1 })
+      const pad = "x".repeat(1024)
+      const lines = [envelope]
+      while (Buffer.byteLength(lines.join("\n"), "utf8") <= REPLAY_MAX_BYTES) lines.push(JSON.stringify({ id: "p", note: pad }))
+      await writeFile(file, `${lines.join("\n")}\n`, "utf8")
+      expect(await readReplayFile(file)).toBeNull()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("INERT scaffold refuses record (runner parity)", () => {
+  test("record on INERT exits 2 without running probes", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      const { INIT_INERT_MARKER } = await import("./up-init")
+      await writeFile(file, `${INIT_INERT_MARKER}\nversion: 1\nscenarios:\n  cart:\n    services: [api]\n    boundaries: [real-read-only]\n    probes: [{id: inert, argv: [true]}]\n    checkpoints: [ok]\n`, "utf8")
+      const { runRecord } = await import("./up-replay")
+      let ran = false
+      const io = capture()
+      let code = -1
+      try {
+        code = await runRecord({ rootDir: root, file, runName: "cart", probeFn: async () => {
+          ran = true
+          return { ok: true, note: "x", timedOut: false as const, code: 0 }
+        } })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain(`INERT: ${file}`)
+      expect(ran).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

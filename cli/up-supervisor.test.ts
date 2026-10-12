@@ -101,7 +101,7 @@ describe("lock live/stale", () => {
       expect(lstart).not.toBeNull()
       await writeFile(paths.lockFile, JSON.stringify({ pid: sleeper.pid, lstart, startedAt: new Date().toISOString() }), "utf8")
       expect((await classifyLock(paths.lockFile)).kind).toBe("live")
-      await expect(acquireLock(paths.lockFile, [])).rejects.toThrow("zaten çalışıyor")
+      await expect(acquireLock(paths.lockFile, [])).rejects.toThrow("already running")
       sleeper.kill("SIGKILL")
       for (let i = 0; i < 30 && (await readLstart(sleeper.pid)) !== null; i += 1) {
         await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
@@ -110,7 +110,7 @@ describe("lock live/stale", () => {
       const warnings: string[] = []
       const lock = await acquireLock(paths.lockFile, warnings)
       expect(lock.pid).toBe(process.pid)
-      expect(warnings.join(" ")).toContain("bayat kilit")
+      expect(warnings.join(" ")).toContain("stale lock")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -154,7 +154,7 @@ describe("lstart kill guard", () => {
       })
       expect(await isLivePid(987654321, "bogus")).toBe(false)
       const outcome = await downAll(root)
-      expect(outcome.results[0]).toMatchObject({ name: "hayalet", stopped: true, note: "çalışmıyor" })
+      expect(outcome.results[0]).toMatchObject({ name: "hayalet", stopped: true, note: "not running" })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -317,7 +317,7 @@ describe("probePort", () => {
       holder.stop(true)
       await rm(root, { recursive: true, force: true })
     }
-    expect(errors.filter((line) => line.includes("port çakışması"))).toHaveLength(1)
+    expect(errors.filter((line) => line.includes("port conflict"))).toHaveLength(1)
   })
 
   test("free port warns never", async () => {
@@ -336,7 +336,7 @@ describe("probePort", () => {
       console.error = orig
       await rm(root, { recursive: true, force: true })
     }
-    expect(errors.filter((line) => line.includes("port çakışması"))).toHaveLength(0)
+    expect(errors.filter((line) => line.includes("port conflict"))).toHaveLength(0)
   })
 })
 
@@ -557,9 +557,9 @@ describe("polish: --check order + nesting hint", () => {
       }
       expect(code).toBe(0)
       expect(io.out).toEqual([
-        "ow.yaml geçerli: 2 servis (configuration, web-live)",
-        "başlatma sırası: configuration, web-live",
-        "depends_on bekletmez (order-only)",
+        "ow.yaml valid: 2 services (configuration, web-live)",
+        "start order: configuration, web-live",
+        "depends_on does not gate (order-only)",
       ])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -596,7 +596,7 @@ describe("polish: --check order + nesting hint", () => {
       } finally {
         io.restore()
       }
-      expect(io.out).toEqual(["ow.yaml geçerli: 2 servis (b, a)"])
+      expect(io.out).toEqual(["ow.yaml valid: 2 services (b, a)"])
       const io2 = capture()
       try {
         expect(await run(["up", "--check", "--json", "--file", file])).toBe(0)
@@ -624,7 +624,7 @@ describe("polish: --check order + nesting hint", () => {
         io.restore()
       }
       expect(code).toBe(2)
-      expect(io.err.join("\n")).toContain("geçersiz ow.yaml")
+      expect(io.err.join("\n")).toContain("invalid ow.yaml")
       expect(io.err.join("\n")).toContain('env: {A: "1"}')
       expect(io.err.join("\n")).toContain("ow init")
     } finally {
@@ -643,8 +643,8 @@ describe("polish: --check order + nesting hint", () => {
       } finally {
         io.restore()
       }
-      expect(io.err.join("\n")).toContain("bilinmeyen servis")
-      expect(io.err.join("\n")).not.toContain("tek-satır inline")
+      expect(io.err.join("\n")).toContain("unknown service")
+      expect(io.err.join("\n")).not.toContain("single-line inline")
       // Same nesting trap through bulk `up` (no --check): gated, no hint.
       await writeFile(file, "services:\n  a:\n    cmd: echo hi\n    env:\n      A: b\n", "utf8")
       const io2 = capture()
@@ -653,8 +653,8 @@ describe("polish: --check order + nesting hint", () => {
       } finally {
         io2.restore()
       }
-      expect(io2.err.join("\n")).toContain("geçersiz ow.yaml")
-      expect(io2.err.join("\n")).not.toContain("tek-satır inline")
+      expect(io2.err.join("\n")).toContain("invalid ow.yaml")
+      expect(io2.err.join("\n")).not.toContain("single-line inline")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -678,7 +678,7 @@ describe("H5 empty-lstart refusal", () => {
       const outcome = await downAll(root)
       expect(outcome.results).toHaveLength(1)
       expect(outcome.results[0].stopped).toBe(false)
-      expect(outcome.results[0].note).toMatch(/lstart bilinmiyor/)
+      expect(outcome.results[0].note).toMatch(/lstart unknown/)
       expect(await isLivePid(sleeper.pid, real!)).toBe(true)
       const state = await readSupervisorState(paths.supervisorFile)
       expect(state?.services[0]?.exitCode).toBeUndefined()
@@ -712,7 +712,7 @@ describe("H5 empty-lstart refusal", () => {
       })
       const outcome = await downAll(root)
       expect(outcome.results[0].stopped).toBe(false)
-      expect(outcome.results[0].note).toMatch(/logs lstart bilinmiyor/)
+      expect(outcome.results[0].note).toMatch(/logs lstart unknown/)
       expect(await isLivePid(main.pid, mainLstart)).toBe(true)
       expect(await isLivePid(tail.pid, tailLstart)).toBe(true)
     } finally {
@@ -728,10 +728,10 @@ describe("M1 downAll corrupt gate", () => {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
-      await expect(downAll(root)).rejects.toThrow(/bozuk/)
+      await expect(downAll(root)).rejects.toThrow(/corrupt/)
       expect(existsSync(paths.supervisorFile)).toBe(true)
       await writeFile(paths.supervisorFile, JSON.stringify({ version: 99, services: [] }), "utf8")
-      await expect(downAll(root)).rejects.toThrow(/sürüm/)
+      await expect(downAll(root)).rejects.toThrow(/version/)
       await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
       const outcome = await downAll(root, true)
       expect(outcome.removedState).toBe(true)
@@ -754,7 +754,7 @@ describe("M2 corrupt lock", () => {
       const warnings: string[] = []
       const lock = await acquireLock(paths.lockFile, warnings)
       expect(lock.pid).toBe(process.pid)
-      expect(warnings.join(" ")).toContain("bozuk kilit")
+      expect(warnings.join(" ")).toContain("corrupt lock")
       expect(await lockFileShape(paths.lockFile)).toBe("ok")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -822,7 +822,7 @@ describe("H6 lock exclusivity and orphan probe", () => {
       expect(lstart).not.toBeNull()
       await writeFile(paths.lockFile, JSON.stringify({ pid: sleeper.pid, lstart, startedAt: new Date().toISOString() }), "utf8")
       const before = await readFile(paths.lockFile, "utf8")
-      await expect(acquireLock(paths.lockFile, [])).rejects.toThrow("zaten çalışıyor")
+      await expect(acquireLock(paths.lockFile, [])).rejects.toThrow("already running")
       expect(await readFile(paths.lockFile, "utf8")).toBe(before)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -857,10 +857,10 @@ describe("H6 lock exclusivity and orphan probe", () => {
         console.error = savedError
       }
       expect(code).toBe(2)
-      expect(errors.join("\n")).toContain("yetim")
+      expect(errors.join("\n")).toContain("orphaned processes")
       expect(errors.join("\n")).toContain("web")
       expect(await isLivePid(sleeper.pid, lstart)).toBe(true)
-      await expect(assertNoLiveOrphans(root)).rejects.toThrow(/yetim/)
+      await expect(assertNoLiveOrphans(root)).rejects.toThrow(/orphaned processes/)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

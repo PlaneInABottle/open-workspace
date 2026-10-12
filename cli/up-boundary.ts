@@ -7,7 +7,7 @@
  *
  * Reuse notes: stale-jar comparison mirrors `reconcileOne` artifact-stale
  * (case-insensitive hex, first sorted basename, basename-only output) and
- * renders through `formatDrift`, so `derleme-eski:` lines read identically;
+ * renders through `formatDrift`, so `stale-build:` lines read identically;
  * digest display reuses `reduceArtifactMap` (masked basename + short-8). */
 
 import { formatDrift, type ReconcileDrift } from "./up-reconcile"
@@ -85,8 +85,8 @@ const parseTime = (value: string | undefined): number | null => {
   return Number.isFinite(ms) ? ms : null
 }
 
-/** Human line for one catalog finding (Turkish, locked prefixes).
- * stale-jar hint carries the full `derleme-eski:` line via `formatDrift`
+/** Human line for one catalog finding (English, locked prefixes).
+ * stale-jar hint carries the full `stale-build:` line via `formatDrift`
  * (service + base + remedy), so it renders verbatim. */
 export const formatFalseGreen = (finding: BoundaryFalseGreen): string => {
   switch (finding.kind) {
@@ -182,7 +182,7 @@ export const scanBoundaries = (input: BoundaryScanInput): BoundaryScan => {
           kind: "artifact-stale",
           expected: { artifact: maskSecrets(base) },
           running: { pid: record.pid },
-          hint: `yeniden-derle + ow restart ${record.name}`,
+          hint: `rebuild + ow restart ${record.name}`,
         }
         falseGreens.push({ kind: "stale-jar", service: record.name, hint: formatDrift(drift) })
         break

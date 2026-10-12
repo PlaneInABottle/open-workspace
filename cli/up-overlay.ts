@@ -62,6 +62,16 @@ export const overlayBaseDigest = (baseText: string): string =>
 export const overlayConventionPath = (rootDir: string): string =>
   join(rootDir, OVERLAY_CONVENTION_DIR, OVERLAY_LOCAL_FILE)
 
+/** Path-safe overlay name echo (src/coordinator.ts safeOverlayName mirror):
+ * basename segment + 64ch cap + secret-mask. Valid scenario names pass
+ * through unchanged (pattern forbids separators); only malformed names
+ * sanitize, and those can never match base (dangling). */
+export const safeOverlayName = (name: string): string => {
+  const base = name.split("/").flatMap((part) => part.split("\\")).filter((part) => part.length > 0).pop() ?? "(empty)"
+  const capped = base.length > 64 ? `${base.slice(0, 64)}…` : base
+  return maskSecrets(capped)
+}
+
 /** Flag-path containment guard (root-anchored): absolute paths and any
  * `..` escape refuse with exit 2, echoing the basename only (never the
  * raw path). Returns the root-anchored resolved path. */
@@ -80,8 +90,11 @@ const checkFlagPath = (rootDir: string, flagPath: string): string => {
 }
 
 /** Bounded read (caps kernel): symlink/directory refuse, oversize
- * refuses, undecodable refuses. No persistence anywhere on this path. */
-const readOverlayText = async (path: string, display: string): Promise<string> => {
+ * refuses, undecodable refuses. MEDIUM-7 symlink-aware containment: the
+ * realpath must stay under rootDir (intermediate symlinks pointing
+ * outside refuse even when the lexical path checks pass). No persistence
+ * anywhere on this path. */
+const readOverlayText = async (path: string, display: string, rootDir: string): Promise<string> => {
   let entry
   try {
     entry = await lstat(path)
@@ -90,6 +103,17 @@ const readOverlayText = async (path: string, display: string): Promise<string> =
   }
   if (entry.isSymbolicLink()) throw new OverlayRefusal(`overlay-refused: ${display} (symlink not followed)`, 1)
   if (!entry.isFile()) throw new OverlayRefusal(`overlay-refused: ${display} (not a file)`, 1)
+  try {
+    const { realpath } = await import("node:fs/promises")
+    const root = await realpath(resolve(rootDir))
+    const real = await realpath(path)
+    if (real !== root && !real.startsWith(root + sep)) {
+      throw new OverlayRefusal(`overlay-refused: ${display} (outside root)`, 1)
+    }
+  } catch (error) {
+    if (error instanceof OverlayRefusal) throw error
+    // Unresolvable path: the open below fails safely with (not found).
+  }
   let handle
   try {
     handle = await open(path, "r")
@@ -134,22 +158,22 @@ const checkBlockedShape = (value: string, scenario: string, display: string): vo
   const reason = blockedReasonOf(value)
   if (reason === null) return
   if (reason.length === 0 || [...reason].length > BLOCKED_REASON_MAX_CHARS) {
-    throw new OverlayRefusal(`overlay-refused: ${display} (invalid blocked shape in ${scenario})`, 1)
+    throw new OverlayRefusal(`overlay-refused: ${display} (invalid blocked shape in ${safeOverlayName(scenario)})`, 1)
   }
 }
 
-const asStringList = (node: YamlNode | undefined, scenario: string, display: string): string[] => {
-  if (node === undefined) return []
+const asStringList = (node: YamlNode | undefined, scenario: string, display: string): string[] | null => {
+  if (node === undefined) return null
   if (typeof node === "string") return [node]
   if (Array.isArray(node)) {
     for (const part of node) {
       if (typeof part !== "string") {
-        throw new OverlayRefusal(`overlay-refused: ${display} (invalid boundaries in ${scenario})`, 1)
+        throw new OverlayRefusal(`overlay-refused: ${display} (invalid boundaries in ${safeOverlayName(scenario)})`, 1)
       }
     }
     return [...node] as string[]
   }
-  throw new OverlayRefusal(`overlay-refused: ${display} (invalid boundaries in ${scenario})`, 1)
+  throw new OverlayRefusal(`overlay-refused: ${display} (invalid boundaries in ${safeOverlayName(scenario)})`, 1)
 }
 
 export type ParsedOverlay = {
@@ -200,13 +224,19 @@ export const parseOverlayText = (text: string, display: string): ParsedOverlay =
   const replacements = new Map<string, string[]>()
   for (const [name, node] of entries) {
     if (typeof node !== "object" || node === null || Array.isArray(node)) {
-      throw new OverlayRefusal(`overlay-refused: ${display} (scenario map expected: ${name})`, 1)
+      throw new OverlayRefusal(`overlay-refused: ${display} (scenario map expected: ${safeOverlayName(name)})`, 1)
     }
     const fields = node as Record<string, YamlNode>
     for (const key of Object.keys(fields)) {
-      if (key !== "boundaries") warnings.push(`${name}: unknown overlay field ignored: ${maskSecrets(key)}`)
+      if (key !== "boundaries") warnings.push(`${safeOverlayName(name)}: unknown overlay field ignored: ${maskSecrets(key)}`)
     }
-    const boundaries = asStringList(fields["boundaries"], name, display)
+    // HIGH-1 fail-closed: an absent boundaries key refuses (silent emptying
+    // is never intended); an explicit [] stays allowed as intentional empty.
+    const boundariesRaw = asStringList(fields["boundaries"], name, display)
+    if (boundariesRaw === null) {
+      throw new OverlayRefusal(`overlay-refused: ${display} (boundaries required in ${safeOverlayName(name)})`, 1)
+    }
+    const boundaries = boundariesRaw
     for (const boundary of boundaries) {
       // Validate-before-touch: secret-shaped values refuse (exit 1) and
       // are never written anywhere (this module has no write path).
@@ -229,6 +259,13 @@ const gitignoreWarning = async (rootDir: string): Promise<string | null> => {
     await lstat(join(rootDir, ".git"))
   } catch {
     return null
+  }
+  // MEDIUM-4: lstat-guarded read (a symlinked .gitignore is unverifiable —
+  // skip silently rather than trusting outside content for the mention check).
+  try {
+    if ((await lstat(join(rootDir, ".gitignore"))).isSymbolicLink()) return null
+  } catch {
+    return `overlay-gitignore-missing: ${OVERLAY_LOCAL_FILE} (warning)`
   }
   let ignore = ""
   try {
@@ -261,7 +298,7 @@ export const resolveOverlay = async (opts: {
   const baseDigest = overlayBaseDigest(opts.baseText)
   // Mask-before-emit (M5 kernel, coordinator parity): base boundaries are
   // masked everywhere pre-M9, so source tags mask at this single producer
-  // — all six readers inherit it, raw secret-shaped values never leak.
+  // — all eight readers inherit it, raw secret-shaped values never leak.
   const baseSources: BoundarySource[] = opts.base.scenarios.flatMap((scenario) =>
     scenario.boundaries.map((boundary) => ({
       scenario: maskSecrets(scenario.name),
@@ -284,7 +321,7 @@ export const resolveOverlay = async (opts: {
     const resolved = checkFlagPath(opts.rootDir, opts.flagPath)
     display = basename(opts.flagPath)
     try {
-      text = await readOverlayText(resolved, display)
+      text = await readOverlayText(resolved, display, opts.rootDir)
     } catch (error) {
       // A missing explicit flag path is a usage error (exit 2), never a
       // silent base-only fallthrough.
@@ -304,13 +341,13 @@ export const resolveOverlay = async (opts: {
     }
     if (!present) return { merged: opts.base, overlay: idle }
     display = OVERLAY_LOCAL_FILE
-    text = await readOverlayText(convention, display)
+    text = await readOverlayText(convention, display, opts.rootDir)
     kind = "local"
   }
   const parsed = parseOverlayText(text, display)
   const baseNames = new Set(opts.base.scenarios.map((scenario) => scenario.name))
   for (const name of parsed.replacements.keys()) {
-    if (!baseNames.has(name)) throw new OverlayRefusal(`overlay-dangling: ${name} (refused)`, 1)
+    if (!baseNames.has(name)) throw new OverlayRefusal(`overlay-dangling: ${safeOverlayName(name)} (refused)`, 1)
   }
   const merged = {
     scenarios: opts.base.scenarios.map((scenario) => {

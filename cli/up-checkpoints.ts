@@ -71,27 +71,27 @@ const STALE_TR: Record<string, string> = {
 /** M-A (#2): yan-etki Türkçe sözcüğü. Eksik (`undefined`) ≡ `unknown`
  * → `bilinmiyor` (uyarısız). Ham İngilizce enum asla render edilmez. */
 const SIDE_EFFECT_TR: Record<string, string> = {
-  none: "yok",
-  attempted: "denendi",
-  confirmed: "onaylandı",
-  unknown: "bilinmiyor",
+  none: "none",
+  attempted: "attempted",
+  confirmed: "confirmed",
+  unknown: "unknown",
 }
 
 const sideEffectWord = (envelope: EvidenceEnvelope): string =>
-  SIDE_EFFECT_TR[envelope.side_effect ?? "unknown"] ?? "bilinmiyor"
+  SIDE_EFFECT_TR[envelope.side_effect ?? "unknown"] ?? "unknown"
 
 /** Zarf bayrak satırı (Türkçe, yorum yok; sayımlar render-only passthrough). */
 export const formatSideEffectLine = (envelope: EvidenceEnvelope): string => {
-  const parts = [`yan-etki: ${envelope.stage} (${sideEffectWord(envelope)}`]
+  const parts = [`side-effect: ${envelope.stage} (${sideEffectWord(envelope)}`]
   const counts: string[] = []
-  if (envelope.side_effect_counts?.attempted !== undefined) counts.push(`denenen: ${envelope.side_effect_counts.attempted}`)
-  if (envelope.side_effect_counts?.confirmed !== undefined) counts.push(`onaylanan: ${envelope.side_effect_counts.confirmed}`)
+  if (envelope.side_effect_counts?.attempted !== undefined) counts.push(`attempted: ${envelope.side_effect_counts.attempted}`)
+  if (envelope.side_effect_counts?.confirmed !== undefined) counts.push(`confirmed: ${envelope.side_effect_counts.confirmed}`)
   return counts.length > 0 ? `${parts[0]}, ${counts.join(", ")})` : `${parts[0]})`
 }
 
 /** M-A (#2): reconcile-öncesi-retry ipucu (kilitli metin; düğme/otomatik
  * eylem yok — salt-okunur öneri). */
-export const RETRY_HINT = "tekrar-öncesi: ow reconcile --check"
+export const RETRY_HINT = "before-retry: ow reconcile --check"
 
 /** Aynı stage'de `attempted` sonrası `confirmed` yoksa doğrulanmamış
  * sayılır (dosya sırası = zaman sırası). */
@@ -133,15 +133,15 @@ export const lineageOf = (envelope: EvidenceEnvelope, run: string): LineageOf =>
 }
 
 const STATUS_WORD: Record<string, string> = {
-  confirmed: "doğrulandı",
-  not_observed: "gözlenmedi",
-  stale: "bayat",
+  confirmed: "confirmed",
+  not_observed: "not-observed",
+  stale: "stale",
 }
 
 const leafWords = (envelopes: EvidenceEnvelope[], index: number): string => {
   const envelope = envelopes[index]
   const words = [STATUS_WORD[envelope.status] ?? envelope.status]
-  if (isAttemptedUnconfirmed(envelopes, index)) words.push("doğrulanmadı")
+  if (isAttemptedUnconfirmed(envelopes, index)) words.push("unconfirmed")
   return words.join(", ")
 }
 
@@ -167,10 +167,10 @@ export const formatAttemptTree = (run: string, envelopes: EvidenceEnvelope[]): s
   })
   const lines: string[] = []
   for (const [scenario, group] of byScenario) {
-    lines.push(`senaryo: ${scenario}`)
+    lines.push(`scenario: ${scenario}`)
     for (const attempt of [...group.attempts.keys()].sort((a, b) => a - b)) {
       for (const index of group.attempts.get(attempt) as number[]) {
-        lines.push(`  deneme ${attempt}: ${envelopes[index].stage} (${leafWords(envelopes, index)})`)
+        lines.push(`  attempt ${attempt}: ${envelopes[index].stage} (${leafWords(envelopes, index)})`)
       }
     }
     for (const index of group.flat) {
@@ -182,9 +182,9 @@ export const formatAttemptTree = (run: string, envelopes: EvidenceEnvelope[]): s
 
 /** Zarf insan satırı (Türkçe, yorum yok). */
 export const formatEnvelopeLine = (envelope: EvidenceEnvelope): string => {
-  if (envelope.status === "confirmed") return `doğrulandı: ${envelope.stage} (${envelope.at})`
-  if (envelope.status === "not_observed") return `gözlenmedi: ${envelope.stage}`
-  return `bayat: ${envelope.stage} (neden: ${STALE_TR[envelope.stale_reason as string] ?? envelope.stale_reason})`
+  if (envelope.status === "confirmed") return `confirmed: ${envelope.stage} (${envelope.at})`
+  if (envelope.status === "not_observed") return `not-observed: ${envelope.stage}`
+  return `stale: ${envelope.stage} (reason: ${STALE_TR[envelope.stale_reason as string] ?? envelope.stale_reason})`
 }
 
 const singleLine = (text: string): string => text.replace(/[\r\n]+/g, " ")
@@ -205,8 +205,8 @@ export const viewOf = (run: string, read: CheckpointRead): CheckpointView => {
 }
 
 const warnSkipped = (json: boolean, skipped: { corrupt: number; overCap: number }): void => {
-  if (skipped.corrupt > 0 && !json) console.error(`bozuk-satır: ${skipped.corrupt} (atlandı)`)
-  if (skipped.overCap > 0 && !json) console.error(`atlandı(${skipped.overCap}): cap aşıldı (dosya 500 satır/256KB sınırında okundu)`)
+  if (skipped.corrupt > 0 && !json) console.error(`corrupt-line: ${skipped.corrupt} (skipped)`)
+  if (skipped.overCap > 0 && !json) console.error(`skipped(${skipped.overCap}): over cap (file read within 500-line/256KB limit)`)
 }
 
 /** `ow checkpoints list [--json]`: run adı + zarf sayısı + özet + son `at`.
@@ -239,11 +239,11 @@ export const runCheckpointsList = async (opts: { rootDir: string; json: boolean 
   if (opts.json) {
     console.log(JSON.stringify({ runs }))
   } else if (runs.length === 0) {
-    console.log("checkpoint yok")
+    console.log("no checkpoints")
   } else {
     for (const entry of runs) {
       console.log(
-        `${entry.run} (${entry.count} zarf: ${entry.summary.confirmed} doğrulandı, ${entry.summary.stale} bayat, ${entry.summary.not_observed} gözlenmedi; son: ${entry.lastAt ?? "yok"})`,
+        `${entry.run} (${entry.count} envelopes: ${entry.summary.confirmed} confirmed, ${entry.summary.stale} stale, ${entry.summary.not_observed} not-observed; last: ${entry.lastAt ?? "none"})`,
       )
     }
   }
@@ -254,7 +254,7 @@ export const runCheckpointsList = async (opts: { rootDir: string; json: boolean 
  * run adı exit 2, bozuk satırlar atlanır (fail değil). */
 export const runCheckpointsShow = async (opts: { rootDir: string; run: string; json: boolean }): Promise<number> => {
   if (!isValidRunName(opts.run)) {
-    console.error(`ow: geçersiz run adı: ${opts.run} (izin: [A-Za-z0-9_.-], en fazla 64 karakter)`)
+    console.error(`ow: invalid run name: ${opts.run} (allowed: [A-Za-z0-9_.-], at most 64 characters)`)
     return 2
   }
   const file = checkpointFile(opts.rootDir, opts.run)
@@ -263,7 +263,7 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
     await stat(file)
     read = await readCheckpointFile(file)
   } catch {
-    console.error(`ow: checkpoint yok: ${opts.run}`)
+    console.error(`ow: no checkpoint: ${opts.run}`)
     return 1
   }
   const view = viewOf(opts.run, read)
@@ -282,21 +282,21 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
     return 0
   }
   if (view.envelopes.length === 0) {
-    console.log(`checkpoint boş: ${opts.run}`)
+    console.log(`checkpoint empty: ${opts.run}`)
     return 0
   }
   for (const envelope of view.envelopes) console.log(formatEnvelopeLine(envelope))
   for (const envelope of view.envelopes) console.log(formatSideEffectLine(envelope))
-  console.log(view.last_verified ? `son doğrulanmış: ${view.last_verified.stage} (${view.last_verified.at})` : "son doğrulanmış: yok")
+  console.log(view.last_verified ? `last confirmed: ${view.last_verified.stage} (${view.last_verified.at})` : "last confirmed: none")
   if (view.first_gap) {
     const why =
-      view.first_gap.status === "not_observed" ? "gözlenmedi" : `bayat: ${STALE_TR[view.first_gap.stale_reason as string] ?? view.first_gap.stale_reason}`
-    console.log(`ilk eksik: ${view.first_gap.stage} (${why})`)
+      view.first_gap.status === "not_observed" ? "not-observed" : `stale: ${STALE_TR[view.first_gap.stale_reason as string] ?? view.first_gap.stale_reason}`
+    console.log(`first missing: ${view.first_gap.stage} (${why})`)
   } else {
-    console.log("ilk eksik: yok")
+    console.log("first missing: none")
   }
   const actionSource = view.first_gap ?? view.envelopes[view.envelopes.length - 1]
-  if (actionSource.safe_next_action !== undefined) console.log(`sonraki: ${singleLine(actionSource.safe_next_action)}`)
+  if (actionSource.safe_next_action !== undefined) console.log(`next: ${singleLine(actionSource.safe_next_action)}`)
   if (needsRetryHint(view.envelopes)) console.log(RETRY_HINT)
   for (const line of formatAttemptTree(view.run, view.envelopes)) console.log(line)
   return 0

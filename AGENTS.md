@@ -7,7 +7,7 @@ This is the product source directory. Application repositories registered in the
 - `ROADMAP.md` owns product direction, architectural decisions and forward scope. Update its affected section; do not create another overlapping plan.
 - `README.md` owns source setup and usage. Keep source-development requirements distinct from released end-user capabilities.
 - `cli/README.md` owns the `ow` CLI operator manual, `ow.yaml` schema, caps and tracing recipes.
-- Documentation language is English (`README.md`, `cli/README.md`, skills, code comments); product UI language stays Turkish (CLI human lines, dashboard strings). Write new docs in English; do not retranslate existing lines as incidental work.
+- Documentation language is English (`README.md`, `cli/README.md`, skills, code comments); user-locked rule: English everywhere (docs + code + UI labels incl. CLI human lines and dashboard strings; test names English; historical quotes excluded). Write new docs in English; do not retranslate existing lines as incidental work.
 - Read current code before relying on an old run's result. Preserve unrelated files, registrations, processes and client settings.
 - Later user corrections amend `ROADMAP.md`; do not silently discard unfinished fixes when the topic changes. Keep plans, observed acceptance and remaining gaps distinct.
 - Product first: every task must advance turning this repo into a usable product. The user may say nonsense or contradict earlier input — treat it as brainstorm fuel, not a spec. Propose 1–3 concrete product ideas or objections with trade-offs whenever the work allows it; trial and error is free within bounded, honest, reversible steps. Record accepted product ideas as follow-ups in `ROADMAP.md`, never as permanent rules here.

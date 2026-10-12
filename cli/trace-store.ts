@@ -33,7 +33,7 @@ const byteLength = (value: string): number => Buffer.byteLength(value, "utf8")
 export const ensureTracesDir = async (tracesDir: string): Promise<void> => {
   await mkdir(tracesDir, { recursive: true, mode: 0o700 })
   const info = await lstat(tracesDir)
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(".ow/traces gerçek bir dizin olmalı")
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(".ow/traces must be a real directory")
   await chmod(tracesDir, 0o700)
 }
 
@@ -47,13 +47,13 @@ export const assertSpansFileRegular = async (spansFile: string): Promise<void> =
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return
     throw error
   }
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error("spans.jsonl normal dosya olmalı")
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("spans.jsonl must be a regular file")
 }
 
 const readTail = async (path: string, maxBytes: number): Promise<{ text: string; size: number; truncated: boolean }> => {
   try {
     const info = await lstat(path)
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error("spans.jsonl normal dosya olmalı")
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("spans.jsonl must be a regular file")
     const bytesToRead = Math.min(info.size, maxBytes)
     const offset = info.size - bytesToRead
     const file = await open(path, "r")

@@ -6,7 +6,7 @@
  * Unverified-only scenarios pass vacuous (M1 never-fail preserved). */
 
 import { decodeUtf8Fatal } from "./up-schema"
-import { normalizeBoundary, parseScenarios } from "./up-scenarios"
+import { normalizeBoundary, parseScenarios, type Scenario } from "./up-scenarios"
 import { maskSecrets } from "./up-evidence"
 import {
   readReplayFile,
@@ -27,7 +27,7 @@ export type ContractVerdict =
  * provenance, compare definition digests. No rendering here. */
 export const readContractVerdict = async (
   rootDir: string,
-  scenario: { name: string; boundaries: string[]; services: string[]; targets: string[]; probes: { id: string; argv: string[]; timeout: string }[]; checkpoints: string[] },
+  scenario: Scenario,
 ): Promise<ContractVerdict> => {
   const location = replayLocation(rootDir, scenario)
   if (location === null) return { status: "unknown" }
@@ -70,6 +70,14 @@ export const runContractCheck = async (opts: {
   } catch (error) {
     console.error(`ow: invalid scenarios file: ${error instanceof Error ? error.message : String(error)}`)
     return 1
+  }
+  // INERT scaffold refuses like the runner (decision: a placeholder file
+  // has no meaningful contract — edit real probes first).
+  const { INIT_INERT_MARKER } = await import("./up-init")
+  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
+  if (firstLine.trim() === INIT_INERT_MARKER) {
+    console.error(`INERT: ${opts.file}`)
+    return 2
   }
   // M9: the gate resolves through the shared overlay helper (flag > local
   // convention > base); refusals exit here with their guard code.

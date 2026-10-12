@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { run } from "./cli"
-import { parseScenarios, validateReferences } from "./up-scenarios"
+import { normalizeBoundary, parseScenarios, validateReferences } from "./up-scenarios"
 
 const FIXTURES = resolve(import.meta.dir, "parity-fixtures")
 
@@ -179,8 +179,8 @@ describe("subset block-map: line-numbered error + hint", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.err.join("\n")).toContain("satır")
-      expect(io.err.join("\n")).toContain("tek-satır inline")
+      expect(io.err.join("\n")).toContain("line")
+      expect(io.err.join("\n")).toContain("single-line inline")
       expect(io.err.join("\n")).toContain("ow init")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -520,5 +520,58 @@ describe("M7 scenario data + env_file schema (validated-only)", () => {
     ]) {
       expect(() => parseScenarios(body)).toThrow()
     }
+  })
+})
+
+describe("H1 CLI↔server boundary parity (same fixture, identical verdicts)", () => {
+  test("normalizeBoundary and server normalizeScenarioBoundary agree", async () => {
+    const server = await import("../src/coordinator")
+    const values = [
+      "real-read-only",
+      "real-state-changing",
+      "network-deny",
+      "subscribed",
+      "unverified",
+      "real",
+      "local",
+      "captured-response",
+      "fake",
+      "test",
+      `blocked:"down for maintenance"`,
+      "bogus-value",
+      "",
+    ]
+    for (const raw of values) {
+      const cli = normalizeBoundary(raw)
+      const srv = server.normalizeScenarioBoundary(raw)
+      expect(srv.known).toBe(cli.known)
+      if (cli.known) expect(srv.normalized).toBe(cli.normalized)
+    }
+  })
+
+  test("parseScenarios and server normalizeScenarios agree on normalized lists + legacy warnings", async () => {
+    const server = await import("../src/coordinator")
+    const text = [
+      "version: 1",
+      "scenarios:",
+      "  mixed:",
+      "    services: [api]",
+      '    boundaries: [real-read-only, real, local, blocked:"down for maintenance", bogus-value]',
+      "    probes: [{id: ready, argv: [./x.sh]}]",
+      "    checkpoints: [ok-stage]",
+      "",
+    ].join("\n")
+    const cliParsed = parseScenarios(text)
+    expect(cliParsed.scenarios).toHaveLength(1)
+    const serverParsed = server.normalizeScenarios(text)
+    expect(serverParsed.scenarios).toHaveLength(1)
+    expect(serverParsed.scenarios[0].boundaries).toEqual(
+      cliParsed.scenarios[0].boundaries.map((boundary) => {
+        const norm = normalizeBoundary(boundary)
+        return norm.known ? norm.normalized : boundary
+      }),
+    )
+    expect(serverParsed.warnings.some((warning) => warning.includes("legacy-boundary: real → real-state-changing (warning)"))).toBe(true)
+    expect(serverParsed.warnings.some((warning) => warning.includes("legacy-boundary: local → real-read-only (warning)"))).toBe(true)
   })
 })

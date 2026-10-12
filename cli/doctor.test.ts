@@ -37,7 +37,7 @@ describe("staleSupervisorHint", () => {
       { sha: "old", digest: "d-old", time: "2026-10-07T07:00:00Z" },
       { sha: "new", digest: "d-new", time: "2026-10-08T07:00:00Z" },
     )
-    expect(hint).toContain("bayat")
+    expect(hint).toContain("stale")
     expect(hint).toContain("2026-10-07T07:00:00Z")
     expect(hint).toContain("2026-10-08T07:00:00Z")
     expect(hint).toContain("ow down && ow up -d")
@@ -50,7 +50,7 @@ describe("doctor up line without sidecars", () => {
     try {
       const lines = await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })
       const up = lines.find((line) => line.name === "up")
-      expect(up?.detail).toBe("durgun (çalışan supervisor yok) — öneri: ow reconcile --check")
+      expect(up?.detail).toBe("idle (no running supervisor) — hint: ow reconcile --check")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -69,15 +69,15 @@ describe("doctor up line without sidecars", () => {
         (line) => line.name === "up",
       )
       expect(stale?.ok).toBe(false)
-      expect(stale?.detail).toContain("bayat")
-      expect(stale?.detail).toContain("öneri: ow reconcile --check")
+      expect(stale?.detail).toContain("stale")
+      expect(stale?.detail).toContain("hint: ow reconcile --check")
       // Corrupt lock → `doğrulanamıyor` + hint.
       await write(paths.lockFile, "bozuk{{{", "utf8")
       const corrupt = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
         (line) => line.name === "up",
       )
-      expect(corrupt?.detail).toContain("doğrulanamıyor")
-      expect(corrupt?.detail).toContain("öneri: ow reconcile --check")
+      expect(corrupt?.detail).toContain("unverifiable")
+      expect(corrupt?.detail).toContain("hint: ow reconcile --check")
       // Live lock, no state → hint-free live wording.
       const keeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
       try {
@@ -87,7 +87,7 @@ describe("doctor up line without sidecars", () => {
           (line) => line.name === "up",
         )
         expect(live?.ok).toBe(true)
-        expect(live?.detail).toBe("çalışıyor (durum yok)")
+        expect(live?.detail).toBe("running (no state)")
       } finally {
         keeper.kill("SIGKILL")
       }
@@ -107,7 +107,7 @@ describe("doctor up line without sidecars", () => {
       await acquireLock(paths.lockFile, [])
       const lines = await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })
       const up = lines.find((line) => line.name === "up")
-      expect(up?.detail).toBe("çalışıyor (durum yok)")
+      expect(up?.detail).toBe("running (no state)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

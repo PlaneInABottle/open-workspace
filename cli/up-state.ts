@@ -135,13 +135,13 @@ export const resolveWorkspaceRoot = async (startDir: string): Promise<string> =>
  * directive clause. Paths are operator-known (same as `dizin:` lines);
  * never env values or span/log bodies. */
 export const noStateNote = (startDir: string): string =>
-  `.ow/ bulunamadı — aranan: ${startDir}; workspace kökünden çalıştırın ya da --file verin`
+  `.ow/ not found — searched: ${startDir}; run from the workspace root or pass --file`
 
 /** `0700` real directory, symlink-rejected (observer-core discipline). */
 export const ensureUpStateDir = async (stateDir: string): Promise<void> => {
   await mkdir(stateDir, { recursive: true, mode: 0o700 })
   const info = await lstat(stateDir)
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(".ow dizini gerçek bir dizin olmalı")
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(".ow must be a real directory")
   await chmod(stateDir, 0o700)
 }
 
@@ -160,7 +160,7 @@ export const ensureOwGitignore = async (rootDir: string): Promise<string | null>
     text = await readFile(ignorePath, "utf8")
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      return "uyarı: .gitignore okunamıyor (.ow/ girdisi eklenemedi)"
+      return "warning: .gitignore unreadable (.ow/ entry could not be added)"
     }
   }
   if (text === null) {
@@ -168,7 +168,7 @@ export const ensureOwGitignore = async (rootDir: string): Promise<string | null>
       await writeFile(ignorePath, `${OW_GITIGNORE_ENTRY}\n`, { encoding: "utf8" })
       return null
     } catch {
-      return "uyarı: .gitignore yazılamıyor (.ow/ girdisi eklenemedi)"
+      return "warning: .gitignore unwritable (.ow/ entry could not be added)"
     }
   }
   const covered = text.split("\n").some((line) => {
@@ -181,7 +181,7 @@ export const ensureOwGitignore = async (rootDir: string): Promise<string | null>
     await writeFile(ignorePath, `${text}${suffix}${OW_GITIGNORE_ENTRY}\n`, { encoding: "utf8" })
     return null
   } catch {
-    return "uyarı: .gitignore yazılamıyor (.ow/ girdisi eklenemedi)"
+    return "warning: .gitignore unwritable (.ow/ entry could not be added)"
   }
 }
 
@@ -323,14 +323,14 @@ export const readLock = async (lockFile: string): Promise<UpLock | null> => {
 export const classifyLock = async (lockFile: string): Promise<LockStatus> => {
   const shape = await lockFileShape(lockFile)
   if (shape === "absent") return { kind: "absent" }
-  if (shape === "corrupt") return { kind: "corrupt", reason: "kilit dosyası bozuk" }
+  if (shape === "corrupt") return { kind: "corrupt", reason: "lock file corrupt" }
   const lock = (await readLock(lockFile)) as UpLock
   const selfCheck = await readLstart(process.pid)
-  if (selfCheck === null) return { kind: "unknown", lock, reason: "lstart okunamıyor, doğrulanamaz" }
+  if (selfCheck === null) return { kind: "unknown", lock, reason: "lstart unreadable, unverifiable" }
   const current = await readLstart(lock.pid)
-  if (current === null) return { kind: "stale", lock, reason: "pid yok" }
+  if (current === null) return { kind: "stale", lock, reason: "no pid" }
   if (current === lock.lstart) return { kind: "live", lock }
-  return { kind: "stale", lock, reason: "lstart uyuşmazlığı (pid geri dönüşümü)" }
+  return { kind: "stale", lock, reason: "lstart mismatch (pid reuse)" }
 };
 
 /** Exclusive (`O_CREAT|O_EXCL`) lock write: the double-`up` check-then-act
@@ -359,13 +359,13 @@ const writeLockExclusive = (lockFile: string, lock: UpLock): boolean => {
  * before); the common live/absent double-`up` race is closed. */
 export const acquireLock = async (lockFile: string, warnings: string[]): Promise<UpLock> => {
   const status = await classifyLock(lockFile)
-  if (status.kind === "live") throw new Error("zaten çalışıyor (ow ps)")
-  if (status.kind === "unknown") throw new Error("kilit doğrulanamadı, çalışıyor sayılıyor — önce ow down")
+  if (status.kind === "live") throw new Error("already running (ow ps)")
+  if (status.kind === "unknown") throw new Error("lock unverified, treated as running — run ow down first")
   const reclaimNote =
     status.kind === "stale"
-      ? `uyarı: bayat kilit devralındı (${status.reason})`
+      ? `warning: stale lock adopted (${status.reason})`
       : status.kind === "corrupt"
-        ? `uyarı: bozuk kilit devralındı (${status.reason})`
+        ? `warning: corrupt lock adopted (${status.reason})`
         : null
   const self = await readLstart(process.pid)
   const lock: UpLock = { pid: process.pid, lstart: self ?? "", startedAt: new Date().toISOString() }
@@ -374,10 +374,10 @@ export const acquireLock = async (lockFile: string, warnings: string[]): Promise
     return lock
   }
   const again = await classifyLock(lockFile)
-  if (again.kind === "live") throw new Error("zaten çalışıyor (ow ps)")
-  if (again.kind === "unknown") throw new Error("kilit doğrulanamadı, çalışıyor sayılıyor — önce ow down")
-  if (again.kind === "corrupt") warnings.push(`uyarı: bozuk kilit devralındı (yarış sonrası, ${again.reason})`)
-  else if (again.kind === "stale") warnings.push(`uyarı: bayat kilit devralındı (yarış sonrası, ${again.reason})`)
+  if (again.kind === "live") throw new Error("already running (ow ps)")
+  if (again.kind === "unknown") throw new Error("lock unverified, treated as running — run ow down first")
+  if (again.kind === "corrupt") warnings.push(`warning: corrupt lock adopted (after race, ${again.reason})`)
+  else if (again.kind === "stale") warnings.push(`warning: stale lock adopted (after race, ${again.reason})`)
   await atomicWriteJson(lockFile, lock)
   return lock
 };

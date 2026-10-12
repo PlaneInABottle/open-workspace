@@ -112,14 +112,14 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
     stderr: json ? "" : warnings.join("\n"),
   })
   const fail = (code: number, stderr: string): TimelineResult => ({ code, stdout: "", stderr })
-  const quiet = (warnings: string[]): TimelineResult => ok(json ? quietEnvelope(warnings) : "zaman çizelgesi yok", warnings)
+  const quiet = (warnings: string[]): TimelineResult => ok(json ? quietEnvelope(warnings) : "no timeline", warnings)
 
   const rawId = options.traceId
   let idFilter: string | null = null
   if (rawId !== undefined) {
     const id = rawId.toLowerCase()
     if (id.length < 8 || id.length > 32 || !HEX_ID.test(id)) {
-      return fail(2, "ow: geçersiz izleme kimliği")
+      return fail(2, "ow: invalid trace id")
     }
     idFilter = id
   }
@@ -150,7 +150,7 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
   try {
     stored = (await readSpansFile(tracePaths(options.rootDir).spansFile)).spans
   } catch (error) {
-    return fail(1, `ow: zaman çizelgesi okunamıyor: ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
+    return fail(1, `ow: timeline unreadable: ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
   }
   const groups = groupSpansByTrace(stored)
   const depths = new Map<string, number>()
@@ -183,10 +183,10 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
     if (matches.length === 0) {
       return json
         ? ok(quietEnvelope(warnings), warnings)
-        : { code: 0, stdout: `zaman çizelgesi yok (izleme bulunamadı: ${rawId})`, stderr: warnings.join("\n") }
+        : { code: 0, stdout: `no timeline (trace not found: ${rawId})`, stderr: warnings.join("\n") }
     }
     if (matches.length > 1) {
-      return fail(2, `ow: birden fazla izleme eşleşti (${matches.length} aday, öneki daraltın)`)
+      return fail(2, `ow: multiple traces matched (${matches.length} candidates, narrow the prefix)`)
     }
   }
 
@@ -265,7 +265,7 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
   const lines = page.map((event) => {
     const iso = new Date(event.ts).toISOString()
     if (event.kind === "agent") return `${iso} AGENT ${event.text}`
-    const tag = event.confidence === "exact" ? " [kesin]" : event.confidence === "estimated" ? " [tahmini]" : ""
+    const tag = event.confidence === "exact" ? " [exact]" : event.confidence === "estimated" ? " [estimated]" : ""
     return `${iso} TRACE ${event.text}${tag}`
   })
   return ok(lines.join("\n"), warnings)

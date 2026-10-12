@@ -72,7 +72,7 @@ export type UpFile = { services: UpService[]; warnings: UpWarning[]; trace?: Tra
 export class UpSchemaError extends Error {
   readonly line: number
   constructor(line: number, message: string) {
-    super(`${message} (satır ${line})`)
+    super(`${message} (line ${line})`)
     this.name = "UpSchemaError"
     this.line = line
   }
@@ -114,7 +114,7 @@ export const decodeUtf8Fatal = (bytes: Uint8Array): string => {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
   } catch {
-    throw new UpSchemaError(0, "dosya UTF-8 çözülemedi (bozuk bayt) — dosya kodlamasını düzeltin")
+    throw new UpSchemaError(0, "file is not decodable UTF-8 (bad bytes) — fix the file encoding")
   }
 }
 
@@ -142,37 +142,37 @@ export const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
     const indent = indentOf(bare)
     const trimmed = bare.trim()
     if (trimmed.startsWith("- ")) {
-      throw new UpSchemaError(lineNo, "blok listesi desteklenmiyor (akış listesi kullanın: [a, b])")
+      throw new UpSchemaError(lineNo, "block lists unsupported (use a flow list: [a, b])")
     }
     const colon = trimmed.indexOf(":")
-    if (colon < 0) throw new UpSchemaError(lineNo, "anahtar: değer bekleniyor")
+    if (colon < 0) throw new UpSchemaError(lineNo, "key: value expected")
     const key = unquote(trimmed.slice(0, colon).trim())
     const rest = trimmed.slice(colon + 1).trim()
-    if (key.length === 0) throw new UpSchemaError(lineNo, "boş anahtar")
+    if (key.length === 0) throw new UpSchemaError(lineNo, "empty key")
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop()
     const parent = stack[stack.length - 1].map
     if (rest.length === 0) {
-      if (indent === 0 && parent !== root) throw new UpSchemaError(lineNo, `beklenmeyen girinti: ${key}`)
+      if (indent === 0 && parent !== root) throw new UpSchemaError(lineNo, `unexpected indent: ${key}`)
       // A map that only contains a block sequence is really a block list:
       // name the `- ` line instead of failing on depth.
       for (let m = n + 1; m < lines.length; m += 1) {
         const peer = stripComment(lines[m]).trim()
         if (peer.length === 0) continue
         if (peer.startsWith("- ")) {
-          throw new UpSchemaError(m + 1, "blok listesi desteklenmiyor (akış listesi kullanın: [a, b])")
+          throw new UpSchemaError(m + 1, "block lists unsupported (use a flow list: [a, b])")
         }
         break
       }
-      if (stack.length >= 3) throw new UpSchemaError(lineNo, `3. düzey desteklenmiyor: ${key}`)
+      if (stack.length >= 3) throw new UpSchemaError(lineNo, `level 3 unsupported: ${key}`)
       const child: Record<string, YamlNode> = {}
       // `hasOwn` (not `in`): `parent` is a plain `{}` so prototype names
       // like `constructor` must not read as duplicates.
-      if (Object.hasOwn(parent, key)) throw new UpSchemaError(lineNo, `tekrarlanan anahtar: ${key}`)
+      if (Object.hasOwn(parent, key)) throw new UpSchemaError(lineNo, `duplicate key: ${key}`)
       parent[key] = child
       stack.push({ indent, map: child })
       continue
     }
-    if (Object.hasOwn(parent, key)) throw new UpSchemaError(lineNo, `tekrarlanan anahtar: ${key}`)
+    if (Object.hasOwn(parent, key)) throw new UpSchemaError(lineNo, `duplicate key: ${key}`)
     parent[key] = parseValue(rest, lineNo)
   }
   return root
@@ -230,11 +230,11 @@ export const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNo
   if (inner.length === 0) return out
   for (const part of splitTopLevel(inner)) {
     const colon = part.indexOf(":")
-    if (colon < 0) throw new UpSchemaError(lineNo, "harita içinde anahtar: değer bekleniyor")
+    if (colon < 0) throw new UpSchemaError(lineNo, "key: value expected inside map")
     const key = unquote(part.slice(0, colon).trim())
     const value = part.slice(colon + 1).trim()
-    if (key.length === 0 || value.length === 0) throw new UpSchemaError(lineNo, "harita içinde boş anahtar/değer")
-    if (key in out) throw new UpSchemaError(lineNo, "harita içinde tekrarlanan anahtar")
+    if (key.length === 0 || value.length === 0) throw new UpSchemaError(lineNo, "empty key/value inside map")
+    if (key in out) throw new UpSchemaError(lineNo, "duplicate key inside map")
     out[key] = parseValue(value, lineNo)
   }
   return out
@@ -243,19 +243,19 @@ export const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNo
 const parseEnvValue = (node: YamlNode | undefined, serviceName: string): Readonly<Record<string, string>> | undefined => {
   if (node === undefined) return undefined
   if (typeof node !== "object" || Array.isArray(node)) {
-    throw new UpSchemaError(0, `${serviceName}: env anahtar: değer çiftlerinden oluşan satır içi harita olmalı (ör. env: {A: b})`)
+    throw new UpSchemaError(0, `${serviceName}: env must be an inline map of key: value pairs (e.g. env: {A: b})`)
   }
   const entries = Object.entries(node)
-  if (entries.length > ENV_MAX_ENTRIES) throw new UpSchemaError(0, `${serviceName}: env en fazla ${ENV_MAX_ENTRIES} anahtar olabilir`)
+  if (entries.length > ENV_MAX_ENTRIES) throw new UpSchemaError(0, `${serviceName}: env may have at most ${ENV_MAX_ENTRIES} keys`)
   const env: Record<string, string> = Object.create(null)
   for (const [key, value] of entries) {
-    if (!ENV_KEY.test(key)) throw new UpSchemaError(0, `${serviceName}: env içinde geçersiz anahtar adı`)
+    if (!ENV_KEY.test(key)) throw new UpSchemaError(0, `${serviceName}: invalid key name inside env`)
     // Nested flow values (`{A: [x, y]}`, `{A: {B: c}}`) now survive the
     // depth-tracking split intact and arrive here as non-strings: name the
     // nesting explicitly instead of the generic scalar error.
-    if (typeof value !== "string") throw new UpSchemaError(0, `${serviceName}: env içinde iç içe değer desteklenmiyor (düz metin kullanın)`)
+    if (typeof value !== "string") throw new UpSchemaError(0, `${serviceName}: nested values unsupported inside env (use plain text)`)
     if (Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8") > ENV_MAX_PAIR_BYTES) {
-      throw new UpSchemaError(0, `${serviceName}: env bir çiftinde en fazla ${ENV_MAX_PAIR_BYTES} bayt olabilir`)
+      throw new UpSchemaError(0, `${serviceName}: one env pair may be at most ${ENV_MAX_PAIR_BYTES} bytes`)
     }
     env[key] = value
   }
@@ -274,36 +274,36 @@ const asString = (value: YamlNode | undefined): string | null =>
 const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: number | undefined, warnings: UpWarning[]): UpReadiness | undefined => {
   if (node === undefined) return undefined
   if (typeof node !== "object" || Array.isArray(node)) {
-    throw new UpSchemaError(0, `${serviceName}: readiness satır-içi harita olmalı (ör. readiness: {probe: [./hazir.sh], timeout: 10s})`)
+    throw new UpSchemaError(0, `${serviceName}: readiness must be an inline map (e.g. readiness: {probe: [./ready.sh], timeout: 10s})`)
   }
   const fields = node as Record<string, YamlNode>
   for (const key of Object.keys(fields)) {
     if (!["probe", "timeout", "needsPort"].includes(key)) {
-      warnings.push({ line: 0, message: `${serviceName}: readiness içinde bilinmeyen alan yoksayıldı: ${key}` })
+      warnings.push({ line: 0, message: `${serviceName}: unknown field ignored inside readiness: ${key}` })
     }
   }
   const probeRaw = fields["probe"]
   if (!Array.isArray(probeRaw) || probeRaw.length === 0) {
-    throw new UpSchemaError(0, `${serviceName}: readiness probe listesi olmalı (ör. probe: [./hazir.sh, --local])`)
+    throw new UpSchemaError(0, `${serviceName}: readiness probe must be a list (e.g. probe: [./ready.sh, --local])`)
   }
   if (probeRaw.length > PROBE_MAX_PARTS) {
-    throw new UpSchemaError(0, `${serviceName}: readiness probe en fazla ${PROBE_MAX_PARTS} parça olabilir`)
+    throw new UpSchemaError(0, `${serviceName}: readiness probe may have at most ${PROBE_MAX_PARTS} parts`)
   }
   const probe = [...probeRaw]
   for (const part of probe) {
-    if (typeof part !== "string") throw new UpSchemaError(0, `${serviceName}: readiness probe parçaları metin olmalı`)
+    if (typeof part !== "string") throw new UpSchemaError(0, `${serviceName}: readiness probe parts must be text`)
     if (Buffer.byteLength(part, "utf8") > PROBE_MAX_PART_BYTES) {
-      throw new UpSchemaError(0, `${serviceName}: readiness probe parçası en fazla ${PROBE_MAX_PART_BYTES} bayt olabilir`)
+      throw new UpSchemaError(0, `${serviceName}: one readiness probe part may be at most ${PROBE_MAX_PART_BYTES} bytes`)
     }
   }
   if (isShellArgv0(probe[0])) {
-    throw new UpSchemaError(0, `${serviceName}: readiness probe shell ile başlayamaz (argv listesi verin, sh -c yok)`)
+    throw new UpSchemaError(0, `${serviceName}: readiness probe must not start with a shell (pass an argv list, no sh -c)`)
   }
   let timeout: UpReadiness["timeout"] = "10s"
   if (fields["timeout"] !== undefined) {
     const raw = fields["timeout"]
     if (raw !== "5s" && raw !== "10s" && raw !== "30s") {
-      throw new UpSchemaError(0, `${serviceName}: readiness timeout 5s|10s|30s olmalı`)
+      throw new UpSchemaError(0, `${serviceName}: readiness timeout must be 5s|10s|30s`)
     }
     timeout = raw
   }
@@ -311,12 +311,12 @@ const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: n
   if (fields["needsPort"] !== undefined) {
     const raw = fields["needsPort"]
     if (raw !== "true" && raw !== "false") {
-      throw new UpSchemaError(0, `${serviceName}: readiness needsPort true/false olmalı`)
+      throw new UpSchemaError(0, `${serviceName}: readiness needsPort must be true/false`)
     }
     needsPort = raw === "true"
   }
   if (needsPort && port === undefined) {
-    throw new UpSchemaError(0, `${serviceName}: readiness needsPort açıkken port tanımlı değil (port ekleyin ya da needsPort: false yazın)`)
+    throw new UpSchemaError(0, `${serviceName}: with readiness needsPort on, no port is defined (add a port or write needsPort: false)`)
   }
   return { probe, timeout, needsPort }
 }
@@ -333,14 +333,14 @@ const DEPENDS_ON_MAX_NAMES = 32
 const parseDependsOn = (node: YamlNode | undefined, serviceName: string): readonly string[] | undefined => {
   if (node === undefined) return undefined
   if (!Array.isArray(node)) {
-    throw new UpSchemaError(0, `${serviceName}: depends_on liste olmalı (ör. depends_on: [api])`)
+    throw new UpSchemaError(0, `${serviceName}: depends_on must be a list (e.g. depends_on: [api])`)
   }
   if (node.length > DEPENDS_ON_MAX_NAMES) {
-    throw new UpSchemaError(0, `${serviceName}: depends_on en fazla ${DEPENDS_ON_MAX_NAMES} servis olabilir`)
+    throw new UpSchemaError(0, `${serviceName}: depends_on may have at most ${DEPENDS_ON_MAX_NAMES} services`)
   }
   for (const dep of node) {
     if (typeof dep !== "string" || !SERVICE_NAME.test(dep)) {
-      throw new UpSchemaError(0, `${serviceName}: depends_on içinde geçersiz servis adı`)
+      throw new UpSchemaError(0, `${serviceName}: invalid service name inside depends_on`)
     }
   }
   return [...node]
@@ -353,9 +353,9 @@ const validateDependsOn = (services: UpService[]): void => {
   const known = new Set(services.map((svc) => svc.name))
   for (const svc of services) {
     for (const dep of svc.dependsOn ?? []) {
-      if (dep === svc.name) throw new UpSchemaError(0, `${svc.name}: depends_on kendine olamaz`)
+      if (dep === svc.name) throw new UpSchemaError(0, `${svc.name}: depends_on cannot reference itself`)
       if (!known.has(dep)) {
-        throw new UpSchemaError(0, `${svc.name}: depends_on içinde bilinmeyen servis: ${dep} (bilinenler: ${services.map((s) => s.name).join(", ")})`)
+        throw new UpSchemaError(0, `${svc.name}: unknown service inside depends_on: ${dep} (known: ${services.map((s) => s.name).join(", ")})`)
       }
     }
   }
@@ -391,7 +391,7 @@ const orderServicesTopo = (services: UpService[]): UpService[] => {
   }
   if (ordered.length !== services.length) {
     const leftover = services.filter((svc) => !done.has(svc.name)).map((svc) => svc.name)
-    throw new UpSchemaError(0, `depends_on döngüsel: ${leftover.join(", ")} (sıralanamıyor)`)
+    throw new UpSchemaError(0, `depends_on is circular: ${leftover.join(", ")} (cannot be ordered)`)
   }
   return ordered
 }
@@ -402,14 +402,14 @@ const orderServicesTopo = (services: UpService[]): UpService[] => {
 const parseRequiredEnv = (node: YamlNode | undefined, serviceName: string): readonly string[] | undefined => {
   if (node === undefined) return undefined
   if (!Array.isArray(node)) {
-    throw new UpSchemaError(0, `${serviceName}: required-env liste olmalı (ör. required-env: [A, B])`)
+    throw new UpSchemaError(0, `${serviceName}: required-env must be a list (e.g. required-env: [A, B])`)
   }
   if (node.length > REQUIRED_ENV_MAX_NAMES) {
-    throw new UpSchemaError(0, `${serviceName}: required-env en fazla ${REQUIRED_ENV_MAX_NAMES} anahtar olabilir`)
+    throw new UpSchemaError(0, `${serviceName}: required-env may have at most ${REQUIRED_ENV_MAX_NAMES} keys`)
   }
   for (const key of node) {
     if (typeof key !== "string" || !ENV_KEY.test(key)) {
-      throw new UpSchemaError(0, `${serviceName}: required-env içinde geçersiz anahtar adı`)
+      throw new UpSchemaError(0, `${serviceName}: invalid key name inside required-env`)
     }
   }
   return [...node]
@@ -421,7 +421,7 @@ const parseRequiredEnv = (node: YamlNode | undefined, serviceName: string): read
 const parseTraceBlock = (node: YamlNode | undefined, warnings: UpWarning[]): TraceConfig | undefined => {
   if (node === undefined) return undefined
   if (typeof node !== "object" || Array.isArray(node)) {
-    warnings.push({ line: 0, message: "trace haritası bekleniyor, yoksayıldı" })
+    warnings.push({ line: 0, message: "trace map expected, ignored" })
     return undefined
   }
   let enabled = true
@@ -430,23 +430,23 @@ const parseTraceBlock = (node: YamlNode | undefined, warnings: UpWarning[]): Tra
     if (key === "enabled") {
       if (value === "true") enabled = true
       else if (value === "false") enabled = false
-      else warnings.push({ line: 0, message: "trace: enabled true/false olmalı, yoksayıldı" })
+      else warnings.push({ line: 0, message: "trace: enabled must be true/false, ignored" })
     } else if (key === "port") {
       if (typeof value === "object") {
-        warnings.push({ line: 0, message: `trace: iç içe alan yoksayıldı: ${key}` })
+        warnings.push({ line: 0, message: `trace: nested field ignored: ${key}` })
         continue
       }
       const parsed = parsePortValue(value, 0, warnings, "trace")
       if (parsed !== undefined) {
         if (parsed === 4318) {
-          throw new UpSchemaError(0, "trace: 4318 portu dashboard için ayrılmış (önizleme portu)")
+          throw new UpSchemaError(0, "trace: port 4318 is reserved for the dashboard (preview port)")
         }
         port = parsed
       }
     } else if (typeof value === "object") {
-      warnings.push({ line: 0, message: `trace: iç içe alan yoksayıldı: ${key}` })
+      warnings.push({ line: 0, message: `trace: nested field ignored: ${key}` })
     } else {
-      warnings.push({ line: 0, message: `trace: bilinmeyen alan yoksayıldı: ${key}` })
+      warnings.push({ line: 0, message: `trace: unknown field ignored: ${key}` })
     }
   }
   return { enabled, port }
@@ -457,14 +457,14 @@ const parsePortValue = (value: YamlNode | undefined, line: number, warnings: UpW
     const host = raw.includes(":") ? raw.split(":")[0] : raw
     const num = Number(host.trim())
     if (!Number.isInteger(num) || num < 1 || num > 65535) {
-      throw new UpSchemaError(line, `geçersiz port: ${raw}`)
+      throw new UpSchemaError(line, `invalid port: ${raw}`)
     }
     return num
   }
   if (typeof value === "string") return take(value)
   if (Array.isArray(value)) {
     if (value.length === 0) return undefined
-    if (value.length > 1) warnings.push({ line, message: `${serviceName}: birden fazla port, ilki kullanılacak` })
+    if (value.length > 1) warnings.push({ line, message: `${serviceName}: multiple ports, the first will be used` })
     return take(value[0])
   }
   return undefined
@@ -476,53 +476,53 @@ export const parseUpFile = (text: string): UpFile => {
   const doc = parseSubsetYaml(text)
   const servicesRaw = doc["services"]
   if (servicesRaw === undefined || typeof servicesRaw !== "object" || Array.isArray(servicesRaw)) {
-    throw new UpSchemaError(0, "`services:` haritası gerekli")
+    throw new UpSchemaError(0, "`services:` map required")
   }
   for (const key of Object.keys(doc)) {
     if (key === "version") {
-      warnings.push({ line: 0, message: "version yoksayıldı (v1)" })
+      warnings.push({ line: 0, message: "version ignored (v1)" })
     } else if (key !== "services" && key !== "trace") {
-      warnings.push({ line: 0, message: `bilinmeyen üst alan yoksayıldı: ${key}` })
+      warnings.push({ line: 0, message: `unknown top-level field ignored: ${key}` })
     }
   }
   const rawEntries = Object.entries(servicesRaw as Record<string, YamlNode>)
-  if (rawEntries.length > 32) throw new UpSchemaError(0, "en fazla 32 servis (v1 sınırı)")
+  if (rawEntries.length > 32) throw new UpSchemaError(0, "at most 32 services (v1 limit)")
   const services: UpService[] = []
   for (const [name, node] of rawEntries) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
-      throw new UpSchemaError(0, `${name}: geçersiz servis adı ([A-Za-z0-9_-], en fazla 64 karakter)`)
+      throw new UpSchemaError(0, `${name}: invalid service name ([A-Za-z0-9_-], at most 64 characters)`)
     }
     if (typeof node !== "object" || Array.isArray(node)) {
-      throw new UpSchemaError(0, `${name}: servis haritası bekleniyor`)
+      throw new UpSchemaError(0, `${name}: service map expected`)
     }
     const fields = node as Record<string, YamlNode>
     const cmdRaw = fields["cmd"]
     const commandRaw = fields["command"]
     if (cmdRaw !== undefined && commandRaw !== undefined && JSON.stringify(cmdRaw) !== JSON.stringify(commandRaw)) {
-      throw new UpSchemaError(0, `${name}: cmd ile command farklı, birini seçin`)
+      throw new UpSchemaError(0, `${name}: cmd and command differ, pick one`)
     }
     const cmdNode = cmdRaw ?? commandRaw
     let cmd: string | string[] | undefined
     if (typeof cmdNode === "string") {
-      if (Buffer.byteLength(cmdNode, "utf8") > 8192) throw new UpSchemaError(0, `${name}: cmd 8KB sınırını aşıyor`)
+      if (Buffer.byteLength(cmdNode, "utf8") > 8192) throw new UpSchemaError(0, `${name}: cmd exceeds the 8KB limit`)
       cmd = cmdNode
     } else if (Array.isArray(cmdNode)) {
-      if (cmdNode.length > 32) throw new UpSchemaError(0, `${name}: cmd en fazla 32 parça olabilir`)
+      if (cmdNode.length > 32) throw new UpSchemaError(0, `${name}: cmd may have at most 32 parts`)
       cmd = [...cmdNode]
-    } else if (cmdNode !== undefined) throw new UpSchemaError(0, `${name}: cmd metin ya da liste olmalı`)
+    } else if (cmdNode !== undefined) throw new UpSchemaError(0, `${name}: cmd must be text or a list`)
     const cwdRaw = fields["cwd"] ?? fields["working_dir"]
     if (fields["cwd"] !== undefined && fields["working_dir"] !== undefined && fields["cwd"] !== fields["working_dir"]) {
-      throw new UpSchemaError(0, `${name}: cwd ile working_dir farklı, birini seçin`)
+      throw new UpSchemaError(0, `${name}: cwd and working_dir differ, pick one`)
     }
     const cwd = asString(cwdRaw ?? undefined) ?? undefined
-    if (cwdRaw !== undefined && cwd === undefined) throw new UpSchemaError(0, `${name}: cwd metin olmalı`)
+    if (cwdRaw !== undefined && cwd === undefined) throw new UpSchemaError(0, `${name}: cwd must be text`)
     const portRaw = fields["port"] ?? fields["ports"]
     if (fields["port"] !== undefined && fields["ports"] !== undefined) {
-      throw new UpSchemaError(0, `${name}: port ile ports birlikte kullanılamaz, birini seçin`)
+      throw new UpSchemaError(0, `${name}: port and ports cannot be combined, pick one`)
     }
     const port = portRaw === undefined ? undefined : parsePortValue(portRaw, 0, warnings, name)
     const logs = asString(fields["logs"] ?? undefined) ?? undefined
-    if (fields["logs"] !== undefined && logs === undefined) throw new UpSchemaError(0, `${name}: logs metin olmalı`)
+    if (fields["logs"] !== undefined && logs === undefined) throw new UpSchemaError(0, `${name}: logs must be text`)
     if (cmd === undefined && logs === undefined) {
       throw new UpSchemaError(0, `${name}: cmd ya da logs gerekli`)
     }
@@ -532,7 +532,7 @@ export const parseUpFile = (text: string): UpFile => {
     const readiness = parseReadiness(fields["readiness"], name, port, warnings)
     for (const key of Object.keys(fields)) {
       if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env", "required-env", "depends_on", "readiness"].includes(key)) {
-        warnings.push({ line: 0, message: `${name}: bilinmeyen alan yoksayıldı: ${key}` })
+        warnings.push({ line: 0, message: `${name}: unknown field ignored: ${key}` })
       }
     }
     const service: UpService = { name, cmd, cwd, port, logs }
@@ -570,7 +570,7 @@ export const missingRequiredEnv = (services: UpService[]): { service: string; va
 
 /** Human-readable warning lines for stderr (non-JSON mode). */
 export const formatUpWarnings = (warnings: UpWarning[]): string[] =>
-  warnings.map((w) => (w.line > 0 ? `uyarı (satır ${w.line}): ${w.message}` : `uyarı: ${w.message}`))
+  warnings.map((w) => (w.line > 0 ? `warning (line ${w.line}): ${w.message}` : `warning: ${w.message}`))
 
 /** True for subset-YAML nesting errors (the single-line inline trap:
  * block lists/sequences, 3rd-level maps, non-inline maps). Callers use
@@ -578,11 +578,11 @@ export const formatUpWarnings = (warnings: UpWarning[]): string[] =>
  * itself names the offending line. */
 export const isSubsetNestingError = (error: unknown): boolean => {
   if (!(error instanceof UpSchemaError)) return false
-  return /blok listesi|3\. düzey|harita içinde|satır içi harita|iç içe/.test(error.message)
+  return /block lists|level 3|inside map|inline map|nested/.test(error.message)
 }
 
 /** Single-line inline hint for the nesting trap (stderr, Turkish). The
  * `readiness` shape is M3-owned; it appears here only as a second inline
  * example, never as accepted syntax. */
 export const subsetNestingHint =
-  `ipucu: iç içe haritalar tek-satır inline yazılır (ör. env: {A: "1"} ya da readiness: {probe: [...], timeout: 10s}) — örnek için ow init çıktısına bakın`
+  `hint: nested maps must be written single-line inline (e.g. env: {A: "1"} or readiness: {probe: [...], timeout: 10s}) — see ow init output for an example`

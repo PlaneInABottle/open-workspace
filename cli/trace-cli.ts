@@ -100,7 +100,7 @@ const formatListLine = (summary: TraceSummary, now: number): string => {
     summary.traceId.slice(0, 8),
     formatAgo(agoMs),
     summary.root,
-    `${summary.services.length} servis`,
+    `${summary.services.length} services`,
     `${summary.spans} span`,
     formatDur(summary.durMs),
     summary.status === "error" ? "✗" : "✓",
@@ -110,7 +110,7 @@ const formatListLine = (summary: TraceSummary, now: number): string => {
 const formatTreeView = (summary: TraceSummary, spans: TraceSpan[]): string => {
   const tree = buildTraceTree(spans)
   const lines = [
-    `izleme ${summary.traceId.slice(0, 12)}...  ${summary.spans} span, ${summary.services.length} servis, ${formatDur(summary.durMs)}`,
+    `trace ${summary.traceId.slice(0, 12)}...  ${summary.spans} span, ${summary.services.length} services, ${formatDur(summary.durMs)}`,
   ]
   for (const node of tree.nodes) {
     const span = node.span
@@ -131,10 +131,10 @@ const formatTreeView = (summary: TraceSummary, spans: TraceSpan[]): string => {
     }
     const statusText = errorBits.length > 0 ? errorBits.join(" ") : span.status
     lines.push(
-      `${"  ".repeat(node.depth)}[${span.service}] ${span.name} ${offsetMs}ms +${formatDur(span.durMs)} ${statusText}${attrs}${node.orphan ? " (kök yok)" : ""}`,
+      `${"  ".repeat(node.depth)}[${span.service}] ${span.name} ${offsetMs}ms +${formatDur(span.durMs)} ${statusText}${attrs}${node.orphan ? " (no root)" : ""}`,
     )
   }
-  if (tree.truncated) lines.push(`…[kesildi: ${tree.dropped} span]…`)
+  if (tree.truncated) lines.push(`…[truncated: ${tree.dropped} spans]…`)
   return lines.join("\n")
 }
 
@@ -148,26 +148,26 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   if (rawId !== undefined) {
     const id = rawId.toLowerCase()
     if (id.length < 8 || id.length > 32 || !HEX_ID.test(id)) {
-      return fail(2, "ow: geçersiz izleme kimliği")
+      return fail(2, "ow: invalid trace id")
     }
     idFilter = id
   }
 
   if (!existsSync(join(options.rootDir, ".ow"))) {
-    return ok(json ? quietJson() : `izleme yok (${noStateNote(options.searchStart ?? options.rootDir)})`)
+    return ok(json ? quietJson() : `no traces (${noStateNote(options.searchStart ?? options.rootDir)})`)
   }
 
   try {
     const text = readFileSync(options.owYamlPath, "utf8")
     const parsed = parseUpFile(text)
     if (parsed.trace === undefined) {
-      return ok(json ? quietJson() : "izleme kapalı (ow.yaml içinde trace: bloğu yok)")
+      return ok(json ? quietJson() : "tracing off (no trace: block in ow.yaml)")
     }
     if (!parsed.trace.enabled) {
-      return ok(json ? quietJson() : "izleme kapalı (trace devre dışı bırakılmış)")
+      return ok(json ? quietJson() : "tracing off (trace disabled)")
     }
   } catch {
-    return ok(json ? quietJson() : "izleme kapalı (ow.yaml içinde trace: bloğu yok)")
+    return ok(json ? quietJson() : "tracing off (no trace: block in ow.yaml)")
   }
 
   let stored: TraceSpan[]
@@ -175,7 +175,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   try {
     stored = (await readSpansFile(spansFile)).spans
   } catch (error) {
-    return fail(1, `ow: izleme okunamıyor: ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
+    return fail(1, `ow: traces unreadable: ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
   }
 
   // `--wait`: poll until a newly arriving span matching the current filter
@@ -232,10 +232,10 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
     }
   }
   const done = (stdout: string): TraceRunResult =>
-    waitExpired ? { code: 0, stdout, stderr: "uyarı: bekleme süresi doldu (yeni span gelmedi)" } : ok(stdout)
+    waitExpired ? { code: 0, stdout, stderr: "warning: wait expired (no new spans)" } : ok(stdout)
 
   if (selectValidSpans(stored).length === 0) {
-    return done(json ? quietJson() : "izleme yok (henüz span gelmedi)")
+    return done(json ? quietJson() : "no traces (no spans yet)")
   }
 
   const groups = groupSpansByTrace(stored)
@@ -245,9 +245,9 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
 
   if (idFilter !== null) {
     const matches = all.filter((summary) => summary.traceId.startsWith(idFilter as string))
-    if (matches.length === 0) return fail(1, `ow: izleme bulunamadı: ${rawId}`)
+    if (matches.length === 0) return fail(1, `ow: trace not found: ${rawId}`)
     if (matches.length > 1) {
-      return fail(2, `ow: birden fazla izleme eşleşti (${matches.length} aday, öneki daraltın)`)
+      return fail(2, `ow: multiple traces matched (${matches.length} candidates, narrow the prefix)`)
     }
     const summary = matches[0]
     const spans = groups.get(summary.traceId) ?? []
@@ -294,7 +294,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   const tail = clampNumber(options.tail, { integer: true, min: 1, max: Number.POSITIVE_INFINITY }, TRACE_LIST_DEFAULT_TAIL)
   const page = listed.slice(0, tail)
   if (json) return done(toListJson(page))
-  if (page.length === 0) return done("izleme yok (henüz span gelmedi)")
+  if (page.length === 0) return done("no traces (no spans yet)")
   return done(page.map((summary) => formatListLine(summary, now)).join("\n"))
 }
 
@@ -350,21 +350,21 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
   } catch {
     enabled = false
   }
-  if (!enabled) return { ok: false, detail: "kapalı (ow.yaml içinde trace: yok)" }
+  if (!enabled) return { ok: false, detail: "off (no trace: in ow.yaml)" }
   const listening = await isTracePortListening(port)
   // Static directive only; the port number is operator-configured. Appended
   // to whichever enabled-state line was computed — a listening receiver
   // keeps its exact historical wording (locked by test).
   const silentSuffix = listening
     ? ""
-    : `. ipucu: alıcı :${port} dinlemiyor — portu başka süreç tutuyor olabilir ya da alıcı başlayamadı`
+    : `. hint: receiver :${port} not listening — another process may hold the port or the receiver failed to start`
   let count = 0
   let lastEnd: bigint | null = null
   let unnamed = false
   try {
     for (const span of selectValidSpans((await readSpansFile(tracePaths(rootDir).spansFile)).spans)) {
       count += 1
-      if (span.service === "bilinmeyen") unnamed = true
+      if (span.service === "unknown") unnamed = true
       const end = BigInt(span.endNano)
       if (lastEnd === null || end > lastEnd) lastEnd = end
     }
@@ -381,18 +381,18 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
   const jarMissing = !existsSync(join(rootDir, ".ow", "otel", "opentelemetry-javaagent.jar"))
   const javaInvolved = services.some(usesJavaAgent) || (process.env.JAVA_TOOL_OPTIONS?.includes("javaagent") ?? false)
   if (count === 0 && jarMissing && javaInvolved) {
-    return { ok: false, detail: `javaagent jar yok (.ow/otel/opentelemetry-javaagent.jar)${silentSuffix}` }
+    return { ok: false, detail: `no javaagent jar (.ow/otel/opentelemetry-javaagent.jar)${silentSuffix}` }
   }
   if (count === 0 || lastEnd === null) {
-    return { ok: true, detail: `açık (port ${port}, 0 span). ipucu: span yok — servis ayakta mı? ow ps${silentSuffix}` }
+    return { ok: true, detail: `open (port ${port}, 0 spans). hint: no spans — is the service up? ow ps${silentSuffix}` }
   }
   const agoMs = Math.max(0, Date.now() - Number(lastEnd / 1_000_000n))
-  const open = `açık (port ${port}, ${count} span, son span ${formatAgo(agoMs)})${silentSuffix}`
+  const open = `open (port ${port}, ${count} spans, last span ${formatAgo(agoMs)})${silentSuffix}`
   // Sibling of the 0-span hint: a stored `bilinmeyen` service means the
   // exporter never sent `service.name`. Static text only, same pattern.
   // The two hints never co-fire (unnamed needs ≥1 span by construction).
   return unnamed
-    ? { ok: true, detail: `${open}. ipucu: isimsiz span var — OTEL_SERVICE_NAME ayarlanmamış olabilir` }
+    ? { ok: true, detail: `${open}. hint: unnamed spans present — OTEL_SERVICE_NAME may be unset` }
     : { ok: true, detail: open }
 }
 

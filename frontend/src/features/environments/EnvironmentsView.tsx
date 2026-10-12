@@ -91,7 +91,7 @@ export function EnvironmentsView({ api, workspaces, refreshToken }: {
           {data.environments.length > 0 && (
             <>
               <div className="grid max-w-xl gap-1">
-                <label htmlFor="coordinator-environment" className="text-xs font-medium text-muted-foreground">Koordinatör ortamı</label>
+                <label htmlFor="coordinator-environment" className="text-xs font-medium text-muted-foreground">Coordinator environment</label>
                 <select
                   id="coordinator-environment"
                   className="project-select"

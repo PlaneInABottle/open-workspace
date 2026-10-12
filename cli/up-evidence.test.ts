@@ -45,7 +45,7 @@ describe("normalizeEnvelope", () => {
       { ...basis(), status: "confirmed", stale_reason: "runtime" },
       { ...basis(), safe_next_action: 7 },
       { ...basis(), code: "abc" },
-      { ...basis(), code: { bilinmeyen: 1 } },
+      { ...basis(), code: { mystery: 1 } },
       { ...basis(), runtime: [8080] },
     ]
     for (const raw of bad) expect(normalizeEnvelope(raw).ok).toBe(false)
@@ -90,11 +90,11 @@ describe("maskSecrets + caps (secret-asla)", () => {
     expect(big.ok).toBe(true)
     if (big.ok) {
       expect((big.proof as string).length).toBeLessThanOrEqual(8192)
-      expect(big.proof as string).toContain("…[kesildi]")
+      expect(big.proof as string).toContain("…[truncated]")
     }
     const capped = capText("y".repeat(600), 512)
     expect(capped.length).toBeLessThanOrEqual(512)
-    expect(capped).toContain("…[kesildi]")
+    expect(capped).toContain("…[truncated]")
     expect(capText("kısa", 512)).toBe("kısa")
   })
 })
@@ -344,7 +344,7 @@ describe("M-B kod haritası (runner/fixture/body/provider_contract + legacy eşd
       { ...rawBasis, code: { fixture: 42 } },
       { ...rawBasis, code: { provider_contract: "x".repeat(65) } },
       { ...rawBasis, code: { script_hash: "x".repeat(65) } },
-      { ...rawBasis, code: { bilinmeyen: 1 } },
+      { ...rawBasis, code: { mystery: 1 } },
     ]
     for (const raw of bad) expect(normalizeEnvelope(raw).ok).toBe(false)
   })

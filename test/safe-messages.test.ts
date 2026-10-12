@@ -111,6 +111,15 @@ const outOfAllowlist: ReadonlyArray<{ file: string; message: string; reason: str
   { file: 'services-docker.ts', message: dockerLogMessages.logInvalid, reason: 'returned directly in log-result bodies, never thrown' },
   { file: 'services-docker.ts', message: dockerLogMessages.logIncomplete, reason: 'returned directly in log-result bodies, never thrown' },
   { file: 'workspace.ts', message: 'This registered root is unavailable or its directory identity changed.', reason: 'per-root inspection payload field, not a thrown error' },
+  { file: 'coordinator.ts', message: 'key: value expected inside map', reason: 'scenario subset-YAML validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'empty key/value inside map', reason: 'scenario subset-YAML validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'duplicate key inside map', reason: 'scenario subset-YAML validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'block lists unsupported (use a flow list: [a, b])', reason: 'scenario subset-YAML validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'key: value expected', reason: 'scenario subset-YAML validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'empty key', reason: 'scenario subset-YAML validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'invalid scenario file: `version: 1` required', reason: 'scenario validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'invalid scenario file: `scenarios:` map required', reason: 'scenario validation, surfaces as generic error box' },
+  { file: 'coordinator.ts', message: 'invalid scenario file: no scenarios (empty `scenarios:`)', reason: 'scenario validation, surfaces as generic error box' },
 ];
 
 test('out-of-allowlist literals stay out, and no literal throw is unclassified', () => {

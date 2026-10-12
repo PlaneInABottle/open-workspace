@@ -77,25 +77,25 @@ export const diffService = (
     ...(expected.port !== undefined ? [`port=${expected.port}`] : []),
   ].join(" ")
   if (running === null) {
-    const prefix = action === "restart" ? "+ başlatılacak (restart, kayıt yok)" : "+ başlatılacak"
+    const prefix = action === "restart" ? "+ to-start (restart, no record)" : "+ to-start"
     return {
       lines: [`${prefix}: ${expected.name} cmd=${shape}${where.length > 0 ? ` ${where}` : ""}`],
       diff: { ...(expected.cmd !== undefined ? { cmd: shape } : {}), ...(expected.cwd !== undefined ? { cwd: expected.cwd } : {}), ...(expected.port !== undefined ? { port: expected.port } : {}), status: "missing" },
     }
   }
   return {
-    lines: [`yeniden: ${expected.name} pid=${running.pid} lstart=eşleşti → cmd=${shape}${where.length > 0 ? ` ${where}` : ""}`],
+    lines: [`restart: ${expected.name} pid=${running.pid} lstart=matched → cmd=${shape}${where.length > 0 ? ` ${where}` : ""}`],
     diff: { ...(expected.cmd !== undefined ? { cmd: shape } : {}), status: "running" },
   }
 }
 
 export type DriftKind =
-  | "eksik"
-  | "fazla"
-  | "durmus"
-  | "config-farkli"
-  | "lstart-uyusmazligi"
-  | "port-yabanci"
+  | "missing"
+  | "extra"
+  | "stopped"
+  | "config-mismatch"
+  | "lstart-mismatch"
+  | "foreign-port"
   | "artifact-stale"
 
 export type ReconcileDrift = {
@@ -128,28 +128,28 @@ export type ReconcileInput = {
 export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   const { name, expected, running, liveness } = input
   if (expected === null && running !== null) {
-    return { service: name, kind: "fazla", running: { pid: running.pid }, hint: `ow down ${name}` }
+    return { service: name, kind: "extra", running: { pid: running.pid }, hint: `ow down ${name}` }
   }
   if (expected !== null && running === null) {
     return {
       service: name,
-      kind: "eksik",
+      kind: "missing",
       expected: { cmd: maskCmdShape(expected.cmd), cwd: expected.cwd, port: expected.port },
       hint: `ow up ${name}`,
     }
   }
   if (expected === null || running === null) return null
   if (running.exitCode !== undefined) {
-    return { service: name, kind: "durmus", running: { pid: running.pid, exitCode: running.exitCode }, hint: `ow restart ${name}` }
+    return { service: name, kind: "stopped", running: { pid: running.pid, exitCode: running.exitCode }, hint: `ow restart ${name}` }
   }
   if (liveness === "lstart-mismatch") {
-    return { service: name, kind: "lstart-uyusmazligi", running: { pid: running.pid }, hint: `ow down ${name} sonrası ow up ${name} (pid geri dönüşümü şüphesi)` }
+    return { service: name, kind: "lstart-mismatch", running: { pid: running.pid }, hint: `ow down ${name} then ow up ${name} (suspected pid reuse)` }
   }
   if (liveness === "unknown") {
-    return { service: name, kind: "durmus", running: { pid: running.pid }, hint: `ow restart ${name}` }
+    return { service: name, kind: "stopped", running: { pid: running.pid }, hint: `ow restart ${name}` }
   }
   if (liveness === "dead") {
-    return { service: name, kind: "durmus", running: { pid: running.pid }, hint: `ow restart ${name}` }
+    return { service: name, kind: "stopped", running: { pid: running.pid }, hint: `ow restart ${name}` }
   }
   const diffs: Record<string, unknown> = {}
   const expectedShape = maskCmdShape(expected.cmd)
@@ -174,7 +174,7 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
     diffs["depends_on"] = { expected: expectedDeps, running: runningDeps }
   }
   if (Object.keys(diffs).length > 0) {
-    return { service: name, kind: "config-farkli", expected: diffs, running: { pid: running.pid }, hint: `ow restart ${name}` }
+    return { service: name, kind: "config-mismatch", expected: diffs, running: { pid: running.pid }, hint: `ow restart ${name}` }
   }
   // M-C artifact-stale: canlı + uyumlu serviste probe-beyanlı digest ile
   // kayıtlı harita çelişirse (sıralı ilk basename, deterministik). Digest
@@ -190,7 +190,7 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
           kind: "artifact-stale",
           expected: { artifact: base },
           running: { pid: running.pid },
-          hint: `yeniden-derle + ow restart ${name}`,
+          hint: `rebuild + ow restart ${name}`,
         }
       }
     }
@@ -203,9 +203,9 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   ) {
     return {
       service: name,
-      kind: "port-yabanci",
+      kind: "foreign-port",
       running: { pid: running.pid, port: expected.port },
-      hint: `port ${expected.port} yabancı dinleyici (UNVERIFIED) — kill yok, sahibi doğrulayın`,
+      hint: `port ${expected.port} foreign listener (UNVERIFIED) — no kill, verify the owner`,
     }
   }
   return null
@@ -236,13 +236,13 @@ export const portOwners = async (port: number, timeoutMs = 2000): Promise<number
 }
 
 const DRIFT_TR: Record<DriftKind, string> = {
-  eksik: "eksik",
-  fazla: "fazla",
-  durmus: "durmuş",
-  "config-farkli": "config-farklı",
-  "lstart-uyusmazligi": "lstart-uyuşmazlığı",
-  "port-yabanci": "port-yabancı",
-  "artifact-stale": "derleme-eski",
+  missing: "missing",
+  extra: "extra",
+  stopped: "stopped",
+  "config-mismatch": "config-mismatch",
+  "lstart-mismatch": "lstart-mismatch",
+  "foreign-port": "foreign-port",
+  "artifact-stale": "stale-build",
 }
 
 /** Kilitli insan şablonu (M-C): `derleme-eski: <svc> (<base> değişti) →
@@ -250,7 +250,7 @@ const DRIFT_TR: Record<DriftKind, string> = {
 export const formatDrift = (drift: ReconcileDrift): string => {
   if (drift.kind === "artifact-stale") {
     const base = (drift.expected as Record<string, unknown> | undefined)?.["artifact"]
-    return `derleme-eski: ${drift.service} (${typeof base === "string" ? base : "?"} değişti) → yeniden-derle + ow restart ${drift.service}`
+    return `stale-build: ${drift.service} (${typeof base === "string" ? base : "?"} changed) → rebuild + ow restart ${drift.service}`
   }
   return `${DRIFT_TR[drift.kind]}: ${drift.service} → ${drift.hint}`
 }
@@ -283,9 +283,9 @@ export const runReconcileCheck = async (opts: {
     text = decodeUtf8Fatal(readFileSync(opts.file))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`ow: ow.yaml bulunamadı: ${opts.file}`)
+      console.error(`ow: ow.yaml not found: ${opts.file}`)
     } else {
-      console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     }
     return 2
   }
@@ -293,7 +293,7 @@ export const runReconcileCheck = async (opts: {
   try {
     expected = parseUpFile(text).services
   } catch (error) {
-    console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     return 2
   }
   const paths = upPaths(opts.rootDir)
@@ -302,7 +302,7 @@ export const runReconcileCheck = async (opts: {
     const { classifySupervisorFile } = await import("./up-state")
     const status = await classifySupervisorFile(paths.supervisorFile)
     if (status === "corrupt" || status === "bad-version") {
-      console.error("ow: okunamıyor: supervisor.json bozuk — `down --rm` ile temizleyin")
+      console.error("ow: unreadable: supervisor.json corrupt — clean with `down --rm`")
       return 1
     }
   }
@@ -363,16 +363,16 @@ export const runReconcileCheck = async (opts: {
     }
     revisions.push(entry)
   }
-  const revMark = (rev: string, dirty: boolean | undefined): string => (dirty === true ? `${rev}+kirli` : rev)
+  const revMark = (rev: string, dirty: boolean | undefined): string => (dirty === true ? `${rev}+dirty` : rev)
   const revLines = revisions.map((entry) => {
     if (entry.recordedRev !== undefined && entry.liveRev !== undefined && !entry.match) {
-      return `fark: revision ${revMark(entry.recordedRev, entry.recordedDirty)}→${revMark(entry.liveRev, entry.liveDirty)} (${entry.service}; canlı checkout, restart gerekli değil, rapor)`
+      return `diff: revision ${revMark(entry.recordedRev, entry.recordedDirty)}→${revMark(entry.liveRev, entry.liveDirty)} (${entry.service}; live checkout, no restart needed, report)`
     }
     if (entry.recordedRev !== undefined && entry.liveRev !== undefined) {
-      return `rev: ${entry.service} ${revMark(entry.liveRev, entry.liveDirty)} (eşleşti)`
+      return `rev: ${entry.service} ${revMark(entry.liveRev, entry.liveDirty)} (matched)`
     }
-    if (entry.recordedRev !== undefined) return `rev: ${entry.service} ${revMark(entry.recordedRev, entry.recordedDirty)} (kayıtlı; canlı okunamadı)`
-    return `rev: ${entry.service} ${revMark(entry.liveRev as string, entry.liveDirty)} (yalnızca canlı; kayıt yok)`
+    if (entry.recordedRev !== undefined) return `rev: ${entry.service} ${revMark(entry.recordedRev, entry.recordedDirty)} (recorded; live unreadable)`
+    return `rev: ${entry.service} ${revMark(entry.liveRev as string, entry.liveDirty)} (live only; no record)`
   })
   if (!opts.json) {
     for (const line of revLines) console.log(line)
@@ -405,7 +405,7 @@ export const runReconcileCheck = async (opts: {
       }
       if (!live) continue
       if (Date.now() > deadline) {
-        measured.push({ service: name, ok: false, note: "ölçülmedi: timeout-bütçesi" })
+        measured.push({ service: name, ok: false, note: "unmeasured: timeout-budget" })
         continue
       }
       const outcome = await runProbeFn({
@@ -413,7 +413,7 @@ export const runReconcileCheck = async (opts: {
         timeoutMs: PROBE_TIMEOUT_MS[exp.readiness.timeout],
         cwd: exp.cwd === undefined ? opts.rootDir : resolvePath(opts.rootDir, exp.cwd),
         env: { ...process.env, ...exp.env, OW_SERVICE: name },
-      }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "çalıştırılamadı", timedOut: false, code: null }))
+      }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "could-not-run", timedOut: false, code: null }))
       measured.push({ service: name, ok: outcome.ok, note: outcome.note })
       const declared = declaredArtifactDigests(outcome.checks)
       const recorded = run.artifactDigests ?? {}
@@ -460,10 +460,10 @@ export const runReconcileCheck = async (opts: {
   const inSync = drifts.length === 0
   const readinessLines = readiness.map((entry) =>
     entry.ok
-      ? `readiness: ${entry.service} hazır`
-      : entry.note.startsWith("ölçülmedi:")
-        ? `readiness: ${entry.service} ölçülmedi (timeout-bütçesi)`
-        : `readiness: ${entry.service} hazır-değil (${entry.note})`,
+      ? `readiness: ${entry.service} ready`
+      : entry.note.startsWith("unmeasured:")
+        ? `readiness: ${entry.service} unmeasured (timeout-budget)`
+        : `readiness: ${entry.service} not-ready (${entry.note})`,
   )
   if (opts.json) {
     console.log(
@@ -476,7 +476,7 @@ export const runReconcileCheck = async (opts: {
       }),
     )
   } else if (inSync) {
-    console.log(`uyumlu: ${expected.length} servis (${expected.map((svc) => svc.name).join(", ")})`)
+    console.log(`in-sync: ${expected.length} services (${expected.map((svc) => svc.name).join(", ")})`)
   } else {
     for (const drift of drifts) console.log(formatDrift(drift))
   }
@@ -520,7 +520,7 @@ export const recordReadinessResults = async (
             })
             await waitResult(paths.requestsDir, nonce)
           } catch {
-            if (!json) console.error(`uyarı: readiness kaydı doğrulanamadı: ${result.service}`)
+            if (!json) console.error(`warning: readiness record unverified: ${result.service}`)
           }
         })(),
       )

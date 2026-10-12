@@ -37,7 +37,7 @@ New agent/chat/IDE, generic visual workflow builder, MCP marketplace, Kubernetes
 - **Second pilot + measurement.** Time to first useful verification, human actions and repeated prerequisite failures across pilots.
 - **Worktree collision-matrix verdict (pending ≥2-week farm pilot).** The advisory port/service matrix ships active alongside the ownership ledger; keep iff the pilot cites ≥1 avoided incident or an explicit keep, else drop to ledger-only (fallback is one doc paragraph — no code change). Verdict + verbatim evidence to be recorded here.
 - **Workspace-central management (decided).** Operation + observation state lives at the workspace root (`ow.yaml`, `ow.scenarios.yaml`, `.ow/`); repos/checkouts hold code + runtime facts only. Agent instructions live at the session root; repo-level files hold repo-only facts, never duplicate the shared rules.
-- **Per-context boundary overlay (pending M9).** Base matrix at the workspace root + conventional `.ow/boundaries.local.yaml` + explicit `--boundaries <path>` (flag > local > base, source-tagged merge). Arbitrated over named-per-context files (pointer contention) — see plan.
+- **Per-context boundary overlay (landed M9).** Base matrix at the workspace root + conventional `.ow/boundaries.local.yaml` + explicit `--boundaries <path>` (flag > local > base, source-tagged merge). Arbitrated over named-per-context files (pointer contention) — see plan.
 - **Optional additions, only on demand:** browser tracing recipe pack, further datastore/issue adapters, environment profiles, hybrid/remote targets.
 
 ## Pilots and safety gates

@@ -68,7 +68,7 @@ describe("explainServices (saf)", () => {
     expect(items).toHaveLength(1)
     expect(items[0].explanation.diffs).toEqual([])
     expect(items[0].explanation.running).toMatchObject({ lstart: "matched" })
-    expect(items[0].explanation.neden).toContain("M3 probe ekleyin")
+    expect(items[0].explanation.neden).toContain("add an M3 probe")
   })
 
   test("config farkları + neden önceliği", () => {
@@ -82,9 +82,9 @@ describe("explainServices (saf)", () => {
       snapshotOk: true,
     })
     const diffs = items[0].explanation.diffs.join("\n")
-    expect(diffs).toContain("komut değişti")
-    expect(diffs).toContain("port değişti")
-    expect(diffs).toContain("port 3002 dinlemiyor")
+    expect(diffs).toContain("command changed")
+    expect(diffs).toContain("port changed")
+    expect(diffs).toContain("port 3002 not listening")
     expect(items[0].explanation.neden).toContain("ow restart a")
   })
 
@@ -106,7 +106,7 @@ describe("explainServices (saf)", () => {
     expect(byName.get("a")?.running).toMatchObject({ lstart: "dead" })
     expect(byName.get("a")?.neden).toContain("ow restart a")
     expect(byName.get("hayalet")?.running).toMatchObject({ lstart: "mismatch" })
-    expect(byName.get("hayalet")?.diffs.join("\n")).toContain("lstart uyuşmazlığı")
+    expect(byName.get("hayalet")?.diffs.join("\n")).toContain("lstart mismatch")
     expect(byName.get("yeni")?.running).toBeNull()
     expect(byName.get("yeni")?.neden).toContain("ow up yeni")
     expect(byName.get("hayalet")?.expected).toBeNull()
@@ -132,10 +132,10 @@ describe("explainServices (saf)", () => {
       snapshotOk: true,
     })
     expect(items[0].explanation.running).toMatchObject({ lstart: "unknown" })
-    expect(items[0].explanation.diffs.join("\n")).toContain("kirli checkout ile başlatıldı (rev=abc)")
-    expect(items[0].explanation.neden).toContain("güvenli işlem yok")
+    expect(items[0].explanation.diffs.join("\n")).toContain("started with dirty checkout (rev=abc)")
+    expect(items[0].explanation.neden).toContain("no safe action")
     const lines = formatExplanation(items[0])
-    expect(lines.join("\n")).toContain("rev=abc(observed)+kirli")
+    expect(lines.join("\n")).toContain("rev=abc(observed)+dirty")
     const noRev = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30" }],
@@ -143,7 +143,7 @@ describe("explainServices (saf)", () => {
       records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", provenance: { recordedAt: "t" } })],
       snapshotOk: true,
     })
-    expect(formatExplanation(noRev[0]).join("\n")).toContain("rev=doğrulanamadı(UNVERIFIED)")
+    expect(formatExplanation(noRev[0]).join("\n")).toContain("rev=unverifiable(UNVERIFIED)")
   })
 
   test("readiness tanımı + son-bilinen (maskeli, çalıştırmaz)", () => {
@@ -172,8 +172,8 @@ describe("explainServices (saf)", () => {
     })
     expect(defined[0].explanation.readiness.probe).not.toContain("hunter2")
     const text = formatExplanation(defined[0]).join("\n")
-    expect(text).toContain("hazırlık:")
-    expect(text).toContain("hazır (2026-10-09T00:00:00.000Z)")
+    expect(text).toContain("readiness:")
+    expect(text).toContain("ready (2026-10-09T00:00:00.000Z)")
     expect(text).not.toContain("hunter2")
     const missing = explainServices({
       rootDir: "/r",
@@ -183,7 +183,7 @@ describe("explainServices (saf)", () => {
       snapshotOk: true,
     })
     expect(missing[0].explanation.readiness.last).toBeNull()
-    expect(formatExplanation(missing[0]).join("\n")).toContain("ölçülmedi")
+    expect(formatExplanation(missing[0]).join("\n")).toContain("unmeasured")
     const plain = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30" }],
@@ -192,7 +192,7 @@ describe("explainServices (saf)", () => {
       snapshotOk: true,
     })
     expect(plain[0].explanation.readiness).toMatchObject({ defined: false, last: null })
-    expect(formatExplanation(plain[0]).join("\n")).not.toContain("hazırlık:")
+    expect(formatExplanation(plain[0]).join("\n")).not.toContain("readiness:")
   })
 })
 
@@ -242,10 +242,10 @@ describe("ps --explain CLI", () => {
       expect(code).toBe(0)
       const text = io.out.join("\n")
       expect(text).toContain("a:")
-      expect(text).toContain("beklenen: cmd=sleep 30 port=3000")
-      expect(text).toContain("lstart=eşleşti")
+      expect(text).toContain("expected: cmd=sleep 30 port=3000")
+      expect(text).toContain("lstart=matched")
       expect(text).toContain("rev=abc123(observed)")
-      expect(text).toContain("neden:")
+      expect(text).toContain("reason:")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -318,7 +318,7 @@ describe("ps --explain CLI", () => {
       snapshotOk: true,
     })
     expect(dropped[0].explanation.running).not.toHaveProperty("cwd")
-    expect(formatExplanation(dropped[0]).join("\n")).toContain("cwd=doğrulanamadı(UNVERIFIED)")
+    expect(formatExplanation(dropped[0]).join("\n")).toContain("cwd=unverifiable(UNVERIFIED)")
   })
 
   test("--explain yalnızca ps dalında okunur (M-C emsali guard'lar)", async () => {
@@ -340,7 +340,7 @@ describe("ps --explain CLI", () => {
           io.restore()
         }
         expect(`${args.join(" ")} → ${code}`).toBe(`${args.join(" ")} → 2`)
-        expect(io.err.join("\n")).toContain("--explain yalnızca ps ile kullanılır")
+        expect(io.err.join("\n")).toContain("--explain works only with ps")
       }
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -547,7 +547,7 @@ describe("gate: checkout-değişimi restart-sız eski rev gösterir", () => {
         io.restore()
       }
       expect(reconcileCode).toBe(0)
-      expect(io.out.join("\n")).toContain(`fark: revision ${rev1}→`)
+      expect(io.out.join("\n")).toContain(`diff: revision ${rev1}→`)
       const io2 = capture()
       try {
         expect(await run(["ps", "--explain", "--file", file, "--json"])).toBe(0)
@@ -616,7 +616,7 @@ describe("M-C explain derleme kimliği (basename + kısa-8)", () => {
     ])
     expect(items[0].explanation.artifacts.rest).toBe(0)
     const lines = formatExplanation(items[0])
-    expect(lines.join("\n")).toContain("derleme: api.jar@a1b2c3d4, extra.jar@ffffffff")
+    expect(lines.join("\n")).toContain("build: api.jar@a1b2c3d4, extra.jar@ffffffff")
     expect(lines.join("\n")).not.toContain("a1b2c3d4e5f6")
   })
 
@@ -633,7 +633,7 @@ describe("M-C explain derleme kimliği (basename + kısa-8)", () => {
     })
     expect(items[0].explanation.artifacts.shown).toHaveLength(32)
     expect(items[0].explanation.artifacts.rest).toBe(1)
-    expect(formatExplanation(items[0]).join("\n")).toContain("(+1 daha)")
+    expect(formatExplanation(items[0]).join("\n")).toContain("(+1 more)")
     const bare = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30" }],

@@ -107,7 +107,7 @@ describe("trace list view", () => {
       const result = await runTrace(opts(root))
       expect(result.code).toBe(0)
       expect(result.stdout).toContain("GET /orders/{id}")
-      expect(result.stdout).toContain("2 servis")
+      expect(result.stdout).toContain("2 services")
       expect(result.stdout).toContain("2 span")
       expect(result.stdout.endsWith("✗")).toBe(true)
     } finally {
@@ -205,7 +205,7 @@ describe("trace tree view", () => {
       const result = await runTrace(opts(root, { traceId: TRACE_A }))
       expect(result.code).toBe(0)
       const lines = result.stdout.split("\n")
-      expect(lines[0]).toBe(`izleme ${TRACE_A.slice(0, 12)}...  3 span, 3 servis, 118ms`)
+      expect(lines[0]).toBe(`trace ${TRACE_A.slice(0, 12)}...  3 span, 3 services, 118ms`)
       expect(lines[1]).toBe("[web] GET /orders 0ms +118ms ok")
       expect(lines[2]).toBe("  [auth] POST /verify 12ms +96ms error error.type=invalid_token")
       expect(lines[3]).toBe("  [api] GET /orders/{id} 24ms +76ms ok http.route=/orders/{id}")
@@ -222,13 +222,13 @@ describe("trace tree view", () => {
       expect((await runTrace(opts(root, { traceId: TRACE_A.slice(0, 8) }))).code).toBe(0)
       const short = await runTrace(opts(root, { traceId: TRACE_A.slice(0, 7) }))
       expect(short.code).toBe(2)
-      expect(short.stderr).toContain("geçersiz izleme kimliği")
+      expect(short.stderr).toContain("invalid trace id")
       const nonHex = await runTrace(opts(root, { traceId: "zzzzzzzz" }))
       expect(nonHex.code).toBe(2)
-      expect(nonHex.stderr).toContain("geçersiz izleme kimliği")
+      expect(nonHex.stderr).toContain("invalid trace id")
       const unknown = await runTrace(opts(root, { traceId: `d${"e".repeat(31)}` }))
       expect(unknown.code).toBe(1)
-      expect(unknown.stderr).toContain("izleme bulunamadı")
+      expect(unknown.stderr).toContain("trace not found")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -244,7 +244,7 @@ describe("trace tree view", () => {
       ])
       const result = await runTrace(opts(root, { traceId: shared }))
       expect(result.code).toBe(2)
-      expect(result.stderr).toContain("2 aday")
+      expect(result.stderr).toContain("2 candidates")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -281,7 +281,7 @@ describe("trace tree view", () => {
       const lines = result.stdout.split("\n")
       expect(lines.length).toBe(2)
       expect(lines[1].startsWith("[api]")).toBe(true)
-      expect(lines[1]).toContain("(kök yok)")
+      expect(lines[1]).toContain("(no root)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -301,7 +301,7 @@ describe("trace tree view", () => {
       expect(parsed.spans.map((span) => span.depth).sort()).toEqual([0, 1])
       expect(parsed.truncated).toBe(false)
       const human = await runTrace(opts(root, { traceId: TRACE_A }))
-      expect(human.stdout).toContain("(kök yok)")
+      expect(human.stdout).toContain("(no root)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -329,7 +329,7 @@ describe("trace tree view", () => {
       const human = await runTrace(opts(root, { traceId: TRACE_A }))
       expect(human.code).toBe(0)
       expect(human.stdout).toContain("first")
-      expect(human.stdout).not.toContain("kesildi")
+      expect(human.stdout).not.toContain("truncated")
       const asJson = await runTrace(opts(root, { traceId: TRACE_A, json: true }))
       const parsed = JSON.parse(asJson.stdout) as { spans: { name: string }[]; truncated: boolean }
       expect(parsed.truncated).toBe(false)
@@ -362,7 +362,7 @@ describe("trace tree view", () => {
       expect(parsed.truncated).toBe(true)
       expect(parsed.spans.length).toBe(2000)
       const human = await runTrace(opts(root, { traceId: TRACE_A }))
-      expect(human.stdout).toContain("…[kesildi: 100 span]…")
+      expect(human.stdout).toContain("…[truncated: 100 spans]…")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -392,7 +392,7 @@ describe("trace tree view", () => {
       await writeFile(join(root, "ow.yaml"), TRACE_YAML)
       const result = await runTrace(opts(root))
       expect(result.code).toBe(1)
-      expect(result.stderr.startsWith("ow: izleme okunamıyor")).toBe(true)
+      expect(result.stderr.startsWith("ow: traces unreadable")).toBe(true)
       expect(result.stderr).not.toContain("\n    at ")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -503,8 +503,8 @@ describe("trace list interest filter", () => {
   })
 
   test("invalid --min-spans is a usage error", () => {
-    expect(parseArgs(["trace", "--min-spans", "0"]).error).toContain("geçersiz --min-spans")
-    expect(parseArgs(["trace", "--min-spans", "bogus"]).error).toContain("geçersiz --min-spans")
+    expect(parseArgs(["trace", "--min-spans", "0"]).error).toContain("invalid --min-spans")
+    expect(parseArgs(["trace", "--min-spans", "bogus"]).error).toContain("invalid --min-spans")
     expect(parseArgs(["trace", "--min-spans", "3"]).error).toBeNull()
   })
 })
@@ -515,7 +515,7 @@ describe("trace quiet paths", () => {
     try {
       const human = await runTrace(opts(root))
       expect(human.code).toBe(0)
-      expect(human.stdout).toBe(`izleme yok (.ow/ bulunamadı — aranan: ${root}; workspace kökünden çalıştırın ya da --file verin)`)
+      expect(human.stdout).toBe(`no traces (.ow/ not found — searched: ${root}; run from the workspace root or pass --file)`)
       const asJson = await runTrace(opts(root, { json: true }))
       expect(asJson.code).toBe(0)
       expect(asJson.stdout).toBe('{"traces":[]}')
@@ -531,7 +531,7 @@ describe("trace quiet paths", () => {
       await writeFile(join(root, "ow.yaml"), "services:\n  a:\n    cmd: x\n")
       const human = await runTrace(opts(root))
       expect(human.code).toBe(0)
-      expect(human.stdout).toBe("izleme kapalı (ow.yaml içinde trace: bloğu yok)")
+      expect(human.stdout).toBe("tracing off (no trace: block in ow.yaml)")
       const asJson = await runTrace(opts(root, { json: true }))
       expect(asJson.stdout).toBe('{"traces":[]}')
     } finally {
@@ -546,12 +546,12 @@ describe("trace quiet paths", () => {
       await writeFile(join(root, "ow.yaml"), TRACE_YAML)
       const human = await runTrace(opts(root))
       expect(human.code).toBe(0)
-      expect(human.stdout).toBe("izleme yok (henüz span gelmedi)")
+      expect(human.stdout).toBe("no traces (no spans yet)")
       const asJson = await runTrace(opts(root, { json: true }))
       expect(asJson.stdout).toBe('{"traces":[]}')
       const withId = await runTrace(opts(root, { traceId: TRACE_A }))
       expect(withId.code).toBe(0)
-      expect(withId.stdout).toBe("izleme yok (henüz span gelmedi)")
+      expect(withId.stdout).toBe("no traces (no spans yet)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1345,7 +1345,7 @@ describe("trace doctor line", () => {
       ], [], yamlWithPort(listener.port))
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toBe(`açık (port ${listener.port}, 1 span, son span 0s önce)`)
+      expect(open.detail).toBe(`open (port ${listener.port}, 1 spans, last span 0s ago)`)
     } finally {
       listener.stop()
       await rm(root, { recursive: true, force: true })
@@ -1362,8 +1362,8 @@ describe("trace doctor line", () => {
       ], [], yamlWithPort(port))
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toContain(`açık (port ${port}, 1 span,`)
-      expect(open.detail).toContain(`ipucu: alıcı :${port} dinlemiyor`)
+      expect(open.detail).toContain(`open (port ${port}, 1 spans,`)
+      expect(open.detail).toContain(`hint: receiver :${port} not listening`)
       expect(doctorFails([{ name: "trace", ok: false }])).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -1381,14 +1381,14 @@ describe("trace doctor line", () => {
       // Python-only setup (no java markers), spans present, jar absent → açık, no jar note
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toMatch(new RegExp(`açık \\(port ${port}, 1 span, son span .* önce\\)`))
+      expect(open.detail).toMatch(new RegExp(`open \\(port ${port}, 1 spans, last span .* ago\\)`))
       expect(open.detail).not.toContain("jar")
       const bare = await tempRoot()
       try {
         await writeFile(join(bare, "ow.yaml"), "services:\n  a:\n    cmd: x\n")
         const closed = await checkTraceDoctor(bare)
         expect(closed.ok).toBe(false)
-        expect(closed.detail).toContain("kapalı (ow.yaml içinde trace: yok)")
+        expect(closed.detail).toContain("off (no trace: in ow.yaml)")
       } finally {
         await rm(bare, { recursive: true, force: true })
       }
@@ -1404,12 +1404,12 @@ describe("trace doctor line", () => {
       await seedRows(root, [], [], javaYamlWithPort(port))
       const missing = await checkTraceDoctor(root)
       expect(missing.ok).toBe(false)
-      expect(missing.detail).toContain("javaagent jar yok")
+      expect(missing.detail).toContain("no javaagent jar")
       await mkdir(join(root, ".ow", "otel"), { recursive: true })
       await writeFile(join(root, ".ow", "otel", "opentelemetry-javaagent.jar"), "")
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toContain(`açık (port ${port}, 0 span)`)
+      expect(open.detail).toContain(`open (port ${port}, 0 spans)`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1422,14 +1422,14 @@ describe("trace doctor line", () => {
       await seedRows(root, [], [], yamlWithPort(port))
       const silent = await checkTraceDoctor(root)
       expect(silent.ok).toBe(true)
-      expect(silent.detail).toBe(`açık (port ${port}, 0 span). ipucu: span yok — servis ayakta mı? ow ps. ipucu: alıcı :${port} dinlemiyor — portu başka süreç tutuyor olabilir ya da alıcı başlayamadı`)
+      expect(silent.detail).toBe(`open (port ${port}, 0 spans). hint: no spans — is the service up? ow ps. hint: receiver :${port} not listening — another process may hold the port or the receiver failed to start`)
       const now = Date.now()
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /gizli-hint-kanarya", startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
       ], [], yamlWithPort(port))
       const flowing = await checkTraceDoctor(root)
       expect(flowing.ok).toBe(true)
-      expect(flowing.detail).not.toContain("span yok")
+      expect(flowing.detail).not.toContain("no spans")
       expect(flowing.detail).not.toContain("gizli-hint-kanarya")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -1445,7 +1445,7 @@ describe("trace doctor line", () => {
       await seedRows(root, [], [], yamlWithPort(port))
       const missing = await checkTraceDoctor(root)
       expect(missing.ok).toBe(false)
-      expect(missing.detail).toContain("javaagent jar yok")
+      expect(missing.detail).toContain("no javaagent jar")
     } finally {
       if (saved === undefined) delete process.env.JAVA_TOOL_OPTIONS
       else process.env.JAVA_TOOL_OPTIONS = saved
@@ -1491,9 +1491,9 @@ describe("trace doctor line", () => {
       await store.flush()
       const hinted = await checkTraceDoctor(root)
       expect(hinted.ok).toBe(true)
-      expect(hinted.detail).toContain("isimsiz span var")
+      expect(hinted.detail).toContain("unnamed spans present")
       expect(hinted.detail).toContain("OTEL_SERVICE_NAME")
-      expect(hinted.detail).not.toContain("span yok")
+      expect(hinted.detail).not.toContain("no spans")
       expect(hinted.detail).not.toContain("gizli-kanarya")
       const named = await tempRoot()
       try {
@@ -1505,7 +1505,7 @@ describe("trace doctor line", () => {
         // seedRows rewrites ow.yaml identically; spans carry service api.
         const clean = await checkTraceDoctor(named)
         expect(clean.ok).toBe(true)
-        expect(clean.detail).not.toContain("ipucu")
+        expect(clean.detail).not.toContain("hint:")
       } finally {
         await rm(named, { recursive: true, force: true })
       }
@@ -1513,8 +1513,8 @@ describe("trace doctor line", () => {
       try {
         await writeFile(join(empty, "ow.yaml"), TRACE_YAML)
         const silent = await checkTraceDoctor(empty)
-        expect(silent.detail).toContain("span yok")
-        expect(silent.detail).not.toContain("isimsiz")
+        expect(silent.detail).toContain("no spans")
+        expect(silent.detail).not.toContain("unnamed")
       } finally {
         await rm(empty, { recursive: true, force: true })
       }
@@ -1548,8 +1548,8 @@ describe("trace command registration", () => {
     expect(parsed.command).toBe("trace")
     expect(parsed.sessionID).toBe(TRACE_A.slice(0, 8))
     expect(parsed.flags["--service"]).toBe("api")
-    expect(helpText()).toContain("trace [iz]")
-    expect(parseArgs(["trace", "--nope"]).error).toContain("bilinmeyen seçenek")
+    expect(helpText()).toContain("trace [trace]")
+    expect(parseArgs(["trace", "--nope"]).error).toContain("unknown option")
   })
 
   test("parseArgs validates --wait; parseWaitDuration maps units with a 5m cap", () => {
@@ -1564,9 +1564,9 @@ describe("trace command registration", () => {
     const ok = parseArgs(["trace", "--wait", "15s"])
     expect(ok.error).toBeNull()
     expect(ok.flags["--wait"]).toBe("15s")
-    expect(parseArgs(["trace", "--wait", "0s"]).error).toContain("geçersiz --wait")
-    expect(parseArgs(["trace", "--wait", "bogus"]).error).toContain("geçersiz --wait")
-    expect(parseArgs(["trace", "--wait", "6m"]).error).toContain("geçersiz --wait")
+    expect(parseArgs(["trace", "--wait", "0s"]).error).toContain("invalid --wait")
+    expect(parseArgs(["trace", "--wait", "bogus"]).error).toContain("invalid --wait")
+    expect(parseArgs(["trace", "--wait", "6m"]).error).toContain("invalid --wait")
     expect(helpText()).toContain("--wait")
   })
 })
@@ -1604,7 +1604,7 @@ describe("trace --wait", () => {
       const result = await runTrace(opts(root, { waitMs: 600, minSpans: 1 }))
       expect(result.code).toBe(0)
       expect(result.stdout).toContain("1 span")
-      expect(result.stderr).toContain("bekleme süresi doldu")
+      expect(result.stderr).toContain("wait expired")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

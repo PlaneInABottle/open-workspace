@@ -13,7 +13,7 @@ export const PROBE_STDOUT_MAX_BYTES = 64 * 1024
 export const PROBE_STDERR_MAX_BYTES = 16 * 1024
 export const PROBE_NOTE_MAX_CHARS = 200
 export const PROBE_RESULT_NOTE_MAX_CHARS = 500
-export const ORPHAN_NOTE = "artakalan-torun-olabilir"
+export const ORPHAN_NOTE = "may-be-leftover-grandchild"
 
 /** M-C (#1): probe-beyanlı kod-kimliği — runner'ın ÇÖZÜMLENMİŞ modül yolu
  * (`path`, ≤512ch) + içerik digesti (`digest`, hex 7..128ch). İkisi de
@@ -208,7 +208,7 @@ export const runProbe = async (opts: {
       env: opts.env,
     })
   } catch (error) {
-    return fail(`başlatılamadı: ${error instanceof Error ? error.message : String(error)}`)
+    return fail(`could not start: ${error instanceof Error ? error.message : String(error)}`)
   }
   let stdout = ""
   let stderr = ""
@@ -247,14 +247,14 @@ export const runProbe = async (opts: {
   const code = settled[0] as number | null
   clearTimeout(timer)
   if (timedOut) {
-    return fail(`zaman aşımı (${Math.round(timeoutMs / 1000)}sn) — not: ${ORPHAN_NOTE}`, { timedOut: true, code })
+    return fail(`timeout (${Math.round(timeoutMs / 1000)}s) — note: ${ORPHAN_NOTE}`, { timedOut: true, code })
   }
   if (code !== 0) {
     const contract = parseProbeContract(stdout)
     const errBit = stderr.trim().length > 0 ? ` — stderr: ${stderr.trim().slice(0, 200)}` : ""
     return {
       ok: false,
-      note: maskSecrets(`${contract?.note ?? "hazır değil"} (çıkış kodu ${code ?? "?"})${errBit}`).slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
+      note: maskSecrets(`${contract?.note ?? "not ready"} (exit code ${code ?? "?"})${errBit}`).slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
       timedOut: false,
       code,
       ...(contract?.checks === undefined ? {} : { checks: contract.checks }),
@@ -262,12 +262,12 @@ export const runProbe = async (opts: {
   }
   const contract = parseProbeContract(stdout)
   if (contract === null) {
-    return fail(`geçersiz JSON (stdout ilk obje bekleniyor)${truncatedStdout ? " — çıktı cap'li" : ""}`, { code })
+    return fail(`invalid JSON (expected first stdout object)${truncatedStdout ? " — output capped" : ""}`, { code })
   }
   if (!contract.ready) {
     return {
       ok: false,
-      note: maskSecrets(contract.note ?? "hazır değil").slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
+      note: maskSecrets(contract.note ?? "not ready").slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
       timedOut: false,
       code,
       ...(contract.checks === undefined ? {} : { checks: contract.checks }),
@@ -275,7 +275,7 @@ export const runProbe = async (opts: {
   }
   return {
     ok: true,
-    note: maskSecrets(contract.note ?? "hazır").slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
+    note: maskSecrets(contract.note ?? "ready").slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
     timedOut: false,
     code,
     ...(contract.checks === undefined ? {} : { checks: contract.checks }),

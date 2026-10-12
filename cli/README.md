@@ -98,8 +98,7 @@ services:
 
 Schema notes: top-level `services:` required; per-service keys are
 `cmd|command`, `cwd|working_dir`, `port|ports` (flow list or
-`host:container`), `logs`, `env`, `depends_on`. Unknown fields warn (`bilinmeyen alan
-yoksayıldı`), never fail; block-sequence lists are rejected with a
+`host:container`), `logs`, `env`, `depends_on`. Unknown fields warn (`unknown field ignored`), never fail; block-sequence lists are rejected with a
 line-naming error; a service needs `cmd` or `logs` (both allowed —
 `logs` then runs as a sibling tail).
 
@@ -145,39 +144,39 @@ services:
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir
-ow up <ad> [-d] [--file ow.yaml]  # live: add one service via the supervisor (no live lock → bulk up)
-ow restart <ad> [--file ow.yaml]  # live: lstart-verified stop + respawn in place (no lock → exit 2)
-ow down [ad] [--file ow.yaml]  # single: stop only the target (lock/state files kept; --rm is bulk-only → exit 2)
+ow up <name> [-d] [--file ow.yaml]  # live: add one service via the supervisor (no live lock → bulk up)
+ow restart <name> [--file ow.yaml]  # live: lstart-verified stop + respawn in place (no lock → exit 2)
+ow down [name] [--file ow.yaml]  # single: stop only the target (lock/state files kept; --rm is bulk-only → exit 2)
 ow reconcile --check [--json] [--file ow.yaml]  # read-only drift report (never mutates)
 ow provision --check [--json] [--probe] [--file ow.yaml]  # worktree checklist: .env symlink + .venv + HEAD + preflight gate (read-only, exit 0 pass / 1 missing / 2 usage; never gates up/ps/reconcile/preflight)
-ow ps [--json]                 # pid, uptime, cpu%, mem, port, listen=evet/hayır
+ow ps [--json]                 # pid, uptime, cpu%, mem, port, listen=yes/no
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
 ow doctor                      # observer health plus an informational up: line
 ow init [--force] [--tracing]  # scaffold ow.yaml from repo detection (never overwrites without --force)
 ```
 
-`ow up -d --wait <süre> [--health <ad>=<yol> ...]` (ör. `--wait 150s
---health configuration=/actuator/health`, `--wait` en fazla 5m) detaches first,
+`ow up -d --wait <duration> [--health <name>=<path> ...]` (e.g. `--wait 150s
+--health configuration=/actuator/health`, `--wait` at most 5m) detaches first,
 then waits until every declared `port` accepts a TCP connection: exit 0
-with `hazır: <ad> :<port> (<sn>sn)` per service, exit 1 when any port times
-out (`zaman aşımı: ...`) or a service exits early (`bitti: ... (çıkış kodu
-N) — ow logs <ad>`). A `--health`-flagged service additionally waits for
-HTTP 2xx on `http://127.0.0.1:<port><yol>` after its TCP gate, and its
-`hazır:` line carries the path (`hazır: configuration
-:8901/actuator/health (42sn)`); unflagged services keep pure TCP.
-`--health` is repeatable (one `<ad>=<yol>` per occurrence, comma-separated
+with `ready: <name> :<port> (<n>s)` per service, exit 1 when any port times
+out (`timeout: ...`) or a service exits early (`exited: ... (exit code
+N) — ow logs <name>`). A `--health`-flagged service additionally waits for
+HTTP 2xx on `http://127.0.0.1:<port><path>` after its TCP gate, and its
+`ready:` line carries the path (`ready: configuration
+:8901/actuator/health (42s)`); unflagged services keep pure TCP.
+`--health` is repeatable (one `<name>=<path>` per occurrence, comma-separated
 also accepted) and a CLI flag only — never an `ow.yaml` key, never
 supervisor state. Unknown service names, slash-less paths, port-less
 services, `--health` without `--wait` (or without `-d`), and any `--health`
 with `--check` are usage errors (exit 2, nothing spawns). Services without
-a `port` are named (`port tanımsız (beklenmedi): ...`)
+a `port` are named (`port undefined (not waited): ...`)
 but never waited on; with no declared ports at all `up -d --wait` exits 0
 immediately. `--wait` without `-d/--detach` is a usage error (exit 2, nothing
 spawns, no `.ow` created), as is any `--wait` combined with `--check`
 (`--check` only validates, never waits). `--json` mirrors the human lines with stable
 English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?, healthPath?}], noPort}`).
-`ps` probes the same way per declared port: human `listen=evet/hayır`,
+`ps` probes the same way per declared port: human `listen=yes/no`,
 JSON additive `listening` key (present only with `port`).
 
 Readiness defaults to TCP-accept (a listener answers on the port), not
@@ -186,31 +185,30 @@ inspect response bodies. `--health` is the explicit opt-in that adds one
 loopback GET per flagged service — still one-shot and bounded, never a
 restart/healthcheck daemon. That stays distinct from the
 spawn-time port-conflict probe, which is a best-effort HTTP fetch warning
-(`port çakışması`) before spawning. One-shot bounded wait only — no
+(`port conflict`) before spawning. One-shot bounded wait only — no
 restart/healthcheck daemon semantics.
 
 ### Tek-servis yaşam döngüsü + salt-okunur reconcile (M1)
 
 No separate `.ow` patch is needed to add or refresh one service: while the
-supervisor lock is live, `up/restart/down <ad>` affects only that service —
+supervisor lock is live, `up/restart/down <name>` affects only that service —
 healthy services are never signaled.
 
 - While the lock is live the client never spawns: it prints a pre-mutation
-  diff (`+ başlatılacak:` / `yeniden:` / `durdurulacak:`, cmd in masked
+  diff (`+ to-start:` / `restart:` / `to-stop:`, cmd in masked
   shape), writes one atomic request under `.ow/requests/`, and waits one-shot
-  10s for the supervisor's result (no result → exit 1 `istek yanıtsız`,
+  10s for the supervisor's result (no result → exit 1 `request unanswered`,
   never an assumed half-spawn). The supervisor is the sole writer; requests
-  run FIFO. An already-running target reports `zaten çalışıyor:` (exit 2,
-  no spawn). A blind target (unverifiable `lstart`) reports `zaten çalışıyor
-  olabilir:` (exit 2, no spawn — the slot is never treated as free). Live
+  run FIFO. An already-running target reports `already running:` (exit 2,
+  no spawn). A blind target (unverifiable `lstart`) reports `may already be running:` (exit 2, no spawn — the slot is never treated as free). Live
   single-`up` ignores `-d`/`--wait`: the result wait is always the fixed
-  one-shot 10s, independent of `--wait`. With no live lock, `up <ad>` falls
-  back to classic bulk `up`, `restart` refuses (exit 2, `önce ow up`), and
-  `down <ad>` stops the target directly without touching the lock file.
+  one-shot 10s, independent of `--wait`. With no live lock, `up <name>` falls
+  back to classic bulk `up`, `restart` refuses (exit 2, `no running supervisor for restart`), and
+  `down <name>` stops the target directly without touching the lock file.
 - `ow reconcile --check` is the witness line: it never mutates, only reports
-  `eksik | fazla | durmuş | config-farklı(cmd-şekil/cwd/port/env-adları/
-  depends_on) | lstart-uyuşmazlığı | port-yabancı` plus the suggested open
-  command (`ow up/restart/down <ad>`). Exit 0 in sync, 1 on drift, 2 on
+  `missing | extra | stopped | config-mismatch(cmd-shape/cwd/port/env-names/
+  depends_on) | lstart-mismatch | foreign-port` plus the suggested open
+  command (`ow up/restart/down <name>`). Exit 0 in sync, 1 on drift, 2 on
   usage. `--json` adds the `reconcile: {inSync, drifts: [{service, kind,
   expected?, running?, hint}]}` envelope (additive). No probe runs here:
   `--probe` belongs to M3 (exit 2 until then), and `ps` never executes
@@ -232,18 +230,18 @@ yolunda çalışır — `ps`/`ps --explain` asla çalıştırmaz (kayıtlı değ
 render eder).
 
 ```sh
-ow ps --explain [servis] [--json]  # beklenen vs çalışan + fark + neden
+ow ps --explain [service] [--json]  # expected vs running + diff + reason
 ```
 
-Her servis için `beklenen:` (ow.yaml cmd-şekli/cwd/port/env-adları) vs
-`çalışan:` (pid/durum/lstart-hükmü/listen/cwd/rev/interpreter) +
-`hazırlık:` (probe tanımı + son-bilinen) + `fark:` satırları + tek `neden:`
+Her servis için `expected:` (ow.yaml cmd-şekli/cwd/port/env-adları) vs
+`running:` (pid/durum/lstart-hükmü/listen/cwd/rev/interpreter) +
+`readiness:` (probe tanımı + son-bilinen) + `diff:` satırları + tek `reason:`
 satırı yazdırır. `--json` additive
 `{services, explanations: [{service, explanation:
 {expected, running, diffs[], provenance, neden, readiness}}]}` verir.
 `reconcile --check`
-ayrıca kayıtlı rev + canlı checkout rev'ini gösterir (`fark: revision
-<eski>→<yeni> (canlı checkout; restart gerekli değil, rapor)` — drift
+ayrıca kayıtlı rev + canlı checkout rev'ini gösterir (`diff: revision
+<old>→<new> (live checkout; no restart needed, report)` — drift
 değil, çıkış değişmez).
 
 ### Proje-tanımlı readiness (M3, istemci-tarafı one-shot, gating yok)
@@ -254,27 +252,27 @@ timeout 5s|10s|30s; `needsPort` portsuzda şema hatası). Probe YALNIZCA
 istemcide çalışır (`up -d --wait`, `reconcile --check --probe`) —
 supervisor asla çalıştırmaz, gating/daemon yok. Sözleşme: stdout'taki ilk
 JSON obje `{ready: bool, note?, checks?}`; `ready:true` + exit 0 +
-timeout-içi + geçerli JSON = hazır, diğer her şey hazır-değil
+timeout-bound + valid JSON = ready, everything else not-ready
 (retry/restart yok). Timeout tek-pid kill (torun sızabilir:
-`artakalan-torun-olabilir`); stdout ≤64KB, secret-maske zorunlu.
+`may-be-leftover-grandchild`); stdout ≤64KB, secret-maske zorunlu.
 `up -d --wait` hedef-başı önce TCP (`needsPort`) sonra probe bekler
-(`hazır değil: <ad> (probe: <not>)`, JSON `readiness: {kind:
+(`not ready: <name> (probe: <note>)`, JSON `readiness: {kind:
 tcp|http-health|probe, ok, note?, waitedSec}`); `reconcile --check
---probe` drift + `readiness: hazır/hazır-değil` raporlar (toplam ≤60s
+--probe` drift + `readiness: ready/not-ready` reports (toplam ≤60s
 soft bütçe — son başlayan probe tek-timeout aşabilir; aşımda
-`ölçülmedi(timeout-bütçesi)`; çıkış drift'e göre).
+`unmeasured(timeout-budget)`; exit follows drift).
 `--health` ile tanımlı probe çakışırsa exit 2. Sonuçlar istek-kanalıyla
 kaydedilir (`lastReadiness`, pid-doğrulanmış); `ps --explain` tanım +
 sonucu gösterir, çalıştırmaz.
 
-### Probe kod-kimliği + derleme-eski drift'i (M-C)
+### Probe kod-kimliği + stale-build drift'i (M-C)
 
 Probe sözleşmesi `checks[]` girdilerine katkısal `path?` (çözümlenmiş modül
 yolu, 1..512ch) + `digest?` (hex 7..128ch) taşır; bozuk alan düşer, girdi
 yaşar (sözleşme-fatalı yok). `reconcile --check --probe` ok-girdilerin
 `basename(path) → digest` beyanını kayıtlı `artifactDigests` haritasıyla
-karşılaştırır (canlı servis): uyuşmazlık → `derleme-eski: <svc> (<base>
-değişti) → yeniden-derle + ow restart <svc>` (kilitli şablon; exit 1,
+karşılaştırır (canlı servis): uyuşmazlık → `stale-build: <svc> (<base>
+changed) → rebuild + ow restart <svc>` (locked template; exit 1,
 diğer drift'lerle aynı); kayıtsız basename → kayıt-gözlem (istek-kanalıyla
 tek-yazar supervisor birleştirir; drift/uyarı yok). Harita servis-başı
 ≤200 girdi (cap); respawn'da diriltilmez (ölü pid'in derlemesi yeni pid'e
@@ -282,7 +280,7 @@ bulaşmaz). Tel/insan YALNIZCA basename + kısa-8 indirgenmiş görür (≤32
 gösterilir, kalan sayılır); tam-yol/tam-digest/probe-argv asla DOM/HAR/
 log/tel'e çıkmaz (durum dosyası ham tutar). `--json` katkısal
 `artifactDigests` (kısaltılmış) + `artifactStale` anahtarları verir.
-`ps --explain` kayıtlı haritayı `derleme: <base>@<kısa-8> (+N daha)`
+`ps --explain` kayıtlı haritayı `build: <base>@<short-8> (+N more)`
 satırında gösterir.
 
 ### Evidence zarfı + checkpoint konvensiyonu (P2-A)
@@ -309,22 +307,21 @@ satırı bozar).
 
 `ow checkpoints list [--json]` koşuları (ad + zarf sayısı + özet + son
 `at`) listeler; `ow checkpoints show <run> [--json]` satırları
-`doğrulandı/gözlenmedi/bayat` dilinde render eder, her zarf için bir
-`yan-etki: <stage> (yok|denendi|onaylandı|bilinmiyor[, denenen: N][, onaylanan: M])`
-bayrak satırı ekler, kapanışta `son
-doğrulanmış` + `ilk eksik` + runner'ın `sonraki` passthrough'unu gösterir
-(yorum katılmaz). Eksik `side_effect` ≡ `bilinmiyor` (uyarısız);
+`confirmed/not-observed/stale` dilinde render eder, her zarf için bir
+`side-effect: <stage> (none|attempted|confirmed|unknown[, attempted: N][, confirmed: M])`
+bayrak satırı ekler, kapanışta `last confirmed` + `first missing` + runner'ın `next` passthrough'unu gösterir
+(yorum katılmaz). Eksik `side_effect` ≡ `unknown` (uyarısız);
 sayımlar render-only'dir (ow hesaplamaz). Aynı stage'de `attempted`
 sonrası `confirmed` yoksa tek satırlık kilitli ipucu basılır:
-`tekrar-öncesi: ow reconcile --check` (düğme/otomatik eylem yok).
+`before-retry: ow reconcile --check` (düğme/otomatik eylem yok).
 Soy (`scenario` 1..64ch RUN_NAME_PATTERN-şekilli, `attempt` 1..999 tamsayı,
 `step_signature` 1..128ch opak dize — üçü de katkısal-isteğe-bağlı;
-bozuk değer satırı bozar) `senaryo: <ad>` → `deneme <N>: <stage> (<durum>[,
-doğrulanmadı])` ağacında gruplanır: açık alanlar kazanır, yoksa koşu-adı
+bozuk değer satırı bozar) `scenario: <name>` → `attempt <N>: <stage> (<status>[,
+unconfirmed])` ağacında gruplanır: açık alanlar kazanır, yoksa koşu-adı
 soneki (`-attempt<N>`/`-deneme<N>`) yedektir, ikisi de yoksa satır sahipsiz
 kalır (düz listede, asla gruplanmaz). Tazelik bu alanları yoksayar
-(ortogonal). Dosya yoksa exit 1, bozuk satırlar `bozuk-satır: N
-(atlandı)` ile atlanır, geçersiz run adı exit 2. Canlı exec
+(ortogonal). Dosya yoksa exit 1, bozuk satırlar `corrupt-line: N
+(skipped)` ile atlanır, geçersiz run adı exit 2. Canlı exec
 (probe/health/git/lsof) bu yollarda yoktur; ow `proof` içeriğini
 yorumlamaz.
 
@@ -342,8 +339,8 @@ the bucket (no message scan, no inference). The two-attempt rule lives
 here, never in `show`: a `(scenario, stage)` partition renders only with
 2+ non-confirmed occurrences (explicit lineage fields win, run-name
 suffix is the fallback, unattributed lines partition under no scenario);
-singletons fold into one fixed line, `tekrar-yok: <n> tekil bulgu
-listelenmedi`. Empty output is `bulgu yok`. Exit is always 0. The command
+singletons fold into one fixed line, `no-repeat: <n> unique findings
+unlisted`. Empty output is `no findings`. Exit is always 0. The command
 never executes, writes, or prunes (bounded file reads only). `--json`
 returns additive English keys `{groups: [{stage, status, stale_reason,
 step, count}], singletons}`.
@@ -355,15 +352,15 @@ beklenen/çalışan config kimliği (provenance lensi) + state'teki
 `lastReadiness` (son bilinen) sonuçlarını tek zarfta birleştirir; ayrıca
 checkpoint zarflarındaki bayat/gözlenmedi satırları kapıyı düşürür.
 Mutasyon YOK (spawn/stop/restart çağırmaz), gating YOK (karar runner'ındır).
-Geçerse exit 0 (`hazır: ortam kapıdan geçti`); geçemezse exit 1 + Türkçe
-eksik listesi (`eksik: …`, `bayat: …`, `hazır-değil: …`); kullanım hatası
+Geçerse exit 0 (`ready: environment passed the gate`); geçemezse exit 1 + English
+missing list (`missing: …`, `stale: …`, `not-ready: …`); kullanım hatası
 exit 2. `--json` additive `{pass, gates: [{name:
-reconcile|provenance|readiness, pass, detail}], missing, envelopes}` verir
+reconcile|provenance|readiness|boundary, pass, detail}], missing, envelopes}` verir
 (`detail` M1 alt-ağaçlarını aynen gömer). Bayraksız canlı exec YOK;
 `--probe` bildirimli portlara one-shot loopback TCP onayı ekler (toplam
-≤60s bütçe, aşımda `(ölçülmedi: timeout-bütçesi)`); kayıtlı ret (`hazır-değil`)
-canlı TCP'yi yener. M2/M3 land etmedi: `lastReadiness` yoksa kapı
-`ölçülmedi` ile düşer.
+≤60s bütçe, aşımda `(unmeasured: timeout-budget)`); kayıtlı ret (`not-ready`)
+canlı TCP'yi yener. `lastReadiness` yoksa kapı
+`unmeasured` ile düşer.
 
 Runner reçetesi (docs-only, kod yok): runner `prepare` ilk satırında `ow
 preflight --json` çağırır; `pass:false` ise işi başlatmaz, `missing[]`'i
@@ -437,7 +434,7 @@ passes silently, the healthy family stays green):
 
 | kind | signal | human line |
 |---|---|---|
-| `stale-jar` | recorded digest identity ≠ fresh declaration (same basename) | `derleme-eski: <name> (<base> değişti)` — renders via the shared drift formatter, converging to `stale-build:` in E1 |
+| `stale-jar` | recorded digest identity ≠ fresh declaration (same basename) | `stale-build: <name> (<base> changed)` |
 | `origin-403` | 403 in a recorded note (origin gate, not down) | `origin-suspect: <name> (…)` |
 | `msw-vite-trap` | `msw`/mock-service-worker marker in cmd, or `vite preview` (frozen build) | `mock-traffic: <name> (…)` |
 | `v5-confusion` | non-v1 ow.yaml `version:` (v1 assumed) | `version-confusion: <name> (…)` |
@@ -473,12 +470,20 @@ runner-written — `ow` writes replay only, never checkpoints.
 
 State-changing boundaries are never replayed: `real-state-changing`
 and `blocked:*` refuse with exit 2 naming the boundary, on both
-verbs. Unknown scenario names, unverified-only scenarios, and missing
+verbs. INERT scaffold files refuse on all three verbs (`record`,
+`contract check`, `scenario run` → exit 2 `INERT: <file>`): a
+placeholder contract is meaningless — edit real probes first.
+Unknown scenario names, unverified-only scenarios, and missing
 files fail closed without writing.
 
 `ow contract check [--json] [--file]` is the ship-order gate: it
 recomputes each deterministic scenario's definition digest and
-compares it to the recorded contract hash. Exits: 0 match, 1
+compares it to the recorded contract hash. The digest covers the full
+definition (services/boundaries/targets/probes/checkpoints plus M6/M7
+mode/restore/asserts/data/env_file and opaque track fields): editing
+any of them flips a recorded contract to mismatch — re-record to heal
+(old records predate the wider digest and mismatch on first check).
+Exits: 0 match, 1
 digest-mismatch (`contract-mismatch:`) or unknown hash
 (`unknown-record:`, never a silent pass), 2 usage or a
 state-changing scenario in scope. `--json` is additive `{pass,
@@ -488,7 +493,7 @@ keys; full digests never render — short-8 plus the verdict).
 ### Overlay boundaries (local convention + explicit flag)
 
 Base scenario boundaries stay in `ow.scenarios.yaml`; a local overlay
-narrows them without touching the base file. Two layers, fixed
+narrows them without touching the base file. Three layers, fixed
 precedence — `--boundaries <path>` flag > `<root>/.ow/boundaries.local.yaml`
 convention > base. An absent overlay (no flag, no convention file) is
 byte-identical to no overlay at all. The user owns overlay files; `ow`
@@ -507,7 +512,10 @@ scenarios:
 
 Merge rule: an overlay `boundaries:` list replaces the base list
 wholesale per scenario (a two-value base collapses to a one-value
-overlay — never a union). Values still flow through the M1 taxonomy
+overlay — never a union). A scenario entry without a `boundaries:` key
+refuses (`boundaries required`) — silent emptying is never intended; an
+explicit `boundaries: []` stays allowed as intentional empty.
+Values still flow through the M1 taxonomy
 (`normalizeBoundary`): unknown values warn `unknown boundaries: <v>
 (UNVERIFIED)` and never refuse. `blocked:` quoting trap: quote reasons
 containing commas (`blocked:"fix, later"`) — an unquoted comma splits
@@ -526,14 +534,15 @@ caps (256KB/500 lines, `oversize` refusal). A `baseDigest:` mismatch
 advises `overlay-stale: base changed since <short-8> (warning)` and
 never fails. With git present and no ignore entry, the convention file
 warns `overlay-gitignore-missing: boundaries.local.yaml (warning)`
-(gitless roots stay silent). `--boundaries` outside the six readers
+(gitless roots stay silent). `--boundaries` outside the eight readers
 (scenarios, preflight, readiness, provision, record, contract,
-scenario run) is exit 2, never silently ignored.
+scenario run, scenario env) is exit 2, never silently ignored.
 
 Source tags (silent overlays are a bug): human rows sourced from the
 overlay gain an `[overlay]` suffix; `--json` gains `overlayApplied`,
-`overlayFile` (basename only), and `boundarySources[]` (`{scenario,
-boundary, source: base|local|flag}`); provenance-bearing outputs
+`overlayFile` (basename only), `boundarySources[]` (`{scenario,
+boundary, source: base|local|flag}`), and `overlayWarnings[]`;
+provenance-bearing outputs
 (record, contract, scenario run) carry the forgotten-overlay banner
 `overlay-active: <basename>` (+ `overlayApplied:true` in JSON). The
 dashboard follows the same convention path server-side (no flag
@@ -604,7 +613,7 @@ wall-clock; assert evaluates `negative` (expects failure),
 `readback-by-consumer` (ready consumer probe plus a confirmed
 checkpoint stage), `call-count` (exact envelope count per stage),
 `budget` (wall ms within limit); restore ALWAYS runs the runner
-(try/finally, even after assert failure) and renders the masked
+(sequential guarantee, even after assert failure) and renders the masked
 restore shape plus outcome (`restored:` or `restore-failed:` suffix);
 report prints the verdict. Exits: 0 pass / 1 assert-or-restore
 failure / 2 usage-or-refusal. `--json` is additive `{scenario,
@@ -656,11 +665,11 @@ ow up -d --wait 150s --health configuration=/actuator/health
   yerine `/actuator/health` (2xx) üzerinde yapın.
 - Yeniden başlatma: `ow down && ow up -d --wait 150s --health ...` —
   araya `sleep 4` koymayın, `down` senkron durur.
-- `pkill` asla: bayat `zaten çalışıyor` görürseniz `ow down` (ölü
+- `pkill` asla: bayat `already running` görürseniz `ow down` (ölü
   kalıntıysa `ow down --rm`) ile temizleyin.
-- Bekleme sırasında `down` çalıştırırsanız her servis `bitti:` raporlar
-  (143 civarı çıkış) — bu beklenen durumdur, hata değil; `hazır:`
-  gelmeyen servisin nedenini `ow logs <ad>` ile okuyun.
+- Bekleme sırasında `down` çalıştırırsanız her servis `exited:` raporlar
+  (143 civarı çıkış) — bu beklenen durumdur, hata değil; `ready:`
+  gelmeyen servisin nedenini `ow logs <name>` ile okuyun.
 - TCP≈hazır portlar için bayrak gerekmez — yalın `--wait` yeter.
 
 `ow init` scans the current directory (read-only, capped) for build files
@@ -684,9 +693,9 @@ risk). The scenarios text is re-validated in-process with the real
 `parseScenarios` before either file is written, and an existing
 `ow.scenarios.yaml` gets the same single-`.bak` rule
 (`ow.scenarios.yaml.bak`, overwritten). Init prints a bounded question
-catalog (fixed `soru:` strings, never interactive): service-cwd confirm,
+catalog (fixed `question:` strings, never interactive): service-cwd confirm,
 port confirm, required-env names, boundary default (`real-read-only`),
-scenario name (`ilk-senaryo`), tracing opt-in. Init writes at most the two
+scenario name (`first-scenario`), tracing opt-in. Init writes at most the two
 yaml files plus `.gitkeep` — it never edits `package.json`/CI/imports,
 never installs anything, never spawns app code.
 
@@ -702,15 +711,15 @@ bounded to a handful of lines (per-line service output streams to the
 terminal in foreground, and always persists to per-service JSONL).
 Every recorded pid is paired with its `ps lstart` string: any later signal
 path re-reads `lstart` and never signals a mismatch (PID-reuse guard).
-A second `up` while the lock is live exits 2 (`zaten çalışıyor`); stale
+A second `up` while the lock is live exits 2 (`already running`); stale
 locks are reclaimed only after `lstart`-verified death; an unreadable
 `lstart` refuses reclaim (no `--force` in v1).
 
 Per-service logs keep `{t, stream, line}` rows (`stdout|stderr|log|event`),
-5 MiB / 10,000 lines newest-wins, 8 KiB per-line cap (`…[kesildi]…`).
-Capture batches in memory (bounded) and drops with a visible `…[atıldı: N
-satır]…` event rather than blocking the child. An early-exiting `logs:`
-tail records `logs komutu bitti` + `logsEnded` while siblings keep running.
+5 MiB / 10,000 lines newest-wins, 8 KiB per-line cap (`…[truncated]…`).
+Capture batches in memory (bounded) and drops with a visible `…[dropped: N
+lines]…` event rather than blocking the child. An early-exiting `logs:`
+tail records `logs command exited` + `logsEnded` while siblings keep running.
 
 ### İzleme tarifleri (per-stack)
 
@@ -721,7 +730,7 @@ never injects OTEL variables into services (D4). Spans land redacted and
 capped in `<root>/.ow/traces/spans.jsonl`; read them with `ow trace`
 (recent list) and `ow trace <id>` (one parent/child tree).
 `ow trace --wait 15s` polls up to 5 minutes for a newly arriving span
-(batch exporters land late) and then renders once. If the receiver port is taken, `up` warns loudly with host+port and `ow doctor` appends an `alıcı dinlemiyor` hint to the trace line.
+(batch exporters land late) and then renders once. If the receiver port is taken, `up` warns loudly with host+port and `ow doctor` appends a `receiver not listening` hint to the trace line.
 The trace list hides ok single-span orphans (noise); `--min-spans 1` shows all, `--min-spans N` keeps ≥N-span traces. Error traces always render; direct `ow trace <id>` is unaffected.
 
 ```yaml

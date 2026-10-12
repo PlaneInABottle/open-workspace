@@ -169,16 +169,16 @@ export const formatTree = (
     const pad = "  ".repeat(depth)
     const short = node.sessionID.slice(0, 13)
     if (depth === 0) {
-      lines.push(`${pad}oturum ${short}`)
+      lines.push(`${pad}session ${short}`)
     } else {
       const who = node.link?.agent ? ` [${node.link.agent}]` : ""
       const what = node.link?.description ? ` ${node.link.description.slice(0, 80)}` : ""
-      const orphan = node.link ? "" : " (bağlantısız)"
-      lines.push(`${pad}↳ çocuk${who}${what} — ${short}${orphan}`)
+      const orphan = node.link ? "" : " (unlinked)"
+      lines.push(`${pad}↳ child${who}${what} — ${short}${orphan}`)
     }
     const records = recordsBy.get(node.sessionID) ?? []
     if (records.length === 0) {
-      lines.push(`${pad}  (kayıt yok)`)
+      lines.push(`${pad}  (no records)`)
     } else {
       const text = formatGrouped(groupByTask(records), options.full ?? false, true, options.sectionBudget)
       for (const line of text.split("\n")) lines.push(`${pad}${line}`)

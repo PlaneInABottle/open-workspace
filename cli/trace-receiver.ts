@@ -91,7 +91,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
     await ensureTracesDir(options.tracesDir)
     await assertSpansFileRegular(options.spansFile)
   } catch (error) {
-    warn(`uyarı: trace kapalı (${error instanceof Error ? error.message : String(error)})`)
+    warn(`warning: trace off (${error instanceof Error ? error.message : String(error)})`)
     return null
   }
   const store = createTraceStore(options.spansFile, options.storeLimits)
@@ -114,7 +114,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
   }
   const reject = (reason: TraceRejectReason, status: number, detail: string): Response => {
     rejected[reason] += 1
-    throttledWarn(`uyarı: trace isteği reddedildi (${reason}: ${detail})`)
+    throttledWarn(`warning: trace request refused (${reason}: ${detail})`)
     return new Response(null, { status })
   }
   let server
@@ -138,7 +138,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
                 },
               })
             }
-            return reject("bad-path", 403, "yabancı origin")
+            return reject("bad-path", 403, "foreign origin")
           }
           if (url.pathname !== "/v1/traces" || req.method !== "POST") {
             return reject("bad-path", 404, "404")
@@ -152,7 +152,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
           }
           const body = await readBoundedBody(req, maxBodyBytes)
           if ("over" in body) {
-            return reject("too-large", 413, `gövde>${maxBodyBytes}b`)
+            return reject("too-large", 413, `body>${maxBodyBytes}b`)
           }
           let payload: Uint8Array = body.bytes
           const encoding = req.headers.get("content-encoding") ?? ""
@@ -162,7 +162,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
               payload = gunzipSync(Buffer.from(body.bytes), { maxOutputLength: maxInflatedBytes })
             } catch (error) {
               if (isInflateOverLimit(error)) {
-                return reject("inflate-too-large", 413, `şişmiş>${maxInflatedBytes}b`)
+                return reject("inflate-too-large", 413, `inflated>${maxInflatedBytes}b`)
               }
               return reject("decode-failed", 400, "bozuk-gzip")
             }
@@ -174,14 +174,14 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
             const detail =
               error instanceof TraceDecodeError
                 ? `${error.reason} ${error.path} offset=${error.offset} len=${error.length}`
-                : "çözümlenemedi"
+                : "decode failed"
             return reject("decode-failed", 400, detail)
           }
           for (const span of spans) store.append(span)
           try {
             await store.flush()
           } catch (error) {
-            throttledWarn(`uyarı: trace yazılamadı (${error instanceof Error ? error.message : String(error)})`)
+            throttledWarn(`warning: trace write failed (${error instanceof Error ? error.message : String(error)})`)
           }
           // V7: echo the request Content-Type; a zero-byte body is a valid
           // fully-successful ExportTraceServiceResponse.
@@ -197,7 +197,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
     // host+port plus one directive clause — static text plus
     // operator-configured values only, never span/log/env content.
     const port = options.port ?? TRACE_DEFAULT_PORT
-    warn(`uyarı: izleme alıcısı ${TRACE_BIND_HOST}:${port} açılamadı — portu başka süreç tutuyor olabilir (lsof -i :${port})`)
+    warn(`warning: trace receiver ${TRACE_BIND_HOST}:${port} could not open — another process may hold the port (lsof -i :${port})`)
     return null
   }
   return {

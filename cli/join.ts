@@ -595,23 +595,23 @@ export const stuckReport = async (options: {
 }
 
 export const formatStuck = (report: StuckReport): string => {
-  const out = ["tıkanma raporu:"]
-  out.push(`kesinti: ${report.interruptions} | compaction: ${report.compactions}`)
-  for (const msg of report.afterInterrupt) out.push(`  kesinti sonrası kullanıcı: ${msg}`)
+  const out = ["stuck report:"]
+  out.push(`interrupts: ${report.interruptions} | compaction: ${report.compactions}`)
+  for (const msg of report.afterInterrupt) out.push(`  post-interrupt user: ${msg}`)
   if (report.retries.length > 0) {
-    out.push("tekrarlar:")
-    for (const r of report.retries) out.push(`  ${r.runs}x (${r.fails} patlak) ${r.signature.slice(0, 100)}`)
+    out.push("retries:")
+    for (const r of report.retries) out.push(`  ${r.runs}x (${r.fails} failed) ${r.signature.slice(0, 100)}`)
   }
   if (report.rereads.length > 0) {
-    out.push("dönüp-dolaşılan dosyalar (aynı ajan, çakışan satırlar):")
-    for (const r of report.rereads) out.push(`  ${r.reads}x (derinlik ${r.depth}) [${r.agent}] ${r.path}`)
+    out.push("revisited files (same agent, overlapping lines):")
+    for (const r of report.rereads) out.push(`  ${r.reads}x (depth ${r.depth}) [${r.agent}] ${r.path}`)
   }
   if (report.slow.length > 0) {
-    out.push("yavaşlar:")
-    for (const s of report.slow) out.push(`  ${Math.round(s.ms / 1000)}sn ${s.command.slice(0, 100)}`)
+    out.push("slow:")
+    for (const s of report.slow) out.push(`  ${Math.round(s.ms / 1000)}s ${s.command.slice(0, 100)}`)
   }
   if (report.retries.length === 0 && report.rereads.length === 0 && report.slow.length === 0 && report.interruptions === 0) {
-    out.push("temiz — tıkanma sinyali yok")
+    out.push("clean — no stuck signals")
   }
   return out.join("\n")
 }
@@ -722,15 +722,15 @@ export const sessionMeta = async (options: { dbPath?: string; sessionID: string 
 }
 
 export const formatMeta = (meta: SessionMeta): string => {
-  const out = [`oturum: ${meta.sessionID}`]
-  if (meta.title) out.push(`başlık: ${meta.title}`)
-  if (meta.directory) out.push(`dizin: ${meta.directory}`)
-  if (meta.cost !== null) out.push(`maliyet: $${meta.cost.toFixed(4)}`)
+  const out = [`session: ${meta.sessionID}`]
+  if (meta.title) out.push(`title: ${meta.title}`)
+  if (meta.directory) out.push(`dir: ${meta.directory}`)
+  if (meta.cost !== null) out.push(`cost: $${meta.cost.toFixed(4)}`)
   if (meta.tokens) out.push(`token: in=${meta.tokens.input} out=${meta.tokens.output} reason=${meta.tokens.reasoning} cache=${meta.tokens.cacheRead}/${meta.tokens.cacheWrite}`)
-  if (meta.additions !== null || meta.deletions !== null) out.push(`değişiklik: +${meta.additions ?? "?"} -${meta.deletions ?? "?"} (${meta.files ?? "?"} dosya)`)
-  out.push(`tur: ${meta.userTurns} kullanıcı / ${meta.assistantTurns} asistan${meta.compactions > 0 ? ` / ${meta.compactions} compaction` : ""}`)
-  if (meta.lastWord) out.push(`son söz: ${meta.lastWord}`)
-  if (meta.models.length > 0) out.push(`modeller: ${meta.models.join(", ")}`)
+  if (meta.additions !== null || meta.deletions !== null) out.push(`changes: +${meta.additions ?? "?"} -${meta.deletions ?? "?"} (${meta.files ?? "?"} files)`)
+  out.push(`turns: ${meta.userTurns} user / ${meta.assistantTurns} assistant${meta.compactions > 0 ? ` / ${meta.compactions} compaction` : ""}`)
+  if (meta.lastWord) out.push(`last word: ${meta.lastWord}`)
+  if (meta.models.length > 0) out.push(`models: ${meta.models.join(", ")}`)
   return out.join("\n")
 }
 
@@ -762,13 +762,13 @@ export const sessionPrompts = async (options: { dbPath?: string; sessionID: stri
 
 export const formatReads = (stats: ReadStat[]): string =>
   stats
-    .map((s) => `${s.reads}x ${s.path}${s.agents.length > 0 ? ` (${s.agents.join("+")})` : ""}${s.ranges.length > 0 ? ` [satır: ${s.ranges.join(", ")}]` : ""}`)
+    .map((s) => `${s.reads}x ${s.path}${s.agents.length > 0 ? ` (${s.agents.join("+")})` : ""}${s.ranges.length > 0 ? ` [lines: ${s.ranges.join(", ")}]` : ""}`)
     .join("\n")
 
 export const formatSessions = (sessions: SessionInfo[]): string => {
   const byDir = new Map<string, SessionInfo[]>()
   for (const s of sessions) {
-    const key = s.workdir ?? "(klasör yok)"
+    const key = s.workdir ?? "(no dir)"
     const list = byDir.get(key) ?? []
     list.push(s)
     byDir.set(key, list)
@@ -777,7 +777,7 @@ export const formatSessions = (sessions: SessionInfo[]): string => {
   for (const [dir, list] of byDir) {
     out.push(`## ${dir}`)
     for (const s of list) {
-      out.push(`${s.sessionID} — ${s.commands} komut${s.fileEdits > 0 ? ` + ${s.fileEdits} dosya` : ""}${s.fails > 0 ? `, ${s.fails} patlak` : ""} | ${s.first ?? "?"} → ${s.last ?? "?"}`)
+      out.push(`${s.sessionID} — ${s.commands} commands${s.fileEdits > 0 ? ` + ${s.fileEdits} files` : ""}${s.fails > 0 ? `, ${s.fails} failed` : ""} | ${s.first ?? "?"} → ${s.last ?? "?"}`)
     }
   }
   return out.join("\n")
@@ -813,7 +813,7 @@ export const childSessions = async (options: { dbPath?: string; sessionID: strin
 export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
   const groups = new Map<string, EnrichedRecord[]>()
   for (const record of records) {
-    const key = typeof record.taskRef === "string" && record.taskRef.length > 0 ? record.taskRef : "(görev yok)"
+    const key = typeof record.taskRef === "string" && record.taskRef.length > 0 ? record.taskRef : "(no task)"
     const list = groups.get(key) ?? []
     list.push(record)
     groups.set(key, list)
@@ -891,25 +891,25 @@ export const formatGrouped = (groups: TaskGroup[], full = false, withSession = f
   }
   const out: string[] = []
   for (const group of groups) {
-    out.push(`görev: ${group.taskRef} (${group.runs} komut${group.fails > 0 ? `, ${group.fails} patlak` : ""})`)
+    out.push(`task: ${group.taskRef} (${group.runs} commands${group.fails > 0 ? `, ${group.fails} failed` : ""})`)
     for (const line of group.lines) {
       const repeat = line.runs > 1 ? ` x${line.runs}` : ""
       const who = line.agents.length > 0 ? ` (${line.agents.join("+")})` : ""
-      const reason = (line.outcome === "failure" || line.outcome === "error") && line.failReason ? ` (sebep: ${line.failReason})` : ""
+      const reason = (line.outcome === "failure" || line.outcome === "error") && line.failReason ? ` (reason: ${line.failReason})` : ""
       const where = withSession && line.sessions.length > 0 ? ` [${line.sessions.join(",")}]` : ""
       out.push(`  [${line.ref}]${who} ${line.signature} — ${line.outcome}${repeat}${reason}${where}`)
       const rawMode = full && !sectionBudget
       for (const variant of line.variants.slice(0, full ? line.variants.length : MAX_SHOWN_VARIANTS)) {
-        out.push(`      kayıt: ${rawMode ? variant : clipText(variant, 130)}`)
+        out.push(`      record: ${rawMode ? variant : clipText(variant, 130)}`)
       }
-      if (!full && line.variants.length > MAX_SHOWN_VARIANTS) out.push(`      (+${line.variants.length - MAX_SHOWN_VARIANTS} kayıt daha --show ${line.ref})`)
-      for (const intent of line.intents) out.push(`      niyet: ${rawMode ? intent : clipText(intent, 160)}`)
+      if (!full && line.variants.length > MAX_SHOWN_VARIANTS) out.push(`      (+${line.variants.length - MAX_SHOWN_VARIANTS} more records --show ${line.ref})`)
+      for (const intent of line.intents) out.push(`      intent: ${rawMode ? intent : clipText(intent, 160)}`)
       if ((line.outcome === "failure" || line.outcome === "error") && line.excerpts.length > 0) {
         const clip = line.excerpts[0].replace(/\s+/g, " ").trim()
-        out.push(`      çıktı: ${rawMode ? clip : clipText(clip, 300)}`)
+        out.push(`      output: ${rawMode ? clip : clipText(clip, 300)}`)
       } else if (line.excerpts.length > 0) {
         const verdict = verdictLine(line.signature, line.excerpts[0])
-        if (verdict) out.push(`      sonuç: ${verdict}`)
+        if (verdict) out.push(`      result: ${verdict}`)
       }
     }
   }
@@ -925,7 +925,7 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
   const clipBody = (text: string): string => {
     const stripped = stripEnvPrefix(text.replace(/\s+/g, " ").trim())
     if (!sectionBudget || stripped.length <= sectionBudget) return stripped
-    return stripped.slice(0, sectionBudget) + `\n…[+${stripped.length - sectionBudget} karakter daha]…`
+    return stripped.slice(0, sectionBudget) + `\n…[+${stripped.length - sectionBudget} more chars]…`
   }
   const showBody = (text: string): string => (sectionBudget ? clipBody(text) : text)
   for (const group of groups) {
@@ -935,29 +935,29 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
       `[${line.ref}] ${line.signature} — ${line.outcome} x${line.runs} (${group.taskRef})`,
     ]
     line.variants.forEach((variant, i) => {
-      out.push(`--- kayıt ${i + 1}/${line.variants.length} ---`)
+      out.push(`--- record ${i + 1}/${line.variants.length} ---`)
       out.push(showBody(variant))
     })
     if (line.intents.length > 0) {
-      out.push(`--- niyetler ---`)
+      out.push(`--- intents ---`)
       for (const intent of line.intents) out.push(`- ${intent}`)
     }
     if (line.excerpts.length > 0) {
       line.excerpts.forEach((excerpt, i) => {
-        out.push(`--- çıktı ${i + 1}/${line.excerpts.length} ---`)
+        out.push(`--- output ${i + 1}/${line.excerpts.length} ---`)
         out.push(showBody(excerpt))
       })
     }
     if (line.results.length > 0) {
       line.results.forEach((res, i) => {
-        out.push(`--- sonuç ${i + 1}/${line.results.length} ---`)
+        out.push(`--- result ${i + 1}/${line.results.length} ---`)
         out.push(showBody(res))
       })
     }
     if (line.messageIDs.length > 0) out.push(`messageIDs: ${line.messageIDs.join(",")}`)
-    if (line.models.length > 0) out.push(`modeller: ${line.models.join(", ")}`)
+    if (line.models.length > 0) out.push(`models: ${line.models.join(", ")}`)
     return out.join("\n")
   }
-  return `satır bulunamadı: ${ref}`
+  return `line not found: ${ref}`
 }
 

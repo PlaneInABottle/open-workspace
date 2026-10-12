@@ -541,20 +541,20 @@ test('D3 scenarios aggregate: matrix verdicts, masked, argv never on wire', asyn
   assert.ok(snapshot.scenarios);
   assert.equal(snapshot.scenarios.file, 'ow.scenarios.yaml');
   assert.equal(snapshot.scenarios.error, null);
-  assert.deepEqual(snapshot.scenarios.columns, ['real', 'local', 'test', 'uydurma-sinir']);
+  assert.deepEqual(snapshot.scenarios.columns, ['real-read-only', 'real-state-changing', 'unverified', 'uydurma-sinir']);
   const sepet = snapshot.scenarios.rows.find(row => row.name === 'sepet');
   assert.ok(sepet);
   assert.deepEqual(sepet.probes, [{ id: 'hazir', timeout: '10s' }]);
   assert.deepEqual(sepet.unverifiedServices, []);
-  assert.equal(sepet.cells['local'], 'pass');
-  assert.equal(sepet.cells['test'], 'pass');
-  assert.equal(sepet.cells['real'], 'uncovered');
+  assert.equal(sepet.cells['real-read-only'], 'pass');
+  assert.equal(sepet.cells['unverified'], 'pass');
+  assert.equal(sepet.cells['real-state-changing'], 'uncovered');
   const odeme = snapshot.scenarios.rows.find(row => row.name === 'odeme');
   assert.ok(odeme);
   assert.deepEqual(odeme.unverifiedServices, ['yabanci']);
-  assert.equal(odeme.cells['real'], 'stale');
+  assert.equal(odeme.cells['real-state-changing'], 'stale');
   assert.equal(odeme.cells['uydurma-sinir'], 'unverified');
-  assert.equal(odeme.cells['local'], 'uncovered');
+  assert.equal(odeme.cells['real-read-only'], 'uncovered');
 });
 
 test('D3 scenarios empty: no file keeps the section alive with null', async t => {
@@ -1247,7 +1247,7 @@ test('M8 strip wire: boundary rollup + last-run + gate, scrubbed shapes only', a
 
   assert.ok(snapshot.scenarios);
   assert.deepEqual(snapshot.boundaryList, [
-    { boundary: 'local', status: 'stale' },
+    { boundary: 'real-read-only', status: 'stale' },
     { boundary: 'token=***', status: 'unverified' },
   ]);
   assert.deepEqual(snapshot.lastRun, { id: 'demo', at: '2026-10-09T11:00:00.000Z', pass: false });
@@ -1303,7 +1303,7 @@ test('M8 strip wire: scenarios present without checkpoints keeps lastRun null', 
     lastRun?: { id: string; at: string | null; pass: boolean } | null;
     readinessGate?: { pass: boolean; missing: string[] } | null;
   };
-  assert.deepEqual(snapshot.boundaryList, [{ boundary: 'local', status: 'skipped' }]);
+  assert.deepEqual(snapshot.boundaryList, [{ boundary: 'real-read-only', status: 'skipped' }]);
   assert.equal(snapshot.lastRun, null);
   assert.equal(typeof snapshot.readinessGate?.pass, 'boolean');
 });
@@ -1340,12 +1340,12 @@ test('M9 overlay convention: REPLACE merge + sources + applied tags', async t =>
   assert.equal(read.overlayError, null);
   const cart = read.scenarios?.find(scenario => scenario.name === 'cart');
   assert.ok(cart);
-  assert.deepEqual(cart.boundaries, ['real']);
+  assert.deepEqual(cart.boundaries, ['real-state-changing']);
   const other = read.scenarios?.find(scenario => scenario.name === 'other');
   assert.ok(other);
-  assert.deepEqual(other.boundaries, ['test']);
-  assert.ok(read.boundarySources.some(entry => entry.scenario === 'cart' && entry.boundary === 'real' && entry.source === 'local'));
-  assert.ok(read.boundarySources.some(entry => entry.scenario === 'other' && entry.boundary === 'test' && entry.source === 'base'));
+  assert.deepEqual(other.boundaries, ['unverified']);
+  assert.ok(read.boundarySources.some(entry => entry.scenario === 'cart' && entry.boundary === 'real-state-changing' && entry.source === 'local'));
+  assert.ok(read.boundarySources.some(entry => entry.scenario === 'other' && entry.boundary === 'unverified' && entry.source === 'base'));
 });
 
 test('M9 overlay invalid: base matrix survives + error box, never a crash', async t => {
@@ -1370,7 +1370,7 @@ test('M9 overlay invalid: base matrix survives + error box, never a crash', asyn
   ].join('\n'));
   const read = await readScenariosSource([f.root]);
   assert.ok(read.scenarios && read.scenarios.length === 1, 'base rows survive');
-  assert.deepEqual(read.scenarios[0].boundaries, ['local']);
+  assert.deepEqual(read.scenarios[0].boundaries, ['real-read-only']);
   assert.equal(read.overlayApplied, false);
   assert.ok(read.overlayError?.includes('overlay-dangling: ghost (refused)'));
   assert.ok(read.warnings.some(warning => warning.includes('overlay-dangling')));
@@ -1397,7 +1397,7 @@ test('M9 overlay secret-smuggle: refused, never leaks', async t => {
     '',
   ].join('\n'));
   const read = await readScenariosSource([f.root]);
-  assert.deepEqual(read.scenarios?.[0].boundaries, ['local']);
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['real-read-only']);
   assert.ok(read.overlayError?.includes('overlay-refused: boundaries.local.yaml (secret-shaped value)'));
   assert.ok(!JSON.stringify(read).includes('hunter2'), 'secret never reaches the read result');
 });
@@ -1426,7 +1426,7 @@ test('M9 overlay stale-shadow: digest-pin mismatch advises, never fails', async 
   const read = await readScenariosSource([f.root]);
   assert.equal(read.overlayApplied, true);
   assert.equal(read.overlayError, null);
-  assert.deepEqual(read.scenarios?.[0].boundaries, ['real']);
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['real-state-changing']);
   assert.ok(read.warnings.some(warning => warning.includes('overlay-stale: base changed since deadbeef (warning)')));
 });
 
@@ -1461,4 +1461,115 @@ test('M9 overlay absent: wire carries no overlay keys (byte-identical)', async t
   assert.ok(!('boundarySources' in (snapshot.scenarios as Record<string, unknown>)), 'absent overlay adds no wire keys');
   assert.ok(!('overlayError' in (snapshot.scenarios as Record<string, unknown>)), 'absent overlay adds no wire keys');
   assert.ok(!JSON.stringify(snapshot).includes('overlay'));
+});
+
+test('HIGH-1 overlay absent boundaries key refuses (explicit [] stays allowed)', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [local]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    notboundaries: [real]',
+    '',
+  ].join('\n'));
+  const read = await readScenariosSource([f.root]);
+  assert.equal(read.overlayApplied, false);
+  assert.ok(read.overlayError?.includes('boundaries required in cart'), `absent key refuses, got: ${read.overlayError}`);
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['real-read-only'], 'base survives normalized');
+});
+
+test('F2 hostile overlay name sanitizes in refusal echo (no path leak)', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [real-read-only]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  ../../etc/passwd:',
+    '    boundaries: [real-read-only]',
+    '',
+  ].join('\n'));
+  const read = await readScenariosSource([f.root]);
+  assert.equal(read.overlayApplied, false);
+  assert.ok(read.overlayError?.includes('overlay-dangling:'), `dangling refusal, got: ${read.overlayError}`);
+  assert.ok(!read.overlayError?.includes('../'), 'no raw path traversal in echo');
+  assert.ok(!read.overlayError?.includes('/etc/passwd'), 'no raw path in echo');
+});
+
+test('server realpath containment: symlinked .ow dir outside refuses overlay', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [real-read-only]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  const outside = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-coordinator-outside-')));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await mkdir(join(outside, 'stolen'), { recursive: true });
+  await writeFile(join(outside, 'stolen', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    boundaries: [network-deny]',
+    '',
+  ].join('\n'));
+  await symlink(join(outside, 'stolen'), join(f.root, '.ow'));
+  const read = await readScenariosSource([f.root]);
+  assert.equal(read.overlayApplied, false);
+  assert.ok(read.overlayError?.includes('outside root'), `expected outside-root refusal, got: ${read.overlayError}`);
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['real-read-only'], 'base survives');
+});
+
+test('server gitignore lstat guard: symlinked .gitignore skips mention check silently', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    services: [api]',
+    '    boundaries: [real-read-only]',
+    '    probes: [{id: ready, argv: [./x.sh]}]',
+    '    checkpoints: [ok-stage]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.ow'), { recursive: true });
+  await writeFile(join(f.root, '.ow', 'boundaries.local.yaml'), [
+    'version: 1',
+    'scenarios:',
+    '  cart:',
+    '    boundaries: [network-deny]',
+    '',
+  ].join('\n'));
+  await mkdir(join(f.root, '.git'), { recursive: true });
+  await writeFile(join(f.root, 'outside-ignore'), 'other\n', 'utf8');
+  await symlink(join(f.root, 'outside-ignore'), join(f.root, '.gitignore'));
+  const read = await readScenariosSource([f.root]);
+  assert.equal(read.overlayApplied, true);
+  assert.ok(!read.warnings.some(warning => warning.includes('overlay-gitignore-missing')), 'symlinked gitignore stays silent');
+  assert.deepEqual(read.scenarios?.[0].boundaries, ['network-deny']);
 });

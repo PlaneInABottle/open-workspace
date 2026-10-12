@@ -102,8 +102,8 @@ describe("provision --check (ready shape)", () => {
       expect(io.out[2]).toMatch(/^ok: head /)
       expect(io.out[3]).toMatch(/^ok: preflight /)
       expect(io.out[4]).toBe("dataClock: unmeasured (no-file)")
-      expect(io.out[5]).toBe("provision geçti")
-      for (const line of io.out) expect(line.startsWith("hazır:")).toBe(false)
+      expect(io.out[5]).toBe("provision passed")
+      for (const line of io.out) expect(line.startsWith("ready:")).toBe(false)
     } finally {
       await cleanup()
     }
@@ -134,7 +134,7 @@ describe("provision --check (ready shape)", () => {
       const human = payload["human"] as string[]
       expect(human).toHaveLength(6)
       expect(human[4]).toBe("dataClock: unmeasured (no-file)")
-      expect(human[5]).toBe("provision geçti")
+      expect(human[5]).toBe("provision passed")
     } finally {
       await cleanup()
     }
@@ -151,7 +151,7 @@ describe("provision --check (ready shape)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.out.join("\n")).toContain("provision geçti")
+      expect(io.out.join("\n")).toContain("provision passed")
       const io2 = capture()
       let usage = -1
       try {
@@ -160,7 +160,7 @@ describe("provision --check (ready shape)", () => {
         io2.restore()
       }
       expect(usage).toBe(2)
-      expect(io2.err.join("\n")).toContain("ow: provision --check gerekli")
+      expect(io2.err.join("\n")).toContain("ow: provision --check is required")
       void root
     } finally {
       await cleanup()
@@ -195,9 +195,9 @@ describe("provision --check (broken shape)", () => {
       expect(byName.get("venv")).toBe(false)
       expect(payload.missing).toContain("envSymlink:broken")
       expect(payload.missing).toContain("venv:missing")
-      expect(payload.human.filter((l) => l.startsWith("eksik: "))).toHaveLength(3)
-      expect(payload.human[payload.human.length - 1]).toBe("provision eksik: 3")
-      for (const line of payload.human) expect(line.startsWith("hazır:")).toBe(false)
+      expect(payload.human.filter((l) => l.startsWith("missing: "))).toHaveLength(3)
+      expect(payload.human[payload.human.length - 1]).toBe("provision missing: 3")
+      for (const line of payload.human) expect(line.startsWith("ready:")).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -348,7 +348,7 @@ describe("NO-WORKTREE-NO-FRICTION (single-root goldens)", () => {
         human.restore()
       }
       expect(code).toBe(0)
-      expect(human.out.join("\n").replaceAll(root, "<root>")).toBe("ow.yaml geçerli: 1 servis (a)")
+      expect(human.out.join("\n").replaceAll(root, "<root>")).toBe("ow.yaml valid: 1 services (a)")
       const js = capture()
       try {
         expect(await run(["up", "--check", "--file", file, "--json"])).toBe(0)
@@ -608,6 +608,86 @@ describe("provision data-clock witness (M7)", () => {
       }
     } finally {
       await cleanup()
+    }
+  })
+})
+
+describe("MEDIUM-2 corrupt scenarios warns, provision continues", () => {
+  test("present-but-corrupt scenarios file warns (env_file/data checks skipped), exit follows checks", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      await writeFile(join(root, "ow.scenarios.yaml"), "version: 1\nscenarios:\n  bad:\n    services: [api]\n", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: false, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(io.err.join("\n")).toContain("ow: invalid scenarios file:")
+      expect(io.err.join("\n")).toContain("env_file/data checks skipped")
+      expect(typeof code).toBe("number")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("MEDIUM-3 provision preflight gate includes boundary claims", () => {
+  test("evidence-demanding boundary without records fails the preflight check", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      await writeFile(
+        join(root, "ow.scenarios.yaml"),
+        "version: 1\nscenarios:\n  cart:\n    services: [a]\n    boundaries: [real-read-only]\n    probes: [{id: p, argv: [./x.sh]}]\n    checkpoints: [ok]\n",
+        "utf8",
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: true, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { pass: boolean; missing: string[] }
+      expect(payload.pass).toBe(false)
+      expect(payload.missing.some((line) => line.startsWith("boundary:"))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("MEDIUM-6 corrupt checkpoint lines invalidate the preflight gate", () => {
+  test("skipped lines surface as readiness:evidence-incomplete missing", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      await mkdir(join(root, ".ow", "checkpoints"), { recursive: true })
+      await writeFile(
+        join(root, ".ow", "checkpoints", "nightly.jsonl"),
+        `${JSON.stringify({ stage: "build", status: "confirmed", proof: { ok: true }, at: "2026-10-09T09:00:00.000Z", by: "runner" })}\nnot-json{{{\n`,
+        "utf8",
+      )
+      const io = capture()
+      let code = -1
+      try {
+        code = await runProvisionCheck({ rootDir: root, file, json: true, probe: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { pass: boolean; missing: string[] }
+      expect(payload.pass).toBe(false)
+      expect(payload.missing).toContain("readiness:evidence-incomplete")
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

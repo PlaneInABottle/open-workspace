@@ -370,7 +370,7 @@ describe("ow readiness CLI (real file paths)", () => {
       expect(code).toBe(1)
       const text = io.out.join("\n")
       expect(text).toContain("boundary:db:no-evidence")
-      expect(text).toContain("derleme-eski: api")
+      expect(text).toContain("stale-build: api")
       const io2 = capture()
       try {
         expect(

@@ -97,23 +97,23 @@ export const foldFailures = (candidates: Candidate[]): FailuresView => {
 }
 
 const STATUS_WORD: Record<string, string> = {
-  confirmed: "doğrulandı",
-  not_observed: "gözlenmedi",
-  stale: "bayat",
+  confirmed: "confirmed",
+  not_observed: "not-observed",
+  stale: "stale",
 }
 
 /** Locked summary lines live here (exact strings, Turkish). */
-export const NO_FINDINGS = "bulgu yok"
-export const singletonLine = (count: number): string => `tekrar-yok: ${count} tekil bulgu listelenmedi`
+export const NO_FINDINGS = "no findings"
+export const singletonLine = (count: number): string => `no-repeat: ${count} unique findings unlisted`
 
 /** Mechanical bucket line (Turkish words, runner-declared values only).
  * A missing step renders as `-` (human output only; `--json` carries
  * null so a literal runner-declared `"-"` step stays distinguishable). */
 export const formatFailureGroup = (group: FailureTuple): string => {
   const parts = [STATUS_WORD[group.status] ?? group.status]
-  if (group.stale_reason !== null) parts.push(`neden: ${group.stale_reason}`)
-  parts.push(`adım: ${group.step ?? "-"}`)
-  return `bulgu: ${group.stage} (${parts.join(", ")}) ×${group.count}`
+  if (group.stale_reason !== null) parts.push(`reason: ${group.stale_reason}`)
+  parts.push(`step: ${group.step ?? "-"}`)
+  return `finding: ${group.stage} (${parts.join(", ")}) ×${group.count}`
 }
 
 /** `ow failures [--since <dur>] [--json]`: every retained run is read
@@ -122,7 +122,7 @@ export const formatFailureGroup = (group: FailureTuple): string => {
 export const runFailures = async (opts: { rootDir: string; since: string | boolean | undefined; json: boolean }): Promise<number> => {
   const sinceMs = parseFailuresSince(opts.since)
   if (sinceMs === null) {
-    console.error(`ow: geçersiz --since: ${typeof opts.since === "string" ? opts.since : ""} (izin: 1h|24h|7d)`)
+    console.error(`ow: invalid --since: ${typeof opts.since === "string" ? opts.since : ""} (allowed: 1h|24h|7d)`)
     return 2
   }
   const now = Date.now()
@@ -154,8 +154,8 @@ export const runFailures = async (opts: { rootDir: string; since: string | boole
       candidates.push({ envelope, run })
     }
   }
-  if (corrupt > 0 && !opts.json) console.error(`bozuk-satır: ${corrupt} (atlandı)`)
-  if (overCap > 0 && !opts.json) console.error(`atlandı(${overCap}): cap aşıldı (dosya 500 satır/256KB sınırında okundu)`)
+  if (corrupt > 0 && !opts.json) console.error(`corrupt-line: ${corrupt} (skipped)`)
+  if (overCap > 0 && !opts.json) console.error(`skipped(${overCap}): over cap (file read within 500-line/256KB limit)`)
   const folded = foldFailures(candidates)
   if (opts.json) {
     console.log(JSON.stringify({ groups: folded.groups, singletons: folded.singletons }))

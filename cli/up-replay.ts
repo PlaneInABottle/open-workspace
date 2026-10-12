@@ -14,7 +14,7 @@ import { chmod, mkdir, open, rename, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 
 import { decodeUtf8Fatal, PROBE_TIMEOUT_MS } from "./up-schema"
-import { normalizeBoundary as normalizeScenarioBoundary, parseScenarios } from "./up-scenarios"
+import { normalizeBoundary as normalizeScenarioBoundary, parseScenarios, type Scenario } from "./up-scenarios"
 import { maskCmdShape } from "./up-reconcile"
 import { maskSecrets } from "./up-evidence"
 import { isArtifactDigest, runProbeJob, type ProbeFn, type ProbeOutcome } from "./up-probe"
@@ -46,16 +46,11 @@ export const foldCwd = (text: string, cwd: string): string => {
 }
 
 /** Canonical scenario bytes (fixed key order, file array order, raw
- * values): any definition edit changes the digest. Digest inputs stay in
- * memory - the file keeps the hex only. */
-export const canonicalScenario = (scenario: {
-  name: string
-  services: string[]
-  boundaries: string[]
-  targets: string[]
-  probes: { id: string; argv: string[]; timeout: string }[]
-  checkpoints: string[]
-}): string =>
+ * values): any definition edit changes the digest. M6/M7 fields are
+ * covered (restore/asserts/mode/data/env_file plus opaque track fields):
+ * editing any of them flips a recorded contract to mismatch (re-record).
+ * Digest inputs stay in memory - the file keeps the hex only. */
+export const canonicalScenario = (scenario: Scenario): string =>
   JSON.stringify({
     name: scenario.name,
     services: scenario.services,
@@ -63,6 +58,21 @@ export const canonicalScenario = (scenario: {
     targets: scenario.targets,
     probes: scenario.probes.map((probe) => ({ id: probe.id, argv: probe.argv, timeout: probe.timeout })),
     checkpoints: scenario.checkpoints,
+    mode: scenario.mode,
+    restore: scenario.restore,
+    asserts: scenario.asserts,
+    triggers: scenario.triggers,
+    queue: scenario.queue,
+    webhook: scenario.webhook,
+    deps: scenario.deps,
+    proxies: scenario.proxies,
+    apiMode: scenario.apiMode,
+    browser: scenario.browser,
+    viewport: scenario.viewport,
+    seed: scenario.seed,
+    artifact: scenario.artifact,
+    data: scenario.data,
+    env_file: scenario.env_file,
   })
 
 export const scenarioDefinitionHash = (scenario: Parameters<typeof canonicalScenario>[0]): string =>
@@ -162,8 +172,10 @@ export const writeReplayFile = async (path: string, envelope: ReplayEnvelope, li
   }
 }
 
-/** Bounded read (256KB / 500 lines): absent, over-cap-unparseable, or
- * malformed content reads as null (fail-closed upstream). Envelope
+/** Bounded read (256KB / 500 lines): absent, over-cap, or malformed
+ * content reads as null (fail-closed upstream). Over-cap refuses instead
+ * of silent truncate (MEDIUM-5): a capped writer never emits over-cap
+ * files, so oversize means tampering or corruption. Envelope
  * completeness is NOT checked here - readers distinguish the unknown-hash
  * case (null) from the provenance-missing case (present). */
 export const readReplayFile = async (path: string): Promise<{ envelope: ReplayEnvelope; lines: ReplayProbeLine[] } | null> => {
@@ -176,9 +188,12 @@ export const readReplayFile = async (path: string): Promise<{ envelope: ReplayEn
   try {
     const buffer = Buffer.alloc(REPLAY_MAX_BYTES + 1024)
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    if (bytesRead > REPLAY_MAX_BYTES) return null
     const text = buffer.subarray(0, bytesRead).toString("utf8")
-    const raw = text.split("\n").filter((part) => part.length > 0).slice(0, REPLAY_MAX_LINES)
-    if (raw.length === 0) return null
+    const parts = text.split("\n").filter((part) => part.length > 0)
+    if (parts.length === 0) return null
+    if (parts.length > REPLAY_MAX_LINES) return null
+    const raw = parts
     let envelope: ReplayEnvelope
     try {
       envelope = JSON.parse(raw[0]) as ReplayEnvelope
@@ -246,6 +261,14 @@ export const runRecord = async (opts: {
   } catch (error) {
     console.error(`ow: invalid scenarios file: ${error instanceof Error ? error.message : String(error)}`)
     return 1
+  }
+  // INERT scaffold refuses like the runner (decision: recording a
+  // placeholder contract is meaningless — edit real probes first).
+  const { INIT_INERT_MARKER } = await import("./up-init")
+  const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? ""
+  if (firstLine.trim() === INIT_INERT_MARKER) {
+    console.error(`INERT: ${opts.file}`)
+    return 2
   }
   // M9: capture resolves through the shared overlay helper (flag > local
   // convention > base); the merged view feeds lookup, refusal gates, and

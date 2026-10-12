@@ -99,7 +99,7 @@ describe("diffService", () => {
   test("kayıtsız servis başlatılacak satırı basar (cmd maskeli)", () => {
     const { lines, diff } = diffService(parseUpFile("services:\n  api:\n    cmd: run --token hunter2\n    port: 3000\n").services[0], null)
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toContain("+ başlatılacak: api")
+    expect(lines[0]).toContain("+ to-start: api")
     expect(lines[0]).not.toContain("hunter2")
     expect(diff).toMatchObject({ status: "missing", port: 3000 })
   })
@@ -111,13 +111,13 @@ describe("diffService", () => {
       lstart: "Mon Oct  6 00:00:00 2026",
       startedAt: "t",
     })
-    expect(lines[0]).toContain("yeniden: api pid=4242")
+    expect(lines[0]).toContain("restart: api pid=4242")
   })
 
   test("restart kayıtsız serviste restart-aware satır basar (L-2)", () => {
     const svc = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
-    expect(diffService(svc, null, "restart").lines[0]).toContain("+ başlatılacak (restart, kayıt yok): api")
-    expect(diffService(svc, null).lines[0]).toContain("+ başlatılacak: api")
+    expect(diffService(svc, null, "restart").lines[0]).toContain("+ to-start (restart, no record): api")
+    expect(diffService(svc, null).lines[0]).toContain("+ to-start: api")
   })
 })
 
@@ -298,21 +298,21 @@ describe("reconcileOne (saf çekirdek)", () => {
   test("eksik/fazla adlandırır + açık komut önerir", () => {
     const exp = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
     expect(reconcileOne({ name: "api", expected: exp, running: null, ...base })).toMatchObject({
-      kind: "eksik",
+      kind: "missing",
       hint: "ow up api",
     })
     expect(
       reconcileOne({ name: "silinmis", expected: null, running: { name: "silinmis", pid: 1, lstart: "l", startedAt: "t" }, ...base }),
-    ).toMatchObject({ kind: "fazla", hint: "ow down silinmis" })
+    ).toMatchObject({ kind: "extra", hint: "ow down silinmis" })
   })
 
   test("durmuş/lstart-uyuşmazlığı", () => {
     const exp = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
     const run = { name: "api", pid: 1, lstart: "l", startedAt: "t" }
-    expect(reconcileOne({ name: "api", expected: exp, running: { ...run, exitCode: 1 }, ...base })).toMatchObject({ kind: "durmus" })
-    expect(reconcileOne({ name: "api", expected: exp, running: run, ...base, liveness: "dead" })).toMatchObject({ kind: "durmus" })
+    expect(reconcileOne({ name: "api", expected: exp, running: { ...run, exitCode: 1 }, ...base })).toMatchObject({ kind: "stopped" })
+    expect(reconcileOne({ name: "api", expected: exp, running: run, ...base, liveness: "dead" })).toMatchObject({ kind: "stopped" })
     expect(reconcileOne({ name: "api", expected: exp, running: run, ...base, liveness: "lstart-mismatch" })).toMatchObject({
-      kind: "lstart-uyusmazligi",
+      kind: "lstart-mismatch",
     })
   })
 
@@ -333,7 +333,7 @@ describe("reconcileOne (saf çekirdek)", () => {
       dependsOn: ["db"],
     }
     const drift = reconcileOne({ name: "api", expected: exp, running: run, ...base })
-    expect(drift?.kind).toBe("config-farkli")
+    expect(drift?.kind).toBe("config-mismatch")
     expect(Object.keys(drift?.expected ?? {})).toContain("cmd")
     const same = reconcileOne({
       name: "api",
@@ -354,7 +354,7 @@ describe("reconcileOne (saf çekirdek)", () => {
       listening: true,
       portOwners: [99999],
     })
-    expect(drift).toMatchObject({ kind: "port-yabanci" })
+    expect(drift).toMatchObject({ kind: "foreign-port" })
   })
 
   test("uyumlu kayıt null döner", () => {
@@ -397,7 +397,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
       } finally {
         io.restore()
       }
-      expect(io.errors.join("\n")).toContain("önce `ow up`")
+      expect(io.errors.join("\n")).toContain("run `ow up` first")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -421,7 +421,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
       } finally {
         io.restore()
       }
-      expect(io.errors.join("\n")).toContain("bilinmeyen servis")
+      expect(io.errors.join("\n")).toContain("unknown service")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -440,7 +440,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.logs.join("\n")).toContain("eksik: a → ow up a")
+      expect(io.logs.join("\n")).toContain("missing: a → ow up a")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -468,7 +468,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
           io.restore()
         }
         expect(`${args.join(" ")} → ${code}`).toBe(`${args.join(" ")} → 2`)
-        expect(io.errors.join("\n")).toContain("--probe henüz desteklenmiyor")
+        expect(io.errors.join("\n")).toContain("--probe not yet supported")
       }
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -498,7 +498,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.logs.join("\n")).toContain("durduruldu: a")
+      expect(io.logs.join("\n")).toContain("stopped: a")
       expect(await readFile(paths.lockFile, "utf8")).toBe(lockBefore)
       expect(existsSync(paths.supervisorFile)).toBe(true)
       expect(await isLivePid(sleeper.pid, lstart)).toBe(false)
@@ -578,7 +578,7 @@ describe("canlı supervisor tek-servis akışı", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.logs.join("\n")).toContain("yeniden başlatıldı: b")
+      expect(io.logs.join("\n")).toContain("restarted: b")
       await waitFor(async () => {
         const state = await readSupervisorState(paths.supervisorFile)
         return state?.services.find((svc) => svc.name === "b")?.pid !== before.services.find((svc) => svc.name === "b")?.pid
@@ -611,7 +611,7 @@ describe("canlı supervisor tek-servis akışı", () => {
       } finally {
         io.restore()
       }
-      expect(io.logs.join("\n")).toContain("başlatılacak: c")
+      expect(io.logs.join("\n")).toContain("to-start: c")
       await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services.length === 3)
       const io2 = captureIo()
       try {
@@ -619,7 +619,7 @@ describe("canlı supervisor tek-servis akışı", () => {
       } finally {
         io2.restore()
       }
-      expect(io2.errors.join("\n")).toContain("zaten çalışıyor: a")
+      expect(io2.errors.join("\n")).toContain("already running: a")
       expect((await readSupervisorState(paths.supervisorFile))?.services).toHaveLength(3)
     } finally {
       live.stop()
@@ -638,7 +638,7 @@ describe("canlı supervisor tek-servis akışı", () => {
       } finally {
         io.restore()
       }
-      expect(io.logs.join("\n")).toContain("durdurulacak: b")
+      expect(io.logs.join("\n")).toContain("to-stop: b")
       await waitFor(async () => {
         const state = await readSupervisorState(paths.supervisorFile)
         const b = state?.services.find((svc) => svc.name === "b")
@@ -678,7 +678,7 @@ describe("canlı supervisor tek-servis akışı", () => {
         io2.restore()
       }
       expect(code).toBe(1)
-      expect(io2.logs.join("\n")).toContain("fazla: b → ow down b")
+      expect(io2.logs.join("\n")).toContain("extra: b → ow down b")
       const paths = upPaths(live.root)
       const b = (await readSupervisorState(paths.supervisorFile))!.services.find((svc) => svc.name === "b")!
       expect(await isLivePid(b.pid, b.lstart)).toBe(true)
@@ -717,7 +717,7 @@ describe("canlı supervisor tek-servis akışı", () => {
       )
       expect(result.ok).toBe(false)
       expect(result.code).toBe("already-running")
-      expect(result.message).toContain("lstart bilinmiyor")
+      expect(result.message).toContain("lstart unknown")
       expect(spawned).toBe(0)
       expect(unit.main).toBe(main)
       expect(children).toHaveLength(1)
@@ -796,7 +796,7 @@ describe("runReconcileCheck çıkışları", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.logs.join("\n")).toContain("eksik: a → ow up a")
+      expect(io.logs.join("\n")).toContain("missing: a → ow up a")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -818,8 +818,8 @@ describe("M-C artifact-stale çekirdeği (saf)", () => {
       artifacts: { declared: { "api.jar": "a1b2c3d4e5" }, recorded: { "api.jar": "ffffffffff" } },
     })
     expect(drift?.kind).toBe("artifact-stale")
-    expect(drift).toMatchObject({ service: "api", expected: { artifact: "api.jar" }, hint: "yeniden-derle + ow restart api" })
-    expect(formatDrift(drift!)).toBe("derleme-eski: api (api.jar değişti) → yeniden-derle + ow restart api")
+    expect(drift).toMatchObject({ service: "api", expected: { artifact: "api.jar" }, hint: "rebuild + ow restart api" })
+    expect(formatDrift(drift!)).toBe("stale-build: api (api.jar changed) → rebuild + ow restart api")
     // Tam-digest satırda yok (indirgenmiş tel).
     expect(JSON.stringify(drift)).not.toContain("a1b2c3d4e5")
     expect(JSON.stringify(drift)).not.toContain("ffffffffff")
@@ -904,7 +904,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.logs.join("\n")).not.toContain("derleme-eski")
+      expect(io.logs.join("\n")).not.toContain("stale-build")
       // Kayıt-gözlem: durum dosyasına basename-anahtar + ham digest (tek yazar supervisor).
       await waitFor(async () =>
         (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["api.jar"] === DIGEST_1,
@@ -925,7 +925,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
       }
       expect(code2).toBe(1)
       const out = io2.logs.join("\n")
-      expect(out).toContain("derleme-eski: api (api.jar değişti) → yeniden-derle + ow restart api")
+      expect(out).toContain("stale-build: api (api.jar changed) → rebuild + ow restart api")
       expect(out).not.toContain(DIGEST_1)
       expect(out).not.toContain(DIGEST_2)
       expect(out).not.toContain("/opt/svc")

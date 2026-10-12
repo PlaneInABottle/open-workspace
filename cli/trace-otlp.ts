@@ -40,7 +40,7 @@ export class TraceDecodeError extends Error {
   readonly offset: number
   readonly length: number
   constructor(reason: string, path: string, offset: number, length: number) {
-    super(`trace çözümlenemedi: ${reason} (${path}, offset=${offset}, len=${length})`)
+    super(`trace decode failed: ${reason} (${path}, offset=${offset}, len=${length})`)
     this.name = "TraceDecodeError"
     this.reason = reason
     this.path = path
@@ -373,7 +373,7 @@ const truncateBytes = (value: string, maxBytes: number): string => {
     if (Buffer.byteLength(output + ch, "utf8") > maxBytes) break
     output += ch
   }
-  return `${output}…[kesildi]…`
+  return `${output}…[truncated]…`
 }
 
 const sanitizeName = (name: string, maxBytes: number): string =>
@@ -610,7 +610,7 @@ const decodeServiceName = (reader: Reader, resourceBytes: Uint8Array, attrValueM
   try {
     fields = readFields(reader.child(resourceBytes, `${reader.path}.resource`))
   } catch {
-    return "bilinmeyen"
+    return "unknown"
   }
   for (const entry of fields) {
     if (entry.field !== 1 || entry.wire !== 2 || entry.bytes === null) continue
@@ -623,7 +623,7 @@ const decodeServiceName = (reader: Reader, resourceBytes: Uint8Array, attrValueM
       // best-effort; the spans still decode
     }
   }
-  return "bilinmeyen"
+  return "unknown"
 }
 
 export type TraceDecodeLimits = {
@@ -654,7 +654,7 @@ export const decodeTraceRequest = (body: Uint8Array, limits: TraceDecodeLimits =
     const resourceReader = reader.child(entry.bytes, resourcePath)
     const resourceFields = readFields(resourceReader)
     const resourceBytes = firstLen(resourceFields, 1)
-    const service = resourceBytes === null ? "bilinmeyen" : decodeServiceName(resourceReader, resourceBytes, attrValueMaxBytes)
+    const service = resourceBytes === null ? "unknown" : decodeServiceName(resourceReader, resourceBytes, attrValueMaxBytes)
     let scopeIndex = 0
     for (const scopeEntry of resourceFields) {
       if (scopeEntry.field !== 2 || scopeEntry.wire !== 2 || scopeEntry.bytes === null) continue

@@ -28,9 +28,9 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
     text = decodeUtf8Fatal(readFileSync(abs))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`ow: ow.yaml bulunamadı: ${abs}`)
+      console.error(`ow: ow.yaml not found: ${abs}`)
     } else {
-      console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     }
     return 2
   }
@@ -38,7 +38,7 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   try {
     parsed = parseUpFile(text)
   } catch (error) {
-    console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     return 2
   }
   const rootDir = dirname(abs)
@@ -46,7 +46,7 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   try {
     await ensureUpStateDir(paths.stateDir)
   } catch (error) {
-    console.error(`ow: .ow kullanılamıyor: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`ow: .ow unavailable: ${error instanceof Error ? error.message : String(error)}`)
     return 1
   }
   const warnings: string[] = []
@@ -88,7 +88,7 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   }
   const state = await readSupervisorState(paths.supervisorFile)
   for (const svc of state?.services ?? []) {
-    if (svc.exitCode !== undefined) console.log(`çıkış: ${svc.name} code=${svc.exitCode}`)
+    if (svc.exitCode !== undefined) console.log(`exit: ${svc.name} code=${svc.exitCode}`)
   }
   return code
 }
@@ -163,7 +163,7 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
   await clearLock(paths.lockFile)
   const pid = Number(pidText)
   if (!Number.isInteger(pid) || pid <= 0) {
-    console.error("ow: supervisor başlatılamadı")
+    console.error("ow: supervisor could not start")
     for (const line of await tailFile(outFile, 20)) console.error(line)
     return 1
   }
@@ -177,7 +177,7 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
     await sleep(100)
   }
   if (!seen) {
-    console.error("ow: supervisor başlamadı (supervisor.json yok)")
+    console.error("ow: supervisor did not start (no supervisor.json)")
     for (const line of await tailFile(outFile, 20)) console.error(line)
     return 1
   }
@@ -187,6 +187,6 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
   } catch {
     names = []
   }
-  console.log(names.length > 0 ? `başlatıldı: ${names.length} servis (${names.join(", ")})` : `başlatıldı: pid ${pid}`)
+  console.log(names.length > 0 ? `started: ${names.length} services (${names.join(", ")})` : `started: pid ${pid}`)
   return 0
 }

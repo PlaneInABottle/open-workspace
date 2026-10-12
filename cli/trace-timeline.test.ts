@@ -149,8 +149,8 @@ describe("trace-timeline exact links", () => {
       expect(agentIdx).toBeGreaterThanOrEqual(0)
       expect(span1Idx).toBeGreaterThan(agentIdx)
       expect(span2Idx).toBeGreaterThan(span1Idx)
-      expect(lines[span1Idx]).toContain("[kesin]")
-      expect(lines[span2Idx]).toContain("[kesin]")
+      expect(lines[span1Idx]).toContain("[exact]")
+      expect(lines[span2Idx]).toContain("[exact]")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -167,7 +167,7 @@ describe("trace-timeline exact links", () => {
       ]))
       const result = await runTimeline(tlOpts(root, log))
       expect(result.code).toBe(0)
-      expect(result.stdout).toContain("[kesin]")
+      expect(result.stdout).toContain("[exact]")
       expect(result.stdout).toContain("curl <url>")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -200,9 +200,9 @@ describe("trace-timeline estimated links", () => {
       expect(result.code).toBe(0)
       const nearLine = result.stdout.split("\n").find((line) => line.includes("GET /near")) ?? ""
       const farLine = result.stdout.split("\n").find((line) => line.includes("GET /far")) ?? ""
-      expect(nearLine).toContain("[tahmini]")
-      expect(farLine).not.toContain("[tahmini]")
-      expect(farLine).not.toContain("[kesin]")
+      expect(nearLine).toContain("[estimated]")
+      expect(farLine).not.toContain("[estimated]")
+      expect(farLine).not.toContain("[exact]")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -248,10 +248,10 @@ describe("trace-timeline --trace filter", () => {
       ]))
       const ambiguous = await runTimeline(tlOpts(root, log, { traceId: shared }))
       expect(ambiguous.code).toBe(2)
-      expect(ambiguous.stderr).toContain("2 aday")
+      expect(ambiguous.stderr).toContain("2 candidates")
       const unknown = await runTimeline(tlOpts(root, log, { traceId: "deadbeef".repeat(4) }))
       expect(unknown.code).toBe(0)
-      expect(unknown.stdout).toContain("izleme bulunamadı")
+      expect(unknown.stdout).toContain("trace not found")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -262,7 +262,7 @@ describe("trace-timeline --trace filter", () => {
     try {
       const bad = await runTimeline(tlOpts(root, join(root, "events.jsonl"), { traceId: "xyz" }))
       expect(bad.code).toBe(2)
-      expect(bad.stderr).toContain("geçersiz izleme kimliği")
+      expect(bad.stderr).toContain("invalid trace id")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -302,7 +302,7 @@ describe("trace-timeline json + bounds + empty", () => {
     try {
       const human = await runTimeline(tlOpts(root, join(root, "nope.jsonl"), { sessionID: undefined }))
       expect(human.code).toBe(0)
-      expect(human.stdout).toBe("zaman çizelgesi yok")
+      expect(human.stdout).toBe("no timeline")
       const asJson = await runTimeline(tlOpts(root, join(root, "nope.jsonl"), { sessionID: undefined, json: true }))
       expect(asJson.code).toBe(0)
       expect(asJson.stdout).toBe('{"events":[],"warnings":[]}')
@@ -349,7 +349,7 @@ describe("trace-timeline json + bounds + empty", () => {
       ]))
       const result = await runTimeline(tlOpts(root, log))
       expect(result.code).toBe(0)
-      expect(result.stdout).toContain("[kesin]")
+      expect(result.stdout).toContain("[exact]")
       expect(result.stdout).not.toContain("hunter2-x")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -384,9 +384,9 @@ describe("trace-timeline LIVE PROOF (scripted end-to-end)", () => {
       expect(lines[0]).toContain("AGENT")
       expect(lines[0]).toContain("curl -H")
       expect(lines[1]).toContain("[api] GET /orders/list")
-      expect(lines[1]).toContain("[kesin]")
+      expect(lines[1]).toContain("[exact]")
       expect(lines[2]).toContain("[worker] SELECT orders")
-      expect(lines[2]).toContain("[kesin]")
+      expect(lines[2]).toContain("[exact]")
       const asJson = await runTimeline(tlOpts(root, log, { json: true }))
       const parsed = JSON.parse(asJson.stdout) as {
         events: { kind: string; confidence?: string; depth?: number; traceId?: string }[]

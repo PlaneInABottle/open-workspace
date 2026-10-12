@@ -51,51 +51,51 @@ export type ParsedArgs = {
 
 export const helpText = (): string =>
   [
-    "ow — shell-observer komut satırı (salt-okunur, etkileşimsiz)",
+    "ow — shell-observer CLI (read-only, non-interactive)",
     "",
-    "kullanım: ow <komut> [oturum] [seçenekler]",
+    "usage: ow <command> [session] [options]",
     "",
-    "komutlar:",
-    "  doctor                        sağlık: log/kanca/halka/db/up",
-    "  sessions [--since] [--dir]    oturum listesi (id, sayı, aralık, dizin)",
-    "  show [oturum] [--since] [--full] [--bytes] [--tree] [--kind ..] [--tool ..] [--show N] [--show-fails]",
-    "                                görev özeti; --tree altgörev ağacı",
-    "  stuck [oturum] [--since] [--tree]  tıkanma raporu (birleşik kayıtlar)",
-    "  meta [oturum]                 maliyet/token/değişiklik/tur",
-    "  prompts [oturum]              son 20 kullanıcı yönergesi (eskiden yeniye)",
-    "  reads [oturum] [--since]      okuma özeti",
-    "  up [servis] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/yol]  servisleri kaldır (ow.yaml); --check yalnız doğrular;",
-  "                                -d ile --wait: bildirilen portlar açılana kadar bekle (çıkış: hazır değilse 1);",
-  "                                --health <ad>=<yol> (tekrarlanabilir, yalnız --wait ile): o servis TCP sonrası HTTP 2xx bekler",
-  "                                tek servis (up <ad>): canlı supervisora istekle eklenir, sağlıklılar etkilenmez",
-    "  restart <servis> [--file]   canlı supervisorda tek servisi yeniden başlat (kilit yoksa çıkış 2)",
-    "  down [servis] [--file] [--rm]  servisleri durdur (--rm yalnız toplu down ile; tek serviste çıkış 2)",
-    "  reconcile --check [--json] [--probe] [--file]  salt-okunur drift raporu (mutasyon yok; çıkış 1 drift, 0 uyumlu)",
-    "  ps [--file]                   servis durumu (pid, süre, cpu, bellek, port, listen)",
-    "  ps --explain [servis] [--file] [--json]  beklenen/çalışan tanık görünümü (salt-okunur)",
-    "  logs [servis] [--file] [--tail] [--grep] [--since]  servis logları",
-    "  checkpoints list [--file] [--json]  kayıtlı kanıt koşuları (salt-okunur)",
-    "  checkpoints show <run> [--file] [--json]  zarfları doğrulanmış/bayat/gözlenmedi dilinde gösterir",
-    "  failures [--since 1h|24h|7d] [--file] [--json]  yinelenen bulgular (salt-okunur, mekanik)",
-    "  preflight [--file] [--json] [--probe]  salt-okunur kapı (mutasyon yok; geçemezse çıkış 1)",
+    "commands:",
+    "  doctor                        health: log/hook/ring/db/up",
+    "  sessions [--since] [--dir]    session list (id, count, range, dir)",
+    "  show [session] [--since] [--full] [--bytes] [--tree] [--kind ..] [--tool ..] [--show N] [--show-fails]",
+    "                                task summary; --tree shows the subtask tree",
+    "  stuck [session] [--since] [--tree]  stuck report (joined records)",
+    "  meta [session]                cost/token/changes/turns",
+    "  prompts [session]             last 20 user prompts (oldest first)",
+    "  reads [session] [--since]     read summary",
+    "  up [service] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/path]  start services (ow.yaml); --check only validates;",
+  "                                -d with --wait: wait until declared ports open (exit: 1 when not ready);",
+  "                                --health <name>=<path> (repeatable, only with --wait): that service waits for HTTP 2xx after TCP",
+  "                                single service (up <name>): added to the live supervisor by request, healthy ones unaffected",
+    "  restart <service> [--file]   restart one service on the live supervisor (exit 2 without lock)",
+    "  down [service] [--file] [--rm]  stop services (--rm only with bulk down; exit 2 for a single service)",
+    "  reconcile --check [--json] [--probe] [--file]  read-only drift report (no mutation; exit 1 on drift, 0 in sync)",
+    "  ps [--file]                   service status (pid, uptime, cpu, memory, port, listen)",
+    "  ps --explain [service] [--file] [--json]  expected/running witness view (read-only)",
+    "  logs [service] [--file] [--tail] [--grep] [--since]  service logs",
+    "  checkpoints list [--file] [--json]  recorded evidence runs (read-only)",
+    "  checkpoints show <run> [--file] [--json]  shows envelopes as confirmed/stale/not-observed",
+    "  failures [--since 1h|24h|7d] [--file] [--json]  repeated findings (read-only, mechanical)",
+    "  preflight [--file] [--json] [--probe]  read-only gate (no mutation; exit 1 when failing)",
     "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
-  "  provision --check [--file] [--json] [--probe]  çalışma-alanı checklist'i (.env symlink + .venv + HEAD + ön-kapı; salt-okunur, çıkış 0 geçti / 1 eksik)",
-    "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 şema doğrulama (çalıştırma yok)",
+  "  provision --check [--file] [--json] [--probe]  workspace checklist (.env symlink + .venv + HEAD + pre-gate; read-only, exit 0 pass / 1 missing)",
+    "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs)",
     "  record <scenario> [--file]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
     "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
     "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory)",
     "  scenario env <name> [--file] [--json] [--boundaries <path>]  boundary matrix as OW_BOUNDARY_* lines (read-only render)",
-    "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
-  "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
-  "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
+    "  trace [trace] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  traces; one tree per trace; --wait 15s waits for new spans",
+  "  timeline [session] [--trace] [--since] [--tail]  agent lines + trace spans as a joined timeline",
+  "  init [--force] [--tracing]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
     "  --boundaries <path>  overlay file (root-relative; flag wins over .ow/boundaries.local.yaml; scenarios/preflight/readiness/provision/record/contract/scenario-run only)",
     "",
-    "genel: --db <yol> --log <yol> --json --help",
-    "  --since  pencere: 30m|3h|1d|1w (varsayılan 1d; sessions/show/stuck/reads)",
-    "  --json  makine çıktısı (İngilizce anahtarlar): show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace",
-    "çıkış: 0 ok, 1 yapısal hata, 2 kullanım hatası",
+    "general: --db <path> --log <path> --json --help",
+    "  --since  window: 30m|3h|1d|1w (default 1d; sessions/show/stuck/reads)",
+    "  --json  machine output (English keys): show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace",
+    "exit: 0 ok, 1 structural error, 2 usage error",
     "",
-    "örnek: ow show <oturum> --tree --since 1d",
+    "example: ow show <session> --tree --since 1d",
   ].join("\n")
 
 export const parseArgs = (argv: string[]): ParsedArgs => {
@@ -117,7 +117,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--")) {
       if (VALUE_FLAGS.has(arg)) {
         const value = argv[i + 1]
-        if (value === undefined || value.startsWith("--")) return fail(`değer bekleniyor: ${arg}`)
+        if (value === undefined || value.startsWith("--")) return fail(`value expected: ${arg}`)
         if (arg === "--health") {
           const prior = flags[arg]
           flags[arg] = [...(Array.isArray(prior) ? prior : prior !== undefined ? [prior as string] : []), value]
@@ -131,7 +131,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
         flags[arg] = true
         continue
       }
-      return fail(`bilinmeyen seçenek: ${arg}`)
+      return fail(`unknown option: ${arg}`)
     }
     if (!command && (COMMANDS as readonly string[]).includes(arg)) {
       command = arg as Command
@@ -156,30 +156,30 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       extra.push(arg)
       continue
     }
-    return fail(`beklenmeyen argüman: ${arg}`)
+    return fail(`unexpected argument: ${arg}`)
   }
   if (flags["--help"]) return { command, sessionID, flags, error: null, extra }
-  if (!command) return fail("komut bekleniyor: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline|init (--help)")
+  if (!command) return fail("command expected: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline|init (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
-  if (typeof flags["--since"] === "string" && since === null) return fail(`geçersiz --since: ${flags["--since"]} (30m|3h|1d|1w)`)
+  if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${flags["--since"]} (30m|3h|1d|1w)`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
-  if (typeof flags["--bytes"] === "string" && bytes === null) return fail(`geçersiz --bytes: ${flags["--bytes"]} (512|1k|4k|1m)`)
+  if (typeof flags["--bytes"] === "string" && bytes === null) return fail(`invalid --bytes: ${flags["--bytes"]} (512|1k|4k|1m)`)
   if (typeof flags["--show"] === "string" && !Number.isFinite(Number(flags["--show"]))) {
-    return fail(`geçersiz --show: ${flags["--show"]} (satır no bekleniyor)`)
+    return fail(`invalid --show: ${flags["--show"]} (line number expected)`)
   }
   if (typeof flags["--tail"] === "string") {
     const tail = Number(flags["--tail"])
-    if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`geçersiz --tail: ${flags["--tail"]} (1-5000 bekleniyor)`)
+    if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`invalid --tail: ${flags["--tail"]} (1-5000 expected)`)
   }
   if (typeof flags["--min-spans"] === "string") {
     const minSpans = Number(flags["--min-spans"])
-    if (!Number.isInteger(minSpans) || minSpans < 1 || minSpans > 5000) return fail(`geçersiz --min-spans: ${flags["--min-spans"]} (1-5000 bekleniyor)`)
+    if (!Number.isInteger(minSpans) || minSpans < 1 || minSpans > 5000) return fail(`invalid --min-spans: ${flags["--min-spans"]} (1-5000 expected)`)
   }
   if (typeof flags["--wait"] === "string" && parseWaitDuration(flags["--wait"]) === null) {
-    return fail(`geçersiz --wait: ${flags["--wait"]} (ör. 15s, en fazla 5m)`)
+    return fail(`invalid --wait: ${flags["--wait"]} (e.g. 15s, at most 5m)`)
   }
   if (typeof flags["--grep"] === "string" && flags["--grep"].length > 256) {
-    return fail("geçersiz --grep: en fazla 256 karakter")
+    return fail("invalid --grep: at most 256 characters")
   }
   return { command, sessionID, flags, error: null, extra }
 }
@@ -254,8 +254,8 @@ export const waitForUpReady = async (opts: {
     }))
   const noPort = opts.services.filter((svc) => svc.port === undefined && svc.readiness === undefined).map((svc) => svc.name)
   if (targets.length === 0) {
-    if (opts.json) console.log(JSON.stringify({ ready: true, services: [], noPort, note: "port tanımlı servis yok" }))
-    else console.log("beklenecek port yok (servislerde port tanımlı değil)")
+    if (opts.json) console.log(JSON.stringify({ ready: true, services: [], noPort, note: "no services with ports" }))
+    else console.log("no ports to wait for (no services declare ports)")
     return 0
   }
   // Per-target probe tracker (N6: probe-function composition — the loop in
@@ -290,7 +290,7 @@ export const waitForUpReady = async (opts: {
         timeoutMs: PROBE_TIMEOUT_MS[spec.timeout],
         cwd: svc?.cwd === undefined ? opts.rootDir : resolvePath(opts.rootDir, svc.cwd),
         env: { ...process.env, ...svc?.env, OW_SERVICE: target.name },
-      }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "çalıştırılamadı", timedOut: false, code: null }))
+      }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "could-not-run", timedOut: false, code: null }))
       st.probe = { ran: true, ok: outcome.ok, note: outcome.note, at: Date.now() }
       return outcome.ok
     },
@@ -307,7 +307,7 @@ export const waitForUpReady = async (opts: {
       return { kind: "tcp", ok: result.status === "ready", waitedSec: result.waitedSec }
     }
     if (st?.probe !== undefined) return { kind: "probe", ok: st.probe.ok && result.status === "ready", note: st.probe.note, waitedSec: result.waitedSec }
-    return { kind: "probe", ok: false, note: "ölçülmedi", waitedSec: result.waitedSec }
+    return { kind: "probe", ok: false, note: "unmeasured", waitedSec: result.waitedSec }
   }
   const ready = results.every((result) => result.status === "ready")
   const where = (result: { port?: number; healthPath?: string }): string =>
@@ -321,12 +321,12 @@ export const waitForUpReady = async (opts: {
   } else {
     for (const result of withReadiness) {
       const readiness = (result as { readiness?: WaitReadiness }).readiness
-      if (result.status === "ready") console.log(`hazır: ${result.name}${where(result)} (${result.waitedSec}sn)`)
-      else if (result.status === "exited") console.log(`bitti: ${result.name} (çıkış kodu ${result.exitCode ?? "?"}) — ow logs ${result.name}`)
-      else if (readiness?.kind === "probe") console.log(`hazır değil: ${result.name} (probe: ${readiness.note ?? "hazır değil"})`)
-      else console.log(`zaman aşımı: ${result.name}${where(result)} (${result.waitedSec}sn)`)
+      if (result.status === "ready") console.log(`ready: ${result.name}${where(result)} (${result.waitedSec}s)`)
+      else if (result.status === "exited") console.log(`exited: ${result.name} (exit code ${result.exitCode ?? "?"}) — ow logs ${result.name}`)
+      else if (readiness?.kind === "probe") console.log(`not ready: ${result.name} (probe: ${readiness.note ?? "not ready"})`)
+      else console.log(`timeout: ${result.name}${where(result)} (${result.waitedSec}s)`)
     }
-    if (noPort.length > 0) console.log(`port tanımsız (beklenmedi): ${noPort.join(", ")}`)
+    if (noPort.length > 0) console.log(`port undefined (not waited): ${noPort.join(", ")}`)
   }
   // M3 last-known persistence (B1-clean: request channel, sole writer stays
   // the supervisor; ack loss only warns, never fails the verdict).
@@ -339,7 +339,7 @@ export const waitForUpReady = async (opts: {
       for (const svc of opts.services) {
         if (svc.readiness === undefined) continue
         const readiness = readinessOf(results.find((result) => result.name === svc.name) ?? { name: svc.name, status: "timeout", waitedSec: 0 })
-        if (readiness?.kind !== "probe" || readiness.note === "ölçülmedi") continue
+        if (readiness?.kind !== "probe" || readiness.note === "unmeasured") continue
         const pid = state?.services.find((entry) => entry.name === svc.name)?.pid
         if (pid === undefined) continue
         const at = new Date().toISOString()
@@ -353,7 +353,7 @@ export const waitForUpReady = async (opts: {
               })
               await waitResult(upPaths(opts.rootDir).requestsDir, nonce)
             } catch {
-              if (!opts.json) console.error(`uyarı: readiness kaydı doğrulanamadı: ${svc.name}`)
+              if (!opts.json) console.error(`warning: readiness record unverified: ${svc.name}`)
             }
           })(),
         )
@@ -383,16 +383,16 @@ export const parseHealthFlags = (
     .filter((entry) => entry.length > 0)
   for (const entry of entries) {
     const eq = entry.indexOf("=")
-    if (eq <= 0 || eq === entry.length - 1) throw new Error(`geçersiz --health: ${entry} (<hizmet>=<yol> bekleniyor)`)
+    if (eq <= 0 || eq === entry.length - 1) throw new Error(`invalid --health: ${entry} (<service>=<path> expected)`)
     const name = entry.slice(0, eq).trim()
     const path = entry.slice(eq + 1).trim()
-    if (!path.startsWith("/")) throw new Error(`geçersiz --health: ${entry} (yol / ile başlamalı)`)
+    if (!path.startsWith("/")) throw new Error(`invalid --health: ${entry} (path must start with /)`)
     const svc = services.find((s) => s.name === name)
     if (!svc) {
       const known = services.map((s) => s.name).join(", ")
-      throw new Error(`bilinmeyen servis: ${name} (--health${known.length > 0 ? `; bilinenler: ${known}` : ""})`)
+      throw new Error(`unknown service: ${name} (--health${known.length > 0 ? `; known: ${known}` : ""})`)
     }
-    if (svc.port === undefined) throw new Error(`--health portsuz serviste kullanılamaz: ${name} (port tanımlı değil)`)
+    if (svc.port === undefined) throw new Error(`--health cannot be used on a portless service: ${name} (no port defined)`)
     map[name] = path
   }
   return map
@@ -452,9 +452,9 @@ export const runSingleServiceRequest = async (opts: {
     text = decodeUtf8Fatal(readFileSync(opts.file))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`ow: ow.yaml bulunamadı: ${opts.file}`)
+      console.error(`ow: ow.yaml not found: ${opts.file}`)
     } else {
-      console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     }
     return 2
   }
@@ -462,13 +462,13 @@ export const runSingleServiceRequest = async (opts: {
   try {
     parsed = parseUpFile(text)
   } catch (error) {
-    console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     return 2
   }
   const svc = parsed.services.find((entry) => entry.name === opts.service)
   if (!svc) {
     const known = parsed.services.map((entry) => entry.name).join(", ")
-    console.error(`ow: bilinmeyen servis: ${opts.service}${known.length > 0 ? ` (bilinenler: ${known})` : ""}`)
+    console.error(`ow: unknown service: ${opts.service}${known.length > 0 ? ` (known: ${known})` : ""}`)
     return 2
   }
   // `down` skips the env gate (stopping must never wait on credentials).
@@ -476,7 +476,7 @@ export const runSingleServiceRequest = async (opts: {
     const missing = missingRequiredEnv([svc])
     if (missing.length > 0) {
       for (const entry of missing) {
-        console.error(`ow: ${entry.service} gerekli ortam değişkenleri eksik: ${entry.vars.join(", ")}`)
+        console.error(`ow: ${entry.service} missing required environment variables: ${entry.vars.join(", ")}`)
       }
       return 2
     }
@@ -491,7 +491,7 @@ export const runSingleServiceRequest = async (opts: {
   }
   if (status.kind !== "live") {
     if (opts.action === "restart") {
-      console.error("ow: restart için çalışan supervisor yok — önce `ow up`")
+      console.error("ow: no running supervisor for restart — run `ow up` first")
       return 2
     }
     if (opts.action === "down") return runDirectSingleDown(opts.rootDir, opts.service, opts.json)
@@ -502,7 +502,7 @@ export const runSingleServiceRequest = async (opts: {
   const { diffService } = await import("./up-reconcile")
   const pre =
     opts.action === "down"
-      ? { lines: [`durdurulacak: ${opts.service}${running ? ` pid=${running.pid}` : ""}`], diff: { status: running ? "running" : "missing" } }
+      ? { lines: [`to-stop: ${opts.service}${running ? ` pid=${running.pid}` : ""}`], diff: { status: running ? "running" : "missing" } }
       : diffService(svc, running, opts.action === "restart" ? "restart" : "up")
   if (!opts.json) for (const line of pre.lines) console.log(line)
   const { waitResult, writeRequest } = await import("./up-requests")
@@ -510,12 +510,12 @@ export const runSingleServiceRequest = async (opts: {
   try {
     nonce = await writeRequest(paths.requestsDir, opts.action, opts.service, opts.file)
   } catch (error) {
-    console.error(`ow: istek yazılamadı: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`ow: request could not be written: ${error instanceof Error ? error.message : String(error)}`)
     return 1
   }
   const result = await waitResult(paths.requestsDir, nonce)
   if (!result) {
-    console.error("ow: istek yanıtsız — `ow ps` ile doğrulayın")
+    console.error("ow: request unanswered — verify with `ow ps`")
     return 1
   }
   if (opts.json) {
@@ -548,22 +548,22 @@ export const runDirectSingleDown = async (rootDir: string, service: string, json
   const paths = upPaths(rootDir)
   const fileStatus = await classifySupervisorFile(paths.supervisorFile)
   if (fileStatus === "corrupt") {
-    console.error("ow: okunamıyor: supervisor.json bozuk — `down --rm` ile temizleyin")
+    console.error("ow: unreadable: supervisor.json corrupt — clean with `down --rm`")
     return 1
   }
   if (fileStatus === "bad-version") {
-    console.error("ow: okunamıyor: supervisor.json sürüm uyuşmazlığı — `down --rm` ile temizleyin")
+    console.error("ow: unreadable: supervisor.json version mismatch — clean with `down --rm`")
     return 1
   }
   if (fileStatus === "missing") {
-    console.error("ow: durdurulacak süreç yok")
+    console.error("ow: no processes to stop")
     return 2
   }
   const state = await readSupervisorState(paths.supervisorFile)
   const record = state?.services.find((entry) => entry.name === service)
   if (!record) {
     const known = (state?.services ?? []).map((entry) => entry.name).join(", ")
-    console.error(`ow: bilinmeyen servis: ${service}${known.length > 0 ? ` (bilinenler: ${known})` : ""}`)
+    console.error(`ow: unknown service: ${service}${known.length > 0 ? ` (known: ${known})` : ""}`)
     return 2
   }
   const outcome = await stopOne(record)
@@ -577,7 +577,7 @@ export const runDirectSingleDown = async (rootDir: string, service: string, json
     }
   }
   if (!json) {
-    console.log(`${outcome.stopped ? "durduruldu" : "durmuyor"}: ${outcome.name} (${outcome.note})`)
+    console.log(`${outcome.stopped ? "stopped" : "will not stop"}: ${outcome.name} (${outcome.note})`)
   } else {
     console.log(JSON.stringify({ stopped: [outcome], warnings: [] }))
   }
@@ -594,7 +594,7 @@ export const run = async (argv: string[]): Promise<number> => {
     const fileIndex = argv.indexOf("--file")
     const file = fileIndex >= 0 ? argv[fileIndex + 1] : undefined
     if (!file || file.startsWith("--")) {
-      console.error("ow: __supervise iç kullanım içindir (--file gerekli)")
+      console.error("ow: __supervise is for internal use (--file required)")
       return 2
     }
     const { runSuperviseFile } = await import("./up-supervisor-cli")
@@ -628,14 +628,14 @@ export const run = async (argv: string[]): Promise<number> => {
     }
   }
   if (command !== "checkpoints" && command !== "scenario" && parsed.extra.length > 0) {
-    console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
+    console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
     console.error(helpText())
     return 2
   }
   // M2: `--explain` renders only in `ps` (M-C precedent: unknown flags fail
   // loudly instead of silently doing nothing elsewhere).
   if (command !== "ps" && flags["--explain"] === true) {
-    console.error("ow: --explain yalnızca ps ile kullanılır")
+    console.error("ow: --explain works only with ps")
     return 2
   }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
@@ -664,14 +664,14 @@ export const run = async (argv: string[]): Promise<number> => {
     if (json) {
       console.log(JSON.stringify(toSessionsJson(sessions)))
     } else {
-      console.log(sessions.length > 0 ? formatSessions(sessions) : "oturum yok")
+      console.log(sessions.length > 0 ? formatSessions(sessions) : "no sessions")
     }
     return 0
   }
 
   if (command === "init") {
     if (positional !== undefined) {
-      console.error("ow: init konumsal argüman almaz")
+      console.error("ow: init takes no positional arguments")
       return 2
     }
     const { runInit } = await import("./up-init")
@@ -755,9 +755,9 @@ export const run = async (argv: string[]): Promise<number> => {
         text = decodeUtf8Fatal(readFileSync(file))
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          console.error(`ow: ow.yaml bulunamadı: ${file}`)
+          console.error(`ow: ow.yaml not found: ${file}`)
         } else {
-          console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+          console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
         }
         return 2
       }
@@ -765,7 +765,7 @@ export const run = async (argv: string[]): Promise<number> => {
       try {
         parsed = parseUpFile(text)
       } catch (error) {
-        console.error(`ow: geçersiz ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
         // Polish (sürtünme 2): the nesting trap bites hardest at validation
         // time — show the inline example only on the `--check` path.
         if (flags["--check"] === true && isSubsetNestingError(error)) console.error(subsetNestingHint)
@@ -774,7 +774,7 @@ export const run = async (argv: string[]): Promise<number> => {
       // `--probe` is M3-owned: anywhere else it is a usage error (exit 2),
       // never a silent no-op. One guard covers bulk and single `up`.
       if (flags["--probe"] === true) {
-        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        console.error("ow: --probe not yet supported (M3)")
         return 2
       }
       if (positional !== undefined) {
@@ -783,36 +783,36 @@ export const run = async (argv: string[]): Promise<number> => {
         // a fixed one-shot 10s, independent of `--wait`). No live lock →
         // classic bulk behavior (plan M1), anchored at this root.
         if (flags["--check"] === true) {
-          console.error("ow: --check tek servis ile kullanılamaz (dosyanın tümünü doğrular)")
+          console.error("ow: --check cannot be used with a single service (validates the whole file)")
           return 2
         }
         if (flags["--health"] !== undefined) {
-          console.error("ow: --health tek-servis up ile kullanılamaz")
+          console.error("ow: --health cannot be used with single-service up")
           return 2
         }
         const single = await runSingleServiceRequest({ rootDir, file: yamlForRead, action: "up", service: positional, json })
         if (single !== null) return single
-        warn(`canlı supervisor yok — toplu başlatılıyor (istenen: ${positional})`)
+        warn(`no live supervisor — bulk starting (requested: ${positional})`)
       }
       if (flags["--check"] === true && flags["--wait"] !== undefined) {
-        console.error("ow: --wait --check ile kullanılamaz (doğrulama beklemez)")
+        console.error("ow: --wait cannot be used with --check (validation does not wait)")
         return 2
       }
       if (flags["--wait"] !== undefined && flags["--detach"] !== true) {
-        console.error("ow: --wait yalnızca -d/--detach ile kullanılır (önizleme)")
+        console.error("ow: --wait works only with -d/--detach (preview)")
         return 2
       }
       const healthRaw = flags["--health"] as string | string[] | undefined
       if (healthRaw !== undefined && flags["--check"] === true) {
-        console.error("ow: --health --check ile kullanılamaz (doğrulama beklemez)")
+        console.error("ow: --health cannot be used with --check (validation does not wait)")
         return 2
       }
       if (healthRaw !== undefined && flags["--wait"] === undefined) {
-        console.error("ow: --health yalnız --wait ile kullanılır (--wait <süre> gerekli)")
+        console.error("ow: --health works only with --wait (--wait <duration> required)")
         return 2
       }
       if (healthRaw !== undefined && flags["--detach"] !== true) {
-        console.error("ow: --health yalnızca -d/--detach ile kullanılır (önizleme)")
+        console.error("ow: --health works only with -d/--detach (preview)")
         return 2
       }
       let health: Record<string, string> = {}
@@ -827,7 +827,7 @@ export const run = async (argv: string[]): Promise<number> => {
       // N5: tanımlı probe + --health aynı serviste yarışamaz (iki kaynak yok).
       for (const svc of parsed.services) {
         if (health[svc.name] !== undefined && svc.readiness !== undefined) {
-          console.error(`ow: --health ile readiness çakışıyor: ${svc.name} (birini seçin)`)
+          console.error(`ow: --health conflicts with readiness: ${svc.name} (pick one)`)
           return 2
         }
       }
@@ -836,7 +836,7 @@ export const run = async (argv: string[]): Promise<number> => {
         const missing = missingRequiredEnv(parsed.services)
         if (missing.length > 0) {
           for (const entry of missing) {
-            console.error(`ow: ${entry.service} gerekli ortam değişkenleri eksik: ${entry.vars.join(", ")}`)
+            console.error(`ow: ${entry.service} missing required environment variables: ${entry.vars.join(", ")}`)
           }
           return 2
         }
@@ -847,10 +847,10 @@ export const run = async (argv: string[]): Promise<number> => {
         const hasDeps = parsed.services.some((svc) => (svc.dependsOn?.length ?? 0) > 0)
         const order = parsed.services.map((svc) => svc.name)
         if (!json) {
-          console.log(`ow.yaml geçerli: ${parsed.services.length} servis (${order.join(", ")})`)
+          console.log(`ow.yaml valid: ${parsed.services.length} services (${order.join(", ")})`)
           if (hasDeps) {
-            console.log(`başlatma sırası: ${order.join(", ")}`)
-            console.log(`depends_on bekletmez (order-only)`)
+            console.log(`start order: ${order.join(", ")}`)
+            console.log(`depends_on does not gate (order-only)`)
           }
         } else {
           console.log(JSON.stringify({ file, services: toCheckServicesJson(parsed.services), warnings: parsed.warnings, ...(hasDeps ? { spawnOrder: order } : {}) }))
@@ -860,7 +860,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const missing = missingRequiredEnv(parsed.services)
       if (missing.length > 0) {
         for (const entry of missing) {
-          console.error(`ow: ${entry.service} gerekli ortam değişkenleri eksik: ${entry.vars.join(", ")}`)
+          console.error(`ow: ${entry.service} missing required environment variables: ${entry.vars.join(", ")}`)
         }
         return 2
       }
@@ -869,20 +869,20 @@ export const run = async (argv: string[]): Promise<number> => {
       try {
         await ensureUpStateDir(stateDir)
       } catch (error) {
-        console.error(`ow: .ow kullanılamıyor: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`ow: .ow unavailable: ${error instanceof Error ? error.message : String(error)}`)
         return 1
       }
       const status = await classifyLock(paths.lockFile)
       if (status.kind === "live") {
-        console.error("ow: zaten çalışıyor (ow ps)")
+        console.error("ow: already running (ow ps)")
         return 2
       }
       if (status.kind === "unknown") {
-        console.error(`ow: kilit doğrulanamıyor (${status.reason}) — çalışıyor sayılıyor`)
+        console.error(`ow: lock unverifiable (${status.reason}) — treated as running`)
         return 2
       }
-      if (status.kind === "stale") warn(`uyarı: bayat kilit devralınacak (${status.reason})`)
-      if (status.kind === "corrupt") warn(`uyarı: bozuk kilit devralınacak (${status.reason})`)
+      if (status.kind === "stale") warn(`warning: stale lock will be adopted (${status.reason})`)
+      if (status.kind === "corrupt") warn(`warning: corrupt lock will be adopted (${status.reason})`)
       // Orphan probe (H6): lock says free but recorded children may still be
       // live from a crashed supervisor — refuse instead of duplicating them.
       // (Adoption is riskier: no shutdown wiring for foreign pids.)
@@ -908,7 +908,7 @@ export const run = async (argv: string[]): Promise<number> => {
     // branch (exit 2 with or without state), matching the `up`/`down`/
     // `restart`/`reconcile` guards below.
     if ((command === "ps" || command === "logs") && flags["--probe"] === true) {
-      console.error("ow: --probe henüz desteklenmiyor (M3)")
+      console.error("ow: --probe not yet supported (M3)")
       return 2
     }
     // `restart`/`reconcile`/tek-servis `down` state-dizini yokluğunda da
@@ -918,26 +918,26 @@ export const run = async (argv: string[]): Promise<number> => {
     const earlyEmpty = (command === "down" && positional === undefined) || command === "ps" || command === "logs"
     if (!existsSync(stateDir) && earlyEmpty) {
       if (command === "down") {
-        console.error(`ow: durdurulacak süreç yok (${noStateNote(searchStart)})`)
+        console.error(`ow: no processes to stop (${noStateNote(searchStart)})`)
         return 2
       }
       if (command === "ps") {
         if (json) console.log(JSON.stringify({ services: [] }))
-        else console.log(`durum yok (${noStateNote(searchStart)})`)
+        else console.log(`no state (${noStateNote(searchStart)})`)
         return 0
       }
       const service = positional ?? null
       if (json) console.log(JSON.stringify({ service, lines: [] }))
-      else console.log(`log yok (${noStateNote(searchStart)})`)
+      else console.log(`no log (${noStateNote(searchStart)})`)
       return 0
     }
     if (command === "down") {
       if (flags["--probe"] === true) {
-        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        console.error("ow: --probe not yet supported (M3)")
         return 2
       }
       if (positional !== undefined && flags["--rm"] === true) {
-        console.error("ow: --rm yalnızca toplu down ile kullanılır (tek serviste `down <ad> --rm` çıkış 2)")
+        console.error("ow: --rm works only with bulk down (single service `down <name> --rm` exits 2)")
         return 2
       }
       if (positional !== undefined) {
@@ -951,11 +951,11 @@ export const run = async (argv: string[]): Promise<number> => {
       if (!rm) {
         const fileStatus = await classifySupervisorFile(upPaths(rootDir).supervisorFile)
         if (fileStatus === "corrupt") {
-          console.error("ow: okunamıyor: supervisor.json bozuk — `down --rm` ile temizleyin")
+          console.error("ow: unreadable: supervisor.json corrupt — clean with `down --rm`")
           return 1
         }
         if (fileStatus === "bad-version") {
-          console.error("ow: okunamıyor: supervisor.json sürüm uyuşmazlığı — `down --rm` ile temizleyin")
+          console.error("ow: unreadable: supervisor.json version mismatch — clean with `down --rm`")
           return 1
         }
       }
@@ -963,21 +963,21 @@ export const run = async (argv: string[]): Promise<number> => {
       for (const line of outcome.warnings) warn(line)
       if (outcome.results.length === 0) {
         if (outcome.clearedLock) {
-          if (!json) console.log("kilit temizlendi")
+          if (!json) console.log("lock cleared")
           else console.log(JSON.stringify({ stopped: [], warnings: outcome.warnings }))
           return 0
         }
         if (outcome.removedState) {
-          if (!json) console.log("temizlendi")
+          if (!json) console.log("cleared")
           else console.log(JSON.stringify({ stopped: [], warnings: outcome.warnings }))
           return 0
         }
-        console.error("ow: durdurulacak süreç yok")
+        console.error("ow: no processes to stop")
         return 2
       }
       if (!json) {
         for (const result of outcome.results) {
-          console.log(`${result.stopped ? "durduruldu" : "durmuyor"}: ${result.name} (${result.note})`)
+          console.log(`${result.stopped ? "stopped" : "will not stop"}: ${result.name} (${result.note})`)
         }
       } else {
         console.log(JSON.stringify({ stopped: outcome.results, warnings: outcome.warnings }))
@@ -986,12 +986,12 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     if (command === "restart") {
       if (positional === undefined) {
-        console.error("ow: restart servis adı bekler (ör. ow restart api)")
+        console.error("ow: restart expects a service name (e.g. ow restart api)")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} restart ile kullanılamaz`)
+          console.error(`ow: ${unsupported} cannot be used with restart`)
           return 2
         }
       }
@@ -1000,11 +1000,11 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     if (command === "reconcile") {
       if (positional !== undefined) {
-        console.error("ow: reconcile konumsal argüman almaz (--check yeterli)")
+        console.error("ow: reconcile takes no positional arguments (--check suffices)")
         return 2
       }
       if (flags["--check"] !== true) {
-        console.error("ow: reconcile --check ile kullanılır (salt-okunur rapor, mutasyon yok)")
+        console.error("ow: use reconcile with --check (read-only report, no mutation)")
         return 2
       }
       // M3: `--probe` bayraklı reconcile, tanımlı probe'ları istemci-tarafı
@@ -1016,24 +1016,24 @@ export const run = async (argv: string[]): Promise<number> => {
     if (command === "checkpoints") {
       // P2-A: runner-yazar/ow-okur; salt-okunur, mutasyon yok, canlı exec yok.
       if (flags["--probe"] === true) {
-        console.error("ow: --probe henüz desteklenmiyor (M3)")
+        console.error("ow: --probe not yet supported (M3)")
         return 2
       }
       const { runCheckpointsList, runCheckpointsShow } = await import("./up-checkpoints")
       if (positional === undefined || (positional !== "list" && positional !== "show")) {
-        console.error("ow: checkpoints list|show bekleniyor (ör. ow checkpoints show <run>)")
+        console.error("ow: checkpoints list|show expected (e.g. ow checkpoints show <run>)")
         return 2
       }
       if (positional === "list") {
         if (parsed.extra.length > 0) {
-          console.error(`ow: beklenmeyen argüman: ${parsed.extra[0]}`)
+          console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
           return 2
         }
         return runCheckpointsList({ rootDir, json })
       }
       if (parsed.extra.length !== 1) {
         console.error(
-          parsed.extra.length === 0 ? "ow: checkpoints show run adı bekler (ör. ow checkpoints show <run>)" : `ow: beklenmeyen argüman: ${parsed.extra[1]}`,
+          parsed.extra.length === 0 ? "ow: checkpoints show expects a run name (e.g. ow checkpoints show <run>)" : `ow: unexpected argument: ${parsed.extra[1]}`,
         )
         return 2
       }
@@ -1043,7 +1043,7 @@ export const run = async (argv: string[]): Promise<number> => {
       // M-D: read-only mechanical finding list — no exec/prune, always
       // exit 0 (usage errors exit 2). --since outside the locked set is 2.
       if (positional !== undefined) {
-        console.error("ow: failures konumsal argüman almaz")
+        console.error("ow: failures takes no positional arguments")
         return 2
       }
       const { runFailures } = await import("./up-failures")
@@ -1055,12 +1055,12 @@ export const run = async (argv: string[]): Promise<number> => {
       // one-shot loopback TCP (bütçeli). `--probe` burada M3 bayrağı değil,
       // kapının kendi canlı-onay yoludur.
       if (positional !== undefined) {
-        console.error("ow: preflight konumsal argüman almaz")
+        console.error("ow: preflight takes no positional arguments")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} preflight ile kullanılamaz`)
+          console.error(`ow: ${unsupported} cannot be used with preflight`)
           return 2
         }
       }
@@ -1075,7 +1075,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: readiness takes no positional arguments")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with readiness`)
           return 2
@@ -1089,16 +1089,16 @@ export const run = async (argv: string[]): Promise<number> => {
       // preflight (those paths are untouched). `--check` required, bare
       // `provision` is a usage error (exit 2).
       if (positional !== undefined) {
-        console.error("ow: provision konumsal argüman almaz (ow provision --check [--file])")
+        console.error("ow: provision takes no positional arguments (ow provision --check [--file])")
         return 2
       }
       if (flags["--check"] !== true) {
-        console.error("ow: provision --check gerekli (salt-okunur checklist, mutasyon yok)")
+        console.error("ow: provision --check is required (read-only checklist, no mutation)")
         return 2
       }
-      for (const unsupported of ["--rm", "--wait", "--health", "--detach"]) {
+      for (const unsupported of ["--rm", "--wait", "--health", "--detach", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} provision ile kullanılamaz`)
+          console.error(`ow: ${unsupported} cannot be used with provision`)
           return 2
         }
       }
@@ -1110,16 +1110,16 @@ export const run = async (argv: string[]): Promise<number> => {
       // senaryo dosyasını gösterir (varsayılan <root>/ow.scenarios.yaml);
       // services-referansları aynı root'un ow.yaml'ına bakılır.
       if (positional !== undefined) {
-        console.error("ow: scenarios konumsal argüman almaz")
+        console.error("ow: scenarios takes no positional arguments")
         return 2
       }
       if (flags["--check"] !== true) {
-        console.error("ow: scenarios --check ile kullanılır (salt-okunur doğrulama, çalıştırma yok)")
+        console.error("ow: use scenarios with --check (read-only validation, no runs)")
         return 2
       }
-      for (const unsupported of ["--probe", "--wait", "--health", "--detach", "--rm"]) {
+      for (const unsupported of ["--probe", "--wait", "--health", "--detach", "--rm", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} scenarios ile kullanılamaz`)
+          console.error(`ow: ${unsupported} cannot be used with scenarios`)
           return 2
         }
       }
@@ -1136,7 +1136,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: use as record <scenario-name> [--file] (single positional)")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--json"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--json", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with record`)
           return 2
@@ -1154,7 +1154,7 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: use as contract check [--file] [--json]")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
+      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--run", "--off-local"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with contract`)
           return 2
@@ -1228,7 +1228,7 @@ export const run = async (argv: string[]): Promise<number> => {
         return 1
       }
       if (!json) {
-        console.log(services.length > 0 ? services.map(formatPsLine).join("\n") : "durum yok")
+        console.log(services.length > 0 ? services.map(formatPsLine).join("\n") : "no state")
       } else {
         console.log(JSON.stringify({ services: services.map(toPsServiceJson) }))
       }
@@ -1241,7 +1241,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const { classifySupervisorFile, upPaths } = await import("./up-state")
       const fileStatus = await classifySupervisorFile(upPaths(rootDir).supervisorFile)
       if (fileStatus === "corrupt" || fileStatus === "bad-version") {
-        console.error("ow: supervisor durumu bozuk — ow down --rm ile temizleyin")
+        console.error("ow: supervisor state corrupt — clean with ow down --rm")
         return 1
       }
       let names: string[] = []
@@ -1253,7 +1253,7 @@ export const run = async (argv: string[]): Promise<number> => {
         names = state?.services.map((svc) => svc.name) ?? []
       }
       if (positional !== undefined && !names.includes(positional)) {
-        console.error(`ow: bilinmeyen servis: ${positional}${names.length > 0 ? ` (${names.join(", ")})` : ""}`)
+        console.error(`ow: unknown service: ${positional}${names.length > 0 ? ` (${names.join(", ")})` : ""}`)
         return 2
       }
       const { queryLogs } = await import("./up-logs")
@@ -1261,12 +1261,12 @@ export const run = async (argv: string[]): Promise<number> => {
       try {
         rows = await queryLogs({ logsDir: join(stateDir, "logs"), service: positional, tail, grep, sinceMs })
       } catch (error) {
-        console.error(`ow: log okunamıyor: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`ow: log unreadable: ${error instanceof Error ? error.message : String(error)}`)
         return 1
       }
       if (!json) {
         if (rows.length === 0) {
-          console.log("log yok")
+          console.log("no log")
         } else {
           for (const row of rows) console.log(`[${row.service}|${row.stream}] ${row.line}`)
         }
@@ -1279,7 +1279,7 @@ export const run = async (argv: string[]): Promise<number> => {
 
   const sid = await resolveSession(positional, logPath)
   if (!sid) {
-    console.error("oturum bulunamadı")
+    console.error("session not found")
     return 2
   }
 
@@ -1310,7 +1310,7 @@ export const run = async (argv: string[]): Promise<number> => {
     let records: EnrichedRecord[]
     if (treeMode) {
       const { by, warnings, childCount } = await loadTreeRecords({ dbPath: flag(flags, "--db"), logPath, sessionID: sid, sinceMs: windowMs })
-      if (childCount > 0) warn(`ağaç: ${childCount + 1} oturum (${childCount} çocuk)`)
+      if (childCount > 0) warn(`tree: ${childCount + 1} sessions (${childCount} children)`)
       for (const w of warnings) warn(`warn: ${w}`)
       records = [...by.values()].flat()
     } else {
@@ -1329,7 +1329,7 @@ export const run = async (argv: string[]): Promise<number> => {
   let warnings: string[]
   if (treeMode) {
     const { by: loaded, warnings: treeWarnings, childCount } = await loadTreeRecords({ dbPath: flag(flags, "--db"), logPath, sessionID: sid, sinceMs: windowMs })
-    if (childCount > 0) warn(`ağaç: ${childCount + 1} oturum (${childCount} çocuk)`)
+    if (childCount > 0) warn(`tree: ${childCount + 1} sessions (${childCount} children)`)
     by = loaded
     warnings = treeWarnings
   } else {
@@ -1350,7 +1350,7 @@ export const run = async (argv: string[]): Promise<number> => {
       console.log(JSON.stringify({ session: sid, reads: stats }))
     } else {
       const text = formatReads(stats)
-      console.log(text.length > 0 ? text : "okuma kaydı yok")
+      console.log(text.length > 0 ? text : "no read records")
     }
     return 0
   }
@@ -1380,7 +1380,7 @@ export const run = async (argv: string[]): Promise<number> => {
       const text = out.join("\n")
       console.log(json ? JSON.stringify({ session: sid, detail: text }) : text)
     } else {
-      warn("patlak satır yok")
+      warn("no failed lines")
     }
     return 0
   }
@@ -1394,7 +1394,7 @@ export const run = async (argv: string[]): Promise<number> => {
     } else {
       const text = formatTree(buildTree(sid, filtered), filtered, { full, sectionBudget })
       if (text.length > 0) console.log(text)
-      if (full) warn(`(tam metin: ${text.length} karakter)`)
+      if (full) warn(`(full text: ${text.length} chars)`)
     }
     return 0
   }
@@ -1403,7 +1403,7 @@ export const run = async (argv: string[]): Promise<number> => {
     console.log(JSON.stringify(toShowJson(sid, warnings, groups)))
   } else {
     if (text.length > 0) console.log(text)
-    if (full) warn(`(tam metin: ${text.length} karakter)`)
+    if (full) warn(`(full text: ${text.length} chars)`)
   }
   return 0
 }

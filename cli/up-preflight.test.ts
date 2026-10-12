@@ -217,8 +217,8 @@ describe("preflight CLI (fixture composition)", () => {
       expect(code).toBe(1)
       const payload = JSON.parse(io.out.join("\n")) as { pass: boolean; missing: string[] }
       expect(payload.pass).toBe(false)
-      expect(payload.missing).toContain("reconcile:a:config-farkli")
-      expect(payload.missing).toContain("provenance:a:config-farkli")
+      expect(payload.missing).toContain("reconcile:a:config-mismatch")
+      expect(payload.missing).toContain("provenance:a:config-mismatch")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -435,6 +435,24 @@ describe("preflight CLI (fixture composition)", () => {
     try {
       expect(await run(["preflight", "x", "--file", file])).toBe(2)
       expect(await run(["preflight", "--detach", "--file", file])).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("boundary claim dedupe (no double-report)", () => {
+  test("duplicate boundary entries collapse to one claim", async () => {
+    const { readBoundaryClaims } = await import("./up-preflight")
+    const root = await mkdtemp(join(tmpdir(), "ow-dedupe-"))
+    try {
+      await writeFile(
+        join(root, "ow.scenarios.yaml"),
+        "version: 1\nscenarios:\n  cart:\n    services: [api]\n    boundaries: [real-read-only, real-read-only]\n    probes: [{id: p, argv: [./x.sh]}]\n",
+        "utf8",
+      )
+      const { claims } = await readBoundaryClaims(root)
+      expect(claims).toEqual([{ scenario: "cart", service: "api", boundary: "real-read-only" }])
     } finally {
       await rm(root, { recursive: true, force: true })
     }

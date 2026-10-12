@@ -33,7 +33,7 @@
  * render edilmez — DOM/title/aria'da yalnızca kısa-hash (7) görünür.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { lstat, open, readdir, readFile } from 'node:fs/promises';
+import { lstat, open, readdir, readFile, realpath } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { Store, resolveEnvironmentRecord, resolveWorkspaceRecord, type EnvironmentRecord } from './store.js';
 import { maxProjectRoots } from './project-roots.js';
@@ -597,8 +597,57 @@ export function shortRev(full: string): string {
 export const SCENARIOS_FILE_NAME = 'ow.scenarios.yaml';
 const SCENARIOS_VERSION = '1';
 const SCENARIO_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]{0,63}$/;
-const SCENARIO_BOUNDARIES = ['real', 'local', 'fake', 'captured-response', 'test'];
-const SCENARIO_KNOWN_BOUNDARIES = new Set(SCENARIO_BOUNDARIES);
+/** M1 taxonomy mirror (cli/up-scenarios.ts): new-enum base set for known
+ * classification and column ordering; legacy values map through before
+ * classification (never a failure). */
+const SCENARIO_BOUNDARY_NEW_BASE: ReadonlySet<string> = new Set([
+  'real-read-only',
+  'real-state-changing',
+  'network-deny',
+  'subscribed',
+  'unverified',
+]);
+const SCENARIO_BOUNDARY_LEGACY_MAP: Readonly<Record<string, string>> = {
+  real: 'real-state-changing',
+  local: 'real-read-only',
+  'captured-response': 'subscribed',
+  fake: 'unverified',
+  test: 'unverified',
+};
+const SCENARIO_BLOCKED_PREFIX = 'blocked:';
+const SCENARIO_BLOCKED_REASON_MAX = 128;
+const SCENARIO_BOUNDARIES = ['real-read-only', 'real-state-changing', 'network-deny', 'subscribed', 'blocked', 'unverified'];
+const SCENARIO_KNOWN_BOUNDARIES = new Set(SCENARIO_BOUNDARY_NEW_BASE);
+
+/** Known-boundary check mirroring classification: new-enum base plus
+ * well-formed `blocked:<reason>` (bare/malformed blocked stays unknown). */
+function isKnownScenarioBoundary(value: string): boolean {
+  if (SCENARIO_KNOWN_BOUNDARIES.has(value)) return true;
+  return normalizeScenarioBoundary(value).known;
+}
+
+/** Pure boundary normalize (never throws; cli/normalizeBoundary mirror):
+ * new-enum passes through, legacy maps, `blocked:<reason>` is preserved,
+ * unknown/empty/malformed-blocked falls back to raw (caller classifies
+ * unknown as unverified). Returns normalized value + known flag +
+ * legacy source for warn parity. */
+export function normalizeScenarioBoundary(raw: string): { normalized: string; known: boolean; legacySource: string | null } {
+  const value = raw.trim();
+  if (value.startsWith(SCENARIO_BLOCKED_PREFIX)) {
+    const unquoted = value.slice(SCENARIO_BLOCKED_PREFIX.length).trim();
+    const reason = unquoted.length >= 2 && ((unquoted.startsWith('"') && unquoted.endsWith('"')) || (unquoted.startsWith("'") && unquoted.endsWith("'")))
+      ? unquoted.slice(1, -1).trim()
+      : unquoted;
+    if (reason.length > 0 && [...reason].length <= SCENARIO_BLOCKED_REASON_MAX) {
+      return { normalized: `${SCENARIO_BLOCKED_PREFIX}${reason}`, known: true, legacySource: null };
+    }
+    return { normalized: value, known: false, legacySource: null };
+  }
+  if (SCENARIO_BOUNDARY_NEW_BASE.has(value)) return { normalized: value, known: true, legacySource: null };
+  const mapped = SCENARIO_BOUNDARY_LEGACY_MAP[value];
+  if (mapped !== undefined) return { normalized: mapped, known: true, legacySource: value };
+  return { normalized: value, known: false, legacySource: null };
+}
 const SCENARIO_MAX_COUNT = 32;
 const SCENARIO_MAX_COLUMNS = 16;
 const SCENARIOS_MAX_BYTES = 256 * 1024;
@@ -680,11 +729,11 @@ function yamlParseFlowMap(raw: string): Record<string, YamlNode> {
   if (inner.length === 0) return out;
   for (const part of yamlSplitTopLevel(inner)) {
     const colon = part.indexOf(':');
-    if (colon < 0) throw new Error('harita içinde anahtar: değer bekleniyor');
+    if (colon < 0) throw new Error('key: value expected inside map');
     const key = yamlUnquote(part.slice(0, colon).trim());
     const value = part.slice(colon + 1).trim();
-    if (key.length === 0 || value.length === 0) throw new Error('harita içinde boş anahtar/değer');
-    if (key in out) throw new Error('harita içinde tekrarlanan anahtar');
+    if (key.length === 0 || value.length === 0) throw new Error('empty key/value inside map');
+    if (key in out) throw new Error('duplicate key inside map');
     out[key] = yamlParseValue(value);
   }
   return out;
@@ -705,30 +754,30 @@ function yamlParseSubset(text: string): Record<string, YamlNode> {
     if (bare.trim().length === 0) continue;
     const indent = bare.match(/^ */)?.[0].length ?? 0;
     const trimmed = bare.trim();
-    if (trimmed.startsWith('- ')) throw new Error('blok listesi desteklenmiyor (akış listesi kullanın: [a, b])');
+    if (trimmed.startsWith('- ')) throw new Error('block lists unsupported (use a flow list: [a, b])');
     const colon = trimmed.indexOf(':');
-    if (colon < 0) throw new Error('anahtar: değer bekleniyor');
+    if (colon < 0) throw new Error('key: value expected');
     const key = yamlUnquote(trimmed.slice(0, colon).trim());
     const rest = trimmed.slice(colon + 1).trim();
-    if (key.length === 0) throw new Error('boş anahtar');
+    if (key.length === 0) throw new Error('empty key');
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
     const parent = stack[stack.length - 1].map;
     if (rest.length === 0) {
-      if (indent === 0 && parent !== root) throw new Error(`beklenmeyen girinti: ${key}`);
+      if (indent === 0 && parent !== root) throw new Error(`unexpected indent: ${key}`);
       for (let m = n + 1; m < lines.length; m += 1) {
         const peer = yamlStripComment(lines[m]).trim();
         if (peer.length === 0) continue;
-        if (peer.startsWith('- ')) throw new Error('blok listesi desteklenmiyor (akış listesi kullanın: [a, b])');
+        if (peer.startsWith('- ')) throw new Error('block lists unsupported (use a flow list: [a, b])');
         break;
       }
-      if (stack.length >= 3) throw new Error(`3. düzey desteklenmiyor: ${key}`);
+      if (stack.length >= 3) throw new Error(`level 3 unsupported: ${key}`);
       const child: Record<string, YamlNode> = {};
-      if (Object.hasOwn(parent, key)) throw new Error(`tekrarlanan anahtar: ${key}`);
+      if (Object.hasOwn(parent, key)) throw new Error(`duplicate key: ${key}`);
       parent[key] = child;
       stack.push({ indent, map: child });
       continue;
     }
-    if (Object.hasOwn(parent, key)) throw new Error(`tekrarlanan anahtar: ${key}`);
+    if (Object.hasOwn(parent, key)) throw new Error(`duplicate key: ${key}`);
     parent[key] = yamlParseValue(rest);
   }
   return root;
@@ -753,25 +802,25 @@ export function normalizeScenarios(text: string): { scenarios: ParsedScenario[];
   try {
     doc = yamlParseSubset(text);
   } catch (error) {
-    throw new Error(`geçersiz senaryo dosyası: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`invalid scenario file: ${error instanceof Error ? error.message : String(error)}`);
   }
   for (const key of Object.keys(doc)) {
-    if (key !== 'version' && key !== 'scenarios') fileWarnings.push(`bilinmeyen üst alan yoksayıldı: ${key}`);
+    if (key !== 'version' && key !== 'scenarios') fileWarnings.push(`unknown top-level field ignored: ${key}`);
   }
-  if (doc['version'] !== SCENARIOS_VERSION) throw new Error('geçersiz senaryo dosyası: `version: 1` gerekli');
+  if (doc['version'] !== SCENARIOS_VERSION) throw new Error('invalid scenario file: `version: 1` required');
   const raw = doc['scenarios'];
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('geçersiz senaryo dosyası: `scenarios:` haritası gerekli');
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('invalid scenario file: `scenarios:` map required');
   const entries = Object.entries(raw as Record<string, YamlNode>);
-  if (entries.length === 0) throw new Error('geçersiz senaryo dosyası: senaryo yok (`scenarios:` boş)');
-  if (entries.length > SCENARIO_MAX_COUNT) throw new Error(`geçersiz senaryo dosyası: en fazla ${SCENARIO_MAX_COUNT} senaryo (v1 sınırı)`);
+  if (entries.length === 0) throw new Error('invalid scenario file: no scenarios (empty `scenarios:`)');
+  if (entries.length > SCENARIO_MAX_COUNT) throw new Error(`invalid scenario file: at most ${SCENARIO_MAX_COUNT} scenarios (v1 limit)`);
   const scenarios: ParsedScenario[] = [];
   for (const [name, node] of entries) {
-    if (!SCENARIO_NAME_PATTERN.test(name)) throw new Error(`geçersiz senaryo dosyası: senaryo adı geçersiz: ${name}`);
-    if (typeof node !== 'object' || node === null || Array.isArray(node)) throw new Error(`geçersiz senaryo dosyası: ${name}: senaryo haritası bekleniyor`);
+    if (!SCENARIO_NAME_PATTERN.test(name)) throw new Error(`invalid scenario file: invalid scenario name: ${name}`);
+    if (typeof node !== 'object' || node === null || Array.isArray(node)) throw new Error(`invalid scenario file: ${name}: scenario map expected`);
     const fields = node as Record<string, YamlNode>;
     for (const key of Object.keys(fields)) {
       if (!['services', 'boundaries', 'targets', 'probes', 'checkpoints'].includes(key)) {
-        fileWarnings.push(`${name}: bilinmeyen alan yoksayıldı: ${key}`);
+        fileWarnings.push(`${name}: unknown field ignored: ${key}`);
       }
     }
     const asList = (value: YamlNode | undefined, what: string): string[] => {
@@ -779,48 +828,60 @@ export function normalizeScenarios(text: string): { scenarios: ParsedScenario[];
       if (typeof value === 'string') return [value];
       if (Array.isArray(value)) {
         for (const part of value) {
-          if (typeof part !== 'string') throw new Error(`geçersiz senaryo dosyası: ${what} metin ya da liste olmalı`);
+          if (typeof part !== 'string') throw new Error(`invalid scenario file: ${what} must be text or a list`);
         }
         return [...value] as string[];
       }
-      throw new Error(`geçersiz senaryo dosyası: ${what} metin ya da liste olmalı`);
+      throw new Error(`invalid scenario file: ${what} must be text or a list`);
     };
     const services = asList(fields['services'], `${name}: services`);
-    if (services.length === 0) throw new Error(`geçersiz senaryo dosyası: ${name}: services gerekli`);
-    const boundaries = asList(fields['boundaries'], `${name}: boundaries`);
+    if (services.length === 0) throw new Error(`invalid scenario file: ${name}: services required`);
+    const rawBoundaries = asList(fields['boundaries'], `${name}: boundaries`);
+    // M1 dual-read: legacy maps before classification (one legacy-boundary
+    // warning per value); known values normalize, unknown stays raw for
+    // the unverified cell verdict downstream.
+    const seenLegacy = new Set<string>();
+    const boundaries = rawBoundaries.map(raw => {
+      const norm = normalizeScenarioBoundary(raw);
+      if (norm.legacySource !== null && !seenLegacy.has(norm.legacySource)) {
+        seenLegacy.add(norm.legacySource);
+        fileWarnings.push(`legacy-boundary: ${norm.legacySource} → ${norm.normalized} (warning)`);
+      }
+      return norm.known ? norm.normalized : raw;
+    });
     asList(fields['targets'], `${name}: targets`);
     const checkpoints = asList(fields['checkpoints'], `${name}: checkpoints`);
     const probesRaw = fields['probes'];
-    if (probesRaw === undefined) throw new Error(`geçersiz senaryo dosyası: ${name}: probes gerekli`);
-    if (!Array.isArray(probesRaw) || probesRaw.length === 0) throw new Error(`geçersiz senaryo dosyası: ${name}: probes liste olmalı`);
+    if (probesRaw === undefined) throw new Error(`invalid scenario file: ${name}: probes required`);
+    if (!Array.isArray(probesRaw) || probesRaw.length === 0) throw new Error(`invalid scenario file: ${name}: probes must be a list`);
     const probes: { id: string; timeout: string }[] = [];
     for (const entry of probesRaw) {
-      if (typeof entry !== 'string') throw new Error(`geçersiz senaryo dosyası: ${name}: probe satır-içi harita olmalı`);
+      if (typeof entry !== 'string') throw new Error(`invalid scenario file: ${name}: probe must be an inline map`);
       const trimmed = entry.trim();
-      if (!(trimmed.startsWith('{') && trimmed.endsWith('}'))) throw new Error(`geçersiz senaryo dosyası: ${name}: probe satır-içi harita olmalı`);
+      if (!(trimmed.startsWith('{') && trimmed.endsWith('}'))) throw new Error(`invalid scenario file: ${name}: probe must be an inline map`);
       let map: Record<string, YamlNode>;
       try {
         map = yamlParseFlowMap(trimmed);
       } catch {
-        throw new Error(`geçersiz senaryo dosyası: ${name}: probe haritası bozuk`);
+        throw new Error(`invalid scenario file: ${name}: probe map malformed`);
       }
       for (const key of Object.keys(map)) {
-        if (!['id', 'argv', 'timeout'].includes(key)) fileWarnings.push(`${name}: probe içinde bilinmeyen alan yoksayıldı: ${key}`);
+        if (!['id', 'argv', 'timeout'].includes(key)) fileWarnings.push(`${name}: unknown probe field ignored: ${key}`);
       }
       const id = map['id'];
-      if (typeof id !== 'string' || !SCENARIO_NAME_PATTERN.test(id)) throw new Error(`geçersiz senaryo dosyası: ${name}: probe id metin olmalı`);
+      if (typeof id !== 'string' || !SCENARIO_NAME_PATTERN.test(id)) throw new Error(`invalid scenario file: ${name}: probe id must be text`);
       const argvRaw = map['argv'];
-      if (!Array.isArray(argvRaw) || argvRaw.length === 0) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv liste olmalı (id: ${id})`);
-      if (argvRaw.length > PROBE_MAX_PARTS) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv en fazla ${PROBE_MAX_PARTS} parça olabilir`);
+      if (!Array.isArray(argvRaw) || argvRaw.length === 0) throw new Error(`invalid scenario file: ${name}: probe argv must be a list (id: ${id})`);
+      if (argvRaw.length > PROBE_MAX_PARTS) throw new Error(`invalid scenario file: ${name}: probe argv holds at most ${PROBE_MAX_PARTS} parts`);
       for (const part of argvRaw) {
-        if (typeof part !== 'string') throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv parçaları metin olmalı`);
-        if (Buffer.byteLength(part, 'utf8') > PROBE_MAX_PART_BYTES) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv parçası çok uzun`);
+        if (typeof part !== 'string') throw new Error(`invalid scenario file: ${name}: probe argv parts must be text`);
+        if (Buffer.byteLength(part, 'utf8') > PROBE_MAX_PART_BYTES) throw new Error(`invalid scenario file: ${name}: probe argv part too long`);
       }
-      if (SHELL_ARGV0.has((argvRaw as string[])[0])) throw new Error(`geçersiz senaryo dosyası: ${name}: probe argv shell ile başlayamaz`);
+      if (SHELL_ARGV0.has((argvRaw as string[])[0])) throw new Error(`invalid scenario file: ${name}: probe argv must not start with a shell`);
       const timeoutRaw = map['timeout'];
       let timeout = PROBE_DEFAULT_TIMEOUT;
       if (timeoutRaw !== undefined) {
-        if (typeof timeoutRaw !== 'string' || !PROBE_TIMEOUTS.has(timeoutRaw)) throw new Error(`geçersiz senaryo dosyası: ${name}: probe timeout 5s|10s|30s olmalı`);
+        if (typeof timeoutRaw !== 'string' || !PROBE_TIMEOUTS.has(timeoutRaw)) throw new Error(`invalid scenario file: ${name}: probe timeout must be 5s|10s|30s`);
         timeout = timeoutRaw;
       }
       probes.push({ id, timeout });
@@ -880,7 +941,7 @@ function buildScenarios(
   }
   const columns = [
     ...SCENARIO_BOUNDARIES.filter(boundary => seenColumns.has(boundary)),
-    ...[...seenColumns].filter(boundary => !SCENARIO_KNOWN_BOUNDARIES.has(boundary)).sort(),
+    ...[...seenColumns].filter(boundary => !isKnownScenarioBoundary(boundary)).sort(),
   ];
   const warnings = [...fileWarnings];
   if (columns.length > SCENARIO_MAX_COLUMNS) {
@@ -914,7 +975,7 @@ function buildScenarios(
       const raw = shownRaw[i];
       const column = shownColumns[i];
       if (!scenario.boundaries.includes(raw)) cells[column] = 'uncovered';
-      else if (!SCENARIO_KNOWN_BOUNDARIES.has(raw)) cells[column] = 'unverified';
+      else if (!isKnownScenarioBoundary(raw)) cells[column] = 'unverified';
       else cells[column] = verdict;
     }
     return {
@@ -1867,6 +1928,15 @@ function overlayBlockedReason(value: string): string | null {
   return raw;
 }
 
+/** Path-safe overlay name echo: basename segment, 64ch cap, secret-masked.
+ * Valid scenario names pass through unchanged (pattern forbids separators);
+ * only malformed names sanitize, and those can never match base (dangling). */
+function safeOverlayName(name: string): string {
+  const base = name.split('/').flatMap(part => part.split('\\')).filter(part => part.length > 0).pop() ?? '(empty)';
+  const capped = base.length > 64 ? `${base.slice(0, 64)}…` : base;
+  return maskSecrets(capped);
+}
+
 async function readRootOverlay(
   canonicalRoot: string,
   baseText: string,
@@ -1890,6 +1960,16 @@ async function readRootOverlay(
   if (entry.isSymbolicLink()) return refused('symlink not followed');
   if (!entry.isFile()) return refused('not a file');
   if (entry.size > OVERLAY_MAX_BYTES) return refused('oversize');
+  // Symlink-aware containment (cli/up-overlay.ts mirror): the realpath
+  // must stay under the realpathed root — an intermediate symlink
+  // pointing outside refuses even when lexical checks pass.
+  try {
+    const root = await realpath(canonicalRoot);
+    const real = await realpath(path);
+    if (real !== root && !real.startsWith(root + sep)) return refused('outside root');
+  } catch {
+    return idle;
+  }
   let text: string;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(path));
@@ -1922,32 +2002,45 @@ async function readRootOverlay(
   const replacements = new Map<string, string[]>();
   for (const [name, node] of entries) {
     if (typeof node !== 'object' || node === null || Array.isArray(node)) {
-      return { applied: false, replacements: new Map(), warnings: [], error: `overlay-dangling: ${maskSecrets(name)} (refused)` };
+      return { applied: false, replacements: new Map(), warnings: [], error: `overlay-dangling: ${safeOverlayName(name)} (refused)` };
     }
     const fields = node as Record<string, YamlNode>;
     for (const key of Object.keys(fields)) {
-      if (key !== 'boundaries') warnings.push(`${maskSecrets(name)}: unknown overlay field ignored: ${maskSecrets(key)}`);
+      if (key !== 'boundaries') warnings.push(`${safeOverlayName(name)}: unknown overlay field ignored: ${maskSecrets(key)}`);
     }
     const listRaw = fields['boundaries'];
     let list: string[];
-    if (listRaw === undefined) list = [];
+    // HIGH-1 fail-closed: an absent boundaries key refuses (silent emptying
+    // is never intended); an explicit [] stays allowed as intentional empty.
+    if (listRaw === undefined) return refused(`boundaries required in ${safeOverlayName(name)}`);
     else if (typeof listRaw === 'string') list = [listRaw];
     else if (Array.isArray(listRaw) && (listRaw as unknown[]).every(part => typeof part === 'string')) {
       list = [...(listRaw as string[])];
     } else {
-      return refused(`invalid boundaries in ${maskSecrets(name)}`);
+      return refused(`invalid boundaries in ${safeOverlayName(name)}`);
     }
     for (const boundary of list) {
       if (maskSecrets(boundary) !== boundary) return refused('secret-shaped value');
       const reason = overlayBlockedReason(boundary);
       if (reason !== null && (reason.length === 0 || [...reason].length > OVERLAY_BLOCKED_REASON_MAX)) {
-        return refused(`invalid blocked shape in ${maskSecrets(name)}`);
+        return refused(`invalid blocked shape in ${safeOverlayName(name)}`);
       }
     }
     if (!baseNames.has(name)) {
-      return { applied: false, replacements: new Map(), warnings: [], error: `overlay-dangling: ${maskSecrets(name)} (refused)` };
+      return { applied: false, replacements: new Map(), warnings: [], error: `overlay-dangling: ${safeOverlayName(name)} (refused)` };
     }
-    replacements.set(name, list);
+    // M1 dual-read: overlay values normalize like base (known→normalized,
+    // unknown stays raw for the unverified verdict); legacy warns here.
+    const seenOverlayLegacy = new Set<string>();
+    const normalized = list.map(raw => {
+      const norm = normalizeScenarioBoundary(raw);
+      if (norm.legacySource !== null && !seenOverlayLegacy.has(norm.legacySource)) {
+        seenOverlayLegacy.add(norm.legacySource);
+        warnings.push(`legacy-boundary: ${norm.legacySource} → ${norm.normalized} (warning)`);
+      }
+      return norm.known ? norm.normalized : raw;
+    });
+    replacements.set(name, normalized);
   }
   if (typeof digestRaw === 'string' && digestRaw !== overlayDigestOf(baseText)) {
     warnings.push(`overlay-stale: base changed since ${digestRaw.slice(0, 8)} (warning)`);
@@ -1956,6 +2049,11 @@ async function readRootOverlay(
     await lstat(join(canonicalRoot, '.git'));
     let ignore = '';
     try {
+      // lstat-guarded read (cli/up-overlay.ts mirror): a symlinked
+      // .gitignore is unverifiable — skip the mention check silently.
+      if ((await lstat(join(canonicalRoot, '.gitignore'))).isSymbolicLink()) {
+        return { applied: true, replacements, warnings, error: null };
+      }
       ignore = (await readFile(join(canonicalRoot, '.gitignore'), 'utf8')).slice(0, 64 * 1024);
     } catch {
       warnings.push(`overlay-gitignore-missing: ${OVERLAY_LOCAL_FILE} (warning)`);

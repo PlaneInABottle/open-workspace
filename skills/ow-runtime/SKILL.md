@@ -36,9 +36,9 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   `up -d --wait`/`reconcile --probe` (argv-only, masked, budgeted;
   `--health` conflicts exit 2).
 - Spring notes: `/` 404 is NORMAL — wait on `/actuator/health`.
-  Never `pkill`: a stale `zaten çalışıyor` clears via `ow down`
+  Never `pkill`: a stale `already running` clears via `ow down`
   (`ow down --rm` for dead residue). `down` during a wait reports
-  `bitti:` everywhere (143-ish) — expected, not an error.
+  `exited:` everywhere (143-ish) — expected, not an error.
 - `ow reconcile --check` reports drift without changing anything
   (exit 0 in sync, 1 on drift; rev lines informational). `--probe`
   runs project probes one-shot (budgeted); never in `ps`.
@@ -59,9 +59,9 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 
 ## Drift, provenance, preflight, readiness
 
-- `ow reconcile --check` drift kinds with Turkish hints (`eksik`,
-  `fazla`, `durmuş`, `config-farklı`, `lstart-uyuşmazlığı`,
-  `port-yabancı`, `derleme-eski` for stale build identity).
+- `ow reconcile --check` drift kinds with English hints (`missing`,
+  `extra`, `stopped`, `config-mismatch`, `lstart-mismatch`,
+  `foreign-port`, `stale-build` for stale build identity).
 - `ow preflight [--file] [--json] [--probe]`: read-only gate, no
   mutation; exits 0 pass / 1 missing / 2 usage. `--probe` is one-shot
   loopback TCP on declared ports only (≤60s budget).
@@ -75,7 +75,7 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   scenario `real-read-only | real-state-changing | subscribed` claims
   against recorded evidence; `unverified`, `network-deny`,
   `blocked:*`, and unknown services never fail it. Known-false-green
-  catalog (positive evidence only): `stale-jar` (`derleme-eski:`),
+  catalog (positive evidence only): `stale-jar` (`stale-build:`),
   `origin-403` (a recorded 403 is an origin gate, not down),
   `msw-vite-trap` (mock markers or frozen `vite preview` build),
   `v5-confusion` (non-v1 ow.yaml `version:` assumed v1).

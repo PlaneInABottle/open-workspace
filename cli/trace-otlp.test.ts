@@ -138,7 +138,7 @@ describe("trace-otlp decode fixture", () => {
       requestBytes(scopeSpans(null, [spanBytes({}), spanBytes({ traceId: null })])),
     )
     expect(spans.length).toBe(1)
-    expect(spans[0].service).toBe("bilinmeyen")
+    expect(spans[0].service).toBe("unknown")
   })
 
   test("two services share one traceId with parent linkage", () => {

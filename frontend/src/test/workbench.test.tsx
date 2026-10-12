@@ -131,8 +131,8 @@ describe('observer-first workbench', () => {
     expect(within(environments).getByText('dev')).toBeInTheDocument();
     // The coordinator section follows the same one-shot refresh with its own
     // environment scope and witness line.
-    expect(await screen.findByRole('region', { name: 'Koordinatör' })).toBeInTheDocument();
-    expect(await screen.findByText('eşleşiyor')).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Coordinator' })).toBeInTheDocument();
+    expect(await screen.findByText('in sync')).toBeInTheDocument();
   });
 
   it('renders the setup prompt without a project selection and lists registered projects', async () => {

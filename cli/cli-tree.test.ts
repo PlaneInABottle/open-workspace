@@ -22,7 +22,7 @@ describe("cli routing", () => {
     for (const word of ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs", "--json", "--help", "--rm", "--check", "--detach"]) {
       expect(text).toContain(word)
     }
-    expect(text).toContain("0 ok, 1 yapısal hata, 2 kullanım hatası")
+    expect(text).toContain("0 ok, 1 structural error, 2 usage error")
     expect(text).toContain("30m|3h|1d|1w")
     expect(text).toContain("show/stuck/meta/sessions/reads/prompts")
   })
@@ -49,11 +49,11 @@ describe("cli routing", () => {
 
   test("parseArgs rejects unknown commands, flags and bad windows", () => {
     expect(parseArgs(["frobnicate"]).error).not.toBeNull()
-    expect(parseArgs(["show", "--bogus"]).error).toContain("bilinmeyen seçenek")
-    expect(parseArgs(["show", "--since", "bogus"]).error).toContain("geçersiz --since")
-    expect(parseArgs(["show", "--since", "30s"]).error).toContain("geçersiz --since")
-    expect(parseArgs(["show", "--bytes", "bogus"]).error).toContain("geçersiz --bytes")
-    expect(parseArgs([]).error).toContain("komut bekleniyor")
+    expect(parseArgs(["show", "--bogus"]).error).toContain("unknown option")
+    expect(parseArgs(["show", "--since", "bogus"]).error).toContain("invalid --since")
+    expect(parseArgs(["show", "--since", "30s"]).error).toContain("invalid --since")
+    expect(parseArgs(["show", "--bytes", "bogus"]).error).toContain("invalid --bytes")
+    expect(parseArgs([]).error).toContain("command expected")
   })
 
   test("parseArgs routes up/down/ps/logs flags and -d alias", () => {
@@ -67,8 +67,8 @@ describe("cli routing", () => {
     expect(logs.error).toBeNull()
     expect(logs.command).toBe("logs")
     expect(logs.sessionID).toBe("web")
-    expect(parseArgs(["logs", "--tail", "bogus"]).error).toContain("geçersiz --tail")
-    expect(parseArgs(["logs", "--tail", "99999"]).error).toContain("geçersiz --tail")
+    expect(parseArgs(["logs", "--tail", "bogus"]).error).toContain("invalid --tail")
+    expect(parseArgs(["logs", "--tail", "99999"]).error).toContain("invalid --tail")
   })
 })
 
@@ -131,12 +131,12 @@ describe("tree builder", () => {
     expect(root.children.map((c) => c.sessionID)).toEqual(["ses_child_a", "ses_child_b", "ses_orphan"])
     expect(root.children[2].link).toBeNull()
     const text = formatTree(root, by)
-    expect(text).toContain("oturum ses_parent")
-    expect(text).toContain("↳ çocuk [explore] ilk iş — ses_child_a")
-    expect(text).toContain("↳ çocuk [implementer] ikinci iş — ses_child_b")
-    expect(text).toContain("(bağlantısız)")
+    expect(text).toContain("session ses_parent")
+    expect(text).toContain("↳ child [explore] ilk iş — ses_child_a")
+    expect(text).toContain("↳ child [implementer] ikinci iş — ses_child_b")
+    expect(text).toContain("(unlinked)")
     // child sections reuse grouped lines with short-id tags, indented
-    expect(text).toContain("  görev: ara")
+    expect(text).toContain("  task: ara")
     expect(text).toContain("[ses_child_a]")
   })
 
@@ -171,7 +171,7 @@ describe("tree builder", () => {
     ])
     expect(parseSpawnLinks(by.get("ses_p")!)).toEqual([])
     const text = formatTree(buildTree("ses_p", by), by)
-    expect(text).toContain("oturum ses_p")
+    expect(text).toContain("session ses_p")
   })
 
   test("clipped subagent args still yield spawn links via field fallback", () => {

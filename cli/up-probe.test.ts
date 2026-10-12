@@ -114,22 +114,22 @@ describe("runProbe", () => {
   test("nonzero çıkış hazır-değil sayılır (not + kod raporlanır)", async () => {
     const outcome = await runProbe({ spec: specOf(["false"]), cwd: "/tmp", env })
     expect(outcome.ok).toBe(false)
-    expect(outcome.note).toContain("çıkış kodu 1")
+    expect(outcome.note).toContain("exit code 1")
     expect(outcome.code).toBe(1)
   })
 
   test("geçersiz JSON hazır-değil (stdout ham basılmaz)", async () => {
     const outcome = await runProbe({ spec: specOf(["echo", "düz yazi"]), cwd: "/tmp", env })
     expect(outcome.ok).toBe(false)
-    expect(outcome.note).toContain("geçersiz JSON")
+    expect(outcome.note).toContain("invalid JSON")
   })
 
   test("timeout: TEK-PID kill + torun-notu, exit beklenmez", async () => {
     const outcome = await runProbe({ spec: specOf(["sleep", "30"]), cwd: "/tmp", env, timeoutMs: 200 })
     expect(outcome.timedOut).toBe(true)
     expect(outcome.ok).toBe(false)
-    expect(outcome.note).toContain("zaman aşımı")
-    expect(outcome.note).toContain("artakalan-torun-olabilir")
+    expect(outcome.note).toContain("timeout")
+    expect(outcome.note).toContain("may-be-leftover-grandchild")
   })
 
   test("secret-maske: stdout/stderr/not maskeli, ham argv rapora girmez", async () => {
@@ -235,7 +235,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.out.join("\n")).toContain("hazır değil: api (probe: kapali)")
+      expect(io.out.join("\n")).toContain("not ready: api (probe: kapali)")
     } finally {
       try {
         sleeper.kill("SIGKILL")
@@ -343,7 +343,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
         io.restore()
       }
       expect(code).toBe(2)
-      expect(io.err.join("\n")).toContain("çakışıyor: api")
+      expect(io.err.join("\n")).toContain("conflicts with readiness: api")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -407,7 +407,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
           io.restore()
         }
         expect(code).toBe(0)
-        expect(io.out.join("\n")).toContain("readiness: a hazır-değil (kapali)")
+        expect(io.out.join("\n")).toContain("readiness: a not-ready (kapali)")
         const io2 = capture()
         try {
           expect(await runReconcileCheck({ rootDir: root, file, json: true, probe: true })).toBe(0)
@@ -475,7 +475,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
         }
         expect(code).toBe(0)
         expect(calls).toBe(1)
-        expect(io.out.join("\n")).toContain("readiness: b ölçülmedi (timeout-bütçesi)")
+        expect(io.out.join("\n")).toContain("readiness: b unmeasured (timeout-budget)")
       } finally {
         for (const proc of [pa, pb]) {
           try {

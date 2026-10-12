@@ -88,11 +88,11 @@ describe("queryPs", () => {
       expect(svc.uptimeSec!).toBeGreaterThanOrEqual(0)
       expect(svc.memBytes!).toBeGreaterThan(0)
       expect(Number.isFinite(svc.cpuPct!)).toBe(true)
-      expect(svc.note).toContain("port çakışması")
-      expect(formatPsLine(svc)).toContain("çalışıyor")
+      expect(svc.note).toContain("port conflict")
+      expect(formatPsLine(svc)).toContain("running")
       // Declared port 4123 has no listener in this fixture → probed false.
       expect(svc.listening).toBe(false)
-      expect(formatPsLine(svc)).toContain("listen=hayır")
+      expect(formatPsLine(svc)).toContain("listen=no")
       expect(toPsServiceJson(svc)).toEqual({
         name: "uyu",
         status: "running",
@@ -124,7 +124,7 @@ describe("queryPs", () => {
       })
       const [svc] = await queryPs(root)
       expect(svc.listening).toBe(true)
-      expect(formatPsLine(svc)).toContain("listen=evet")
+      expect(formatPsLine(svc)).toContain("listen=yes")
       expect(toPsServiceJson(svc)).toMatchObject({ port: holder.port, listening: true })
     } finally {
       holder.stop(true)
@@ -148,8 +148,8 @@ describe("queryPs", () => {
       expect(svc.status).toBe("unknown")
       expect(svc.cpuPct).toBeNull()
       expect(svc.memBytes).toBeNull()
-      expect(svc.note).toContain("lstart uyuşmazlığı")
-      expect(formatPsLine(svc)).toContain("bilinmiyor")
+      expect(svc.note).toContain("lstart mismatch")
+      expect(formatPsLine(svc)).toContain("unknown")
       // foreign process untouched by the query
       expect(await isLivePid(sleeper.pid, (await readLstart(sleeper.pid))!)).toBe(true)
     } finally {
@@ -177,8 +177,8 @@ describe("queryPs", () => {
       expect(by["biten"].status).toBe("exited")
       expect(by["oldurulen"].status).toBe("stopped")
       expect(by["sessiz"].status).toBe("stopped")
-      expect(formatPsLine(by["biten"])).toContain("bitti")
-      expect(formatPsLine(by["sessiz"])).toContain("durdu")
+      expect(formatPsLine(by["biten"])).toContain("exited")
+      expect(formatPsLine(by["sessiz"])).toContain("stopped")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -191,9 +191,9 @@ describe("queryPs", () => {
       await ensureUpStateDir(paths.stateDir)
       expect(await queryPs(root)).toEqual([])
       await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
-      await expect(queryPs(root)).rejects.toThrow("okunamıyor")
+      await expect(queryPs(root)).rejects.toThrow("unreadable")
       await writeFile(paths.supervisorFile, JSON.stringify({ version: 99, services: [] }), "utf8")
-      await expect(queryPs(root)).rejects.toThrow("sürüm")
+      await expect(queryPs(root)).rejects.toThrow("version")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -216,8 +216,8 @@ describe("queryPs", () => {
       expect(svc.status).toBe("unknown")
       expect(svc.cpuPct).toBeNull()
       expect(svc.memBytes).toBeNull()
-      expect(svc.note).toContain("lstart bilinmiyor")
-      expect(formatPsLine(svc)).toContain("bilinmiyor")
+      expect(svc.note).toContain("lstart unknown")
+      expect(formatPsLine(svc)).toContain("unknown")
       expect(await isLivePid(sleeper.pid, real)).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -237,7 +237,7 @@ describe("queryPs", () => {
       })
       const [svc] = await queryPs(root)
       expect(svc.status).toBe("unknown")
-      expect(svc.note).toContain("lstart bilinmiyor")
+      expect(svc.note).toContain("lstart unknown")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

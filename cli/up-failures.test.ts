@@ -53,7 +53,7 @@ describe("failures boş + kullanım", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("bulgu yok")
+      expect(io.out.join("\n")).toContain("no findings")
       const io2 = capture()
       try {
         expect(await run(["failures", "--file", file, "--json"])).toBe(0)
@@ -118,8 +118,8 @@ describe("failures mekanik demet", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("bulgu: build (bayat, neden: script_hash, adım: imza-1) ×2")
-      expect(text).toContain("bulgu: build (bayat, neden: script_hash, adım: imza-2) ×1")
+      expect(text).toContain("finding: build (stale, reason: script_hash, step: imza-1) ×2")
+      expect(text).toContain("finding: build (stale, reason: script_hash, step: imza-2) ×1")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -137,7 +137,7 @@ describe("failures mekanik demet", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("bulgu: build (bayat, neden: script_hash, adım: -) ×2")
+      expect(io.out.join("\n")).toContain("finding: build (stale, reason: script_hash, step: -) ×2")
       const io2 = capture()
       try {
         expect(await run(["failures", "--file", file, "--json"])).toBe(0)
@@ -196,7 +196,7 @@ describe("failures mekanik demet", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("bulgu yok")
+      expect(io.out.join("\n")).toContain("no findings")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -218,7 +218,7 @@ describe("failures mekanik demet", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("bulgu: build (bayat, neden: script_hash, adım: -) ×2")
+      expect(io.out.join("\n")).toContain("finding: build (stale, reason: script_hash, step: -) ×2")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -240,8 +240,8 @@ describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("tekrar-yok: 1 tekil bulgu listelenmedi")
-      expect(io.out.join("\n")).not.toContain("bulgu: build")
+      expect(io.out.join("\n")).toContain("no-repeat: 1 unique findings unlisted")
+      expect(io.out.join("\n")).not.toContain("finding: build")
       // Sonek-çözümlü ikinci deneme (açık alan yok — koşu-adı yedeği).
       await writeRun(root, "gece-attempt2", `${line({ stage: "build", status: "not_observed", proof: "x", at, by: "runner" })}\n`)
       const io2 = capture()
@@ -251,8 +251,8 @@ describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
         io2.restore()
       }
       const text = io2.out.join("\n")
-      expect(text).toContain("bulgu: build (gözlenmedi, adım: -) ×2")
-      expect(text).not.toContain("tekrar-yok")
+      expect(text).toContain("finding: build (not-observed, step: -) ×2")
+      expect(text).not.toContain("no-repeat")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -272,8 +272,8 @@ describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("bulgu: build (gözlenmedi, adım: -) ×2")
-      expect(text).toContain("tekrar-yok: 1 tekil bulgu listelenmedi")
+      expect(text).toContain("finding: build (not-observed, step: -) ×2")
+      expect(text).toContain("no-repeat: 1 unique findings unlisted")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -302,22 +302,22 @@ describe("failures --since filtresi (kilitli küme)", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("bulgu: test (gözlenmedi, adım: -) ×2")
-      expect(text).not.toContain("bulgu: build")
+      expect(text).toContain("finding: test (not-observed, step: -) ×2")
+      expect(text).not.toContain("finding: build")
       const io2 = capture()
       try {
         expect(await run(["failures", "--file", file, "--since", "7d"])).toBe(0)
       } finally {
         io2.restore()
       }
-      expect(io2.out.join("\n")).not.toContain("bulgu: build")
+      expect(io2.out.join("\n")).not.toContain("finding: build")
       const io3 = capture()
       try {
         expect(await run(["failures", "--file", file])).toBe(0)
       } finally {
         io3.restore()
       }
-      expect(io3.out.join("\n")).toContain("bulgu: build (gözlenmedi, adım: -) ×2")
+      expect(io3.out.join("\n")).toContain("finding: build (not-observed, step: -) ×2")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

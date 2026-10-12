@@ -77,9 +77,9 @@ export type SupervisorCtx = {
   try {
     info = await lstat(abs)
   } catch {
-    throw new Error(`cwd bulunamadı: ${cwd}`)
+    throw new Error(`cwd not found: ${cwd}`)
   }
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`cwd gerçek bir dizin olmalı: ${cwd}`)
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`cwd must be a real directory: ${cwd}`)
   return abs
 }
 
@@ -209,7 +209,7 @@ export type UpRunOptions = {
 export const runSupervised = async (services: UpService[], options: UpRunOptions): Promise<number> => {
   const onLine = options.onLine ?? (() => undefined)
   for (const svc of services) {
-    if (svc.cmd === undefined && svc.logs === undefined) throw new Error(`${svc.name}: cmd ya da logs gerekli`)
+    if (svc.cmd === undefined && svc.logs === undefined) throw new Error(`${svc.name}: cmd or logs required`)
   }
   const logsDir = options.logsDir
   if (logsDir) await ensureUpStateDir(logsDir)
@@ -262,7 +262,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   const unitOfOrThrow = (name: string): LiveUnit => unitOf(name) as LiveUnit
   for (const svc of services) {
     if (svc.port !== undefined && (await probePort(svc.port))) {
-      console.error(`uyarı: port çakışması: ${svc.port} dolu (${svc.name} yine de başlatılıyor)`)
+      console.error(`warning: port conflict: ${svc.port} in use (${svc.name} still starting)`)
       portConflicts.set(svc.name, true)
     }
   }
@@ -272,7 +272,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
    * path probes up-front instead, so each service still warns exactly once. */
   const spawnUnit = async (svc: UpService, cwd: string | undefined, probeFirst: boolean): Promise<void> => {
     if (probeFirst && svc.port !== undefined && (await probePort(svc.port))) {
-      console.error(`uyarı: port çakışması: ${svc.port} dolu (${svc.name} yine de başlatılıyor)`)
+      console.error(`warning: port conflict: ${svc.port} in use (${svc.name} still starting)`)
       portConflicts.set(svc.name, true)
     }
     if (svc.cmd !== undefined) {
@@ -303,9 +303,9 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
       proc.exited.then((code) => {
         tail.exit = { code, duringShutdown: stopping || retiring.has(tail) }
         if (!stopping && !retiring.has(tail) && capture) {
-          capture(svc.name, "event", `logs komutu bitti (code=${code ?? "?"})`)
+          capture(svc.name, "event", `logs command exited (code=${code ?? "?"})`)
         }
-        if (!stopping && !retiring.has(tail)) console.error(`uyarı: ${svc.name} logs komutu bitti (code=${code ?? "?"})`)
+        if (!stopping && !retiring.has(tail)) console.error(`warning: ${svc.name} logs command exited (code=${code ?? "?"})`)
         void persist()
       }).catch(() => {
         tail.exit = { code: null, duringShutdown: stopping || retiring.has(tail) }
@@ -546,7 +546,7 @@ export const persistMerged = async (supervisorFile: string, state: { version: 1;
  * `reconcile --check` can still compare expected vs running shapes. */
 const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTail | undefined, portConflict = false, provenance?: Provenance, lastReadiness?: UpServiceState["lastReadiness"], artifactDigests?: Record<string, string>): UpServiceState => {
   const primary = main ?? tail
-  if (!primary) throw new Error(`${svc.name}: izlenecek süreç yok`)
+  if (!primary) throw new Error(`${svc.name}: no process to watch`)
   const maskedCmd = maskCmdShape(svc.cmd)
   const maskedLogs = svc.logs === undefined ? undefined : (maskCmdShape(svc.logs) ?? svc.logs)
   const envNames = svc.env === undefined && svc.requiredEnv === undefined ? undefined : [...new Set([...Object.keys(svc.env ?? {}), ...(svc.requiredEnv ?? [])])].sort()
@@ -597,7 +597,7 @@ export const assertNoLiveOrphans = async (rootDir: string): Promise<void> => {
   const orphans = await findLiveOrphans(rootDir)
   if (orphans.length === 0) return
   const names = orphans.map((svc) => `${svc.name} (pid ${svc.pid})`).join(", ")
-  throw new Error(`yetim süreçler çalışıyor: ${names} — önce \`ow down\` ile durdurun (eski supervisor ölü; ölü kalıntıysa \`ow down --rm\`)`)
+  throw new Error(`orphaned processes still running: ${names} — stop with \`ow down\` first (old supervisor dead; if dead residue, \`ow down --rm\`)`)
 }
 
 export type DownResult = { name: string; stopped: boolean; note: string }
@@ -615,8 +615,8 @@ export const downAll = async (rootDir: string, rm = false): Promise<DownOutcome>
   // the explicit cleanup path for exactly this situation.
   if (!rm) {
     const fileStatus = await classifySupervisorFile(paths.supervisorFile)
-    if (fileStatus === "corrupt") throw new Error("supervisor.json bozuk — `down --rm` ile temizleyin")
-    if (fileStatus === "bad-version") throw new Error("supervisor.json sürüm uyuşmazlığı — `down --rm` ile temizleyin")
+    if (fileStatus === "corrupt") throw new Error("supervisor.json corrupt — clean with `down --rm`")
+    if (fileStatus === "bad-version") throw new Error("supervisor.json version mismatch — clean with `down --rm`")
   }
   const state = await readSupervisorState(paths.supervisorFile)
   const lock = await readLock(paths.lockFile)
@@ -637,7 +637,7 @@ export const downAll = async (rootDir: string, rm = false): Promise<DownOutcome>
           break
         }
       }
-      if (!gone) warnings.push("uyarı: supervisor durmuyor, kilit yine de temizlendi")
+      if (!gone) warnings.push("warning: supervisor will not stop, lock cleared anyway")
     } catch {
       // already gone
     }
@@ -708,7 +708,7 @@ export const stopOne = async (svc: UpServiceState): Promise<DownResult> => {
   // blind: refusing loudly beats the old false `stopped: true` on a process
   // that may still be live. The process is deliberately left untouched.
   if (svc.lstart === "") {
-    return { name: svc.name, stopped: false, note: "lstart bilinmiyor — güvenli durdurma yok (pid doğrulanamaz)" }
+    return { name: svc.name, stopped: false, note: "lstart unknown — no safe stop (pid unverifiable)" }
   }
   // `logs:` sibling dies with the parent first (same lstart guard; a recorded
   // `logsEnded` means our tail already exited, so its pid is never signaled —
@@ -716,22 +716,22 @@ export const stopOne = async (svc: UpServiceState): Promise<DownResult> => {
   // the main pid too; the `logsPid !== pid` guard avoids double-signaling it.
   if (svc.logsPid !== undefined && svc.logsEnded === undefined && svc.logsPid !== svc.pid) {
     if ((svc.logsLstart ?? "") === "") {
-      return { name: svc.name, stopped: false, note: "logs lstart bilinmiyor — güvenli durdurma yok" }
+      return { name: svc.name, stopped: false, note: "logs lstart unknown — no safe stop" }
     }
     const tail = await stopPid(svc.logsPid, svc.logsLstart ?? "")
-    if (tail === "refused") return { name: svc.name, stopped: false, note: "logs kuyruğu durmuyor" }
+    if (tail === "refused") return { name: svc.name, stopped: false, note: "logs tail will not stop" }
     if (tail === "stopped") {
-      if (svc.exitCode !== undefined) return { name: svc.name, stopped: true, note: "durduruldu" }
+      if (svc.exitCode !== undefined) return { name: svc.name, stopped: true, note: "stopped" }
       const main = await stopPid(svc.pid, svc.lstart)
-      if (main === "refused") return { name: svc.name, stopped: false, note: "durmuyor" }
-      return { name: svc.name, stopped: true, note: "durduruldu" }
+      if (main === "refused") return { name: svc.name, stopped: false, note: "will not stop" }
+      return { name: svc.name, stopped: true, note: "stopped" }
     }
   }
-  if (svc.exitCode !== undefined) return { name: svc.name, stopped: true, note: "zaten bitmiş" }
+  if (svc.exitCode !== undefined) return { name: svc.name, stopped: true, note: "already exited" }
   const main = await stopPid(svc.pid, svc.lstart)
-  if (main === "already") return { name: svc.name, stopped: true, note: "çalışmıyor" }
-  if (main === "stopped") return { name: svc.name, stopped: true, note: "durduruldu" }
-  return { name: svc.name, stopped: false, note: "durmuyor" }
+  if (main === "already") return { name: svc.name, stopped: true, note: "not running" }
+  if (main === "stopped") return { name: svc.name, stopped: true, note: "stopped" }
+  return { name: svc.name, stopped: false, note: "will not stop" }
 };
 
 /** Drop a unit's dead handles from the supervisor's wait lists so a
@@ -776,18 +776,18 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
     services = parseUpFile(decodeUtf8Fatal(readFileSync(ctx.owFile))).services
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return fail("invalid-config", `ow: geçersiz ow.yaml: ${message}`)
+    return fail("invalid-config", `ow: invalid ow.yaml: ${message}`)
   }
   const svc = services.find((entry) => entry.name === request.service)
   if (!svc) {
     const known = services.map((entry) => entry.name).join(", ")
-    return fail("unknown-service", `ow: bilinmeyen servis: ${request.service}${known.length > 0 ? ` (bilinenler: ${known})` : ""}`)
+    return fail("unknown-service", `ow: unknown service: ${request.service}${known.length > 0 ? ` (known: ${known})` : ""}`)
   }
   const existing = ctx.units.find((unit) => unit.svc.name === request.service)
   if (request.action === "up") {
     if (existing && (await unitIsLive(existing))) {
       const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
-      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "already-running", message: `zaten çalışıyor: ${request.service} (pid ${pid})`, pid }
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "already-running", message: `already running: ${request.service} (pid ${pid})`, pid }
     }
     // Blind unit (spawn-time `readLstart` failure): the guard cannot verify
     // the recorded pid, so the slot is never treated as free — spawning
@@ -795,7 +795,7 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
     // already-running (exit 2, no spawn), never prune + respawn.
     if (existing && unitLstartUnknown(existing)) {
       const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
-      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "already-running", message: `zaten çalışıyor olabilir: ${request.service} (pid ${pid}, lstart bilinmiyor — doğrulanamaz, spawn yapılmadı)`, pid }
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "already-running", message: `may already be running: ${request.service} (pid ${pid}, lstart unknown — unverifiable, not spawned)`, pid }
     }
     let cwd: string | undefined
     try {
@@ -815,7 +815,7 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
     await ctx.persist()
     const live = ctx.units.find((unit) => unit.svc.name === request.service) as LiveUnit
     const pid = live.main?.proc.pid ?? live.tail?.proc.pid ?? 0
-    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "started", message: `başlatıldı: ${request.service} (pid ${pid})`, pid }
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "started", message: `started: ${request.service} (pid ${pid})`, pid }
   }
   if (request.action === "restart") {
     if (!existing) {
@@ -831,23 +831,23 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
       await ctx.spawnUnit(svc, cwd, true)
       await ctx.persist()
       const pid = unit.main?.proc.pid ?? unit.tail?.proc.pid ?? 0
-      return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "started", message: `başlatıldı: ${request.service} (pid ${pid})`, pid }
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "started", message: `started: ${request.service} (pid ${pid})`, pid }
     }
     if (unitLstartUnknown(existing)) {
-      return fail("refused", `güvenli durdurma yok: ${request.service} (lstart bilinmiyor — pid doğrulanamaz)`)
+      return fail("refused", `no safe stop: ${request.service} (lstart unknown — pid unverifiable)`)
     }
     const oldPid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
     if (existing.main && (await isLivePid(existing.main.proc.pid, existing.main.lstart))) {
       ctx.retiring.add(existing.main)
       const stopped = await stopPid(existing.main.proc.pid, existing.main.lstart)
-      if (stopped === "refused") return fail("refused", `durmuyor: ${request.service} (pid ${oldPid})`)
+      if (stopped === "refused") return fail("refused", `will not stop: ${request.service} (pid ${oldPid})`)
     }
     if (existing.tail && !existing.tail.exit && existing.tail.proc.pid !== oldPid) {
-      if ((existing.tail.lstart ?? "") === "") return fail("refused", `güvenli durdurma yok: ${request.service} (logs lstart bilinmiyor)`)
+      if ((existing.tail.lstart ?? "") === "") return fail("refused", `no safe stop: ${request.service} (logs lstart unknown)`)
       if (await isLivePid(existing.tail.proc.pid, existing.tail.lstart)) {
         ctx.retiring.add(existing.tail)
         const stopped = await stopPid(existing.tail.proc.pid, existing.tail.lstart)
-        if (stopped === "refused") return fail("refused", `durmuyor: ${request.service} (logs kuyruğu)`)
+        if (stopped === "refused") return fail("refused", `will not stop: ${request.service} (logs tail)`)
       }
     }
     let cwd: string | undefined
@@ -861,7 +861,7 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
     await ctx.spawnUnit(svc, cwd, true)
     await ctx.persist()
     const pid = existing.main?.proc.pid ?? existing.tail?.proc.pid ?? 0
-    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "restarted", message: `yeniden başlatıldı: ${request.service} (pid ${oldPid} → ${pid})`, pid }
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "restarted", message: `restarted: ${request.service} (pid ${oldPid} → ${pid})`, pid }
   }
   // readiness (M3): merge a client-observed probe verdict into the live
   // unit's record. Sole-writer discipline holds (only the supervisor
@@ -870,11 +870,11 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
   if (request.action === "readiness") {
     const outcome = request.readiness
     if (outcome === undefined || !Number.isInteger(outcome.pid) || outcome.pid <= 0 || typeof outcome.ok !== "boolean") {
-      return fail("invalid-config", `ow: bozuk readiness kaydı: ${request.service}`)
+      return fail("invalid-config", `ow: corrupt readiness record: ${request.service}`)
     }
     const livePid = existing?.main?.proc.pid ?? existing?.tail?.proc.pid
     if (!existing || livePid !== outcome.pid) {
-      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "stale", message: `eski sonuç: ${request.service} (pid değişti, kaydedilmedi)` }
+      return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "stale", message: `stale result: ${request.service} (pid changed, not recorded)` }
     }
     const main = existing.main
     if (main === undefined || main.lstart === "" || !(await isLivePid(main.proc.pid, main.lstart))) {
@@ -882,7 +882,7 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
       // verdict still counts when its own guard verifies.
       const tail = existing.tail
       if (tail === undefined || tail.exit || (tail.lstart ?? "") === "" || !(await isLivePid(tail.proc.pid, tail.lstart)) || tail.proc.pid !== outcome.pid) {
-        return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "stale", message: `eski sonuç: ${request.service} (süreç bitti, kaydedilmedi)` }
+        return { action: request.action, service: request.service, nonce: request.nonce, ok: false, code: "stale", message: `stale result: ${request.service} (process exited, not recorded)` }
       }
     }
     existing.lastReadiness = {
@@ -904,33 +904,33 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
       }
     }
     await ctx.persist()
-    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "recorded", message: `kaydedildi: ${request.service} readiness (${outcome.ok ? "hazır" : "hazır-değil"})`, pid: outcome.pid }
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "recorded", message: `recorded: ${request.service} readiness (${outcome.ok ? "ready" : "not-ready"})`, pid: outcome.pid }
   }
   // down: stop only the target, keep its settled record for ps/reconcile.
   if (!existing) {
-    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "already-stopped", message: `çalışmıyor: ${request.service}` }
+    return { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "already-stopped", message: `not running: ${request.service}` }
   }
   if (unitLstartUnknown(existing)) {
-    return fail("refused", `güvenli durdurma yok: ${request.service} (lstart bilinmiyor — pid doğrulanamaz)`)
+    return fail("refused", `no safe stop: ${request.service} (lstart unknown — pid unverifiable)`)
   }
   let touched = false
   if (existing.main && (await isLivePid(existing.main.proc.pid, existing.main.lstart))) {
     ctx.retiring.add(existing.main)
     const stopped = await stopPid(existing.main.proc.pid, existing.main.lstart)
-    if (stopped === "refused") return fail("refused", `durmuyor: ${request.service}`)
+    if (stopped === "refused") return fail("refused", `will not stop: ${request.service}`)
     touched = true
   }
   if (existing.tail && !existing.tail.exit && existing.tail.proc.pid !== (existing.main?.proc.pid ?? -1)) {
-    if ((existing.tail.lstart ?? "") === "") return fail("refused", `güvenli durdurma yok: ${request.service} (logs lstart bilinmiyor)`)
+    if ((existing.tail.lstart ?? "") === "") return fail("refused", `no safe stop: ${request.service} (logs lstart unknown)`)
     if (await isLivePid(existing.tail.proc.pid, existing.tail.lstart)) {
       ctx.retiring.add(existing.tail)
       const stopped = await stopPid(existing.tail.proc.pid, existing.tail.lstart)
-      if (stopped === "refused") return fail("refused", `durmuyor: ${request.service} (logs kuyruğu)`)
+      if (stopped === "refused") return fail("refused", `will not stop: ${request.service} (logs tail)`)
       touched = true
     }
   }
   await ctx.persist()
   return touched
-    ? { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "stopped", message: `durduruldu: ${request.service}` }
-    : { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "already-stopped", message: `çalışmıyor: ${request.service}` }
+    ? { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "stopped", message: `stopped: ${request.service}` }
+    : { action: request.action, service: request.service, nonce: request.nonce, ok: true, code: "already-stopped", message: `not running: ${request.service}` }
 };

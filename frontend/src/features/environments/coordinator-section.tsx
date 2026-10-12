@@ -16,33 +16,33 @@ import { useObserverFetch, WarningsStrip } from '@/features/observe/use-observer
 import { checkpointAgeLabel, yasEtiketi } from '@/features/environments/time-label';
 
 const STAGE_TR: Record<CheckpointStageStatus, string> = {
-  confirmed: 'doğrulandı',
-  not_observed: 'gözlenmedi',
-  stale: 'bayat',
+  confirmed: 'confirmed',
+  not_observed: 'not-observed',
+  stale: 'stale',
 };
 
 const STALE_TR: Record<string, string> = {
-  script_hash: 'betik değişti',
-  checkout_rev: 'kod revizyonu değişti',
-  runtime: 'çalışma ortamı değişti',
-  missing_basis: 'karşılaştırma kaydı yok',
+  script_hash: 'script changed',
+  checkout_rev: 'code revision changed',
+  runtime: 'runtime changed',
+  missing_basis: 'no comparison record',
 };
 
 /** M-A (#2): yan-etki Türkçe sözcüğü (`null` ≡ eksik → `bilinmiyor`). */
 const SIDE_EFFECT_TR: Record<string, string> = {
-  none: 'yok',
-  attempted: 'denendi',
-  confirmed: 'onaylandı',
-  unknown: 'bilinmiyor',
+  none: 'none',
+  attempted: 'attempted',
+  confirmed: 'confirmed',
+  unknown: 'unknown',
 };
 
 function yanEtkiSozcugu(sideEffect: string | null): string {
-  if (!sideEffect) return 'bilinmiyor';
-  return SIDE_EFFECT_TR[sideEffect] ?? 'bilinmiyor';
+  if (!sideEffect) return 'unknown';
+  return SIDE_EFFECT_TR[sideEffect] ?? 'unknown';
 }
 
 /** M-A (#2): kilitli retry metni (salt-metin; düğme/bağlantı yok). */
-const RETRY_HINT_TR = 'tekrar-öncesi: ow reconcile --check';
+const RETRY_HINT_TR = 'before-retry: ow reconcile --check';
 
 /** M1 boundary taxonomy: new-enum English labels + legacy dual-read
  * labels (old columns may still arrive). `blocked:<reason>` matches by
@@ -70,10 +70,10 @@ function boundaryLabel(column: string): string {
 }
 
 const VERDICT_TR: Record<Exclude<ScenarioVerdict, 'uncovered'>, string> = {
-  pass: 'geçti',
-  stale: 'bayat',
-  skipped: 'atlandı',
-  unverified: 'doğrulanamadı',
+  pass: 'pass',
+  stale: 'stale',
+  skipped: 'skipped',
+  unverified: 'unverified',
 };
 
 function staleNedeni(staleReason: string | null): string {
@@ -110,7 +110,7 @@ function CopyButton({ full, label }: { full: string; label: string }) {
       onClick={copy}
       className="shrink-0 rounded border border-border px-1.5 py-0.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
     >
-      {copied ? '✓ kopyalandı' : 'Kopyala'}
+      {copied ? '✓ copied' : 'Copy'}
     </button>
   );
 }
@@ -118,8 +118,8 @@ function CopyButton({ full, label }: { full: string; label: string }) {
 /** Mutlak saat + göreli yaş ikilisi; ayrıştırılamayan saat asla bayatlık kanıtlamaz. */
 function witnessAgeLabel(producedAt: string, nowMs: number): { time: string; age: string; stale: boolean } {
   const atMs = Date.parse(producedAt);
-  if (!Number.isFinite(atMs)) return { time: 'saat bilinmiyor', age: 'tazelik bilinmiyor', stale: false };
-  const time = new Date(atMs).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (!Number.isFinite(atMs)) return { time: 'time unknown', age: 'freshness unknown', stale: false };
+  const time = new Date(atMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const ageMs = Math.max(0, nowMs - atMs);
   const stale = ageMs > 60_000;
   return { time, age: checkpointAgeLabel(producedAt, nowMs), stale };
@@ -168,19 +168,19 @@ function DiffModal({ drift, onClose }: { drift: CoordinatorDrift; onClose: () =>
         onClick={event => event.stopPropagation()}
         onKeyDown={onKeyDown}
       >
-        <h3 id={titleId} className="text-base font-semibold">Fark: {drift.service}</h3>
-        <p className="mt-1 text-xs text-muted-foreground">Salt-okunur önizleme — hiçbir şey çalıştırmaz.</p>
+        <h3 id={titleId} className="text-base font-semibold">Diff: {drift.service}</h3>
+        <p className="mt-1 text-xs text-muted-foreground">Read-only preview — runs nothing.</p>
         <dl className="mt-3 space-y-2 text-sm">
           <div>
-            <dt className="text-xs font-medium text-muted-foreground">Alan</dt>
+            <dt className="text-xs font-medium text-muted-foreground">Field</dt>
             <dd>{drift.field}</dd>
           </div>
           <div>
-            <dt className="text-xs font-medium text-muted-foreground">Beklenen</dt>
+            <dt className="text-xs font-medium text-muted-foreground">Expected</dt>
             <dd className="break-words">{drift.expected}</dd>
           </div>
           <div>
-            <dt className="text-xs font-medium text-muted-foreground">Çalışan</dt>
+            <dt className="text-xs font-medium text-muted-foreground">Running</dt>
             <dd className="break-words">{drift.actual}</dd>
           </div>
         </dl>
@@ -190,7 +190,7 @@ function DiffModal({ drift, onClose }: { drift: CoordinatorDrift; onClose: () =>
             className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             onClick={onClose}
           >
-            Kapat
+            Close
           </button>
         </div>
       </div>
@@ -205,15 +205,15 @@ function PreflightPanel({ snapshot }: { snapshot: CoordinatorSnapshot }) {
   return (
     <article aria-labelledby="koordinator-preflight-heading" className="mt-4 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="koordinator-preflight-heading" className="text-sm font-semibold">Başlatma ön kontrolü</h3>
+        <h3 id="koordinator-preflight-heading" className="text-sm font-semibold">Preflight</h3>
         {preflight.pass ? (
-          <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> başlatılabilir</Badge>
+          <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> can start</Badge>
         ) : (
-          <Badge variant="outline" className="gap-1 text-destructive"><span aria-hidden="true">!</span> eksikler var ({preflight.missing.length})</Badge>
+          <Badge variant="outline" className="gap-1 text-destructive"><span aria-hidden="true">!</span> missing ({preflight.missing.length})</Badge>
         )}
       </div>
       {preflight.missing.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground">Eksik yok — bilinen kapıların hepsi boş.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Nothing missing — all known gates are clear.</p>
       ) : (
         <div className="mt-2">
           <button
@@ -223,7 +223,7 @@ function PreflightPanel({ snapshot }: { snapshot: CoordinatorSnapshot }) {
             className="text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             onClick={() => setOpen(current => !current)}
           >
-            {open ? 'Eksik listesini gizle' : `Eksik listesini göster (${preflight.missing.length})`}
+            {open ? 'Hide missing list' : `Show missing list (${preflight.missing.length})`}
           </button>
           {open && (
             <ul id={regionId} className="mt-2 list-disc space-y-1 pl-5 text-sm">
@@ -284,34 +284,34 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
   return (
     <section aria-labelledby="koordinator-heading" className="border-t border-border pt-5">
       <header>
-        <p className="eyebrow">KOORDİNATÖR</p>
-        <h2 id="koordinator-heading" className="text-base font-semibold">Koordinatör</h2>
+        <p className="eyebrow">COORDINATOR</p>
+        <h2 id="koordinator-heading" className="text-base font-semibold">Coordinator</h2>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
           {environment
-            ? <>Salt-okunur ortam özeti: <span className="font-medium text-foreground">{environment}</span>. Hiçbir şey başlatmaz, durdurmaz, düzeltmez.</>
-            : 'Ortam seçilince salt-okunur özet burada görünür.'}
+            ? <>Read-only environment summary: <span className="font-medium text-foreground">{environment}</span>. Starts, stops, or fixes nothing.</>
+            : 'The read-only summary appears here once an environment is selected.'}
         </p>
       </header>
 
       <WarningsStrip warnings={warnings} />
-      {error && <p role="alert" className="mt-3 text-sm text-destructive">Koordinatör anlığı okunamadı: {error}</p>}
+      {error && <p role="alert" className="mt-3 text-sm text-destructive">Coordinator snapshot unreadable: {error}</p>}
       {loading && !data && !error && (
-        <p role="status" className="mt-3 text-sm text-muted-foreground">Koordinatör anlığı okunuyor…</p>
+        <p role="status" className="mt-3 text-sm text-muted-foreground">Loading coordinator snapshot…</p>
       )}
 
       {data && (
         <>
           <article aria-labelledby="koordinator-reconcile-heading" className="mt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 id="koordinator-reconcile-heading" className="text-sm font-semibold">Ortam haritası</h3>
+              <h3 id="koordinator-reconcile-heading" className="text-sm font-semibold">Environment map</h3>
               {data.reconcile.inSync ? (
-                <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> eşleşiyor</Badge>
+                <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> in sync</Badge>
               ) : (
-                <Badge variant="outline" className="gap-1 text-destructive"><span aria-hidden="true">!</span> kayık ({data.reconcile.drifts.length})</Badge>
+                <Badge variant="outline" className="gap-1 text-destructive"><span aria-hidden="true">!</span> drifted ({data.reconcile.drifts.length})</Badge>
               )}
             </div>
             {data.reconcile.inSync ? (
-              <p className="mt-2 text-sm text-muted-foreground">Fark yok — beklenen topoloji ile çalışan durum örtüşüyor.</p>
+              <p className="mt-2 text-sm text-muted-foreground">No diff — expected topology matches running state.</p>
             ) : (
               <ul className="mt-2 divide-y divide-border border-y border-border">
                 {data.reconcile.drifts.map(drift => (
@@ -326,7 +326,7 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
                       className="shrink-0 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                       onClick={event => { openerRef.current = event.currentTarget; setOpenDrift(drift); }}
                     >
-                      Diff&apos;i aç
+                      Open diff
                     </button>
                   </li>
                 ))}
@@ -416,8 +416,8 @@ function WitnessLine({ snapshot }: { snapshot: CoordinatorSnapshot }) {
   const { time, age, stale } = witnessAgeLabel(snapshot.meta.producedAt, nowMs);
   return (
     <p className="mt-4 text-xs text-muted-foreground">
-      koordinatör anlığı · {time} · {age} · <span title="anlık kimliği">#{snapshot.meta.snapshotId}</span>
-      {stale && <> · <span className="font-medium text-warning">bayat olabilir — Yenile&apos;ye bas</span></>}
+      coordinator snapshot · {time} · {age} · <span title="snapshot id">#{snapshot.meta.snapshotId}</span>
+      {stale && <> · <span className="font-medium text-warning">may be stale — press Refresh</span></>}
     </p>
   );
 }
@@ -440,13 +440,13 @@ function RunPicker({ runs, run, onRunChange }: {
   if (runs.length === 0) return null;
   return (
     <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      Çalışma
+      Run
       <select
         value={run ?? ''}
         onChange={event => onRunChange(event.currentTarget.value === '' ? null : event.currentTarget.value)}
         className="rounded-md border border-border bg-background px-1.5 py-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
-        <option value="">en güncel</option>
+        <option value="">latest</option>
         {runs.map(name => (
           <option key={name} value={name}>{name}</option>
         ))}
@@ -470,10 +470,10 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
     return (
       <article aria-labelledby="koordinator-checkpoints-heading" className="mt-4 border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint çizgisi</h3>
+          <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint line</h3>
           <RunPicker runs={runs} run={run} onRunChange={onRunChange} />
         </div>
-        <p className="mt-2 text-sm text-muted-foreground">Checkpoint yok — runner kaydı bulunamadı.</p>
+        <p className="mt-2 text-sm text-muted-foreground">No checkpoints — no runner record found.</p>
       </article>
     );
   }
@@ -486,11 +486,11 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
   // kuralı CLI `isAttemptedUnconfirmed` aynasıdır.
   const flagText = (stage: CoordinatorCheckpoints['stages'][number]): string => {
     const counts: string[] = [];
-    if (stage.sideEffectAttempted !== null) counts.push(`denenen: ${stage.sideEffectAttempted}`);
-    if (stage.sideEffectConfirmed !== null) counts.push(`onaylanan: ${stage.sideEffectConfirmed}`);
+    if (stage.sideEffectAttempted !== null) counts.push(`attempted: ${stage.sideEffectAttempted}`);
+    if (stage.sideEffectConfirmed !== null) counts.push(`confirmed: ${stage.sideEffectConfirmed}`);
     return counts.length > 0
-      ? `yan-etki: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)}, ${counts.join(', ')})`
-      : `yan-etki: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)})`;
+      ? `side-effect: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)}, ${counts.join(', ')})`
+      : `side-effect: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)})`;
   };
   const unconfirmedAt = (index: number): boolean => {
     const stage = checkpoints.stages[index];
@@ -500,7 +500,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
   const leafText = (index: number): string => {
     const stage = checkpoints.stages[index];
     const words = [STAGE_TR[stage.status]];
-    if (unconfirmedAt(index)) words.push('doğrulanmadı');
+    if (unconfirmedAt(index)) words.push('unconfirmed');
     return `${stage.stage} (${words.join(', ')})`;
   };
   const attemptTree = new Map<string, { attempts: Map<number, number[]>; flat: number[] }>();
@@ -522,17 +522,17 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
   return (
     <article aria-labelledby="koordinator-checkpoints-heading" className="mt-4 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint çizgisi</h3>
+        <h3 id="koordinator-checkpoints-heading" className="text-sm font-semibold">Checkpoint line</h3>
         <div className="flex flex-wrap items-center gap-2">
           <RunPicker runs={runs} run={run} onRunChange={onRunChange} />
           <p className="text-xs text-muted-foreground">
-            çalışma: <span className="font-medium text-foreground">{checkpoints.run}</span>
-            {' · '}{checkpoints.summary.confirmed} doğrulandı, {checkpoints.summary.stale} bayat, {checkpoints.summary.notObserved} gözlenmedi
+            run: <span className="font-medium text-foreground">{checkpoints.run}</span>
+            {' · '}{checkpoints.summary.confirmed} confirmed, {checkpoints.summary.stale} stale, {checkpoints.summary.notObserved} not-observed
           </p>
         </div>
       </div>
 
-      <ol aria-label="Checkpoint aşamaları" className="mt-2 flex flex-wrap gap-2">
+      <ol aria-label="Checkpoint stages" className="mt-2 flex flex-wrap gap-2">
         {checkpoints.stages.map(stage => {
           const isCurrent = stage.stage === currentStage;
           const marker = stage.status === 'confirmed' ? '✓' : stage.status === 'stale' ? '!' : isCurrent ? '▸' : '○';
@@ -545,11 +545,11 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
               <span aria-hidden="true" className={stage.status === 'stale' ? 'font-bold text-warning' : stage.status === 'confirmed' ? 'text-success' : ''}>{marker}</span>
               <span className="font-medium">{stage.stage}</span>
               {stage.status === 'confirmed' ? (
-                <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> doğrulandı</Badge>
+                <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> confirmed</Badge>
               ) : stage.status === 'stale' ? (
-                <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">!</span> bayat</Badge>
+                <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">!</span> stale</Badge>
               ) : (
-                <Badge variant="outline" className="gap-1 text-muted-foreground"><span aria-hidden="true">○</span> gözlenmedi</Badge>
+                <Badge variant="outline" className="gap-1 text-muted-foreground"><span aria-hidden="true">○</span> not-observed</Badge>
               )}
               <span className="text-xs text-muted-foreground">{yasEtiketi(stage.at, nowMs)}</span>
             </li>
@@ -560,13 +560,13 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
       {checkpoints.firstGap && (
         <div role="status" className="mt-3 rounded-md border border-border p-3">
           <p className="text-sm">
-            İlk boşluk: <span className="font-medium">{checkpoints.firstGap.stage}</span>
+            First gap: <span className="font-medium">{checkpoints.firstGap.stage}</span>
             {' '}({STAGE_TR[checkpoints.firstGap.status]}{checkpoints.firstGap.staleReason ? ` — ${staleNedeni(checkpoints.firstGap.staleReason)}` : ''})
             {' · '}{yasEtiketi(checkpoints.firstGap.at, nowMs)}
           </p>
           {staleStages.length > 0 && (
             <div className="mt-2">
-              <h4 className="text-xs font-semibold text-warning">Bayat kuyruğu</h4>
+              <h4 className="text-xs font-semibold text-warning">Stale queue</h4>
               <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">
                 {staleStages.map(stage => (
                   <li key={stage.stage}>
@@ -579,7 +579,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
         </div>
       )}
 
-      <ul aria-label="Yan etkiler" className="mt-3 space-y-1 text-sm text-muted-foreground">
+      <ul aria-label="Side effects" className="mt-3 space-y-1 text-sm text-muted-foreground">
         {checkpoints.stages.map((stage, index) => (
           <li key={`${stage.stage}-${index}`}><span>{flagText(stage)}</span></li>
         ))}
@@ -588,19 +588,19 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
       {checkpoints.retryHint && (
         <div className="mt-3 rounded-md border border-border p-3">
           <p className="text-sm">{RETRY_HINT_TR}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Bu bir öneri — çalıştırmaz. Uygulamak asistana aittir.</p>
+          <p className="mt-1 text-xs text-muted-foreground">This is a suggestion — it runs nothing. Applying it is up to the assistant.</p>
         </div>
       )}
 
       {attemptTree.size > 0 && (
-        <ul aria-label="Deneme ağacı" className="mt-3 space-y-2 text-sm">
+        <ul aria-label="Attempt tree" className="mt-3 space-y-2 text-sm">
           {[...attemptTree.entries()].map(([scenario, group]) => (
             <li key={scenario}>
-              <span className="font-medium">{`senaryo: ${scenario}`}</span>
+              <span className="font-medium">{`scenario: ${scenario}`}</span>
               <ul className="ml-4 mt-1 space-y-1 text-muted-foreground">
                 {[...group.attempts.keys()].sort((a, b) => a - b).flatMap(attempt =>
                   (group.attempts.get(attempt) ?? []).map(index => (
-                    <li key={`${attempt}-${index}`}><span>{`deneme ${attempt}: ${leafText(index)}`}</span></li>
+                    <li key={`${attempt}-${index}`}><span>{`attempt ${attempt}: ${leafText(index)}`}</span></li>
                   )),
                 )}
                 {group.flat.map(index => (
@@ -614,9 +614,9 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
 
       {checkpoints.safeNextAction && (
         <div className="mt-3 rounded-md border border-border bg-muted/40 p-3">
-          <p className="text-xs font-medium text-muted-foreground">Önerilen sıradaki adım</p>
+          <p className="text-xs font-medium text-muted-foreground">Suggested next step</p>
           <p className="mt-1 text-sm">{checkpoints.safeNextAction}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Bu bir öneri — çalıştırmaz. Uygulamak asistana aittir.</p>
+          <p className="mt-1 text-xs text-muted-foreground">This is a suggestion — it runs nothing. Applying it is up to the assistant.</p>
         </div>
       )}
     </article>
@@ -624,11 +624,11 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
 }
 
 function expectedCellText(entry: CoordinatorExplanation['entries'][number]): string {
-  if (!entry.expected) return 'tanımda yok';
+  if (!entry.expected) return 'not in definition';
   const parts = [
     entry.expected.cmd,
     entry.expected.dir,
-    entry.expected.port === null ? null : `${entry.expected.port} portu`,
+    entry.expected.port === null ? null : `port ${entry.expected.port}`,
   ].filter((part): part is string => part !== null && part.length > 0);
   return parts.length > 0 ? parts.join(' · ') : '—';
 }
@@ -671,8 +671,8 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
   if (!explanation) {
     return (
       <article aria-labelledby="koordinator-provenance-heading" className="mt-4 border-t border-border pt-4">
-        <h3 id="koordinator-provenance-heading" className="text-sm font-semibold">Provenance kartı</h3>
-        <p className="mt-2 text-sm text-muted-foreground">Provenance kaydı yok — spawn kaydı bulunamadı.</p>
+        <h3 id="koordinator-provenance-heading" className="text-sm font-semibold">Provenance card</h3>
+        <p className="mt-2 text-sm text-muted-foreground">No provenance record — no spawn record found.</p>
       </article>
     );
   }
@@ -687,16 +687,16 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
 
   return (
     <article aria-labelledby="koordinator-provenance-heading" className="mt-4 border-t border-border pt-4">
-      <h3 id="koordinator-provenance-heading" className="text-sm font-semibold">Provenance kartı</h3>
+      <h3 id="koordinator-provenance-heading" className="text-sm font-semibold">Provenance card</h3>
       {showWorktree && (
         <label className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-          Worktree filtresi
+          Worktree filter
           <input
             type="text"
             value={worktreeFilter}
             onChange={event => setWorktreeFilter(event.currentTarget.value)}
-            placeholder="wt:<ad>"
-            aria-label="Worktree filtresi (wt:<ad>)"
+            placeholder="wt:<name>"
+            aria-label="Worktree filter (wt:<name>)"
             className="rounded-md border border-border bg-background px-1.5 py-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           />
         </label>
@@ -706,9 +706,9 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-border text-left">
-              <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Servis</th>
-              <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Beklenen</th>
-              <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Çalışan</th>
+              <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Service</th>
+              <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Expected</th>
+              <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Running</th>
               <th scope="col" className="py-1 text-xs font-medium text-muted-foreground">Rev</th>
             </tr>
           </thead>
@@ -731,27 +731,27 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
                 </th>
                 <td className="py-2 pr-3">{expectedCellText(entry)}</td>
                 <td className="py-2 pr-3">
-                  {entry.running ? <>{entry.running.status}: {entry.running.detail}</> : 'ölçülmedi'}
+                  {entry.running ? <>{entry.running.status}: {entry.running.detail}</> : 'unmeasured'}
                 </td>
                 <td className="py-2">
                   {entry.revShort ? (
                     <span className="inline-flex flex-wrap items-center gap-1.5">
                       <code translate="no" className="font-mono text-[0.8rem]">{entry.revShort}</code>
-                      {entry.revDirty && <span className="text-xs text-muted-foreground">+kirli</span>}
+                      {entry.revDirty && <span className="text-xs text-muted-foreground">+dirty</span>}
                       {entry.revRecorded ? (
-                        <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> kayıtlı</Badge>
+                        <Badge variant="outline" className="gap-1 text-success"><span aria-hidden="true">✓</span> recorded</Badge>
                       ) : (
-                        <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">?</span> doğrulanamadı</Badge>
+                        <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">?</span> unverified</Badge>
                       )}
                       <span className="text-xs text-muted-foreground">
-                        {entry.revAt ? `${yasEtiketi(entry.revAt, nowMs)} kaydedildi` : 'kayıt saati yok'}
+                        {entry.revAt ? `saved ${yasEtiketi(entry.revAt, nowMs)}` : 'no record time'}
                       </span>
-                      {entry.revFull && <CopyButton full={entry.revFull} label={`${entry.revShort} revini kopyala`} />}
+                      {entry.revFull && <CopyButton full={entry.revFull} label={`copy ${entry.revShort} rev`} />}
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1.5">
-                      <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">?</span> doğrulanamadı</Badge>
-                      <span className="text-xs text-muted-foreground">rev kaydı yok</span>
+                      <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">?</span> unverified</Badge>
+                      <span className="text-xs text-muted-foreground">no rev record</span>
                     </span>
                   )}
                 </td>
@@ -765,28 +765,28 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
         <div key={entry.service} className="mt-2 text-sm">
           <p className="font-medium">{entry.service}</p>
           {entry.diffs.length > 0 && (
-            <ul aria-label={`${entry.service} farkları`} className="list-disc pl-5 text-muted-foreground">
+            <ul aria-label={`${entry.service} diffs`} className="list-disc pl-5 text-muted-foreground">
               {entry.diffs.map(diff => <li key={diff}>{diff}</li>)}
             </ul>
           )}
           {entry.artifacts.length > 0 && (
-            <ul aria-label={`${entry.service} derlemeleri`} className="mt-1 flex flex-wrap gap-1.5 text-xs">
+            <ul aria-label={`${entry.service} builds`} className="mt-1 flex flex-wrap gap-1.5 text-xs">
               {entry.artifacts.map(artifact => (
                 <li key={artifact.base} className="rounded border border-border px-1.5 py-0.5">
                   <code translate="no" data-artifact-digest className="font-mono">{`${artifact.base}@${artifact.digest}`}</code>
                 </li>
               ))}
-              {entry.artifactRest > 0 && <li className="px-1 py-0.5 text-muted-foreground">+{entry.artifactRest} daha</li>}
+              {entry.artifactRest > 0 && <li className="px-1 py-0.5 text-muted-foreground">+{entry.artifactRest} more</li>}
             </ul>
           )}
-          <p className="text-muted-foreground">neden: {entry.note}</p>
+          <p className="text-muted-foreground">reason: {entry.note}</p>
         </div>
       ))}
 
       {explanation.revisions.length > 0 && (
         <div className="mt-3">
-          <h4 className="text-xs font-semibold text-muted-foreground">Rev şeridi</h4>
-          <ol aria-label="Rev şeridi" className="mt-1 flex flex-wrap items-center gap-2">
+          <h4 className="text-xs font-semibold text-muted-foreground">Rev strip</h4>
+          <ol aria-label="Rev strip" className="mt-1 flex flex-wrap items-center gap-2">
             {explanation.revisions.map(revision => {
               const isActive = revision.full === activeFull;
               return (
@@ -814,17 +814,17 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
 }
 
 const WORKTREE_LOCK_TR: Record<CoordinatorWorktreeEntry['lock'], string> = {
-  live: 'canlı',
-  stale: 'bayat',
-  absent: 'yok',
-  corrupt: 'bozuk',
-  unknown: 'doğrulanamadı',
+  live: 'live',
+  stale: 'stale',
+  absent: 'none',
+  corrupt: 'corrupt',
+  unknown: 'unverified',
 };
 
 const WORKTREE_STATE_TR: Record<Exclude<CoordinatorWorktreeEntry['state'], 'ok'>, string> = {
-  missing: 'kayıt yok',
-  corrupt: 'bozuk kayıt',
-  'bad-version': 'sürüm uyuşmazlığı',
+  missing: 'no record',
+  corrupt: 'corrupt record',
+  'bad-version': 'version mismatch',
 };
 
 /**
@@ -838,9 +838,9 @@ function WorktreesPanel({ worktrees }: { worktrees: CoordinatorWorktreeEntry[] |
   if (!worktrees || worktrees.length === 0) return null;
   return (
     <article aria-labelledby="koordinator-worktrees-heading" className="mt-4 border-t border-border pt-4">
-      <h3 id="koordinator-worktrees-heading" className="text-sm font-semibold">Worktree sahipliği</h3>
+      <h3 id="koordinator-worktrees-heading" className="text-sm font-semibold">Worktree ownership</h3>
       <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-        Salt-okunur kök listesi — hangi worktree&apos;de ne kayıtlı. Hiçbir şey başlatmaz, durdurmaz, düzeltmez.
+        Read-only root list — which worktree holds what. Starts, stops, or fixes nothing.
       </p>
       <ul className="mt-2 divide-y divide-border border-y border-border">
         {worktrees.map((entry, index) => (
@@ -855,9 +855,9 @@ function WorktreesPanel({ worktrees }: { worktrees: CoordinatorWorktreeEntry[] |
               <Badge variant="outline" className="gap-1">{WORKTREE_LOCK_TR[entry.lock]}</Badge>
             </div>
             <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
-              {entry.branch ? `dal: ${entry.branch} · ` : ''}
+              {entry.branch ? `branch: ${entry.branch} · ` : ''}
               {entry.state !== 'ok' ? `${WORKTREE_STATE_TR[entry.state]} · ` : ''}
-              {entry.liveServices.length > 0 ? `kayıtlı: ${entry.liveServices.join(', ')}` : 'kayıtlı servis yok'}
+              {entry.liveServices.length > 0 ? `recorded: ${entry.liveServices.join(', ')}` : 'no recorded services'}
             </p>
           </li>
         ))}
@@ -871,7 +871,7 @@ function ScenarioCell({ verdict }: { verdict: ScenarioVerdict }) {
     return (
       <span className="text-muted-foreground">
         <span aria-hidden="true">—</span>
-        <span className="sr-only">kapsam dışı</span>
+        <span className="sr-only">out of scope</span>
       </span>
     );
   }
@@ -898,10 +898,10 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
   if (!scenarios) {
     return (
       <article aria-labelledby="koordinator-scenarios-heading" className="mt-4 border-t border-border pt-4">
-        <h3 id="koordinator-scenarios-heading" className="text-sm font-semibold">Senaryo matrisi</h3>
-        <p className="mt-2 text-sm text-muted-foreground">Senaryo dosyası bağlı değil.</p>
+        <h3 id="koordinator-scenarios-heading" className="text-sm font-semibold">Scenario matrix</h3>
+        <p className="mt-2 text-sm text-muted-foreground">No scenario file attached.</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Senaryo dosyasını asistanına bağlat — <a href="#setup" className="font-medium text-primary underline-offset-4 hover:underline">Connect your AI →</a>
+          Have your assistant attach the scenario file — <a href="#setup" className="font-medium text-primary underline-offset-4 hover:underline">Connect your AI →</a>
         </p>
       </article>
     );
@@ -910,8 +910,8 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
   const atMs = Date.parse(producedAt);
   const staleSnapshot = Number.isFinite(atMs) && nowMs - atMs > 60_000;
   const snapshotTime = Number.isFinite(atMs)
-    ? new Date(atMs).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : 'saat bilinmiyor';
+    ? new Date(atMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : 'time unknown';
 
   // M9 source-badge column (additive): per-row overlay provenance from
   // `boundarySources`. Absent on old wire → no column (strip untouched,
@@ -925,10 +925,10 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
   return (
     <article aria-labelledby="koordinator-scenarios-heading" className="mt-4 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="koordinator-scenarios-heading" className="text-sm font-semibold">Senaryo matrisi</h3>
+        <h3 id="koordinator-scenarios-heading" className="text-sm font-semibold">Scenario matrix</h3>
         <p className="text-xs text-muted-foreground">
-          dosya: <span className="font-medium text-foreground">{scenarios.file}</span>
-          {' · '}{scenarios.rows.length} senaryo, {scenarios.columns.length} sınır
+          file: <span className="font-medium text-foreground">{scenarios.file}</span>
+          {' · '}{scenarios.rows.length} scenarios, {scenarios.columns.length} boundaries
         </p>
       </div>
       {scenarios.overlayApplied === true && (
@@ -941,22 +941,22 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
       )}
       {staleSnapshot && (
         <div role="status" className="mt-2 text-xs text-muted-foreground">
-          <span className="font-medium text-warning">bayat olabilir — Yenile?</span>
+          <span className="font-medium text-warning">may be stale — refresh?</span>
           {' · '}{snapshotTime} · {yasEtiketi(producedAt, nowMs)}
         </div>
       )}
 
       {scenarios.error !== null ? (
-        <p role="alert" className="mt-2 text-sm text-destructive">Senaryo dosyası okunamadı: {scenarios.error}</p>
+        <p role="alert" className="mt-2 text-sm text-destructive">Scenario file unreadable: {scenarios.error}</p>
       ) : (
         <div className="mt-2 overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <caption className="pb-2 text-left text-xs text-muted-foreground">
-              Senaryo matrisi — {scenarios.file} · satır senaryo, sütun sınır; hücre hükmü seçili run kaydından gelir, çalıştırma yapmaz.
+              Scenario matrix — {scenarios.file} · rows are scenarios, columns are boundaries; cell verdicts come from the selected run record, nothing runs.
             </caption>
             <thead>
               <tr className="border-b border-border text-left">
-                <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Senaryo</th>
+                <th scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">Scenario</th>
                 {scenarios.columns.map(column => (
                   <th key={column} scope="col" className="py-1 pr-3 text-xs font-medium text-muted-foreground">
                     {boundaryLabel(column)}
@@ -977,14 +977,14 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
                         <span key={service} className="mr-1.5">
                           {service}
                           {row.unverifiedServices.includes(service) && (
-                            <span className="ml-1 font-medium text-warning">? doğrulanamadı</span>
+                            <span className="ml-1 font-medium text-warning">? unverified</span>
                           )}
                         </span>
                       ))}
                     </span>
                     <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
                       {row.probes.length} probe ({row.probes.map(probe => probe.id).join(', ')})
-                      {' · '}kayıt: {row.checkpoints.length > 0 ? row.checkpoints.join(', ') : 'yok'}
+                      {' · '}records: {row.checkpoints.length > 0 ? row.checkpoints.join(', ') : 'none'}
                     </span>
                   </th>
                   {scenarios.columns.map(column => (

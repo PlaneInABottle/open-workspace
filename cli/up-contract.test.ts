@@ -239,3 +239,55 @@ describe("ow contract check refusals + usage", () => {
     }
   })
 })
+
+describe("H2 contract digest covers M6/M7 fields", () => {
+  test("editing restore.argv flips a recorded contract to mismatch (re-record to heal)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      const withRestore = "version: 1\nscenarios:\n  cart:\n    services: [api]\n    boundaries: [real-read-only]\n    probes: [{id: ready, argv: [./ready.sh], timeout: 10s}]\n    checkpoints: [approval]\n    restore: {argv: [./restore.sh], timeout: 10s}\n"
+      await writeFile(file, withRestore, "utf8")
+      await recordGolden(root, file)
+      const io = capture()
+      try {
+        expect(await runContractCheck({ rootDir: root, file, json: false })).toBe(0)
+      } finally {
+        io.restore()
+      }
+      await writeFile(file, withRestore.replace("./restore.sh", "./restore-v2.sh"), "utf8")
+      const io2 = capture()
+      let code = -1
+      try {
+        code = await runContractCheck({ rootDir: root, file, json: false })
+      } finally {
+        io2.restore()
+      }
+      expect(code).toBe(1)
+      expect(io2.out.join("\n")).toContain("contract-mismatch: cart")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("INERT scaffold refuses record and contract (runner parity)", () => {
+  test("contract check on INERT exits 2", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      const { INIT_INERT_MARKER } = await import("./up-init")
+      await writeFile(file, `${INIT_INERT_MARKER}\nversion: 1\nscenarios:\n  cart:\n    services: [api]\n    boundaries: [real-read-only]\n    probes: [{id: inert, argv: [true]}]\n    checkpoints: [ok]\n`, "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runContractCheck({ rootDir: root, file, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain(`INERT: ${file}`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

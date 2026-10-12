@@ -659,30 +659,30 @@ describe("trace: schema block", () => {
   test("non-map block warns without failing; unknown keys warn; nested maps warn", () => {
     const scalar = parseUpFile(`trace: yo\n${services}`)
     expect(scalar.trace).toBeUndefined()
-    expect(scalar.warnings.map((w) => w.message)).toContain("trace haritası bekleniyor, yoksayıldı")
+    expect(scalar.warnings.map((w) => w.message)).toContain("trace map expected, ignored")
 
     const unknown = parseUpFile(`trace:\n  endpoint: x\n${services}`)
     expect(unknown.trace).toEqual({ enabled: true, port: 4319 })
-    expect(unknown.warnings.map((w) => w.message)).toContain("trace: bilinmeyen alan yoksayıldı: endpoint")
+    expect(unknown.warnings.map((w) => w.message)).toContain("trace: unknown field ignored: endpoint")
 
     const nested = parseUpFile(`trace:\n  exporter:\n    port: 4319\n${services}`)
     expect(nested.trace).toEqual({ enabled: true, port: 4319 })
-    expect(nested.warnings.map((w) => w.message)).toContain("trace: iç içe alan yoksayıldı: exporter")
+    expect(nested.warnings.map((w) => w.message)).toContain("trace: nested field ignored: exporter")
   })
 
   test("bad enabled value warns and stays enabled", () => {
     const file = parseUpFile(`trace:\n  enabled: maybe\n${services}`)
     expect(file.trace).toEqual({ enabled: true, port: 4319 })
-    expect(file.warnings.map((w) => w.message)).toContain("trace: enabled true/false olmalı, yoksayıldı")
+    expect(file.warnings.map((w) => w.message)).toContain("trace: enabled must be true/false, ignored")
   })
 
   test("invalid port reuses the geçersiz port hard error", () => {
-    expect(() => parseUpFile(`trace:\n  port: abc\n${services}`)).toThrow(/geçersiz port/)
-    expect(() => parseUpFile(`trace:\n  port: 99999\n${services}`)).toThrow(/geçersiz port/)
+    expect(() => parseUpFile(`trace:\n  port: abc\n${services}`)).toThrow(/invalid port/)
+    expect(() => parseUpFile(`trace:\n  port: 99999\n${services}`)).toThrow(/invalid port/)
   })
 
   test("trace block no longer warns as an unknown top-level field", () => {
     const file = parseUpFile(`trace:\n  enabled: true\n${services}`)
-    expect(file.warnings.map((w) => w.message).some((m) => m.includes("bilinmeyen üst alan"))).toBe(false)
+    expect(file.warnings.map((w) => w.message).some((m) => m.includes("unknown top-level field"))).toBe(false)
   })
 })

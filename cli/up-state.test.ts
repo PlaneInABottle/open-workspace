@@ -232,7 +232,7 @@ describe("subdir reads resolve upward", () => {
       const { out } = await captureLog(() => withCwd(sub, () => run(["doctor", "--json"])))
       const checks = (JSON.parse(out) as { checks: { name: string; detail: string }[] }).checks
       const trace = checks.find((line) => line.name === "trace")
-      expect(trace?.detail).toContain("açık")
+      expect(trace?.detail).toContain("open")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -268,7 +268,7 @@ describe("subdir reads resolve upward", () => {
       expect(ps.code).toBe(0)
       for (const out of [trace.out, ps.out]) {
         expect(out).toContain(root)
-        expect(out).toContain("workspace kökünden")
+        expect(out).toContain("run from the workspace root")
       }
     } finally {
       await rm(root, { recursive: true, force: true })

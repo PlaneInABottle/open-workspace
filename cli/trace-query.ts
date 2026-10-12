@@ -235,10 +235,10 @@ export const formatDur = (ms: number): string => {
 /** Delegated wording: compact Turkish recency (`4s önce`, `3dak önce`). */
 export const formatAgo = (ms: number): string => {
   const seconds = Math.max(0, Math.round(ms / 1000))
-  if (seconds < 60) return `${seconds}s önce`
+  if (seconds < 60) return `${seconds}s ago`
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}dak önce`
+  if (minutes < 60) return `${minutes}m ago`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}sa önce`
-  return `${Math.floor(hours / 24)}g önce`
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
 }

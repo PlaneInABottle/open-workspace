@@ -808,3 +808,122 @@ describe("overlay banner channel on refusal paths (stdout stays JSON-clean)", ()
     }
   })
 })
+
+describe("HIGH-1 absent boundaries key refuses (explicit [] stays allowed)", () => {
+  test("absent key refuses exit 1, base untouched", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writeBase(root)
+      await writeLocal(root, "version: 1\nscenarios:\n  demo:\n    notboundaries: [network-deny]\n")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runScenariosCheck({ file, rootDir: root, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.err.join("\n")).toContain("boundaries required in demo")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("explicit [] replaces with empty (intentional, distinguishable)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writeBase(root)
+      await writeLocal(root, "version: 1\nscenarios:\n  demo:\n    boundaries: []\n")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runScenariosCheck({ file, rootDir: root, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(io.out.join("\n")) as { scenarios: { name: string; boundaries: string[] }[] }
+      expect(payload.scenarios.find((scenario) => scenario.name === "demo")?.boundaries).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("MEDIUM-4 symlinked .gitignore skips the mention check silently", () => {
+  test("symlink .gitignore yields no gitignore warning (unverifiable, not missing)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writeBase(root)
+      await writeLocal(root, "version: 1\nscenarios:\n  demo:\n    boundaries: [network-deny]\n")
+      const { mkdir, symlink } = await import("node:fs/promises")
+      await mkdir(join(root, ".git"), { recursive: true })
+      await writeFile(join(root, "outside-ignore"), "other\n", "utf8")
+      await symlink(join(root, "outside-ignore"), join(root, ".gitignore"))
+      const io = capture()
+      let code = -1
+      try {
+        code = await runScenariosCheck({ file, rootDir: root, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(io.out.join("\n")) as { warnings: { message: string }[] }
+      expect(payload.warnings.some((w) => w.message.includes("overlay-gitignore-missing"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("MEDIUM-7 intermediate symlink outside root refuses", () => {
+  test("flag path through a symlinked dir refuses (outside root)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writeBase(root)
+      const outside = await mkdtemp(join(tmpdir(), "ow-ov-out-"))
+      try {
+        await writeFile(join(outside, "evil.yaml"), "version: 1\nscenarios:\n  demo:\n    boundaries: [network-deny]\n", "utf8")
+        const { symlink } = await import("node:fs/promises")
+        await symlink(outside, join(root, "linkdir"))
+        const io = capture()
+        let code = -1
+        try {
+          code = await runScenariosCheck({ file, rootDir: root, json: false, boundariesFlag: "linkdir/evil.yaml" })
+        } finally {
+          io.restore()
+        }
+        expect(code).toBe(1)
+        expect(io.err.join("\n")).toContain("outside root")
+      } finally {
+        await rm(outside, { recursive: true, force: true })
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("CLI raw-echo parity: hostile overlay names sanitize (no path leak)", () => {
+  test("traversal scenario key refuses with basename echo, no ../ leak", async () => {
+    const root = await tempRoot()
+    try {
+      const file = await writeBase(root)
+      await writeLocal(root, "version: 1\nscenarios:\n  ../../etc/passwd:\n    boundaries: [network-deny]\n")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runScenariosCheck({ file, rootDir: root, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const err = io.err.join("\n")
+      expect(err).toContain("overlay-dangling: passwd (refused)")
+      expect(err).not.toContain("../")
+      expect(err).not.toContain("/etc/passwd")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

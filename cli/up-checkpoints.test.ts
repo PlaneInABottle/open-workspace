@@ -126,12 +126,12 @@ describe("checkpoints show (CLI)", () => {
       }
       expect(code).toBe(0)
       const text = io.out.join("\n")
-      expect(text).toContain("doğrulandı: build (2026-10-09T08:00:00.000Z)")
-      expect(text).toContain("bayat: build (neden: script_hash)")
-      expect(text).toContain("gözlenmedi: deploy")
-      expect(text).toContain("son doğrulanmış: build (2026-10-09T08:00:00.000Z)")
-      expect(text).toContain("ilk eksik: build (bayat: script_hash)")
-      expect(text).toContain("sonraki: betigi sabitleyip kosumu tekrarlayin")
+      expect(text).toContain("confirmed: build (2026-10-09T08:00:00.000Z)")
+      expect(text).toContain("stale: build (reason: script_hash)")
+      expect(text).toContain("not-observed: deploy")
+      expect(text).toContain("last confirmed: build (2026-10-09T08:00:00.000Z)")
+      expect(text).toContain("first missing: build (stale: script_hash)")
+      expect(text).toContain("next: betigi sabitleyip kosumu tekrarlayin")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -179,7 +179,7 @@ describe("checkpoints show (CLI)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.err.join("\n")).toContain("bozuk-satır: 2 (atlandı)")
+      expect(io.err.join("\n")).toContain("corrupt-line: 2 (skipped)")
       const io2 = capture()
       try {
         expect(await run(["checkpoints", "show", "bozuk", "--file", file, "--json"])).toBe(0)
@@ -212,7 +212,7 @@ describe("checkpoints show (CLI)", () => {
       }
       const human = io2.out.join("\n") + "\n" + io2.err.join("\n")
       expect(human).not.toContain("hunter2")
-      expect(io2.out.join("\n")).toContain("sonraki:")
+      expect(io2.out.join("\n")).toContain("next:")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -229,7 +229,7 @@ describe("checkpoints show (CLI)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.err.join("\n")).toContain("checkpoint yok: yok")
+      expect(io.err.join("\n")).toContain("ow: no checkpoint: yok")
       for (const args of [["checkpoints", "show", "../x"], ["checkpoints", "show", "a/b"], ["checkpoints"], ["checkpoints", "bogus"], ["checkpoints", "show"], ["checkpoints", "list", "fazla"]]) {
         const io2 = capture()
         let code2 = -1
@@ -260,7 +260,7 @@ describe("checkpoints list (CLI)", () => {
         io.restore()
       }
       expect(code).toBe(0)
-      expect(io.out.join("\n")).toContain("checkpoint yok")
+      expect(io.out.join("\n")).toContain("no checkpoints")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -278,7 +278,7 @@ describe("checkpoints list (CLI)", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).toContain("demo (3 zarf: 1 doğrulandı, 1 bayat, 1 gözlenmedi; son: 2026-10-09T09:05:00.000Z)")
+      expect(io.out.join("\n")).toContain("demo (3 envelopes: 1 confirmed, 1 stale, 1 not-observed; last: 2026-10-09T09:05:00.000Z)")
       const io2 = capture()
       try {
         expect(await run(["checkpoints", "list", "--file", file, "--json"])).toBe(0)
@@ -315,9 +315,9 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("yan-etki: build (yok)")
-      expect(text).toContain("yan-etki: test (denendi, denenen: 2)")
-      expect(text).toContain("yan-etki: deploy (onaylandı, denenen: 1, onaylanan: 1)")
+      expect(text).toContain("side-effect: build (none)")
+      expect(text).toContain("side-effect: test (attempted, attempted: 2)")
+      expect(text).toContain("side-effect: deploy (confirmed, attempted: 1, confirmed: 1)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -333,7 +333,7 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("yan-etki: build (bilinmiyor)")
+      expect(text).toContain("side-effect: build (unknown)")
       expect(io.err.join("\n")).not.toContain("bilinmiyor")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -349,7 +349,7 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
       } finally {
         io.restore()
       }
-      const hint = "tekrar-öncesi: ow reconcile --check"
+      const hint = "before-retry: ow reconcile --check"
       const hits = io.out.join("\n").split(hint).length - 1
       expect(hits).toBe(1)
     } finally {
@@ -372,7 +372,7 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
       } finally {
         io.restore()
       }
-      expect(io.out.join("\n")).not.toContain("tekrar-öncesi:")
+      expect(io.out.join("\n")).not.toContain("before-retry:")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -388,9 +388,9 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("senaryo: gece")
-      expect(text).toContain("deneme 1: build (doğrulandı)")
-      expect(text).toContain("deneme 2: test (doğrulandı, doğrulanmadı)")
+      expect(text).toContain("scenario: gece")
+      expect(text).toContain("attempt 1: build (confirmed)")
+      expect(text).toContain("attempt 2: test (confirmed, unconfirmed)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -410,8 +410,8 @@ describe("M-A side_effect bayrakları + retry ipucu + deneme ağacı", () => {
         io.restore()
       }
       const suffixText = io.out.join("\n")
-      expect(suffixText).toContain("senaryo: gece")
-      expect(suffixText).toContain("deneme 2: build (doğrulandı)")
+      expect(suffixText).toContain("scenario: gece")
+      expect(suffixText).toContain("attempt 2: build (confirmed)")
       const io2 = capture()
       try {
         expect(await run(["checkpoints", "show", "duz", "--file", file])).toBe(0)
@@ -525,7 +525,7 @@ describe("konumsal gramer korunur", () => {
       } finally {
         io.restore()
       }
-      expect(io.err.join("\n")).toContain("beklenmeyen argüman: b")
+      expect(io.err.join("\n")).toContain("unexpected argument: b")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

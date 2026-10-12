@@ -47,7 +47,7 @@ describe("up-log caps", () => {
       const rows = await queryLogs({ logsDir, service: "web" })
       expect(rows).toHaveLength(1)
       expect(Buffer.byteLength(rows[0].line, "utf8")).toBeLessThanOrEqual(UP_LOG_LINE_MAX_BYTES + 32)
-      expect(rows[0].line).toContain("…[kesildi]…")
+      expect(rows[0].line).toContain("…[truncated]…")
       expect(rows[0].line.startsWith("elma:")).toBe(true)
       expect(rows[0].line.includes("kuyruk")).toBe(false)
       expect(truncateLogLine("kısa")).toBe("kısa")
@@ -125,8 +125,8 @@ describe("up-log caps", () => {
       const events = rows.filter((row) => row.stream === "event")
       const data = rows.filter((row) => row.stream === "stdout")
       expect(events.length).toBeGreaterThanOrEqual(1)
-      expect(events.map((row) => row.line).join(" ")).toContain("atıldı")
-      const total = Number((events.map((row) => row.line).join(" ").match(/atıldı: (\d+) satır/) ?? ["", "0"])[1])
+      expect(events.map((row) => row.line).join(" ")).toContain("dropped")
+      const total = Number((events.map((row) => row.line).join(" ").match(/dropped: (\d+) lines/) ?? ["", "0"])[1])
       expect(data.length + total).toBe(10)
       expect(total).toBeGreaterThan(0)
     } finally {
@@ -255,7 +255,7 @@ describe("logs: sibling lifecycle", () => {
       const rows = await queryLogs({ logsDir: paths.logsDir, service: "erken" })
       const events = rows.filter((row) => row.stream === "event")
       expect(events.length).toBeGreaterThanOrEqual(1)
-      expect(events.map((row) => row.line).join(" ")).toContain("logs komutu bitti (code=3)")
+      expect(events.map((row) => row.line).join(" ")).toContain("logs command exited (code=3)")
       const state = await readSupervisorState(paths.supervisorFile)
       expect(state?.services.find((svc) => svc.name === "erken")?.logsEnded).toMatchObject({ code: 3 })
     } finally {

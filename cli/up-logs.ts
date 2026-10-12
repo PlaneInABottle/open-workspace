@@ -30,7 +30,7 @@ const byteLength = (value: string): number => Buffer.byteLength(value, "utf8")
 const readTail = async (path: string, maxBytes: number): Promise<{ text: string; size: number; truncated: boolean }> => {
   try {
     const info = await lstat(path)
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error("log dosyası normal dosya olmalı")
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("log file must be a regular file")
     const bytesToRead = Math.min(info.size, maxBytes)
     const offset = info.size - bytesToRead
     const file = await open(path, "r")
@@ -91,7 +91,7 @@ export const truncateLogLine = (line: string): string => {
     if (byteLength(output + ch) > UP_LOG_LINE_MAX_BYTES) break
     output += ch
   }
-  return `${output}…[kesildi]…`
+  return `${output}…[truncated]…`
 }
 
 export type UpLogWriterLimits = { maxBytes?: number; maxLines?: number; maxPendingBytes?: number }
@@ -180,7 +180,7 @@ export const createUpLogWriter = (path: string, limits: UpLogWriterLimits = {}) 
     if (state.dropped > 0) {
       const count = state.dropped
       state.dropped = 0
-      rows.unshift({ t: new Date().toISOString(), stream: "event", line: `…[atıldı: ${count} satır]…` })
+      rows.unshift({ t: new Date().toISOString(), stream: "event", line: `…[dropped: ${count} lines]…` })
     }
     if (rows.length === 0) return
     await writeBatch(rows)

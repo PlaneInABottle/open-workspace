@@ -23,7 +23,7 @@ export const staleSupervisorHint = (
   if (!recorded || !current) return ""
   if (recorded.digest.length === 0 || current.digest.length === 0) return ""
   if (recorded.digest === current.digest) return ""
-  return `. ipucu: çalışan supervisor bayat (çalışan ${recorded.time}, kurulu ${current.time}) — ow down && ow up -d ile yenile`
+  return `. hint: running supervisor stale (running ${recorded.time}, installed ${current.time}) — refresh with ow down && ow up -d`
 }
 
 export const doctor = async (options: { logPath?: string; dbPath?: string; upRoot?: string } = {}): Promise<DoctorLine[]> => {
@@ -44,16 +44,16 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
         continue
       }
     }
-    lines.push({ name: "log", ok: true, detail: `büyüyor: ${(info.size / 1024).toFixed(0)}KB/${rows.length} satır, son satır ${age === null ? "bilinmiyor" : `${age}sn önce`}` })
-    lines.push({ name: "kanca", ok: kinds.size > 0, detail: kinds.size > 0 ? `akan tipler: ${[...kinds].join(", ")}` : "son 500 satırda kayıt yok" })
+    lines.push({ name: "log", ok: true, detail: `growing: ${(info.size / 1024).toFixed(0)}KB/${rows.length} lines, last line ${age === null ? "unknown" : `${age}s ago`}` })
+    lines.push({ name: "hook", ok: kinds.size > 0, detail: kinds.size > 0 ? `flowing kinds: ${[...kinds].join(", ")}` : "no records in last 500 lines" })
     const pctBytes = Math.min(99, Math.round((info.size / RING_MAX_BYTES) * 100))
     const pctLines = Math.min(99, Math.round((rows.length / RING_MAX_LINES) * 100))
     const pct = Math.max(pctBytes, pctLines)
-    lines.push({ name: "halka", ok: pct < 90, detail: `%${pct} dolu (${(info.size / 1024).toFixed(0)}KB/${rows.length} satır; tavan 100MB/50bin)` })
+    lines.push({ name: "ring", ok: pct < 90, detail: `%${pct} full (${(info.size / 1024).toFixed(0)}KB/${rows.length} lines; cap 100MB/50k)` })
   } catch (error) {
-    lines.push({ name: "log", ok: false, detail: `okunamıyor: ${String(error).slice(0, 120)}` })
-    lines.push({ name: "kanca", ok: false, detail: "log yok" })
-    lines.push({ name: "halka", ok: false, detail: "log yok" })
+    lines.push({ name: "log", ok: false, detail: `unreadable: ${String(error).slice(0, 120)}` })
+    lines.push({ name: "hook", ok: false, detail: "no log" })
+    lines.push({ name: "ring", ok: false, detail: "no log" })
   }
   try {
     const db = new Database(options.dbPath ?? DEFAULT_DB_PATH, { readonly: true })
@@ -61,12 +61,12 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
       const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_message','session_v2')").all() as { name: string }[]
       const names = tables.map((t) => t.name)
       const ok = names.includes("session_message") && names.includes("session_v2")
-      lines.push({ name: "db", ok, detail: ok ? "session_message + session_v2 okunuyor" : `eksik tablo (var: ${names.join(",") || "hiç"})` })
+      lines.push({ name: "db", ok, detail: ok ? "session_message + session_v2 readable" : `missing tables (have: ${names.join(",") || "none"})` })
     } finally {
       db.close()
     }
   } catch (error) {
-    lines.push({ name: "db", ok: false, detail: `açılamıyor: ${String(error).slice(0, 120)}` })
+    lines.push({ name: "db", ok: false, detail: `cannot open: ${String(error).slice(0, 120)}` })
   }
   // Informational only: never feeds the `ow doctor` exit rule (cli.ts filters
   // `up` and `trace` out). ok:true solely for a lock-verified live supervisor.
@@ -74,7 +74,7 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
   // stays silent (missing sidecars must not fail or reword doctor).
   // Polish (sürtünme 9): every non-live `up` detail ends with the
   // reconcile pointer (live needs no action).
-  const reconcileHint = " — öneri: ow reconcile --check"
+  const reconcileHint = " — hint: ow reconcile --check"
   try {
     const paths = upPaths(options.upRoot ?? process.cwd())
     const status = await classifyLock(paths.lockFile)
@@ -82,7 +82,7 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
       const state = await readSupervisorState(paths.supervisorFile)
       const total = state?.services.length ?? 0
       const done = state?.services.filter((svc) => svc.exitCode !== undefined).length ?? 0
-      let detail = total > 0 ? `çalışıyor (${total} servis${done > 0 ? `, ${done} bitti` : ""})` : "çalışıyor (durum yok)"
+      let detail = total > 0 ? `running (${total} services${done > 0 ? `, ${done} exited` : ""})` : "running (no state)"
       try {
         detail += staleSupervisorHint(state?.build, await readOwnBuildSidecar())
       } catch {
@@ -90,20 +90,20 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
       }
       lines.push({ name: "up", ok: true, detail })
     } else if (status.kind === "absent") {
-      lines.push({ name: "up", ok: false, detail: `durgun (çalışan supervisor yok)${reconcileHint}` })
+      lines.push({ name: "up", ok: false, detail: `idle (no running supervisor)${reconcileHint}` })
     } else if (status.kind === "stale") {
-      lines.push({ name: "up", ok: false, detail: `bayat (${status.reason})${reconcileHint}` })
+      lines.push({ name: "up", ok: false, detail: `stale (${status.reason})${reconcileHint}` })
     } else {
-      lines.push({ name: "up", ok: false, detail: `doğrulanamıyor (${status.reason})${reconcileHint}` })
+      lines.push({ name: "up", ok: false, detail: `unverifiable (${status.reason})${reconcileHint}` })
     }
   } catch (error) {
-    lines.push({ name: "up", ok: false, detail: `okunamıyor: ${String(error).slice(0, 80)}${reconcileHint}` })
+    lines.push({ name: "up", ok: false, detail: `unreadable: ${String(error).slice(0, 80)}${reconcileHint}` })
   }
   try {
     const check = await checkTraceDoctor(options.upRoot ?? process.cwd())
     lines.push({ name: "trace", ok: check.ok, detail: check.detail })
   } catch (error) {
-    lines.push({ name: "trace", ok: false, detail: `okunamıyor: ${String(error).slice(0, 80)}` })
+    lines.push({ name: "trace", ok: false, detail: `unreadable: ${String(error).slice(0, 80)}` })
   }
   return lines
 }

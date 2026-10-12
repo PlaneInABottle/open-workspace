@@ -112,7 +112,7 @@ export const evaluatePreflight = (opts: {
   // beklenen/çalışan config kimliği (reconcile config-farklı alt-kümesi;
   // aynı olgu, ikinci lens — ölü/bilinmeyen kayıtlar reconcile'indir).
   const liveConfigDiffs = drifts.filter(
-    (drift) => drift.kind === "config-farkli" && opts.liveness.get(drift.service) === "live",
+    (drift) => drift.kind === "config-mismatch" && opts.liveness.get(drift.service) === "live",
   )
   for (const drift of liveConfigDiffs) {
     missing.push(`provenance:${drift.service}:${drift.kind}`)
@@ -330,11 +330,17 @@ export const readBoundaryClaims = async (rootDir: string, flagPath?: string): Pr
     throw error
   }
   const claims: BoundaryClaim[] = []
+  // Claim dedupe: identical scenario/service/boundary triples collapse
+  // (a repeated boundary list entry must not double-report downstream).
+  const seenClaims = new Set<string>()
   for (const scenario of merged.scenarios) {
     for (const service of scenario.services) {
       for (const raw of scenario.boundaries) {
         const norm = normalizeBoundary(raw)
         if (norm.known && isEvidenceDemanding(norm.normalized)) {
+          const key = `${scenario.name}\n${service}\n${norm.normalized}`
+          if (seenClaims.has(key)) continue
+          seenClaims.add(key)
           claims.push({ scenario: scenario.name, service, boundary: norm.normalized })
         }
       }

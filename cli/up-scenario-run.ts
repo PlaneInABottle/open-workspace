@@ -4,7 +4,7 @@
  * contract verdict (surfaced, never duplicated); `ow` spawns ONLY declared
  * probe argv (bounded one-shot class). Restore is runner-side: `ow`
  * validates the declared restore argv shape and renders the outcome only -
- * spawning restore inside `ow` is out of contract. try/finally guarantees
+ * spawning restore inside `ow` is out of contract. Sequential order guarantees
  * the restore phase runs even when asserts fail. */
 
 import { join } from "node:path"
@@ -25,12 +25,15 @@ import { INIT_INERT_MARKER } from "./up-init"
 export type AssertResult = { kind: string; ok: boolean; detail: string }
 
 /** Pure assertion kernel (no I/O): outcomes by probe id, checkpoint
- * envelopes of the selected run, measured run-phase wall ms. */
+ * envelopes of the selected run, measured run-phase wall ms. The optional
+ * skipped counts fail-closed the call-count assert (MEDIUM-6): a truncated
+ * read cannot prove an exact count. */
 export const evaluateAsserts = (
   asserts: ScenarioAssert[],
   outcomes: Map<string, ProbeOutcome>,
   envelopes: EvidenceEnvelope[],
   wallMs: number,
+  skipped?: { corrupt: number; overCap: number },
 ): AssertResult[] =>
   asserts.map((assert) => {
     if (assert.kind === "negative") {
@@ -49,6 +52,10 @@ export const evaluateAsserts = (
       }
     }
     if (assert.kind === "call-count") {
+      const dropped = (skipped?.corrupt ?? 0) + (skipped?.overCap ?? 0)
+      if (dropped > 0) {
+        return { kind: assert.kind, ok: false, detail: `count unreliable: ${dropped} checkpoint lines skipped (corrupt ${skipped?.corrupt ?? 0}, over-cap ${skipped?.overCap ?? 0})` }
+      }
       const found = envelopes.filter((envelope) => envelope.stage === assert.stage).length
       return { kind: assert.kind, ok: found === assert.count, detail: `found ${found}, expected ${assert.count}` }
     }
@@ -57,9 +64,11 @@ export const evaluateAsserts = (
 
 export type RestoreRunner = (opts: { argv: string[]; scenario: string; rootDir: string }) => Promise<{ ok: boolean; note: string }>
 
-/** Checkpoint runs for assertion/restore reads (tolerant per file). */
-const readCheckpointRuns = async (rootDir: string): Promise<{ name: string; envelopes: EvidenceEnvelope[] }[]> => {
-  const runs: { name: string; envelopes: EvidenceEnvelope[] }[] = []
+/** Checkpoint runs for assertion/restore reads (tolerant per file).
+ * Skipped counts travel with each run so asserts can fail-closed on
+ * truncated reads (MEDIUM-6) instead of counting partial evidence. */
+const readCheckpointRuns = async (rootDir: string): Promise<{ name: string; envelopes: EvidenceEnvelope[]; skipped: { corrupt: number; overCap: number } }[]> => {
+  const runs: { name: string; envelopes: EvidenceEnvelope[]; skipped: { corrupt: number; overCap: number } }[] = []
   try {
     const { readdir } = await import("node:fs/promises")
     const dir = join(rootDir, ".ow", CHECKPOINTS_DIR_NAME)
@@ -68,7 +77,8 @@ const readCheckpointRuns = async (rootDir: string): Promise<{ name: string; enve
       const name = file.slice(0, -".jsonl".length)
       if (!isValidRunName(name)) continue
       try {
-        runs.push({ name, envelopes: viewOf(name, await readCheckpointFile(join(dir, file))).envelopes })
+        const view = viewOf(name, await readCheckpointFile(join(dir, file)))
+        runs.push({ name, envelopes: view.envelopes, skipped: view.skipped })
       } catch {
         continue
       }
@@ -238,6 +248,7 @@ export const runScenarioRun = async (opts: {
   const gate = await checkPreflightGate({ rootDir: opts.rootDir, file: join(opts.rootDir, "ow.yaml"), probe: false }).catch(() => ({ ok: false as boolean, note: "preflight unreadable", missing: [] as string[] }))
   const runs = await readCheckpointRuns(opts.rootDir)
   let selected: EvidenceEnvelope[]
+  let selectedSkipped: { corrupt: number; overCap: number } = { corrupt: 0, overCap: 0 }
   if (opts.runId !== undefined) {
     const found = runs.find((run) => run.name === opts.runId)
     if (found === undefined) {
@@ -249,8 +260,9 @@ export const runScenarioRun = async (opts: {
       return 2
     }
     selected = found.envelopes
+    selectedSkipped = found.skipped
   } else {
-    let best: { name: string; envelopes: EvidenceEnvelope[] } | null = null
+    let best: { name: string; envelopes: EvidenceEnvelope[]; skipped: { corrupt: number; overCap: number } } | null = null
     let bestAt = Number.NEGATIVE_INFINITY
     for (const run of runs) {
       let at = Number.NEGATIVE_INFINITY
@@ -264,6 +276,7 @@ export const runScenarioRun = async (opts: {
       }
     }
     selected = best?.envelopes ?? []
+    selectedSkipped = best?.skipped ?? { corrupt: 0, overCap: 0 }
   }
   const phases: ScenarioPhase[] = []
   phases.push({
@@ -312,10 +325,10 @@ export const runScenarioRun = async (opts: {
   const runOk = [...outcomes.entries()].every(([id, outcome]) => outcome.ok || negativeCover.has(id))
   phases.push({ name: "run", ok: runOk, detail: { outcomes: outcomeShapes } })
   // Assert phase: pure kernel over outcomes + selected envelopes + wall clock.
-  const assertResults = evaluateAsserts(scenario.asserts, outcomes, selected, wallMs)
+  const assertResults = evaluateAsserts(scenario.asserts, outcomes, selected, wallMs, selectedSkipped)
   const assertsOk = assertResults.filter((entry) => entry.ok).length
   phases.push({ name: "assert", ok: assertsOk === assertResults.length, detail: { results: assertResults } })
-  // Restore phase (mandatory, try/finally shaped): the runner executes the
+  // Restore phase (mandatory, sequential): the runner executes the
   // declared restore argv; `ow` validates the shape (already schema-checked
   // at parse) and renders the masked shape + outcome only.
   const restoreShape = foldCwd(maskCmdShape(scenario.restore.argv) ?? "", opts.rootDir)

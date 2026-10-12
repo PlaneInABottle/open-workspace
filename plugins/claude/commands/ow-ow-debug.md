@@ -25,7 +25,7 @@ this file never repeats its reference. No product-code change is implied.
    within ±10s): cite the confidence shown, never upgrade a `tahmini`
    link into a causal claim.
 5. `ow doctor` when results look wrong (stale tail, missing session,
-   0 spans): it names liveness, `bilinmeyen` service, and listener hints.
+   0 spans): it names liveness, `unknown` service, and listener hints.
 
 Exits: 0 ok (quiet-empty listings included), 1 structural failure,
 2 usage error; always non-interactive.
@@ -63,7 +63,7 @@ bodies into reports or issues; summarize row counts plus changed tables.
 - Narrow first; `--json` for piping; trace output is semi-sensitive
   (resource IDs) — review before pasting anywhere public.
 - Two lags: sidecar rows land ~5s after session end; browser spans 5–15s.
-- `unset` span status means the app never said; `bilinmeyen` service
+- `unset` span status means the app never said; `unknown` service
   means `OTEL_SERVICE_NAME` is missing.
 - Port fight: `lsof -i :PORT` plus `ow doctor` last-span age
   (stale = spans go elsewhere; local stays 4319).
