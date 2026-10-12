@@ -446,7 +446,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("M-C: --probe 6 yolda da exit 2 (sessiz yoksayma yok; reconcile yolu M3'te açık)", async () => {
+  test("fail-loud: --probe outside the witness verbs exits 2 (never silently ignored)", async () => {
     const { root, file } = await fixture()
     try {
       const paths = upPaths(root)
@@ -468,7 +468,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
           io.restore()
         }
         expect(`${args.join(" ")} → ${code}`).toBe(`${args.join(" ")} → 2`)
-        expect(io.errors.join("\n")).toContain("--probe not yet supported")
+        expect(io.errors.join("\n")).toContain("--probe works only with reconcile, preflight, readiness, provision")
       }
     } finally {
       await rm(root, { recursive: true, force: true })

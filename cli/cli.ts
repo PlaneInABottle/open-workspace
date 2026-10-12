@@ -96,7 +96,7 @@ export const helpText = (): string =>
     "",
     "general: --db <path> --log <path> --json --help",
     "  --since  window: 30m|3h|1d|1w (default 1d; sessions/show/stuck/reads)",
-    "  --json  machine output (English keys): show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace",
+    "  --json  machine output (English keys): show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace/timeline/reconcile/checkpoints/failures/preflight/readiness/provision/scenarios/contract/scenario (+ up --check)",
     "exit: 0 ok, 1 structural error, 2 usage error",
     "",
     "example: ow show <session> --tree --since 1d",
@@ -704,7 +704,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "readiness" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures" || command === "record" || command === "contract" || command === "scenario" || command === "export") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "readiness" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "timeline" || command === "failures" || command === "record" || command === "contract" || command === "scenario" || command === "export") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -790,10 +790,11 @@ export const run = async (argv: string[]): Promise<number> => {
         if (flags["--check"] === true && isSubsetNestingError(error)) console.error(subsetNestingHint)
         return 2
       }
-      // `--probe` is M3-owned: anywhere else it is a usage error (exit 2),
+      // `--probe` belongs to the witness verbs (reconcile, preflight,
+      // readiness, provision): anywhere else it is a usage error (exit 2),
       // never a silent no-op. One guard covers bulk and single `up`.
       if (flags["--probe"] === true) {
-        console.error("ow: --probe not yet supported (M3)")
+        console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
         return 2
       }
       if (positional !== undefined) {
@@ -923,11 +924,11 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runSuperviseFile } = await import("./up-supervisor-cli")
       return runSuperviseFile(file)
     }
-    // `--probe` is M3-owned: `ps`/`logs` reject it before the honest-empty
-    // branch (exit 2 with or without state), matching the `up`/`down`/
-    // `restart`/`reconcile` guards below.
+    // `--probe` belongs to the witness verbs: `ps`/`logs` reject it before
+    // the honest-empty branch (exit 2 with or without state), matching the
+    // `up`/`down`/`checkpoints` guards below.
     if ((command === "ps" || command === "logs") && flags["--probe"] === true) {
-      console.error("ow: --probe not yet supported (M3)")
+      console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
       return 2
     }
     // `restart`/`reconcile`/tek-servis `down` state-dizini yokluğunda da
@@ -952,7 +953,7 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     if (command === "down") {
       if (flags["--probe"] === true) {
-        console.error("ow: --probe not yet supported (M3)")
+        console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
         return 2
       }
       if (positional !== undefined && flags["--rm"] === true) {
@@ -1035,7 +1036,7 @@ export const run = async (argv: string[]): Promise<number> => {
     if (command === "checkpoints") {
       // P2-A: runner-yazar/ow-okur; salt-okunur, mutasyon yok, canlı exec yok.
       if (flags["--probe"] === true) {
-        console.error("ow: --probe not yet supported (M3)")
+        console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
         return 2
       }
       const { runCheckpointsDiff, runCheckpointsList, runCheckpointsShow } = await import("./up-checkpoints")
@@ -1357,7 +1358,7 @@ export const run = async (argv: string[]): Promise<number> => {
     } else if (prompts.length > 0) {
       prompts.forEach((p, i) => console.log(`[${i + 1}] ${p}`))
     } else {
-      console.log("prompt yok")
+      console.log("no prompts")
     }
     return 0
   }

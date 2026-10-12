@@ -54,8 +54,10 @@ pnpm typecheck:backend
 pnpm typecheck:frontend
 pnpm test
 pnpm test:ui
-pnpm audit
 ```
+
+`bun test cli/` runs the `ow` CLI suites (bun-only). `pnpm audit` is the
+pnpm-builtin dependency vulnerability scan, not a project-owned check.
 
 `cli/` is bun-only: `bun test cli/`, build via `pnpm ow:build`; `pnpm test`/`typecheck` exclude it.
 
@@ -111,6 +113,6 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 
 Load [openworkspace-development](.agents/skills/openworkspace-development/SKILL.md) for platform changes spanning the service, companion, MCP or dashboard. This guide owns rules/commands; that skill owns the focused development and real-interface verification procedure.
 
-`skills/` is the **consumer distribution source** (7 `ow-*` skills: `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`, `setup-tracing`); `plugins/` is generated from it by `pnpm build-skill-packs`. It is intentionally outside the active `.agents/skills/` development tree. Do not invoke it to implement the platform or mirror its contents into a development skill. Client-native installation packs and the optional skills CLI distribution remain product work, not an installed integration today.
+`skills/` is the **consumer distribution source** (9 consumer skills: `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `ow-runtime`, `ow-scenarios`, `setup-ow`, `setup-tracing`); `plugins/` is generated from it by `pnpm build-skill-packs`. It is intentionally outside the active `.agents/skills/` development tree. Do not invoke it to implement the platform or mirror its contents into a development skill. Client-native installation packs and the optional skills CLI distribution remain product work, not an installed integration today.
 
 Persist a reusable development rule here, a development procedure in its development skill, a consumer procedure in `skills/<name>/`, and a product decision/follow-up in `ROADMAP.md`. Do not create an evidence.md, task diary, mandatory memory.md or duplicate capability profile for this small app. Prefer regression tests/guards for repeated failures. Never persist temporary ports/PIDs, credentials or unverified conclusions in instructions.

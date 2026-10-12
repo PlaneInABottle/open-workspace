@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { parseArgs } from "./cli"
+import { parseArgs, run } from "./cli"
 import { createTraceStore } from "./trace-store"
 import { decodeTraceRequest } from "./trace-otlp"
 import { extractTraceIds, runTimeline } from "./trace-timeline"
@@ -425,6 +425,72 @@ describe("trace-timeline cross-trace depths (L2)", () => {
         parsed.events.find((e) => e.kind === "trace" && e.traceId === traceId && e.text.includes(name))?.depth
       expect(depthOf(TRACE_A, "/a-root")).toBe(0)
       expect(depthOf(TRACE_B, "/b-child")).toBe(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("timeline cli dispatch (outer guard reaches runTimeline)", () => {
+  const capture = (): { out: string[]; err: string[]; restore: () => void } => {
+    const out: string[] = []
+    const err: string[] = []
+    const origLog = console.log
+    const origError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    return { out, err, restore: () => {
+      console.log = origLog
+      console.error = origError
+    } }
+  }
+  const withCwd = async <T>(dir: string, fn: () => Promise<T>): Promise<T> => {
+    const saved = process.cwd()
+    process.chdir(dir)
+    try {
+      return await fn()
+    } finally {
+      process.chdir(saved)
+    }
+  }
+  test("ow timeline --json exits 0 with events envelope (not show, not usage)", async () => {
+    const root = await tempRoot()
+    try {
+      const log = join(root, "events.jsonl")
+      await writeFile(log, "", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await withCwd(root, () => run(["timeline", "--log", log, "--json"]))
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(io.out.join("\n")) as Record<string, unknown>
+      expect(Array.isArray(parsed["events"])).toBe(true)
+      expect("groups" in parsed).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+  test("ow timeline human empty prints no timeline (exit 0)", async () => {
+    const root = await tempRoot()
+    try {
+      const log = join(root, "events.jsonl")
+      await writeFile(log, "", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await withCwd(root, () => run(["timeline", "--log", log]))
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("no timeline")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

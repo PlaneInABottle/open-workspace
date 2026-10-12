@@ -541,3 +541,29 @@ describe("doctor", () => {
     await clearLock(paths.lockFile)
   })
 })
+
+describe("prompts empty branch (English, sibling-shaped)", () => {
+  test("ow prompts with no rows prints no prompts (exit 0)", async () => {
+    const { run } = await import("./cli")
+    const dir = await mkdtemp(join(tmpdir(), "ow-prompts-empty-"))
+    const out: string[] = []
+    const err: string[] = []
+    const origLog = console.log
+    const origError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    let code = -1
+    try {
+      code = await run(["prompts", "sess-missing", "--db", join(dir, "nope.db")])
+    } finally {
+      console.log = origLog
+      console.error = origError
+    }
+    expect(code).toBe(0)
+    expect(out.join("\n")).toContain("no prompts")
+  })
+})

@@ -210,8 +210,9 @@ healthy services are never signaled.
   depends_on) | lstart-mismatch | foreign-port` plus the suggested open
   command (`ow up/restart/down <name>`). Exit 0 in sync, 1 on drift, 2 on
   usage. `--json` adds the `reconcile: {inSync, drifts: [{service, kind,
-  expected?, running?, hint}]}` envelope (additive). No probe runs here:
-  `--probe` belongs to M3 (exit 2 until then), and `ps` never executes
+  expected?, running?, hint}]}` envelope (additive). Probes run only on the
+  witness verbs: `--probe` works with `reconcile --check`, `preflight`,
+  `readiness` and `provision --check` (exit 2 elsewhere), and `ps` never executes
   `git`/`lsof`/probes — only the spawn-time and reconcile paths may.
 - Secret values never reach state/output/logs: recorded `cmd`/`logsCmd` are
   masked shapes (deterministic, so expected-vs-running shape compare still
@@ -736,7 +737,9 @@ real `argv:` line commented, one `{id: inert, argv: [true]}` placeholder
 probe keeping `ow scenarios --check` green) plus `.ow/replay/.gitkeep`.
 The scenarios file opens with the exact marker
 `# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented`
-(the M6 singular runner will refuse marked files with exit 2 — pending; today the verb does not exist); its commented
+(the landed M6 runner refuses marked files with exit 2, `INERT: <file>` on
+stderr; `record`, `contract check` and `scenario run` refuse INERT scaffolds
+alike); its commented
 boundary matrix lists the M1 new taxonomy, with the `blocked:` example
 quoted (`blocked:"<reason>"` — an unquoted reason is a fail-closed parse
 risk). The scenarios text is re-validated in-process with the real

@@ -12,6 +12,23 @@ import { parseArgs, run } from "./cli"
 import { parseUpFile } from "./up-schema"
 import { runInit } from "./up-init"
 
+const capture = (): { out: string[]; err: string[]; restore: () => void } => {
+  const out: string[] = []
+  const err: string[] = []
+  const origLog = console.log
+  const origError = console.error
+  console.log = (...args: unknown[]): void => {
+    out.push(args.map(String).join(" "))
+  }
+  console.error = (...args: unknown[]): void => {
+    err.push(args.map(String).join(" "))
+  }
+  return { out, err, restore: () => {
+    console.log = origLog
+    console.error = origError
+  } }
+}
+
 const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-init-"))
 
 const withCwd = async <T>(dir: string, fn: () => Promise<T>): Promise<T> => {
@@ -516,7 +533,7 @@ scenarios:
     }
   })
 
-  test("scaffolded scenarios passes --check (exit 0); scenario-run refusal is M6-pending", async () => {
+  test("scaffolded scenarios file refuses scenario run with the INERT contract (landed M6)", async () => {
     const root = await tempRoot()
     try {
       await makeGradle(root)
@@ -527,11 +544,31 @@ scenarios:
       expect(text.split("\n")[0]).toMatch(/^# INERT — ow scenarios --check passes/)
       const { runScenariosCheck } = await import("./up-scenarios")
       expect(await runScenariosCheck({ file, rootDir: root, json: false })).toBe(0)
-      // M6 pending-skip: the singular runner verb does not exist yet, so the
-      // call fails at usage-routing (exit 2). M6 replaces this with the
-      // INERT-contract refusal (`INERT: <file>`); the marker line above is
-      // M3's side of that contract and is asserted for real.
-      expect(await run(["scenario", "run", "first-scenario", "--file", file])).toBe(2)
+      // Landed M6: the singular runner refuses the INERT scaffold with the
+      // contract line (exit 2 naming the file), not a usage-routing error.
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["scenario", "run", "first-scenario", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain(`INERT: ${file}`)
+      // Positive control: the same file without the marker reaches the
+      // runner — an unknown scenario names the missing entry instead.
+      const live = join(root, "live.scenarios.yaml")
+      await writeFile(live, text.split("\n").slice(1).join("\n"), "utf8")
+      const io2 = capture()
+      let code2 = -1
+      try {
+        code2 = await run(["scenario", "run", "no-such-scenario", "--file", live])
+      } finally {
+        io2.restore()
+      }
+      expect(code2).toBe(2)
+      expect(io2.err.join("\n")).toContain("ow: scenario not found: no-such-scenario")
+      expect(io2.err.join("\n")).not.toContain("INERT:")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
