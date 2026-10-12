@@ -189,9 +189,9 @@ export class WorkspaceService {
   }
 
   /**
-   * Dashboard-only coordinator snapshot (P1+P2+P3+P4+P5). Salt-okunur:
-   * viewing never records activity (observer emsali). `run` açık
-   * checkpoint-çalışma isteğidir (boş/geçersiz/yok → latest + uyarı).
+   * Dashboard-only coordinator snapshot (P1+P2+P3+P4+P5). Read-only:
+   * viewing never records activity (observer precedent). `run` is an explicit
+   * checkpoint-run request (empty/invalid/missing → latest + warning).
    */
   async coordinator(name: string, environment: string, runtime?: CoordinatorRuntime, run?: string) {
     return coordinatorSnapshot(this.store, name, environment, { list: this.listPm2, ...runtime }, run);

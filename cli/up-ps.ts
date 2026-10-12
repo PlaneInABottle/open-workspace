@@ -170,7 +170,7 @@ const toPsService = (
 }
 
 /** State-authoritative service list with one live snapshot attached. Missing
- * `supervisor.json` → honest empty; corrupt/versioned → Turkish error
+ * `supervisor.json` → honest empty; corrupt/versioned → English error
  * (exit 1, suggests `down --rm`). */
 export const queryPs = async (rootDir: string): Promise<PsServiceView[]> => {
   const paths = upPaths(rootDir)
@@ -214,12 +214,12 @@ const formatMem = (bytes: number | null): string => {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`
 }
 
-const STATUS_TR: Record<PsStatus, string> = { running: "running", exited: "exited", stopped: "stopped", unknown: "unknown" }
+const STATUS_EN: Record<PsStatus, string> = { running: "running", exited: "exited", stopped: "stopped", unknown: "unknown" }
 
-/** Human line: `web: çalışıyor pid=123 süre=2dk cpu=%0.0 mem=12.3MB port=3000 (port çakışması)`. */
+/** Human line: `web: running pid=123 uptime=2min cpu=%0.0 mem=12.3MB port=3000 (port conflict)`. */
 export const formatPsLine = (svc: PsServiceView): string => {
   const parts = [
-    `${svc.name}: ${STATUS_TR[svc.status]}`,
+    `${svc.name}: ${STATUS_EN[svc.status]}`,
     `pid=${svc.pid}`,
     `uptime=${formatDuration(svc.uptimeSec)}`,
     `cpu=${svc.cpuPct === null ? "?" : `%${svc.cpuPct}`}`,
@@ -262,14 +262,14 @@ export type ExplainRunning = {
   status: PsStatus
   lstart: ExplainLstart
   listening?: boolean
-  /** Resolve edilmiş çalışan cwd (provenance'tan); yokluğu UNVERIFIED
-   * render edilir (karşı-doğrulama çelişkisi ya da kayıtsızlık). */
+  /** Resolved running cwd (from provenance); its absence renders as UNVERIFIED
+   * (a counter-check mismatch or a missing record). */
   cwd?: string
 } | null
 
-/** M3 readiness görünümü: tanım (maskeli) + son bilinen sonuç (kayıtlı
- * `lastReadiness`; hoşgörülü okuma — şekilsizse `ölçülmedi`). Explain
- * probe ÇALIŞTIRMAZ (tanım + kayıt render eder). */
+/** M3 readiness view: definition (masked) + last-known result (recorded
+ * `lastReadiness`; tolerant read — `unmeasured` if shapeless). Explain does
+ * NOT run the probe (it renders the definition + record). */
 export type ExplainReadiness = {
   defined: boolean
   probe?: string
@@ -293,22 +293,22 @@ const readRecordedReadiness = (rec: UpServiceState | undefined): ExplainReadines
 export type Explanation = {
   expected: ExplainExpected
   running: ExplainRunning
-  /** Turkish diff lines (human `fark:` body, no prefix). */
+  /** Diff lines (human `diff:` body, no prefix). */
   diffs: string[]
   /** Recorded provenance verbatim (masked shapes/names by construction). */
   provenance: Provenance | null
-  /** Single Turkish reason line (human `neden:` body, no prefix). */
+  /** Single reason line (human `reason:` body, no prefix). */
   neden: string
   /** M3 readiness: masked definition + last-known result (never executed). */
   readiness: ExplainReadiness
-  /** M-C derleme kimliği (kayıtlı haritadan indirgenmiş: maskeli-basename +
-   * kısa-8, sıralı ilk 32 + sayaç; tam-yol/tam-digest asla). */
+  /** M-C build identity (reduced from the recorded map: masked-basename +
+   * short-8, first 32 in order + counter; never a full path/full digest). */
   artifacts: { shown: { base: string; digest: string }[]; rest: number }
 }
 
 export type ServiceExplanation = { service: string; explanation: Explanation }
 
-const LSTART_TR: Record<ExplainLstart, string> = {
+const LSTART_EN: Record<ExplainLstart, string> = {
   matched: "matched",
   mismatch: "mismatch",
   unknown: "unknown",
@@ -390,7 +390,7 @@ export const explainServices = (opts: {
     if (verdict === "mismatch") diffs.push("lstart mismatch — suspected pid reuse")
     if (verdict === "unknown" && rec !== undefined && rec.exitCode === undefined) diffs.push("pid unverifiable (lstart unknown)")
     if (verdict === "dead" && rec !== undefined) {
-      diffs.push(rec.exitCode !== undefined ? `process exited (exit code ${rec.exitCode})` : `process not running (status: ${STATUS_TR[view?.status ?? "stopped"]})`)
+      diffs.push(rec.exitCode !== undefined ? `process exited (exit code ${rec.exitCode})` : `process not running (status: ${STATUS_EN[view?.status ?? "stopped"]})`)
     }
     if (verdict === "matched" && rec?.port !== undefined && view?.listening === false) {
       diffs.push(`port ${rec.port} not listening`)
@@ -423,7 +423,7 @@ export const explainServices = (opts: {
   })
 }
 
-/** Human block for one explanation (Turkish labels, no secrets: shapes,
+/** Human block for one explanation (English labels, no secrets: shapes,
  * names, counts and revs only). */
 export const formatExplanation = (item: ServiceExplanation): string[] => {
   const { service, explanation } = item
@@ -454,8 +454,8 @@ export const formatExplanation = (item: ServiceExplanation): string[] => {
   } else {
     const parts = [
       `pid=${explanation.running.pid}`,
-      STATUS_TR[explanation.running.status],
-      `lstart=${LSTART_TR[explanation.running.lstart]}`,
+      STATUS_EN[explanation.running.status],
+      `lstart=${LSTART_EN[explanation.running.lstart]}`,
     ]
     if (explanation.running.listening !== undefined) parts.push(`listen=${explanation.running.listening ? "yes" : "no"}`)
     parts.push(explanation.running.cwd === undefined ? "cwd=unverifiable(UNVERIFIED)" : `cwd=${explanation.running.cwd}`)
@@ -479,7 +479,7 @@ export const formatExplanation = (item: ServiceExplanation): string[] => {
 }
 
 /** `ow ps --explain [svc] [--json]`: recorded render (exit 0 ok / 1
- * yapısal / 2 kullanım). Unknown service → exit 2. */
+ * structural / 2 usage). Unknown service → exit 2. */
 export const runPsExplain = async (opts: { rootDir: string; file: string; service?: string; json: boolean }): Promise<number> => {
   let views: PsServiceView[]
   try {

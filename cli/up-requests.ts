@@ -9,7 +9,7 @@
  * `readiness-<svc>.<pid>.<nonce>.json` (M3 verdict recording);
  * results live in `requests/results/<nonce>.json`. All writes are
  * tmp+rename atomic. A client that sees no result within the window exits
- * 1 (`istek yanıtsız`) and never assumes a half-spawn. */
+ * 1 (`request unanswered`) and never assumes a half-spawn. */
 
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
@@ -25,9 +25,9 @@ export type ReadinessOutcome = {
   ok: boolean
   note?: string
   at: string
-  /** M-C probe-beyanlı derleme kimliği (basename → tam-digest, ham):
-   * readiness isteğiyle aynı zarfta taşınır (tek-yazar supervisor
-   * birleştirir; cap + şekil-disiplini supervisor tarafında). */
+  /** M-C probe-declared build identity (basename → full digest, raw):
+   * carried in the same envelope as the readiness request (the sole-writer
+   * supervisor merges it; cap + shape discipline live on the supervisor side). */
   artifacts?: Record<string, string>
 }
 
@@ -55,7 +55,7 @@ export type ServiceResult = {
    * `stopped` | `already-stopped` | `refused` | `unknown-service` |
    * `invalid-config` | `recorded` | `stale`. */
   code: string
-  /** Turkish human line (already formatted for stdout/stderr). */
+  /** Human line (already formatted for stdout/stderr). */
   message: string
   pid?: number
 }

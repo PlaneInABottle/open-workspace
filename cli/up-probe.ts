@@ -1,8 +1,8 @@
-/** M3 proje-tanımlı readiness probe çalıştırıcısı: istemci-tarafı one-shot
- * (supervisor içinde ASLA — gating yok, daemon yok). Keyfi yerel komut
- * (B2: ağ kısıtı YOK, read-only sözleşmesi beyana dayalı — ow denetlemez,
- * yalnızca raporlar + cap/timeout/maske uygular). argv-only: shell/sh-c
- * formu şemada reddedilir, burada yorumlanmaz. */
+/** M3 project-defined readiness probe runner: client-side one-shot
+ * (NEVER inside the supervisor — no gating, no daemon). Arbitrary local command
+ * (B2: NO network restriction, the read-only contract is declaration-based —
+ * ow does not audit it, it only reports + applies cap/timeout/mask). argv-only:
+ * a shell/sh-c form is rejected by the schema, not interpreted here. */
 
 import { basename } from "node:path"
 
@@ -15,14 +15,14 @@ export const PROBE_NOTE_MAX_CHARS = 200
 export const PROBE_RESULT_NOTE_MAX_CHARS = 500
 export const ORPHAN_NOTE = "may-be-leftover-grandchild"
 
-/** M-C (#1): probe-beyanlı kod-kimliği — runner'ın ÇÖZÜMLENMİŞ modül yolu
- * (`path`, ≤512ch) + içerik digesti (`digest`, hex 7..128ch). İkisi de
- * katkısal-isteğe-bağlı; şekilsiz alan düşer, girdi yaşar. Ham `path`/
- * tam `digest`/probe-argv asla render/tel/log'a çıkmaz — yalnızca
- * basename + kısa-8 indirgenmiş taşınır (durum dosyası ham tutar). */
+/** M-C (#1): probe-declared code identity — the runner's RESOLVED module path
+ * (`path`, ≤512ch) + content digest (`digest`, hex 7..128ch). Both are
+ * additive-optional; a malformed field drops, the entry survives. A raw `path`/
+ * full `digest`/probe-argv never reaches render/wire/log — only
+ * basename + short-8 is carried reduced (the state file keeps them raw). */
 export const PROBE_PATH_MAX_CHARS = 512
 export const ARTIFACT_DIGEST_PATTERN = /^[0-9a-fA-F]{7,128}$/
-/** İnsan/tel listesinde gösterilen en çok girdi; kalanı sayılır. */
+/** The most entries shown in a human/wire list; the rest are counted. */
 export const ARTIFACT_DISPLAY_MAX = 32
 
 export type ProbeCheck = { name: string; ok: boolean; path?: string; digest?: string }
@@ -42,8 +42,8 @@ export type ProbeSpec = {
   env: Record<string, string | undefined>
 }
 
-/** Tam-çözülmüş spec ile koşum (orkestrasyon varsayılanı; `timeout`
- * etiketi inert — `timeoutMs` kazanır). */
+/** Run with a fully-resolved spec (orchestration default; the `timeout`
+ * label is inert — `timeoutMs` wins). */
 export const runProbeJob = (spec: ProbeSpec): Promise<ProbeOutcome> =>
   runProbe({
     spec: { probe: spec.probe, timeout: "10s", needsPort: true },
@@ -52,11 +52,11 @@ export const runProbeJob = (spec: ProbeSpec): Promise<ProbeOutcome> =>
     timeoutMs: spec.timeoutMs,
   })
 
-/** Probe çalıştırıcı fn tipi (enjeksiyon noktası; testler sahte verir). */
+/** Probe runner fn type (injection point; tests provide a fake). */
 export type ProbeFn = (spec: ProbeSpec) => Promise<ProbeOutcome>
 
-/** stdout içindeki İLK JSON objeyi bul (derinlik sayaçlı, string-farkındalı).
- * Log-ön-ekli çıktılarda sözleşme objesini yakalar. */
+/** Find the FIRST JSON object in stdout (depth-counted, string-aware).
+ * Catches the contract object in log-prefixed output. */
 export const findFirstJsonObject = (text: string): string | null => {
   let depth = 0
   let start = -1
@@ -85,11 +85,11 @@ export const findFirstJsonObject = (text: string): string | null => {
 
 type ParsedContract = { ready: boolean; note?: string; checks?: ProbeCheck[] }
 
-/** `{ready: bool, note?: ≤200ch, checks?: [{name, ok, path?, digest?}]}` sözleşmesi:
- * ready ZORUNLU bool (yoksa geçersiz); note kırpılır; checks yalnızca
- * şekli tutan girdilerle alınır (bozuk girdiler düşer, fatal değil).
- * M-C: `path` (1..512ch dize) + `digest` (hex 7..128ch) şekil-sıkı
- * alınır — bozuk alan düşer, girdi YAŞAR (asla tüm-sözleşme fatalı yok). */
+/** `{ready: bool, note?: ≤200ch, checks?: [{name, ok, path?, digest?}]}` contract:
+ * ready is a MANDATORY bool (otherwise invalid); note is truncated; checks are
+ * taken only from shape-holding entries (malformed entries drop, not fatal).
+ * M-C: `path` (1..512ch string) + `digest` (hex 7..128ch) are shape-strict —
+ * a malformed field drops, the entry SURVIVES (never a whole-contract fatal). */
 export const parseProbeContract = (text: string): ParsedContract | null => {
   const raw = findFirstJsonObject(text)
   if (raw === null) return null
@@ -126,23 +126,23 @@ export const parseProbeContract = (text: string): ParsedContract | null => {
   return out
 }
 
-/** Kayıtlı-harita anahtar disiplini: basename-şekil (ayraç/`..` yok). */
+/** Recorded-map key discipline: basename shape (no separator/`..`). */
 export const isArtifactBase = (base: unknown): base is string =>
   typeof base === "string" && base.length > 0 && base.length <= PROBE_PATH_MAX_CHARS && !base.includes("/") && !base.includes("\\") && base !== "." && base !== ".."
 
-/** Kayıtlı-harita değer disiplini: hex 7..128ch. */
+/** Recorded-map value discipline: hex 7..128ch. */
 export const isArtifactDigest = (digest: unknown): digest is string =>
   typeof digest === "string" && ARTIFACT_DIGEST_PATTERN.test(digest)
 
-/** Çözümlenmiş yolun sızdırmaz adı (dizinler düşer). */
+/** Non-leaking name of a resolved path (directories drop). */
 export const artifactBase = (path: string): string => basename(path)
 
-/** Tel/insan görüntüsü (kısa-8; tam-digest asla render edilmez). */
+/** Wire/human view (short-8; the full digest is never rendered). */
 export const shortDigest = (digest: string): string => digest.slice(0, 8)
 
 export type ReducedArtifact = { base: string; digest: string }
 
-/** Kayıtlı-harita girişi seçimi (şekil-sıkı: bozuk girdi düşer, geçerli yaşar). */
+/** Recorded-map entry selection (shape-strict: a malformed entry drops, a valid one survives). */
 export const pickArtifactEntries = (raw: unknown): Record<string, string> => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {}
   const out: Record<string, string> = {}
@@ -152,9 +152,9 @@ export const pickArtifactEntries = (raw: unknown): Record<string, string> => {
   return out
 }
 
-/** Beyan haritası (tazelik karşılaştırması için bellek-içi): ok-girdilerin
- * tam-digestleri. Ham basename anahtarlıdır (maskesiz — render dışı);
- * aynı basename tekrarında İLK girdi kazanır (deterministik). */
+/** Declaration map (in-memory, for the freshness comparison): the full digests
+ * of ok entries. Keyed by raw basename (unmasked — render-excluded); on a
+ * repeated basename the FIRST entry wins (deterministic). */
 export const declaredArtifactDigests = (checks: ProbeCheck[] | undefined): Record<string, string> => {
   const out: Record<string, string> = {}
   for (const check of checks ?? []) {
@@ -166,25 +166,25 @@ export const declaredArtifactDigests = (checks: ProbeCheck[] | undefined): Recor
   return out
 }
 
-/** İndirgenmiş görünüm (tel/insan): maskeli-basename + kısa-8, sıralı ilk
- * 32 gösterilir, kalan sayılır. Tam-yol/tam-digest asla çıkmaz. */
+/** Reduced view (wire/human): masked-basename + short-8, first 32 in sorted
+ * order shown, the rest counted. A full path/full digest never appears. */
 export const reduceArtifacts = (checks: ProbeCheck[] | undefined): { shown: ReducedArtifact[]; rest: number } =>
   reduceArtifactMap(declaredArtifactDigests(checks))
 
-/** Kayıtlı-harita indirgemesi (durum-dosyasından tele/insana): aynı
- * basename + kısa-8 disiplini (maske-önce). */
+/** Recorded-map reduction (from the state file to wire/human): the same
+ * basename + short-8 discipline (mask first). */
 export const reduceArtifactMap = (map: Record<string, string> | undefined): { shown: ReducedArtifact[]; rest: number } => {
   const bases = Object.keys(map ?? {}).sort()
   const shown = bases.slice(0, ARTIFACT_DISPLAY_MAX).map((base) => ({ base: maskSecrets(base), digest: shortDigest((map as Record<string, string>)[base]) }))
   return { shown, rest: Math.max(0, bases.length - shown.length) }
 }
 
-/** Tek probe koşusu: exit 0 + timeout-içi + geçerli JSON + ready:true =
- * hazır; diğer her şey hazır-değil (retry/restart YOK). Timeout TEK-PID
- * kill (grup-kill YOK; torun sızıntısı notlanır). Çıktılar B3 desen
- * listesiyle maskeli + cap'li (çıplak şekilsiz değerler maskelenmez —
- * probe ham sırrı basmamalı; liste plan B3'ten sabittir); ham argv/loga
- * girmez. Asla throw etmez (sonuçta taşınır). */
+/** Single probe run: exit 0 + within-timeout + valid JSON + ready:true =
+ * ready; everything else is not-ready (NO retry/restart). Timeout is a
+ * SINGLE-PID kill (NO group-kill; a grandchild leak is noted). Outputs are
+ * masked + capped with the B3 pattern list (shapeless bare values are not
+ * masked — a probe must not print a raw secret; the list is fixed from plan
+ * B3); raw argv never enters logs. Never throws (carried in the result). */
 export const runProbe = async (opts: {
   spec: UpReadiness
   cwd: string

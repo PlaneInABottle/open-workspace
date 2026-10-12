@@ -632,7 +632,7 @@ scenarios:
       await makeGradle(root)
       const original = "services:\n  old:\n    cmd: old-cmd\n"
       await writeFile(join(root, "ow.yaml"), original)
-      const result = await runInit({ rootDir: root, force: true }, { renderScenarios: () => "version: 1\nscenarios:\n  - blok liste yasak\n" })
+      const result = await runInit({ rootDir: root, force: true }, { renderScenarios: () => "version: 1\nscenarios:\n  - block list forbidden\n" })
       expect(result.code).toBe(2)
       expect(result.stderr).toContain("invalid scenarios skeleton")
       expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(original)

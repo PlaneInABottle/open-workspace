@@ -145,7 +145,7 @@ describe("scenario env refusals (scenario-run gates mirrored)", () => {
       expect(io.err.join("\n")).toContain("scenario not found: ghost")
       const io2 = capture()
       try {
-        expect(await run(["scenario", "env", "demo", "--file", join(root, "yok.yaml")])).toBe(1)
+        expect(await run(["scenario", "env", "demo", "--file", join(root, "missing.yaml")])).toBe(1)
       } finally {
         io2.restore()
       }

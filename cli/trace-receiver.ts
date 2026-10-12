@@ -164,7 +164,7 @@ export const startTraceReceiver = async (options: TraceReceiverOptions): Promise
               if (isInflateOverLimit(error)) {
                 return reject("inflate-too-large", 413, `inflated>${maxInflatedBytes}b`)
               }
-              return reject("decode-failed", 400, "bozuk-gzip")
+              return reject("decode-failed", 400, "corrupt-gzip")
             }
           }
           let spans

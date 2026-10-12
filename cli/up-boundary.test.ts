@@ -332,7 +332,7 @@ describe("ow readiness CLI (real file paths)", () => {
     })
   }
 
-  test("stale artifact + missing boundary -> exit 1 naming boundary: + derleme-eski (E1-a converges the shared drift line)", async () => {
+  test("stale artifact + missing boundary -> exit 1 naming boundary: + stale-build (E1-a converges the shared drift line)", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -346,7 +346,7 @@ describe("ow readiness CLI (real file paths)", () => {
         {
           name: "api",
           pid: 4242,
-          lstart: "sahte",
+          lstart: "fake",
           startedAt: "2026-10-09T08:00:00.000Z",
           cmd: "sleep 30",
           lastReadiness: { ok: true, at: "2026-10-09T08:00:00.000Z" },
@@ -436,11 +436,11 @@ describe("ow readiness CLI (real file paths)", () => {
   })
 
   test("usage: positional / --check -> exit 2; missing file -> exit 2", async () => {
-    expect(await run(["readiness", "fazla"])).toBe(2)
+    expect(await run(["readiness", "extra"])).toBe(2)
     const root = await tempRoot()
     try {
       expect(await run(["readiness", "--check"])).toBe(2)
-      expect(await run(["readiness", "--file", join(root, "yok.yaml")])).toBe(2)
+      expect(await run(["readiness", "--file", join(root, "missing.yaml")])).toBe(2)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -453,7 +453,7 @@ describe("ow readiness CLI (real file paths)", () => {
       await writeFile(file, "services:\n  api:\n    cmd: sleep 30\n", "utf8")
       await writeFile(
         join(root, "ow.scenarios.yaml"),
-        "version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [blocked:\"token=hunter2\", gizli-token=hunter2, a1b2c3d4e5f60718293a4b5c6d7e8f9012345678]\n    probes: [{id: p, argv: [./x.sh]}]\n",
+        "version: 1\nscenarios:\n  a:\n    services: [api]\n    boundaries: [blocked:\"token=hunter2\", secret-token=hunter2, a1b2c3d4e5f60718293a4b5c6d7e8f9012345678]\n    probes: [{id: p, argv: [./x.sh]}]\n",
         "utf8",
       )
       await writeState(root, [])

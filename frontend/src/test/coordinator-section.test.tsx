@@ -23,16 +23,16 @@ function drifted(): CoordinatorSnapshot {
     reconcile: {
       inSync: false,
       drifts: [
-        { service: 'api', field: 'durum', expected: 'çalışıyor (dev · portsuz)', actual: 'failed: The last readiness poll did not succeed.' },
-        { service: 'web', field: 'durum', expected: 'çalışıyor (dev · 3000 portu)', actual: 'down: No owned process is recorded.' },
+        { service: 'api', field: 'status', expected: 'running (dev · portless)', actual: 'failed: The last readiness poll did not succeed.' },
+        { service: 'web', field: 'status', expected: 'running (dev · port 3000)', actual: 'down: No owned process is recorded.' },
       ],
     },
     preflight: {
       pass: false,
-      gates: [{ service: 'web', port: 3000, free: false, note: '3000 portu dolu' }],
-      missing: ['web: 3000 portu dolu'],
+      gates: [{ service: 'web', port: 3000, free: false, note: '3000 port is busy' }],
+      missing: ['web: 3000 port is busy'],
     },
-    warnings: ['checkpoint kırpıldı: big (256KB/500 kayıt sınırı)'],
+    warnings: ['checkpoint truncated: big (256KB/500 record limit)'],
   });
 }
 
@@ -63,7 +63,7 @@ function checkpointed(): CoordinatorSnapshot {
       summary: { confirmed: 1, stale: 1, notObserved: 1 },
       lastVerified: { stage: 'build', at: twoHoursAgo },
       firstGap: { stage: 'test', status: 'stale', staleReason: 'checkout_rev', at: tenMinutesAgo },
-      safeNextAction: 'betiği yeniden çalıştır',
+      safeNextAction: 'rerun the script',
       retryHint: false,
     },
     explanation: {
@@ -71,9 +71,9 @@ function checkpointed(): CoordinatorSnapshot {
         {
           service: 'api',
           expected: { cmd: 'dev', dir: 'backend', port: 3100 },
-          running: { status: 'ready', detail: 'çalışıyor' },
+          running: { status: 'ready', detail: 'running' },
           revShort: REV_A.slice(0, 7), revFull: REV_A, revAt: twoHoursAgo, revDirty: false, revRecorded: true,
-          diffs: [], note: 'çalışıyor, bilinen sorun yok',
+          diffs: [], note: 'running, no known issues',
           artifacts: [], artifactRest: 0,
         },
         {
@@ -81,7 +81,7 @@ function checkpointed(): CoordinatorSnapshot {
           expected: { cmd: 'dev', dir: 'backend', port: null },
           running: null,
           revShort: null, revFull: null, revAt: null, revDirty: false, revRecorded: false,
-          diffs: [], note: 'kayıt yok — bu servis için provenance kaydı bulunamadı',
+          diffs: [], note: 'no record — no provenance record found for this service',
           artifacts: [], artifactRest: 0,
         },
       ],
@@ -111,8 +111,8 @@ describe('CoordinatorSection', () => {
     render(<CoordinatorSection api={apiReturning(drifted())} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
     expect(within(section).getByText('drifted (2)')).toBeInTheDocument();
-    expect(within(section).getByText(/çalışıyor \(dev · portsuz\) →/)).toBeInTheDocument();
-    expect(within(section).getByText('checkpoint kırpıldı: big (256KB/500 kayıt sınırı)')).toBeInTheDocument();
+    expect(within(section).getByText(/running \(dev · portless\) →/)).toBeInTheDocument();
+    expect(within(section).getByText('checkpoint truncated: big (256KB/500 record limit)')).toBeInTheDocument();
 
     // Keyboard-only tour: focus the first diff button, open with Enter, close with Esc.
     const diffButtons = within(section).getAllByRole('button', { name: "Open diff" });
@@ -145,7 +145,7 @@ describe('CoordinatorSection', () => {
     fireEvent.keyDown(toggle, { key: 'Enter' });
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(within(section).getByText('web: 3000 portu dolu')).toBeInTheDocument();
+    expect(within(section).getByText('web: 3000 port is busy')).toBeInTheDocument();
   });
 
   it('shows one error box when the aggregate is missing or 400', async () => {
@@ -174,27 +174,27 @@ describe('CoordinatorSection', () => {
     await within(section).findByText('Checkpoint line');
 
     const rawText = document.body.textContent ?? '';
-    // textContent öğe sınırında birleşir ("önce"+"b2c3d4e" gibi yalancı
-    // 8'li üretir); düğümleri boşlukla birleştiren tarama gerçek
-    // render'ı denetler. Ham textContent ayrıca tam-hash içerirlik
-    // için denetlenir (parçalı render bile yakalanır).
+    // textContent joins at element boundaries (producing a fake
+    // 8-char run like "ago"+"b2c3d4e"); the scan that joins nodes with a space checks
+    // the real render. Raw textContent is also checked for full-hash
+    // containment (even a split render is caught).
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const parts: string[] = [];
     while (walker.nextNode()) parts.push(walker.currentNode.textContent ?? '');
     const text = parts.join(' ');
     const ariaTexts = [...document.querySelectorAll('[aria-label]')]
       .map(element => element.getAttribute('aria-label') ?? '').join(' ');
-    // Allowlist: `#`+8-hex snapshotId ("anlık" etiketli) ve 7-karakter
-    // kısa-hash'ler. Bunlar çıkınca çıplak hash kalmamalı.
+    // Allowlist: `#`+8-hex snapshotId (labeled "snapshot") and 7-character
+    // short hashes. Once these are removed no bare hash should remain.
     const scanned = `${document.title} ${text} ${ariaTexts}`.replace(/#\s?[0-9a-fA-F]{8}\b/g, '');
     expect(scanned).not.toMatch(/[0-9a-fA-F]{8,}/);
     expect(rawText).not.toContain(REV_A);
     expect(rawText).not.toContain(REV_B);
-    // Kısa-hash ve anlık kimliği görünür.
+    // The short hash and snapshot id are visible.
     expect(rawText).toContain(REV_A.slice(0, 7));
     expect(rawText).toContain('#a3f9c1d2');
 
-    // Tam-hash yalnızca kullanıcı-tetikli kopyalamada clipboard'a gider.
+    // The full hash goes to the clipboard only on a user-triggered copy.
     const copy = within(section).getByRole('button', { name: `copy ${REV_A.slice(0, 7)} rev` });
     copy.focus();
     expect(document.activeElement).toBe(copy);
@@ -208,19 +208,19 @@ describe('CoordinatorSection', () => {
     const section = await screen.findByRole('region', { name: 'Coordinator' });
     const strip = await within(section).findByRole('list', { name: 'Checkpoint stages' });
     expect(within(strip).getByText('stale')).toBeInTheDocument();
-    // Mevcut adım (ilk boşluk) liste öğesinde aria-current taşır.
+    // The current step (first gap) carries aria-current on the list item.
     const current = strip.querySelector('[aria-current="step"]');
     expect(current?.textContent).toMatch(/test/);
-    // Bayat kuyruğu: neden + yaş, role=status bölgesinde.
+    // The stale queue: reason + age, in the role=status region.
     const status = within(section).getByRole('status');
     expect(within(status).getByText(/First gap:/)).toBeInTheDocument();
     expect(within(status).getByText('Stale queue')).toBeInTheDocument();
-    // Neden hem boşluk satırında hem kuyruk maddesinde yazılır.
+    // The reason is written both on the gap line and on the queue item.
     expect(within(status).getAllByText(/code revision changed/)).toHaveLength(2);
-    // Yaş şeritte (×2), boşluk satırında, kuyruk maddesinde ve rev
-    // şeridinde yazılır — hepsi aynı kayıt-saatinden.
+    // The age is written on the strip (×2), the gap line, the queue item and the rev
+    // strip — all from the same record time.
     expect(within(section).getAllByText(/10m ago/)).toHaveLength(5);
-    // Kayıtlı rev yaşı tabloda.
+    // The recorded rev age is in the table.
     expect(within(section).getByText(/saved 2h ago/)).toBeInTheDocument();
     expect(within(section).getByText('recorded')).toBeInTheDocument();
     expect(within(section).getByText('no rev record')).toBeInTheDocument();
@@ -229,7 +229,7 @@ describe('CoordinatorSection', () => {
   it('renders safe_next_action as text with no action control', async () => {
     render(<CoordinatorSection api={apiReturning(checkpointed())} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
-    const action = await within(section).findByText('betiği yeniden çalıştır');
+    const action = await within(section).findByText('rerun the script');
     expect(within(section).getByText(/This is a suggestion — it runs nothing/)).toBeInTheDocument();
     const box = action.closest('div')!;
     expect(within(box).queryByRole('button')).not.toBeInTheDocument();
@@ -242,16 +242,16 @@ describe('CoordinatorSection', () => {
     const revStrip = await within(section).findByRole('list', { name: 'Rev strip' });
     const dots = within(revStrip).getAllByRole('button');
     expect(dots).toHaveLength(2);
-    // En yeni rev seçili başlar.
+    // The newest rev starts selected.
     expect(dots[1]).toHaveAttribute('aria-current', 'true');
-    // Klavye turu: Tab odağı alır, Enter seçimi taşır.
+    // Keyboard cycle: Tab takes focus, Enter moves the selection.
     dots[0].focus();
     expect(document.activeElement).toBe(dots[0]);
     fireEvent.keyDown(dots[0], { key: 'Enter' });
     fireEvent.click(dots[0]);
     expect(dots[0]).toHaveAttribute('aria-current', 'true');
     expect(dots[1]).not.toHaveAttribute('aria-current');
-    // Beklenen/çalışan gerçek bir tablodur (scope'lu başlıklar).
+    // Expected/running is a real table (scoped headers).
     const table = within(section).getByRole('table');
     expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent))
       .toEqual(['Service', 'Expected', 'Running', 'Rev']);
@@ -262,8 +262,8 @@ describe('CoordinatorSection', () => {
 function scenarioed(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSnapshot {
   return snapshot({
     checkpoints: {
-      run: 'yeni',
-      runs: ['yeni', 'eski'],
+      run: 'new',
+      runs: ['new', 'old'],
       stages: [],
       summary: { confirmed: 0, stale: 0, notObserved: 0 },
       lastVerified: null,
@@ -271,7 +271,7 @@ function scenarioed(overrides: Partial<CoordinatorSnapshot> = {}): CoordinatorSn
       safeNextAction: null,
       retryHint: false,
     },
-    runs: ['yeni', 'eski'],
+    runs: ['new', 'old'],
     scenarios: {
       file: 'ow.scenarios.yaml',
       columns: ['local', 'real', 'xyz-unknown'],
@@ -356,7 +356,7 @@ describe('CoordinatorSection scenarios', () => {
     expect(headers)
       .toEqual(['Scenario', 'real read-only', 'real state-changing', 'network deny', 'subscribed', 'blocked', 'unverified', 'unknown']);
     // Headers carry no Turkish: the M1 map renders English labels.
-    expect(headers.join(' ')).not.toMatch(/[çğıöşüÇĞİÖŞÜ]/);
+    expect(headers.join(' ')).not.toMatch(/[\u00e7\u011f\u0131\u00f6\u015f\u00fc\u00c7\u011e\u0130\u00d6\u015e\u00dc]/);
   });
 
   it('shows an explained empty state with a setup link when no file is bound', async () => {
@@ -369,7 +369,7 @@ describe('CoordinatorSection scenarios', () => {
 
   it('shows an error box without killing sibling panels on a corrupt file', async () => {
     const broken = scenarioed({
-      scenarios: { file: 'ow.scenarios.yaml', columns: [], rows: [], warnings: [], error: '`version: 1` gerekli' },
+      scenarios: { file: 'ow.scenarios.yaml', columns: [], rows: [], warnings: [], error: '`version: 1` required' },
     });
     render(<CoordinatorSection api={apiReturning(broken)} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
@@ -424,14 +424,14 @@ describe('CoordinatorSection scenarios', () => {
     const { rerender } = render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
     const select = await within(section).findByLabelText('Run') as HTMLSelectElement;
-    expect([...select.options].map(option => option.text)).toEqual(['latest', 'yeni', 'eski']);
+    expect([...select.options].map(option => option.text)).toEqual(['latest', 'new', 'old']);
     expect(calls).toEqual([undefined]);
     select.focus();
     expect(document.activeElement).toBe(select);
-    fireEvent.change(select, { target: { value: 'eski' } });
-    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'eski'));
-    expect(calls).toEqual([undefined, 'eski']);
-    // Ortam değişince seçim latest'e döner.
+    fireEvent.change(select, { target: { value: 'old' } });
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'old'));
+    expect(calls).toEqual([undefined, 'old']);
+    // The selection returns to latest when the environment changes.
     rerender(<CoordinatorSection api={api} workspace="Demo" environment="prod" refreshToken={0} />);
     await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'prod', undefined));
   });
@@ -440,45 +440,45 @@ describe('CoordinatorSection scenarios', () => {
     const full = scenarioed();
     const empty = scenarioed({ checkpoints: null });
     const coordinator = vi.fn(async (_workspace: string, _environment: string, run?: string) =>
-      run === 'eski' ? empty : full);
+      run === 'old' ? empty : full);
     const api = { coordinator } as unknown as ApiClient;
     const { rerender } = render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
     await within(section).findByLabelText('Run');
-    // İçeriksiz run: null iletisi + seçici kalır (dead-end yok).
-    fireEvent.change(within(section).getByLabelText('Run'), { target: { value: 'eski' } });
+    // Empty run: null message + the selector stays (no dead-end).
+    fireEvent.change(within(section).getByLabelText('Run'), { target: { value: 'old' } });
     await within(section).findByText('No checkpoints — no runner record found.');
     const stranded = within(section).getByLabelText('Run') as HTMLSelectElement;
-    expect([...stranded.options].map(option => option.value)).toEqual(['', 'yeni', 'eski']);
-    expect(stranded.value).toBe('eski');
-    // Yenile aynı içeriksiz run'da kalır: ileti + seçici korunur.
+    expect([...stranded.options].map(option => option.value)).toEqual(['', 'new', 'old']);
+    expect(stranded.value).toBe('old');
+    // Refresh stays on the same empty run: the message + selector are preserved.
     rerender(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={1} />);
-    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'eski'));
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'old'));
     expect(within(section).getByText('No checkpoints — no runner record found.')).toBeInTheDocument();
     expect(within(section).getByLabelText('Run')).toBeInTheDocument();
-    // İçerikli run'a dönüş kurtarır: ileti gider, şerit döner.
-    fireEvent.change(within(section).getByLabelText('Run'), { target: { value: 'yeni' } });
-    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'yeni'));
+    // Returning to a non-empty run recovers: the message goes, the strip returns.
+    fireEvent.change(within(section).getByLabelText('Run'), { target: { value: 'new' } });
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'new'));
     await vi.waitFor(() => expect(within(section).queryByText('No checkpoints — no runner record found.')).not.toBeInTheDocument());
-    expect(within(section).getByText((_, el) => el?.tagName === 'P' && (el.textContent ?? '').includes('run: yeni'))).toBeInTheDocument();
+    expect(within(section).getByText((_, el) => el?.tagName === 'P' && (el.textContent ?? '').includes('run: new'))).toBeInTheDocument();
     expect(within(section).getByLabelText('Run')).toBeInTheDocument();
   });
 
   it('shows the picker on first load when checkpoints are null but runs are listed', async () => {
-    const firstLoad = scenarioed({ checkpoints: null, runs: ['yeni', 'eski'] });
+    const firstLoad = scenarioed({ checkpoints: null, runs: ['new', 'old'] });
     const full = scenarioed();
     const coordinator = vi.fn(async (_workspace: string, _environment: string, run?: string) =>
       run === undefined ? firstLoad : full);
     const api = { coordinator } as unknown as ApiClient;
     render(<CoordinatorSection api={api} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
-    // Önbellek boştur: liste wire'daki üst-düzey runs'tan gelir.
+    // The cache is empty: the list comes from the top-level runs on the wire.
     const select = await within(section).findByLabelText('Run') as HTMLSelectElement;
-    expect([...select.options].map(option => option.value)).toEqual(['', 'yeni', 'eski']);
+    expect([...select.options].map(option => option.value)).toEqual(['', 'new', 'old']);
     expect(within(section).getByText('No checkpoints — no runner record found.')).toBeInTheDocument();
-    // İçerikli seçim kurtarır (tekil yeniden-çekme).
-    fireEvent.change(select, { target: { value: 'yeni' } });
-    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'yeni'));
+    // A non-empty selection recovers (a single refetch).
+    fireEvent.change(select, { target: { value: 'new' } });
+    await vi.waitFor(() => expect(coordinator).toHaveBeenLastCalledWith('Demo', 'dev', 'new'));
     await vi.waitFor(() => expect(within(section).queryByText('No checkpoints — no runner record found.')).not.toBeInTheDocument());
   });
 
@@ -586,11 +586,11 @@ function flagged(): CoordinatorSnapshot {
   const at = new Date().toISOString();
   return snapshot({
     checkpoints: {
-      run: 'gece-attempt2',
-      runs: ['gece-attempt2'],
+      run: 'night-attempt2',
+      runs: ['night-attempt2'],
       stages: [
-        { stage: 'build', status: 'confirmed', staleReason: null, at, sideEffect: 'attempted', sideEffectAttempted: 2, sideEffectConfirmed: null, scenario: 'gece', attempt: 1, stepSignature: 'build-imza' },
-        { stage: 'test', status: 'confirmed', staleReason: null, at, sideEffect: 'none', sideEffectAttempted: null, sideEffectConfirmed: null, scenario: 'gece', attempt: 2, stepSignature: null },
+        { stage: 'build', status: 'confirmed', staleReason: null, at, sideEffect: 'attempted', sideEffectAttempted: 2, sideEffectConfirmed: null, scenario: 'night', attempt: 1, stepSignature: 'build-signature' },
+        { stage: 'test', status: 'confirmed', staleReason: null, at, sideEffect: 'none', sideEffectAttempted: null, sideEffectConfirmed: null, scenario: 'night', attempt: 2, stepSignature: null },
         { stage: 'deploy', status: 'not_observed', staleReason: null, at, sideEffect: null, sideEffectAttempted: null, sideEffectConfirmed: null, scenario: null, attempt: null, stepSignature: null },
       ],
       summary: { confirmed: 2, stale: 0, notObserved: 1 },
@@ -603,7 +603,7 @@ function flagged(): CoordinatorSnapshot {
 }
 
 describe('CoordinatorSection M-A flags', () => {
-  it('renders per-stage side-effect flags with counts and bilinmiyor for missing', async () => {
+  it('renders per-stage side-effect flags with counts and unknown for missing', async () => {
     render(<CoordinatorSection api={apiReturning(flagged())} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
     await within(section).findByText('Checkpoint line');
@@ -626,15 +626,15 @@ describe('CoordinatorSection M-A flags', () => {
     expect(within(box).queryByRole('link')).not.toBeInTheDocument();
   });
 
-  it('renders the scenario→attempt tree with locked vocab and doğrulanmadı', async () => {
+  it('renders the scenario→attempt tree with locked vocab and unconfirmed', async () => {
     render(<CoordinatorSection api={apiReturning(flagged())} workspace="Demo" environment="dev" refreshToken={0} />);
     const section = await screen.findByRole('region', { name: 'Coordinator' });
     const tree = await within(section).findByRole('list', { name: 'Attempt tree' });
-    expect(within(tree).getByText(/scenario: gece/)).toBeInTheDocument();
+    expect(within(tree).getByText(/scenario: night/)).toBeInTheDocument();
     expect(within(tree).getByText(/attempt 1: build/)).toBeInTheDocument();
     expect(within(tree).getByText(/attempt 2: test/)).toBeInTheDocument();
     expect(within(tree).getByText(/unconfirmed/)).toBeInTheDocument();
-    // Sahipsiz zarf ağaca girmez (düz listede kalır).
+    // An unattributed envelope does not enter the tree (it stays in the flat list).
     expect(within(tree).queryByText(/deploy/)).not.toBeInTheDocument();
   });
 });
@@ -659,9 +659,9 @@ function artifacted(): CoordinatorSnapshot {
         {
           service: 'api',
           expected: { cmd: 'dev', dir: 'backend', port: null },
-          running: { status: 'ready', detail: 'çalışıyor' },
+          running: { status: 'ready', detail: 'running' },
           revShort: null, revFull: null, revAt: null, revDirty: false, revRecorded: false,
-          diffs: [], note: 'çalışıyor, bilinen sorun yok',
+          diffs: [], note: 'running, no known issues',
           artifacts: [
             { base: 'api.jar', digest: 'a1b2c3d4' },
             { base: 'extra.jar', digest: 'ffffffff' },
@@ -682,7 +682,7 @@ describe('CoordinatorSection M-C artifacts', () => {
     expect(within(section).getByText('api.jar@a1b2c3d4')).toBeInTheDocument();
     expect(within(section).getByText('extra.jar@ffffffff')).toBeInTheDocument();
     expect(within(section).getByText('+3 more')).toBeInTheDocument();
-    // Tam-digest/argv ASLA DOM'da yok (tel zaten indirgenmiş taşır).
+    // The full digest/argv are NEVER in the DOM (the wire already carries the reduced form).
     const rawText = document.body.textContent ?? '';
     expect(rawText).not.toMatch(/[0-9a-fA-F]{32,}/);
   });
@@ -697,7 +697,7 @@ describe('CoordinatorSection M-C artifacts', () => {
     const text = parts.join(' ');
     const ariaTexts = [...document.querySelectorAll('[aria-label]')]
       .map(element => element.getAttribute('aria-label') ?? '').join(' ');
-    // Kasıtlı kısa-8 çipler düğüm-bazında ayıklanır (tam-hash koruması sürer).
+    // The intentional short-8 chips are excluded node-by-node (full-hash protection continues).
     const chips = [...document.querySelectorAll('[data-artifact-digest]')].map(element => element.textContent ?? '');
     expect(chips).toHaveLength(2);
     for (const chip of chips) expect(chip).toMatch(/^[^@/]+@[0-9a-fA-F]{8}$/);
@@ -720,17 +720,17 @@ describe('M1 worktree identity (chip + wt: filter, conditional)', () => {
           {
             service: 'api',
             expected: { cmd: 'dev', dir: 'wt-a', port: 3100 },
-            running: { status: 'ready', detail: 'çalışıyor' },
+            running: { status: 'ready', detail: 'running' },
             revShort: WT_A.slice(0, 7), revFull: WT_A, revAt: new Date().toISOString(), revDirty: false, revRecorded: true,
-            diffs: [], note: 'çalışıyor, bilinen sorun yok',
+            diffs: [], note: 'running, no known issues',
             artifacts: [], artifactRest: 0,
           },
           {
             service: 'web',
             expected: { cmd: 'dev', dir: 'wt-b', port: null },
-            running: { status: 'ready', detail: 'çalışıyor' },
+            running: { status: 'ready', detail: 'running' },
             revShort: null, revFull: null, revAt: null, revDirty: false, revRecorded: false,
-            diffs: [], note: 'çalışıyor, bilinen sorun yok',
+            diffs: [], note: 'running, no known issues',
             artifacts: [], artifactRest: 0,
           },
         ],
@@ -816,7 +816,7 @@ describe('M2 ownership ledger (read-only list, conditional)', () => {
     // responses cannot linger past newer data).
     rerender(<CoordinatorSection api={apiReturning(snapshot())} workspace="Demo" environment="dev" refreshToken={1} />);
     section = await screen.findByRole('region', { name: 'Coordinator' });
-    expect(within(section).queryByText('Worktree sahipliği')).not.toBeInTheDocument();
+    expect(within(section).queryByText('Worktree ownership')).not.toBeInTheDocument();
   });
 });
 

@@ -1,11 +1,11 @@
 #!/bin/bash
 # Report whether product-built cli/ow matches current cli/ sources.
-# Exit 0 `taze`, 1 stale, 2 missing sidecar/binary. Rebuild: `pnpm ow:build`.
+# Exit 0 `fresh`, 1 stale, 2 missing sidecar/binary. Rebuild: `pnpm ow:build`.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
 if [ ! -x cli/ow ] || [ ! -f cli/ow.build.json ]; then
-  echo "derleme bilgisi yok — pnpm ow:build çalıştırın"
+  echo "build info missing — run pnpm ow:build"
   exit 2
 fi
 if python3 - "$ROOT" <<'EOF' 2>/dev/null; then
@@ -38,9 +38,9 @@ if saved is None:
     sys.exit(0 if (side.get("sha") == head and side.get("dirty") == dirty) else 1)
 sys.exit(0 if saved == current else 1)
 EOF
-  echo "taze"
+  echo "fresh"
   exit 0
 else
-  echo "bayat (kaynaklar değişti, yeniden derleyin)"
+  echo "stale (sources changed, rebuild)"
   exit 1
 fi

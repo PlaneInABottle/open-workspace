@@ -133,7 +133,7 @@ describe("trace-otlp decode fixture", () => {
     ])
   })
 
-  test("missing resource → bilinmeyen; missing trace id → span skipped", () => {
+  test("missing resource → unknown; missing trace id → span skipped", () => {
     const spans = decodeTraceRequest(
       requestBytes(scopeSpans(null, [spanBytes({}), spanBytes({ traceId: null })])),
     )
@@ -175,7 +175,7 @@ describe("trace-otlp decode fixture", () => {
       ...fixed64(1000n),
       ...tag(8, 1),
       ...fixed64(2000n),
-      ...lenField(99, utf8("gelecek-alan")),
+      ...lenField(99, utf8("future-field")),
     ]
     void span
     const spans = decodeTraceRequest(requestBytes(scopeSpans("api", [withUnknown])))
@@ -701,7 +701,7 @@ describe("trace-otlp redaction (A3 + S1–S5)", () => {
 
 describe("trace-otlp decode failures (S6)", () => {
   test("truncated body reports reason + field path + offset/length, never content", () => {
-    const full = requestBytes(scopeSpans("api", [spanBytes({ name: "gizli-payload-M1x9" })]))
+    const full = requestBytes(scopeSpans("api", [spanBytes({ name: "secret-payload-M1x9" })]))
     const truncated = full.subarray(0, full.length - 5)
     let error: unknown
     try {
@@ -715,8 +715,8 @@ describe("trace-otlp decode failures (S6)", () => {
     expect(decoded.path).toContain("resource_spans")
     expect(decoded.message).toContain("offset=")
     expect(decoded.message).toContain("len=")
-    expect(decoded.message).not.toContain("gizli-payload-M1x9")
-    expect(JSON.stringify(error)).not.toContain("gizli-payload-M1x9")
+    expect(decoded.message).not.toContain("secret-payload-M1x9")
+    expect(JSON.stringify(error)).not.toContain("secret-payload-M1x9")
   })
 
   test("garbage bytes fail bounded; illegal wire type names bad-wiretype", () => {
@@ -740,12 +740,12 @@ describe("trace-otlp decode failures (S6)", () => {
   })
 
   test("too-deep guard reports a bounded reason with no payload bytes", () => {
-    const nest = (depth: number): number[] => (depth === 0 ? utf8("gizli-derinlik-P9q4") : lenField(1, nest(depth - 1)))
+    const nest = (depth: number): number[] => (depth === 0 ? utf8("secret-depth-P9q4") : lenField(1, nest(depth - 1)))
     const deep = new Uint8Array(lenField(1, nest(40)))
     // default limits: total decoder, hostile nesting never throws
     expect(decodeTraceRequest(deep)).toEqual([])
     // forced shallow limit hits the guard with a bounded descriptor
-    const body = requestBytes(scopeSpans("api", [spanBytes({ name: "gizli-derinlik-P9q4" })]))
+    const body = requestBytes(scopeSpans("api", [spanBytes({ name: "secret-depth-P9q4" })]))
     let error: unknown
     try {
       decodeTraceRequest(body, { maxDepth: 2 })
@@ -757,7 +757,7 @@ describe("trace-otlp decode failures (S6)", () => {
     expect(bounded.reason).toBe("too-deep")
     expect(bounded.path).toContain("resource_spans")
     expect(bounded.message).toContain("offset=")
-    expect(bounded.message).not.toContain("gizli-derinlik-P9q4")
+    expect(bounded.message).not.toContain("secret-depth-P9q4")
   })
 
   test("decode never writes files anywhere", async () => {
@@ -780,7 +780,7 @@ describe("trace-otlp decode failures (S6)", () => {
       for (const span of decodeTraceRequest(requestBytes(scopeSpans("api", [spanBytes({})])))) store.append(span)
       await store.flush()
       const { appendFile } = await import("node:fs/promises")
-      await appendFile(spansFile, "bozuk-satır{{{not-json\n")
+      await appendFile(spansFile, "corrupt-line{{{not-json\n")
       const { spans, corrupt } = await readSpansFile(spansFile)
       expect(spans.length).toBe(1)
       expect(corrupt).toBe(1)

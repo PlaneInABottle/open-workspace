@@ -21,8 +21,8 @@ and timeline in step 2 above:
 1. `ow sessions --dir <project-root>` to scope which sessions actually worked here.
 2. `ow stuck --tree` for repeats/overlaps/slows (retry counts, overlap depth).
 3. `ow timeline` for action→effect joins across agent rows and spans.
-4. Link confidence is cited, never upgraded: `kesin` means the ID matched ≥1
-   sidecar row exactly; `tahmini` means nearest-row proximity within ±10s.
+4. Link confidence is cited, never upgraded: `exact` means the ID matched ≥1
+   sidecar row exactly; `estimated` means nearest-row proximity within ±10s.
 
 Findings from `ow` evidence obey the same 5-rule cap and citation rule below
 (session IDs/timestamps/test names, never content).

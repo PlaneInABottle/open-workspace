@@ -72,7 +72,7 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
   // `up` and `trace` out). ok:true solely for a lock-verified live supervisor.
   // A build mismatch appends a bounded refresh hint; any compare failure
   // stays silent (missing sidecars must not fail or reword doctor).
-  // Polish (sürtünme 9): every non-live `up` detail ends with the
+  // Polish (friction 9): every non-live `up` detail ends with the
   // reconcile pointer (live needs no action).
   const reconcileHint = " — hint: ow reconcile --check"
   try {

@@ -1,6 +1,6 @@
 /** Detached/foreground entry points for `ow up`.
  * Foreground (`runSuperviseFile`) acquires the lock in-process, streams
- * `[ad|akış] satır` lines to stdout and clears the lock last. Detach
+ * `[name|stream] line` lines to stdout and clears the lock last. Detach
  * (`detachSupervised`) re-spawns a hidden `__supervise` via nohup and polls
  * for `supervisor.json` (bounded: 3 s). */
 

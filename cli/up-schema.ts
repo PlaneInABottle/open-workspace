@@ -43,15 +43,15 @@ export const PROBE_TIMEOUT_MS: Record<UpReadiness["timeout"], number> = { "5s": 
 
 const PROBE_MAX_PARTS = 16
 const PROBE_MAX_PART_BYTES = 512
-// POSIX shell ailesi (argv[0] bunlara eşitse probe bir shell binary'sidir
-// ve `-c` ile shell-semantiği kazanır — Bun.spawn kendisi yorumlamaz).
-// powershell|cmd REDDEDİLDİ (gerekçe): platform macOS+Linux (POSIX,
-// ROADMAP'ta Windows deferred); genişlerse liste gözden geçirilir.
+// POSIX shell family (if argv[0] equals one of these the probe is a shell
+// binary and gains shell semantics with `-c` — Bun.spawn itself does not interpret).
+// powershell|cmd were REJECTED (rationale): the platform is macOS+Linux (POSIX,
+// Windows deferred in ROADMAP); revisit the list if that widens.
 const SHELL_ARGV0: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh"])
 
-/** Shell-binary tespiti: path basename + lowercase + `.exe` sıyırma
- * (`/bin/sh`, `Sh`, `sh.exe` hepsi yakalanır; POSIX'te ters-bölü dosya
- * adıdır, ayraç sayılmaz). */
+/** Shell-binary detection: path basename + lowercase + `.exe` stripping
+ * (`/bin/sh`, `Sh`, `sh.exe` are all caught; on POSIX a backslash is a file
+ * name character, not a separator). */
 export const isShellArgv0 = (argv0: string): boolean => {
   const base = argv0.split("/").pop() ?? argv0
   return SHELL_ARGV0.has(base.toLowerCase().replace(/\.exe$/, ""))
@@ -265,12 +265,12 @@ const parseEnvValue = (node: YamlNode | undefined, serviceName: string): Readonl
 const asString = (value: YamlNode | undefined): string | null =>
   typeof value === "string" ? value : null
 
-/** `readiness: {probe: [...], timeout: 10s, needsPort: true}` — M3, YALNIZCA
- * tek-satır inline flow-map (N1: blok-map yazımı subset-YAML 3. düzey
- * yasağına takılır — parse hatası, exit 2). `probe` zorunlu argv listesi
- * (shell yok); `timeout` 5s|10s|30s (default 10s); `needsPort` default true
- * ve portsuz serviste şema hatasıdır. Ham argv state'e değil, yalnızca
- * çalıştırıcıya gider (listelemeler maskeli-şekil gösterir). */
+/** `readiness: {probe: [...], timeout: 10s, needsPort: true}` — M3, ONLY a
+ * single-line inline flow-map (N1: block-map form trips the subset-YAML level-3
+ * ban — parse error, exit 2). `probe` is a mandatory argv list
+ * (no shell); `timeout` 5s|10s|30s (default 10s); `needsPort` defaults to true
+ * and is a schema error on a portless service. Raw argv goes only to the
+ * runner, never to state (listings show the masked shape). */
 const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: number | undefined, warnings: UpWarning[]): UpReadiness | undefined => {
   if (node === undefined) return undefined
   if (typeof node !== "object" || Array.isArray(node)) {
@@ -417,7 +417,7 @@ const parseRequiredEnv = (node: YamlNode | undefined, serviceName: string): read
 
 /** Flat `trace:` block only (2nd level scalars). A non-map block, an unknown
  * key or a nested map warns and is ignored; only an invalid `port` reuses
- * the existing `geçersiz port:` hard error. */
+ * the existing `invalid port:` hard error. */
 const parseTraceBlock = (node: YamlNode | undefined, warnings: UpWarning[]): TraceConfig | undefined => {
   if (node === undefined) return undefined
   if (typeof node !== "object" || Array.isArray(node)) {
@@ -524,7 +524,7 @@ export const parseUpFile = (text: string): UpFile => {
     const logs = asString(fields["logs"] ?? undefined) ?? undefined
     if (fields["logs"] !== undefined && logs === undefined) throw new UpSchemaError(0, `${name}: logs must be text`)
     if (cmd === undefined && logs === undefined) {
-      throw new UpSchemaError(0, `${name}: cmd ya da logs gerekli`)
+      throw new UpSchemaError(0, `${name}: cmd or logs required`)
     }
     const env = parseEnvValue(fields["env"], name)
     const requiredEnv = parseRequiredEnv(fields["required-env"], name)
@@ -574,14 +574,14 @@ export const formatUpWarnings = (warnings: UpWarning[]): string[] =>
 
 /** True for subset-YAML nesting errors (the single-line inline trap:
  * block lists/sequences, 3rd-level maps, non-inline maps). Callers use
- * this to append the inline example hint; the `(satır N)` in the error
+ * this to append the inline example hint; the `(line N)` in the error
  * itself names the offending line. */
 export const isSubsetNestingError = (error: unknown): boolean => {
   if (!(error instanceof UpSchemaError)) return false
   return /block lists|level 3|inside map|inline map|nested/.test(error.message)
 }
 
-/** Single-line inline hint for the nesting trap (stderr, Turkish). The
+/** Single-line inline hint for the nesting trap (stderr, English). The
  * `readiness` shape is M3-owned; it appears here only as a second inline
  * example, never as accepted syntax. */
 export const subsetNestingHint =

@@ -1,7 +1,7 @@
-/** P2-A checkpoint konvensiyonu + salt-okunur render. Runner YAZAR
+/** P2-A checkpoint convention + read-only render. The runner WRITES
  * (`<root>/.ow/checkpoints/<run>.jsonl`, atomic tmp+rename, ≤256KB/≤500
- * satır — aşımda runner en-eskiden budar), ow YALNIZCA OKUR (budamaz,
- * yazmaz). Canlı exec YOK (probe/health/git/lsof çalıştırılmaz). */
+ * lines — on overrun the runner prunes oldest-first), ow ONLY READS (never
+ * prunes, never writes). No live exec (probe/health/git/lsof are not run). */
 
 import { readdir, readFile, stat } from "node:fs/promises"
 import { createHash } from "node:crypto"
@@ -14,7 +14,7 @@ export const CHECKPOINTS_DIR_NAME = "checkpoints"
 export const CHECKPOINT_MAX_LINES = 500
 export const CHECKPOINT_MAX_BYTES = 256 * 1024
 
-/** Run adı allowlist (path-traversal yok: `/` ve `..` reddedilir). */
+/** Run-name allowlist (no path traversal: `/` and `..` are rejected). */
 export const isValidRunName = (run: string): boolean => /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(run)
 
 export const checkpointFile = (rootDir: string, run: string): string =>
@@ -26,9 +26,9 @@ export type CheckpointRead = {
   skipped: { corrupt: number; overCap: number }
 }
 
-/** Satır-satır jsonl okuma: boş satırlar sessiz geçilir; bozuk satırlar +
- * cap-aşımı (500 satır / 256KB, hangisi önce dolarsa) `skipped` ile
- * sayılır, dosya ASLA değiştirilmez. */
+/** Line-by-line jsonl read: blank lines pass silently; corrupt lines +
+ * cap overflow (500 lines / 256KB, whichever fills first) are counted as
+ * `skipped`, the file is NEVER modified. */
 export const readCheckpointFile = async (file: string): Promise<CheckpointRead> => {
   // M-j FIFO/hang guard (partial): lstat regular-file-only upfront, then
   // O_NONBLOCK open + fstat dev/ino pin (cheap TOCTOU narrowing; the
@@ -74,22 +74,22 @@ export const readCheckpointFile = async (file: string): Promise<CheckpointRead> 
     }
     envelopes.push(normalized.envelope)
   }
-  // Cap-aşımı = cap penceresi dışında kalan DOLU satırlar (boş satırlar
-  // sayılmaz; bozuk satırlar ayrı sayılır).
+  // Cap overflow = NON-BLANK lines beyond the cap window (blank lines do not
+  // count; corrupt lines are counted separately).
   const nonBlankTotal = lines.filter((line) => line.trim().length > 0).length
   return { envelopes, totalLines, skipped: { corrupt, overCap: Math.max(0, nonBlankTotal - processed) } }
 }
 
-const STALE_TR: Record<string, string> = {
+const STALE_EN: Record<string, string> = {
   script_hash: "script_hash",
   checkout_rev: "checkout_rev",
   runtime: "runtime",
   missing_basis: "missing_basis",
 }
 
-/** M-A (#2): yan-etki Türkçe sözcüğü. Eksik (`undefined`) ≡ `unknown`
- * → `bilinmiyor` (uyarısız). Ham İngilizce enum asla render edilmez. */
-const SIDE_EFFECT_TR: Record<string, string> = {
+/** M-A (#2): side-effect word. A missing field (`undefined`) ≡ `unknown`
+ * (no warning). The rendered word is always one of the English enum values. */
+const SIDE_EFFECT_EN: Record<string, string> = {
   none: "none",
   attempted: "attempted",
   confirmed: "confirmed",
@@ -97,9 +97,9 @@ const SIDE_EFFECT_TR: Record<string, string> = {
 }
 
 const sideEffectWord = (envelope: EvidenceEnvelope): string =>
-  SIDE_EFFECT_TR[envelope.side_effect ?? "unknown"] ?? "unknown"
+  SIDE_EFFECT_EN[envelope.side_effect ?? "unknown"] ?? "unknown"
 
-/** Zarf bayrak satırı (Türkçe, yorum yok; sayımlar render-only passthrough). */
+/** Envelope flag line (English, no comments; counts are render-only passthrough). */
 export const formatSideEffectLine = (envelope: EvidenceEnvelope): string => {
   const parts = [`side-effect: ${envelope.stage} (${sideEffectWord(envelope)}`]
   const counts: string[] = []
@@ -108,12 +108,12 @@ export const formatSideEffectLine = (envelope: EvidenceEnvelope): string => {
   return counts.length > 0 ? `${parts[0]}, ${counts.join(", ")})` : `${parts[0]})`
 }
 
-/** M-A (#2): reconcile-öncesi-retry ipucu (kilitli metin; düğme/otomatik
- * eylem yok — salt-okunur öneri). */
+/** M-A (#2): pre-reconcile retry hint (locked text; no button/automatic
+ * action — a read-only suggestion). */
 export const RETRY_HINT = "before-retry: ow reconcile --check"
 
-/** Aynı stage'de `attempted` sonrası `confirmed` yoksa doğrulanmamış
- * sayılır (dosya sırası = zaman sırası). */
+/** If a stage has `attempted` with no following `confirmed` it counts as
+ * unconfirmed (file order = time order). */
 export const isAttemptedUnconfirmed = (envelopes: EvidenceEnvelope[], index: number): boolean => {
   const envelope = envelopes[index]
   if (envelope.side_effect !== "attempted") return false
@@ -123,13 +123,13 @@ export const isAttemptedUnconfirmed = (envelopes: EvidenceEnvelope[], index: num
   return true
 }
 
-/** Herhangi bir zarf doğrulanmamış-deneme taşıyorsa ipucu gerekir (tek satır). */
+/** If any envelope carries an attempted-unconfirmed, the hint is needed (one line). */
 export const needsRetryHint = (envelopes: EvidenceEnvelope[]): boolean =>
   envelopes.some((_, index) => isAttemptedUnconfirmed(envelopes, index))
 
-/** M-A (#3): koşu-adı sonek ayrıştırması (`<senaryo>-attempt<N>` /
- * `<senaryo>-deneme<N>`, N 1..999). Açık alanlar her zaman kazanır;
- * ayrıştırma yalnızca yedektir. */
+/** M-A (#3): run-name suffix parsing (`<scenario>-attempt<N>` /
+ * `<scenario>-deneme<N>`, N 1..999). Explicit fields always win; the
+ * parse is only a fallback. */
 export const parseAttemptSuffix = (run: string): { scenario: string; attempt: number } | null => {
   const match = /^(.*)-(?:attempt|deneme)(\d{1,3})$/.exec(run)
   if (!match) return null
@@ -141,8 +141,8 @@ export const parseAttemptSuffix = (run: string): { scenario: string; attempt: nu
 
 export type LineageOf = { scenario: string | null; attempt: number | null }
 
-/** Soy-çözümü (alan-bazında açık-kazanır): açık `scenario`/`attempt`
- * varsa o; yoksa koşu-adı soneği; ikisi de yoksa sahipsiz (düz, grupsuz). */
+/** Lineage resolution (explicit-wins per field): the explicit `scenario`/`attempt`
+ * if present; otherwise the run-name suffix; if neither, unattributed (flat, ungrouped). */
 export const lineageOf = (envelope: EvidenceEnvelope, run: string): LineageOf => {
   const fallback = parseAttemptSuffix(run)
   return {
@@ -164,9 +164,9 @@ const leafWords = (envelopes: EvidenceEnvelope[], index: number): string => {
   return words.join(", ")
 }
 
-/** M-A (#3): `senaryo → deneme → stage` ağacı. Sahipsiz satırlar ağaca
- * girmez (düz listede kalır — gruplama yok). Kilitli sözcükler: `senaryo`,
- * `deneme`, `doğrulanmadı` (yalnızca doğrulanmamış-deneme yaprağında). */
+/** M-A (#3): `scenario → attempt → stage` tree. Unattributed lines do not
+ * enter the tree (they stay in the flat list — no grouping). Locked words:
+ * `scenario`, `attempt`, `unconfirmed` (only on an attempted-unconfirmed leaf). */
 export const formatAttemptTree = (run: string, envelopes: EvidenceEnvelope[]): string[] => {
   const byScenario = new Map<string, { attempts: Map<number, number[]>; flat: number[] }>()
   envelopes.forEach((envelope, index) => {
@@ -199,11 +199,11 @@ export const formatAttemptTree = (run: string, envelopes: EvidenceEnvelope[]): s
   return lines
 }
 
-/** Zarf insan satırı (Türkçe, yorum yok). */
+/** Envelope human line (English, no comments). */
 export const formatEnvelopeLine = (envelope: EvidenceEnvelope): string => {
   if (envelope.status === "confirmed") return `confirmed: ${envelope.stage} (${envelope.at})`
   if (envelope.status === "not_observed") return `not-observed: ${envelope.stage}`
-  return `stale: ${envelope.stage} (reason: ${STALE_TR[envelope.stale_reason as string] ?? envelope.stale_reason})`
+  return `stale: ${envelope.stage} (reason: ${STALE_EN[envelope.stale_reason as string] ?? envelope.stale_reason})`
 }
 
 const singleLine = (text: string): string => text.replace(/[\r\n]+/g, " ")
@@ -228,8 +228,8 @@ const warnSkipped = (json: boolean, skipped: { corrupt: number; overCap: number 
   if (skipped.overCap > 0 && !json) console.error(`skipped(${skipped.overCap}): over cap (file read within 500-line/256KB limit)`)
 }
 
-/** `ow checkpoints list [--json]`: run adı + zarf sayısı + özet + son `at`.
- * Salt-okunur, dizin yoksa boş liste; exit her zaman 0. */
+/** `ow checkpoints list [--json]`: run name + envelope count + summary + last `at`.
+ * Read-only, an empty list if the directory is missing; exit is always 0. */
 export const runCheckpointsList = async (opts: { rootDir: string; json: boolean }): Promise<number> => {
   const dir = join(upPaths(opts.rootDir).stateDir, CHECKPOINTS_DIR_NAME)
   let files: string[]
@@ -269,8 +269,8 @@ export const runCheckpointsList = async (opts: { rootDir: string; json: boolean 
   return 0
 }
 
-/** `ow checkpoints show <run> [--json]`: dosya yoksa exit 1, geçersiz
- * run adı exit 2, bozuk satırlar atlanır (fail değil). */
+/** `ow checkpoints show <run> [--json]`: exit 1 if the file is missing, exit 2
+ * for an invalid run name, corrupt lines are skipped (not a failure). */
 export const runCheckpointsShow = async (opts: { rootDir: string; run: string; json: boolean }): Promise<number> => {
   if (!isValidRunName(opts.run)) {
     console.error(`ow: invalid run name: ${opts.run} (allowed: [A-Za-z0-9_.-], at most 64 characters)`)
@@ -314,7 +314,7 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
   console.log(view.last_verified ? `last confirmed: ${view.last_verified.stage} (${view.last_verified.at})` : "last confirmed: none")
   if (view.first_gap) {
     const why =
-      view.first_gap.status === "not_observed" ? "not-observed" : `stale: ${STALE_TR[view.first_gap.stale_reason as string] ?? view.first_gap.stale_reason}`
+      view.first_gap.status === "not_observed" ? "not-observed" : `stale: ${STALE_EN[view.first_gap.stale_reason as string] ?? view.first_gap.stale_reason}`
     console.log(`first missing: ${view.first_gap.stage} (${why})`)
   } else {
     console.log("first missing: none")

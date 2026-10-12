@@ -9,7 +9,7 @@
  * copies/auto-provisions env, NEVER installs tools, NEVER spawns/kills/
  * lock-breaks, NEVER writes (no checkpoint/supervisor mutation). Every
  * `note`/`missing`/`human` string passes through `maskSecrets()`. Notes
- * truncate past 200 chars + `…[kesildi]`. */
+ * truncate past 200 chars + `…[truncated]`. */
 
 import { lstat, readFile, readlink, stat } from "node:fs/promises"
 import { basename, isAbsolute, join, resolve } from "node:path"

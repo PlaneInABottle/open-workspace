@@ -201,7 +201,7 @@ describe("ow record refusals (fail-closed)", () => {
         io3.restore()
       }
       expect(io3.err.join("\n")).toContain("scenario file missing")
-      await writeFile(file, "version: 1\nscenarios:\n  - blok liste yasak\n", "utf8")
+      await writeFile(file, "version: 1\nscenarios:\n  - block list forbidden\n", "utf8")
       const io4 = capture()
       try {
         expect(await runRecord({ rootDir: root, file, runName: "cart" })).toBe(1)

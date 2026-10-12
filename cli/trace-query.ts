@@ -232,7 +232,7 @@ export const formatDur = (ms: number): string => {
   return `${Math.round((ms / 1000) * 10) / 10}s`
 }
 
-/** Delegated wording: compact Turkish recency (`4s önce`, `3dak önce`). */
+/** Delegated wording: compact recency (`4s ago`, `3m ago`). */
 export const formatAgo = (ms: number): string => {
   const seconds = Math.max(0, Math.round(ms / 1000))
   if (seconds < 60) return `${seconds}s ago`

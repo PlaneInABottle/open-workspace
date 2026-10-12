@@ -1,14 +1,15 @@
-/** P2-A evidence zarfı: saf şema + maske/cap + tazelik. ow zarfın `proof`
- * içeriğini yorumlamaz (business bilmez) — yalnızca maske/cap uygular ve
- * tazelik kuralını işletir. Runner yazar, ow okur/gösterir. Canlı exec yok. */
+/** P2-A evidence envelope: pure schema + mask/cap + freshness. ow does not
+ * interpret the envelope's `proof` content (it has no business knowledge) —
+ * it only applies mask/cap and enforces the freshness rule. The runner writes,
+ * ow reads/shows. No live exec. */
 
 import { isSecretFlagToken, maskSecretToken, PROVIDER_PREFIX_PATTERN, SECRET_WORD_PATTERN } from "./up-reconcile"
 
 export type EnvelopeStatus = "confirmed" | "not_observed" | "stale"
 export type StaleReason = "script_hash" | "checkout_rev" | "runtime" | "missing_basis"
 export type EnvelopeBy = "runner" | "ow-preflight" | "ow-reconcile" | "ow-probe"
-/** M-A (#2): yan-etki bayrağı. Eksik alan ≡ `unknown` (render
- * `bilinmiyor`, uyarısız) — telde eksik taşınır, ow tamamlamaz. */
+/** M-A (#2): side-effect flag. A missing field ≡ `unknown` (rendered as
+ * `unknown`, without warning) — it travels missing on the wire, ow does not complete it. */
 export type EnvelopeSideEffect = "none" | "attempted" | "confirmed" | "unknown"
 
 export type EvidenceEnvelope = {
@@ -22,12 +23,12 @@ export type EvidenceEnvelope = {
   code?: { runner?: string; fixture?: string; body?: string; provider_contract?: string }
   runtime?: { port?: number; cwd?: string; provenance_rev?: string }
   side_effect?: EnvelopeSideEffect
-  /** Render-only sayaçlar (ow HESAPLAMAZ — runner yazar, ow gösterir). */
+  /** Render-only counters (ow does NOT compute — the runner writes, ow shows). */
   side_effect_counts?: { attempted?: number; confirmed?: number }
-  /** M-A (#3): runner-beyanlı soy (koşu-adı sonek ayrıştırması yedektir). */
+  /** M-A (#3): runner-declared lineage (run-name suffix parsing is the fallback). */
   scenario?: string
   attempt?: number
-  /** M-A (+M-D fails-verb grup anahtarı): opak adım imzası. */
+  /** M-A (+M-D fails-verb group key): opaque step signature. */
   step_signature?: string
   /** M7 data-clock witness: opaque runner-declared object (conventional
    * keys `revField`, `freshness-ignores`; `ow` never interprets values). */
@@ -37,32 +38,32 @@ export type EvidenceEnvelope = {
 /** M7 envelope data cap (telemetry bound; over-capacity drops the field). */
 export const DATA_EVIDENCE_MAX_BYTES = 4 * 1024
 
-/** Cap'ler (üst sınırlar planda sabit; altı implementere bırakıldı — aynen alındı). */
+/** Caps (upper bounds fixed in the plan; the lower bound was left to the implementer — taken as-is). */
 export const PROOF_MAX_CHARS = 8192
 export const SAFE_NEXT_ACTION_MAX_CHARS = 512
 export const TRUNCATION_MARK = "…[truncated]"
-/** M-A cap'leri: sayaç 0..999999, senaryo 64ch (RUN_NAME_PATTERN şekli),
- * deneme 1..999, adım-imzası 128ch. */
+/** M-A caps: counter 0..999999, scenario 64ch (RUN_NAME_PATTERN shape),
+ * attempt 1..999, step signature 128ch. */
 export const SIDE_EFFECT_COUNT_MAX = 999999
 export const SCENARIO_MAX_CHARS = 64
 export const ATTEMPT_MIN = 1
 export const ATTEMPT_MAX = 999
 export const STEP_SIGNATURE_MAX_CHARS = 128
-/** M-B (#5): kod-slotu cap'i — 4 slotun her biri 1..64ch (`revField` disiplini). */
+/** M-B (#5): code-slot cap — each of the 4 slots 1..64ch (`revField` discipline). */
 export const CODE_SLOT_MAX_CHARS = 64
 
-/** Serbest metin secret-maskesi (B3 listesi, tek kaynak): önce `Bearer`
- * gövdesi (değer yandaki tokendadır), sonra boşluk-korumalı token
- * yürüyüşü — `ad=değer` (tırnaklı JSON dahil), `ad:` + sonraki değer,
- * bayrak-sonrası değer, yalın secret-kelime, sağlayıcı-öneki, uzun-hex.
- * Tüm regex'ler lineerdir (O(n²) backtracking yok). Şekilsiz `hunter2`
- * gibi çıplak değerler maskelenmez — sentinel testleri şekilli yerleştirir. */
+/** Free-text secret mask (B3 list, single source): first the `Bearer`
+ * body (the value is the adjacent token), then a whitespace-preserving
+ * token walk — `name=value` (including quoted JSON), `name:` + the next
+ * value, a post-flag value, a bare secret word, a provider prefix, long hex.
+ * All regexes are linear (no O(n²) backtracking). Shapeless bare values
+ * like `hunter2` are not masked — sentinel tests place them in a shape. */
 export const maskSecrets = (text: string): string => {
   const afterBearer = text.replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer ***")
   const looksSecretKey = (token: string): boolean =>
     SECRET_WORD_PATTERN.test(token.replace(/^["']+|["':=]+$/g, ""))
-  /** Değeri maskelerken çevreleyen tırnak/noktalamayı korur (`"hunter2",`
-   * → `"***",`; yapı bütünlüğü için). */
+  /** While masking a value, keeps the surrounding quote/punctuation (`"hunter2",`
+   * → `"***",`; for structural integrity). */
   const maskWord = (token: string): string => {
     const match = /^(\W*)(.*?)(\W*)$/.exec(token)
     if (!match || match[2].length === 0) return "***"
@@ -104,12 +105,12 @@ export const maskSecrets = (text: string): string => {
     .join("")
 }
 
-/** Cap + kesme işareti (karakter sayımı; maske ÖNCE uygulanır). */
+/** Cap + truncation mark (character count; the mask is applied FIRST). */
 export const capText = (text: string, maxChars: number): string =>
   text.length <= maxChars ? text : text.slice(0, Math.max(0, maxChars - TRUNCATION_MARK.length)) + TRUNCATION_MARK
 
-/** `proof` normalizasyonu: string aynen; object stringify→maske→cap→
- * yapıyı koruyorsa geri-parse, kesildiyse işaretli string. */
+/** `proof` normalization: a string as-is; an object stringify→mask→cap→
+ * re-parse if it preserves structure, otherwise the marked string. */
 export const normalizeProof = (proof: unknown): { ok: true; proof: unknown } | { ok: false } => {
   if (typeof proof === "string") return { ok: true, proof: capText(maskSecrets(proof), PROOF_MAX_CHARS) }
   if (typeof proof === "object" && proof !== null) {
@@ -132,15 +133,15 @@ export const normalizeProof = (proof: unknown): { ok: true; proof: unknown } | {
 const STALE_REASONS: ReadonlySet<string> = new Set(["script_hash", "checkout_rev", "runtime", "missing_basis"])
 const BY_VALUES: ReadonlySet<string> = new Set(["runner", "ow-preflight", "ow-reconcile", "ow-probe"])
 const SIDE_EFFECTS: ReadonlySet<string> = new Set(["none", "attempted", "confirmed", "unknown"])
-/** Senaryo adı şekli = koşu-adı allowlist'iyle aynı (M-A kilidi). */
+/** Scenario name shape = same as the run-name allowlist (M-A lock). */
 const SCENARIO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
 
 const isCount = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= SIDE_EFFECT_COUNT_MAX
 
-/** M-B (#5): tek kod-slotu okuma (coordinator `revField` aynası — kırp →
- * boş/64-aşkın/şekilsiz geçersiz; secret-şekilli fail-safe `***`).
- * Anahtar yoksa `{present:false}`; varsa disiplin sonucu taşınır. */
+/** M-B (#5): single code-slot read (coordinator `revField` mirror — trim →
+ * empty/over-64/shapeless is invalid; secret-shaped fails safe to `***`).
+ * With no key `{present:false}`; otherwise the discipline result is carried. */
 const readCodeSlot = (table: Record<string, unknown>, key: string): { present: boolean; value: string | undefined } => {
   if (table[key] === undefined) return { present: false, value: undefined }
   const raw = table[key]
@@ -151,9 +152,9 @@ const readCodeSlot = (table: Record<string, unknown>, key: string): { present: b
   return { present: true, value: rev }
 }
 
-/** Satır normalizasyonu: şekil-sıkı (fail-closed). `stale` geçerli
- * `stale_reason` ZORUNLU taşır; `stale_reason` başka statüde satırı bozar.
- * `code`/`runtime` ek alanları atılır (bilinen alt-alanlar alınır). */
+/** Line normalization: shape-strict (fail-closed). `stale` MUST carry a valid
+ * `stale_reason`; a `stale_reason` on any other status breaks the line.
+ * Extra `code`/`runtime` fields are dropped (known sub-fields are taken). */
 export const normalizeEnvelope = (raw: unknown): { ok: true; envelope: EvidenceEnvelope } | { ok: false } => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { ok: false }
   const dict = raw as Record<string, unknown>
@@ -186,10 +187,10 @@ export const normalizeEnvelope = (raw: unknown): { ok: true; envelope: EvidenceE
   if (dict["code"] !== undefined) {
     if (typeof dict["code"] !== "object" || dict["code"] === null || Array.isArray(dict["code"])) return { ok: false }
     const code = dict["code"] as Record<string, unknown>
-    // M-B (#5): 4 slot + legacy eşdeğer (script_hash→body,
-    // checkout_rev→runner). Aynı slot iki adla gelirse satır bozuktur
-    // (fail-closed — sessiz-kazanım/new-wins yok); present-ama-disiplinsiz
-    // (uzun/boş/şekilsiz) değer de satırı bozar.
+    // M-B (#5): 4 slots + legacy equivalents (script_hash→body,
+    // checkout_rev→runner). If the same slot arrives under both names the line
+    // is corrupt (fail-closed — no silent win/new-wins); a present-but-
+    // undisciplined (long/empty/shapeless) value also breaks the line.
     const runner = readCodeSlot(code, "runner")
     const fixture = readCodeSlot(code, "fixture")
     const body = readCodeSlot(code, "body")
@@ -226,13 +227,13 @@ export const normalizeEnvelope = (raw: unknown): { ok: true; envelope: EvidenceE
     if (Object.keys(picked).length > 0) envelope.runtime = picked
     else if (Object.keys(runtime).length > 0) return { ok: false }
   }
-  // M-A (#2): yan-etki bayrağı — geçersiz enum satırı bozar (asla zorlama).
+  // M-A (#2): side-effect flag — an invalid enum breaks the line (never coerced).
   if (dict["side_effect"] !== undefined) {
     if (typeof dict["side_effect"] !== "string" || !SIDE_EFFECTS.has(dict["side_effect"] as string)) return { ok: false }
     envelope.side_effect = dict["side_effect"] as EnvelopeSideEffect
   }
-  // M-A (#2): sayaçlar render-only'dir (ow hesaplamaz); aralık-dışı /
-  // tamsayı-dışı / şekilsiz değer satırı bozar.
+  // M-A (#2): the counters are render-only (ow does not compute them); an
+  // out-of-range / non-integer / shapeless value breaks the line.
   if (dict["side_effect_counts"] !== undefined) {
     if (typeof dict["side_effect_counts"] !== "object" || dict["side_effect_counts"] === null || Array.isArray(dict["side_effect_counts"])) {
       return { ok: false }
@@ -265,7 +266,7 @@ export const normalizeEnvelope = (raw: unknown): { ok: true; envelope: EvidenceE
       if (size <= DATA_EVIDENCE_MAX_BYTES) envelope.data = raw as Record<string, unknown>
     }
   }
-  // M-A (#3): soy — senaryo RUN_NAME_PATTERN şekli, deneme 1..999 tamsayı.
+  // M-A (#3): lineage — scenario RUN_NAME_PATTERN shape, attempt 1..999 integer.
   if (dict["scenario"] !== undefined) {
     if (typeof dict["scenario"] !== "string" || !SCENARIO_PATTERN.test(dict["scenario"] as string)) return { ok: false }
     envelope.scenario = maskSecrets(dict["scenario"] as string)
@@ -276,7 +277,7 @@ export const normalizeEnvelope = (raw: unknown): { ok: true; envelope: EvidenceE
     }
     envelope.attempt = dict["attempt"] as number
   }
-  // M-A (+M-D): adım imzası 1..128ch opak dize (maske-önce-cap).
+  // M-A (+M-D): step signature 1..128ch opaque string (mask-before-cap).
   if (dict["step_signature"] !== undefined) {
     if (typeof dict["step_signature"] !== "string" || (dict["step_signature"] as string).length === 0 || (dict["step_signature"] as string).length > STEP_SIGNATURE_MAX_CHARS) {
       return { ok: false }
@@ -306,16 +307,16 @@ const slotsOf = (envelope: EvidenceEnvelope): BasisSlots => ({
   provenance_rev: envelope.runtime?.provenance_rev,
 })
 
-/** Tazelik: baz = dosyada o stage'in dosya-sırasına göre İLK confirmed
- * zarfı. Yazılı `not_observed`/`stale` (geçerli nedenli) aynen geçer;
- * yazılı `confirmed` baza karşı alan-bazında karşılaştırılır — M-B (#5):
- * 4 kod-slotu sabit sırada (runner → fixture → body → provider_contract);
- * herhangi bir kod-slotu uyuşmazlığı enum-sabit `script_hash` bayatlatır
- * (kod-harita uyuşmazlığı; yeni `stale_reason` yok), sonra runtime;
- * `code`+`runtime` İKİSİ de yoksa `missing_basis` KAZANIR. `not_observed`
- * ow tarafından SENTEZLENMEZ (o stage'e hiç zarf yoksa satır yoktur).
- * M-A notu: `side_effect`/`side_effect_counts`/`scenario`/`attempt`/
- * `step_signature` tazeliğe ORTOGONALDIR (burada yoksayılır). */
+/** Freshness: the basis = the FIRST confirmed envelope of that stage in file
+ * order. A written `not_observed`/`stale` (with a valid reason) passes as-is;
+ * a written `confirmed` is compared field-by-field against the basis —
+ * M-B (#5): the 4 code slots in fixed order (runner → fixture → body →
+ * provider_contract); any code-slot mismatch stales it to the enum-constant
+ * `script_hash` (code-map mismatch; no new `stale_reason`), then runtime;
+ * when BOTH `code`+`runtime` are absent, `missing_basis` WINS. `not_observed`
+ * is NOT synthesized by ow (if there is no envelope for that stage, there is no line).
+ * M-A note: `side_effect`/`side_effect_counts`/`scenario`/`attempt`/
+ * `step_signature` are ORTHOGONAL to freshness (ignored here). */
 export const applyFreshness = (envelopes: EvidenceEnvelope[]): EvidenceEnvelope[] => {
   const basisByStage = new Map<string, EvidenceEnvelope>()
   for (const envelope of envelopes) {
@@ -357,8 +358,8 @@ export const newestEnvelopePerStage = (envelopes: EvidenceEnvelope[]): EvidenceE
   return [...best.values()].map((entry) => entry.envelope)
 }
 
-/** Özet + `last_verified` (dosya-sırasında SON confirmed) + `first_gap`
- * (ondan sonraki İLK non-confirmed; confirmed yoksa ilk satır). */
+/** Summary + `last_verified` (the LAST confirmed in file order) + `first_gap`
+ * (the FIRST non-confirmed after it; the first line if there is no confirmed). */
 export const summarizeFresh = (
   envelopes: EvidenceEnvelope[],
 ): { summary: FreshSummary; last_verified: EvidenceEnvelope | null; first_gap: EvidenceEnvelope | null } => {

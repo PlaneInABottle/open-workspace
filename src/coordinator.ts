@@ -1,36 +1,35 @@
 /**
- * Dashboard-only coordinator snapshot (D3: P1 ortam haritası + P2 preflight
- * + P3 checkpoint çizgisi + P4 provenance kartı + P5 senaryo matrisi).
+ * Dashboard-only coordinator snapshot (D3: P1 environment map + P2 preflight
+ * + P3 checkpoint line + P4 provenance card + P5 scenario matrix).
  *
- * Salt-okunur aggregate: kayıtlı topoloji + canlı durumdan reconcile
- * (eşleşiyor/kayık) + port preflight + runner-dosya bounded okuma
- * (frozen root, symlink-izlenmez, 256KB/500 cap, seçili-run okuma,
+ * Read-only aggregate: recorded topology + reconcile from live status
+ * (match/drift) + port preflight + runner-file bounded read
+ * (frozen root, symlink not followed, 256KB/500 cap, selected-run read,
  * fail-closed + warnings[]).
  *
- * Kaynaklar (hepsi kayıtlı dosya; canlı exec YOK, CLI davranış değişikliği
- * YOK):
- * - P3: `.ow/checkpoints/<run>.jsonl` seçili run — `?run=` adı (allowlist;
- *   boş/geçersiz/yok → en yeni İÇERİKLİ dosya + uyarı), açık istenen
- *   boş/bozuk dosya → bölüm null + tarama uyarısı (fallback yok).
- *   Zarf `at` = stage yaşı kaynağı (D2 kararı: envelope `at` +
- *   provenance `recordedAt` dışında saat yoktur).
- * - P4: `.ow/supervisor.json` spawn-kayıtları (provenance checkout rev +
- *   recordedAt = kayıtlı-rev yaşı kaynağı) + store topolojisi (beklenen) +
- *   environmentStatus (çalışan). Kaydedilmemiş rev'e "canlıda farklı"
- *   denmez — canlı checkout'u okumak git exec ister (fail-closed:
- *   "doğrulanamadı").
- * - P5: `<root>/ow.scenarios.yaml` v1 (subset-YAML aynası; argv/target
- *   ham değerleri dosyada kalır) + store topolojisi (referans kontrolü) +
- *   seçili run tazeliği (hücre hükmü).
+ * Sources (all recorded files; NO live exec, no CLI behavior change).
+ * - P3: `.ow/checkpoints/<run>.jsonl` selected run — the `?run=` name (allowlist;
+ *   empty/invalid/missing → the newest NON-EMPTY file + warning), an explicit request
+ *   for an empty/corrupt file → section null + scan warning (no fallback).
+ *   Envelope `at` = the stage-age source (D2 decision: envelope `at` +
+ *   provenance `recordedAt` are the only clocks).
+ * - P4: `.ow/supervisor.json` spawn records (provenance checkout rev +
+ *   recordedAt = the recorded-rev age source) + store topology (expected) +
+ *   environmentStatus (running). An unrecorded rev is not called
+ *   "different live" — reading the live checkout requires a git exec (fail-closed:
+ *   "unverified").
+ * - P5: `<root>/ow.scenarios.yaml` v1 (subset-YAML mirror; argv/target
+ *   raw values stay in the file) + store topology (reference check) +
+ *   selected-run freshness (cell verdict).
  *
- * Secret disiplini: tüm serbest-metin alanlar wire'a yazılmadan önce
- * maskelenir (aşağıdaki maske, cli/up-reconcile.ts + cli/up-evidence.ts
- * kurallarının node-tarafı aynasıdır — CLI bun-only olduğu için import
- * edilmez, davranış değişikliği yok); mutlak path'ler basename'e iner.
- * Zarf normalizasyonu + tazelik de aynı aynalama disiplinindedir
+ * Secret discipline: all free-text fields are masked before they are
+ * written to the wire (the mask below mirrors cli/up-reconcile.ts +
+ * cli/up-evidence.ts rules on the node side — the CLI is bun-only, so it is not
+ * imported, no behavior change); absolute paths reduce to basename.
+ * Envelope normalization + freshness follow the same mirroring discipline
  * (cli/up-evidence.ts + cli/up-checkpoints.ts).
- * Tam rev wire'da taşınır (kopyala-butonu clipboard payload'ı) ama ASLA
- * render edilmez — DOM/title/aria'da yalnızca kısa-hash (7) görünür.
+ * The full rev is carried on the wire (the copy button's clipboard payload) but is NEVER
+ * rendered — only the short hash (7) appears in DOM/title/aria.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { lstat, open, readdir, readFile, realpath } from 'node:fs/promises';
@@ -46,7 +45,7 @@ import {
   type EnvironmentStatus,
 } from './environment.js';
 
-// --- Secret maskesi (cli/up-reconcile.ts B3 listesinin aynası) -------------
+// --- Secret mask (mirror of the cli/up-reconcile.ts B3 list) ---------------
 
 const SECRET_WORD = /password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization/i;
 const PROVIDER_PREFIX = /^(ghp_|gho_|ghu_|ghs_|sk-(live|test)-|xox[bpas]-|Bearer\s|eyJ[A-Za-z0-9_-]{8,})/;
@@ -73,7 +72,7 @@ function maskSecretToken(token: string, prevIsSecretFlag: boolean): string {
   return token;
 }
 
-/** Serbest-metin secret maskesi: önce Bearer gövdesi, sonra boşluk-korumalı yürüyüş. */
+/** Free-text secret mask: first the Bearer body, then a whitespace-preserving walk. */
 export function maskSecrets(text: string): string {
   const afterBearer = text.replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer ***');
   const looksSecretKey = (token: string): boolean =>
@@ -136,7 +135,7 @@ export interface CoordinatorReconcile {
 export interface CoordinatorReadinessEntry {
   serviceId: string;
   name: string;
-  /** Kayıtlı kökün dizin adı (basename) — tam path asla wire'a girmez. */
+  /** Directory name (basename) of the recorded root — a full path never enters the wire. */
   dir: string | null;
   status: string;
   detail: string;
@@ -171,50 +170,50 @@ export type CheckpointStageStatus = 'confirmed' | 'not_observed' | 'stale';
 export interface CoordinatorCheckpointStage {
   stage: string;
   status: CheckpointStageStatus;
-  /** Ham İngilizce enum (UI Türkçe'ye eşler — §3). */
+  /** Raw English enum (the UI maps it for display — §3). */
   staleReason: string | null;
-  /** Zarf kayıt saati (stage yaşı kaynağı). */
+  /** Envelope record time (the stage-age source). */
   at: string;
-  /** M-A (#2): ham İngilizce bayrak (`null` ≡ eksik → UI `bilinmiyor`). */
+  /** M-A (#2): raw English flag (`null` ≡ missing → UI renders `unknown`). */
   sideEffect: string | null;
   sideEffectAttempted: number | null;
   sideEffectConfirmed: number | null;
-  /** M-A (#3): soy (ikisi de `null` → sahipsiz, ağaç-dışı). */
+  /** M-A (#3): lineage (both `null` → unattributed, outside the tree). */
   scenario: string | null;
   attempt: number | null;
   stepSignature: string | null;
 }
 
 export interface CoordinatorCheckpoints {
-  /** Dosya adı (path değil) — seçili run (?run= yoksa latest). */
+  /** File name (not a path) — the selected run (latest when there is no ?run=). */
   run: string;
-  /** Keşfedilen run adları (yeni→eski); ?run= seçimi buradan yapılır. */
+  /** Discovered run names (new→old); the ?run= selection comes from here. */
   runs: string[];
   stages: CoordinatorCheckpointStage[];
   summary: { confirmed: number; stale: number; notObserved: number };
   lastVerified: { stage: string; at: string } | null;
   firstGap: { stage: string; status: CheckpointStageStatus; staleReason: string | null; at: string } | null;
-  /** Salt-metin öneri (butona bağlanmaz). */
+  /** Plain-text suggestion (not wired to a button). */
   safeNextAction: string | null;
-  /** M-A (#2): doğrulanmamış-deneme varsa true → UI kilitli
-   * `tekrar-öncesi: ow reconcile --check` metnini gösterir (eylem yok). */
+  /** M-A (#2): true when there is an attempted-unconfirmed → the UI shows the
+   * locked `before-retry: ow reconcile --check` text (no action). */
   retryHint: boolean;
 }
 
 export interface CoordinatorRevision {
-  /** Ekrandaki tek temsil (7 karakter). */
+  /** The single on-screen representation (7 characters). */
   short: string;
-  /** YALNIZCA kopyala-butonu clipboard payload'ı — DOM'a yazılmaz. */
+  /** ONLY the copy button's clipboard payload — never written to the DOM. */
   full: string;
-  /** İlk görülme kayıt saati (zarf `at` / provenance `recordedAt`). */
+  /** First-seen record time (envelope `at` / provenance `recordedAt`). */
   at: string | null;
-  // NOT: `services` alanı bilerek yok — şerit etiketi kısa-hash+yaştır
-  // (§3); zarf rev'lerinin servis atfı zaten yoktu, supervisor tarafı tek
-  // ad taşıyordu (kayıp-bilgi). D3 (P5 senaryo matrisi) rev-servis
-  // eşlemesi istemez; ihtiyaç doğarsa wire'a eklenir.
-  /** En yeni rev (şeritte vurgulu). */
+  // NOTE: the `services` field is deliberately absent — the strip label is short-hash+age
+  // (§3); envelope revs never had a service attribution and the supervisor side carried a single
+  // name (lost information). D3 (P5 scenario matrix) does not need a rev-service
+  // mapping; add it to the wire if the need arises.
+  /** Newest rev (highlighted on the strip). */
   current: boolean;
-  /** Supervisor spawn-kaydıyla eşleşiyor. */
+  /** Matches the supervisor spawn record. */
   recorded: boolean;
 }
 
@@ -222,7 +221,7 @@ export interface CoordinatorExplanationEntry {
   service: string;
   expected: { cmd: string | null; dir: string | null; port: number | null } | null;
   running: { status: string; detail: string } | null;
-  /** Rev satırı asla çıplak hash değil: kısa + rozet + yaş UI'da birleşir. */
+  /** The rev line is never a bare hash: short + badge + age merge in the UI. */
   revShort: string | null;
   revFull: string | null;
   revAt: string | null;
@@ -230,8 +229,8 @@ export interface CoordinatorExplanationEntry {
   revRecorded: boolean;
   diffs: string[];
   note: string;
-  /** M-C derleme kimliği (kayıtlı haritadan indirgenmiş: maskeli-basename +
-   * kısa-8, sıralı ilk 32; tam-yol/tam-digest tele asla çıkmaz). */
+  /** M-C build identity (reduced from the recorded map: masked-basename +
+   * short-8, first 32 in order; a full path/full digest never reaches the wire). */
   artifacts: { base: string; digest: string }[];
   artifactRest: number;
 }
@@ -250,24 +249,24 @@ export interface OverlayBoundarySource {
 export interface ScenarioMatrixRow {
   name: string;
   services: string[];
-  /** Topolojide karşılığı yok (UNVERIFIED) — sarı rozetle işaretlenir. */
+  /** No counterpart in the topology (UNVERIFIED) — marked with a yellow badge. */
   unverifiedServices: string[];
-  /** YALNIZCA id + timeout: probe argv dosyada kalır, wire'a çıkmaz. */
+  /** ONLY id + timeout: the probe argv stays in the file, never reaches the wire. */
   probes: { id: string; timeout: string }[];
   checkpoints: string[];
-  /** Sütun adından hücre hükmüne (columns sırası UI'dadır). */
+  /** From the column name to the cell verdict (column order lives in the UI). */
   cells: Record<string, ScenarioVerdict>;
 }
 
 export interface CoordinatorScenarios {
-  /** Dosya adı (path değil) — köklerde hep `ow.scenarios.yaml`. */
+  /** File name (not a path) — always `ow.scenarios.yaml` in the roots. */
   file: string;
-  /** Sınır sütunları: bilinen sıra önce, bilinmeyenler alfabetik. */
+  /** Boundary columns: known order first, unknown ones alphabetical. */
   columns: string[];
   rows: ScenarioMatrixRow[];
-  /** Bölüm uyarıları (şema uyarıları + yineltiler). */
+  /** Section warnings (schema warnings + duplicates). */
   warnings: string[];
-  /** Bozuk dosya: satırlar boş + neden burada (diğer paneller sağlam). */
+  /** Corrupt file: lines empty + the reason here (the other panels stay intact). */
   error: string | null;
   /** M9 overlay source tags (additive-optional): present only when the
    * local convention applied in at least one root; absent keeps old
@@ -310,20 +309,20 @@ export interface CoordinatorReadinessGate {
 export interface CoordinatorSnapshot {
   reconcile: CoordinatorReconcile;
   readiness: CoordinatorReadinessEntry[];
-  /** Kayıt yoksa null → UI "provenance kaydı yok" gösterir. */
+  /** null when there is no record → the UI shows "no provenance record". */
   explanation: CoordinatorExplanation | null;
   preflight: CoordinatorPreflight;
-  /** Kayıt yoksa/bozuksa null → UI "checkpoint yok" gösterir. */
+  /** null when there is no/corrupt record → the UI shows "no checkpoint". */
   checkpoints: CoordinatorCheckpoints | null;
   /**
-   * Keşfedilen checkpoint run adları (yeni→eski) — checkpoints null iken
-   * bile dolu olabilir; null dalındaki çalışma seçici buradan beslenir.
-   * Salt-okunur liste, tekil `?run=` yeniden-çekmede kullanılır.
+   * Discovered checkpoint run names (new→old) — may be non-empty even while
+   * checkpoints is null; the run selector in the null branch is fed from here.
+   * Read-only list, used for a single `?run=` refetch.
    */
   runs: string[];
   /**
-   * Dosya yoksa null → UI "senaryo dosyası bağlı değil" gösterir.
-   * Bozuk dosya: error'lu nesne (hata kutusu; diğer paneller sağlam).
+   * null when the file is missing → the UI shows "no scenario file attached".
+   * Corrupt file: an object with error (error box; the other panels stay intact).
    */
   scenarios: CoordinatorScenarios | null;
   /** Readiness strip (M8, additive-optional): present only when a
@@ -340,12 +339,13 @@ export interface CoordinatorSnapshot {
   meta: CoordinatorMeta;
 }
 
-// --- Checkpoint zarf aynası (cli/up-evidence.ts + cli/up-checkpoints.ts) ----
-// Şekil-sıkı fail-closed: bozuk satır bölümü öldürmez (corrupt sayılır).
+// --- Checkpoint envelope mirror (cli/up-evidence.ts + cli/up-checkpoints.ts) --
+// Shape-strict fail-closed: a corrupt line does not kill the section (counted as corrupt).
 
 const ENVELOPE_BY = new Set(['runner', 'ow-preflight', 'ow-reconcile', 'ow-probe']);
 const STALE_REASONS = new Set(['script_hash', 'checkout_rev', 'runtime', 'missing_basis']);
 const SAFE_NEXT_ACTION_MAX = 512;
+const TRUNCATION_MARK = '…[truncated]';
 const REV_MAX_CHARS = 64;
 // M-A (#2/#3) cap'leri — CLI `cli/up-evidence.ts` kilidiyle birebir.
 const SIDE_EFFECTS = new Set(['none', 'attempted', 'confirmed', 'unknown']);
@@ -362,12 +362,12 @@ export interface ParsedCheckpointEnvelope {
   safeNextAction: string | null;
   at: string;
   /**
-   * M-B (#5) kod-haritası: wire anahtarları SABİT (`checkoutRev` = runner
-   * slotu, `scriptHash` = body slotu; legacy `checkout_rev`/`script_hash`
-   * okumada buraya eşlenir, telde asla yazılmaz). Yeni slotlar `fixture` +
-   * `providerContract`. Dördü de tanımsız + runtime tanımsız →
-   * `missing_basis`; herhangi bir kod-slotu uyuşmazlığı `script_hash`
-   * bayatlatır (kod-harita uyuşmazlığı; enum sabit).
+   * M-B (#5) code map: wire keys are FIXED (`checkoutRev` = runner
+   * slot, `scriptHash` = body slot; legacy `checkout_rev`/`script_hash`
+   * map here on read, never written on the wire). New slots `fixture` +
+   * `providerContract`. All four undefined + runtime undefined →
+   * `missing_basis`; any code-slot mismatch stales to `script_hash`
+   * (code-map mismatch; enum constant).
    */
   checkoutRev?: string;
   scriptHash?: string;
@@ -375,18 +375,18 @@ export interface ParsedCheckpointEnvelope {
   providerContract?: string;
   port?: number;
   /**
-   * Tam çözümlenmiş cwd — YALNIZCA tazelik karşılaştırması için iç slot
-   * (CLI `slotsOf` aynası: cwd tam-yoldan karşılaştırılır). Wire'a/çıktıya
-   * çıkmaz (basename indirgemesi bile yok — cwd P3/P4'te render edilmez).
+   * Fully resolved cwd — an inner slot ONLY for the freshness comparison
+   * (CLI `slotsOf` mirror: cwd is compared by full path). Never reaches the wire/output
+   * (not even basename reduction — cwd is not rendered in P3/P4).
    */
   cwdFull?: string;
   provenanceRev?: string;
   /**
-   * M-A (#2/#3) tel aynası (CLI `cli/up-evidence.ts` kilidiyle birebir):
+   * M-A (#2/#3) wire mirror (identical to the CLI `cli/up-evidence.ts` lock):
    * `side_effect`→`sideEffect`, `side_effect_counts`→`sideEffectCounts`,
    * `scenario`→`scenario`, `attempt`→`attempt`,
-   * `step_signature`→`stepSignature`. Eksik `side_effect` wire'da `null`
-   * taşınır (render `bilinmiyor`). Tazelik bu alanları yoksayar (ortogonal).
+   * `step_signature`→`stepSignature`. A missing `side_effect` is carried as
+   * `null` on the wire (renders as `unknown`). Freshness ignores these fields (orthogonal).
    */
   sideEffect: string | null;
   sideEffectCounts: { attempted?: number; confirmed?: number } | null;
@@ -399,17 +399,17 @@ function revField(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const rev = value.trim();
   if (rev.length === 0 || rev.length > REV_MAX_CHARS) return undefined;
-  // Secret-şekilli rev fail-safe maskelenir (***) — örn. token=hunter2-….
-  // Meşru şekiller (hex SHA incl. 40-hex, kısa id, dal adı) aynen geçer:
-  // uzun-hex kuralı uygulanmaz (40-hex SHA birincil meşru şekildir —
-  // maskSecrets'in 32+hex kuralı burada geçersizdir). Gerçek üreticiler
-  // yalnızca hex yazar (up-provenance gitCheckout: /^[0-9a-fA-F]{4,64}$/);
-  // CLI fixture-id'leri ("rev1", "abc123") secret-kelime içermez.
+  // A secret-shaped rev fails safe to masked (***) — e.g. token=hunter2-….
+  // Legitimate shapes (hex SHA incl. 40-hex, short id, branch name) pass as-is:
+  // the long-hex rule does not apply (a 40-hex SHA is the primary legitimate shape —
+  // maskSecrets' 32+hex rule is invalid here). Real producers
+  // write only hex (up-provenance gitCheckout: /^[0-9a-fA-F]{4,64}$/);
+  // CLI fixture ids ("rev1", "abc123") contain no secret word.
   if (SECRET_WORD.test(rev) || PROVIDER_PREFIX.test(rev)) return '***';
   return rev;
 }
 
-/** Saf zarf normalizasyonu (testler hostile fixture'ı buradan sokar). */
+/** Pure envelope normalization (tests inject hostile fixtures through here). */
 export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope: ParsedCheckpointEnvelope } | { ok: false } {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false };
   const dict = raw as Record<string, unknown>;
@@ -438,16 +438,16 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
   };
   if (typeof dict['safe_next_action'] === 'string') {
     const text = maskSecrets(dict['safe_next_action'] as string);
-    envelope.safeNextAction = text.length <= SAFE_NEXT_ACTION_MAX ? text : `${text.slice(0, SAFE_NEXT_ACTION_MAX - '…[kesildi]'.length)}…[kesildi]`;
+    envelope.safeNextAction = text.length <= SAFE_NEXT_ACTION_MAX ? text : `${text.slice(0, SAFE_NEXT_ACTION_MAX - TRUNCATION_MARK.length)}${TRUNCATION_MARK}`;
   } else if (dict['safe_next_action'] !== undefined) {
     return { ok: false };
   }
   if (dict['code'] !== undefined) {
     if (typeof dict['code'] !== 'object' || dict['code'] === null || Array.isArray(dict['code'])) return { ok: false };
     const code = dict['code'] as Record<string, unknown>;
-    // M-B (#5): 4 slot + legacy eşdeğer (CLI `cli/up-evidence.ts` kilidiyle
-    // birebir: script_hash→body, checkout_rev→runner; aynı slot iki adla
-    // gelirse satır bozuktur; present-ama-disiplinsiz değer satırı bozar).
+    // M-B (#5): 4 slots + legacy equivalent (identical to the CLI
+    // `cli/up-evidence.ts` lock: script_hash→body, checkout_rev→runner; if the same slot
+    // arrives under both names the line is corrupt; a present-but-undisciplined value breaks the line).
     const slot = (key: string): { present: boolean; value: string | undefined } => {
       const raw = code[key];
       if (raw === undefined) return { present: false, value: undefined };
@@ -488,13 +488,13 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
     if (provenanceRev !== undefined) { envelope.provenanceRev = provenanceRev; known += 1; }
     if (known === 0 && Object.keys(runtime).length > 0) return { ok: false };
   }
-  // M-A (#2): yan-etki bayrağı — geçersiz enum satırı bozar (asla zorlama).
+  // M-A (#2): side-effect flag — an invalid enum breaks the line (never coerced).
   if (dict['side_effect'] !== undefined) {
     if (typeof dict['side_effect'] !== 'string' || !SIDE_EFFECTS.has(dict['side_effect'] as string)) return { ok: false };
     envelope.sideEffect = dict['side_effect'] as string;
   }
-  // M-A (#2): sayaçlar render-only'dir (ow hesaplamaz); aralık-dışı /
-  // tamsayı-dışı / şekilsiz değer satırı bozar.
+  // M-A (#2): the counters are render-only (ow does not compute them); an
+  // out-of-range / non-integer / shapeless value breaks the line.
   if (dict['side_effect_counts'] !== undefined) {
     const counts = dict['side_effect_counts'];
     if (typeof counts !== 'object' || counts === null || Array.isArray(counts)) return { ok: false };
@@ -511,7 +511,7 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
     if (Object.keys(picked).length > 0) envelope.sideEffectCounts = picked;
     else if (Object.keys(table).length > 0) return { ok: false };
   }
-  // M-A (#3): soy — senaryo RUN_NAME_PATTERN şekli, deneme 1..999 tamsayı.
+  // M-A (#3): lineage — scenario RUN_NAME_PATTERN shape, attempt 1..999 integer.
   if (dict['scenario'] !== undefined) {
     if (typeof dict['scenario'] !== 'string' || !SCENARIO_PATTERN.test(dict['scenario'] as string)) return { ok: false };
     envelope.scenario = maskSecrets(dict['scenario'] as string);
@@ -522,23 +522,23 @@ export function normalizeCheckpointEnvelope(raw: unknown): { ok: true; envelope:
     }
     envelope.attempt = dict['attempt'] as number;
   }
-  // M-A (+M-D): adım imzası 1..128ch opak dize (maske-önce-cap).
+  // M-A (+M-D): step signature 1..128ch opaque string (mask-before-cap).
   if (dict['step_signature'] !== undefined) {
     if (typeof dict['step_signature'] !== 'string' || (dict['step_signature'] as string).length === 0 || (dict['step_signature'] as string).length > STEP_SIGNATURE_MAX) {
       return { ok: false };
     }
     const masked = maskSecrets(dict['step_signature'] as string);
-    envelope.stepSignature = masked.length <= STEP_SIGNATURE_MAX ? masked : `${masked.slice(0, STEP_SIGNATURE_MAX - '…[kesildi]'.length)}…[kesildi]`;
+    envelope.stepSignature = masked.length <= STEP_SIGNATURE_MAX ? masked : `${masked.slice(0, STEP_SIGNATURE_MAX - TRUNCATION_MARK.length)}${TRUNCATION_MARK}`;
   }
   return { ok: true, envelope };
 }
 
 function applyCheckpointFreshness(envelopes: ParsedCheckpointEnvelope[]): ParsedCheckpointEnvelope[] {
   // M-A notu: sideEffect/sideEffectCounts/scenario/attempt/stepSignature
-  // tazeliğe ortogonaldir (burada yoksayılır — CLI `applyFreshness` aynası).
-  // M-B (#5): 4 kod-slotu sabit sırada (runner → fixture → body →
-  // provider_contract); herhangi bir kod-slotu uyuşmazlığı enum-sabit
-  // `script_hash` bayatlatır (kod-harita uyuşmazlığı).
+  // is orthogonal to freshness (ignored here — CLI `applyFreshness` mirror).
+  // M-B (#5): the 4 code slots in fixed order (runner → fixture → body →
+  // provider_contract); any code-slot mismatch stales to the enum-constant
+  // `script_hash` (code-map mismatch).
   const basisByStage = new Map<string, ParsedCheckpointEnvelope>();
   for (const envelope of envelopes) {
     if (envelope.status === 'confirmed' && !basisByStage.has(envelope.stage)) basisByStage.set(envelope.stage, envelope);
@@ -562,7 +562,7 @@ function applyCheckpointFreshness(envelopes: ParsedCheckpointEnvelope[]): Parsed
 export interface CheckpointSource {
   run: string;
   envelopes: ParsedCheckpointEnvelope[];
-  /** Keşfedilen run adları (yeni→eski, ≤50). */
+  /** Discovered run names (new→old, ≤50). */
   runs: string[];
 }
 
@@ -575,24 +575,24 @@ export interface SupervisorProvenanceRecord {
   exitCode?: number;
    /** Basename of the reading root (`readSupervisorRecords` fills it; full path never reaches the wire). */
   rootBase?: string;
-  /** M-C probe-beyanlı derleme kimliği (durum-dosyasından ham basename →
-   * tam-digest; tele indirgenmiş taşınır). */
+  /** M-C probe-declared build identity (raw basename → full digest from the
+   * state file; carried reduced on the wire). */
   artifactDigests?: Record<string, string>;
-  // NOT: `cwdBase`/`lastReadiness` bilerek yok — P4 beklenen/çalışan
-  // environmentStatus + spawn rev'inden kurulur; supervisor cwd'si ve
-  // lastReadiness kaydı render edilmez. D3 (P5 + a11y) ikisini de istemez
-  // (§5-D3); cwd-diff gösterimi doğarsa tam-yol iç-slot + basename-çıktı
-  // çiftiyle birlikte eklenir.
+  // NOTE: `cwdBase`/`lastReadiness` are deliberately absent — P4 expected/running
+  // environmentStatus + the spawn rev; the supervisor cwd and the
+  // the lastReadiness record is not rendered. D3 (P5 + a11y) wants neither
+  // (§5-D3); if cwd-diff display arises, add it as a full-path inner slot + basename-output
+  // pair together.
 }
 
 export function shortRev(full: string): string {
   return full.slice(0, 7);
 }
 
-// --- Senaryo aynası (cli/up-scenarios.ts v1 + cli/up-schema.ts subset) ----
-// CLI bun-only olduğu için import edilmez; davranış aynasıdır.
-// Wire'a argv ASLA çıkmaz (CLI maskeli-şekli bile taşımayız — matris
-// yalnızca id sayar); targets/checkpoints adları maskeden geçer.
+// --- Scenario mirror (cli/up-scenarios.ts v1 + cli/up-schema.ts subset) ----
+// The CLI is bun-only, so it is not imported; this is a behavior mirror.
+// argv NEVER reaches the wire (we do not even carry the CLI masked shape — the matrix
+// only counts ids); targets/checkpoints names go through the mask.
 
 export const SCENARIOS_FILE_NAME = 'ow.scenarios.yaml';
 const SCENARIOS_VERSION = '1';
@@ -687,7 +687,7 @@ function yamlStripComment(line: string): string {
   return line;
 }
 
-/** Üst-düzey virgül bölmesi: `[]`/`{}` derinliği + tırnak farkındalığı (CLI aynası). */
+/** Top-level comma split: `[]`/`{}` depth + quote awareness (CLI mirror). */
 function yamlSplitTopLevel(inner: string): string[] {
   const parts: string[] = [];
   let current = '';
@@ -792,9 +792,9 @@ export interface ParsedScenario {
 }
 
 /**
- * Saf v1 senaryo normalizasyonu: şekil-sıkı fail-closed (hata fırlatır —
- * çağıran `error` kutusuna çevirir). Uyarılar warn-only listede döner.
- * argv/target ham DEĞERLERİ düşer (id/timeout/ad listeleri kalır).
+ * Pure v1 scenario normalization: shape-strict fail-closed (throws —
+ * the caller turns it into the `error` box). Warnings return in a warn-only list.
+ * argv/target raw VALUES drop (id/timeout/name lists remain).
  */
 export function normalizeScenarios(text: string): { scenarios: ParsedScenario[]; warnings: string[] } {
   const fileWarnings: string[] = [];
@@ -955,7 +955,7 @@ function buildScenarios(
   overlay?: { applied: boolean; file: string | null; sources: OverlayBoundarySource[]; error: string | null },
 ): CoordinatorScenarios {
   const knownServices = new Set(record.services.map(service => service.name ?? service.id));
-  // Sütunlar: bilinen sıra önce, bilinmeyenler alfabetik (≤16).
+  // Columns: known order first, unknown ones alphabetical (≤16).
   const seenColumns = new Set<string>();
   for (const scenario of parsed) {
     for (const boundary of scenario.boundaries) seenColumns.add(boundary);
@@ -966,14 +966,14 @@ function buildScenarios(
   ];
   const warnings = [...fileWarnings];
   if (columns.length > SCENARIO_MAX_COLUMNS) {
-    warnings.push(`sütun kırpıldı (${SCENARIO_MAX_COLUMNS} sınır) — matris ilk sütunlarla sınırlı`);
+    warnings.push(`column truncated (${SCENARIO_MAX_COLUMNS} limit) — matrix limited to the first columns`);
   }
   const shownRaw = columns.slice(0, SCENARIO_MAX_COLUMNS);
-  // Wire anahtarları maskeli (ham sınır adları kullanıcı verisidir);
-  // bilinen adlar maskeden aynen geçer, eşleşme ham değerle yapılır.
+  // Wire keys are masked (raw boundary names are user data);
+  // known names pass the mask as-is, matching is done against the raw value.
   const shownColumns = shownRaw.map(column => maskSecrets(column));
-  // Hüküm tabanı: seçili run'daki zarf tazeliği (son kayıt kazanır).
-  // Checkpoint görünümü yoksa kapsanan hücre "atlandı" düşer (kayıt yok).
+  // Verdict basis: envelope freshness in the selected run (the last record wins).
+  // Without a checkpoint view the covered cell drops to "skipped" (no record).
   const stageStatus = new Map<string, CheckpointStageStatus>();
   if (checkpoint) {
     const fresh = applyCheckpointFreshness(checkpoint.envelopes);
@@ -1025,11 +1025,11 @@ function buildScenarios(
   };
 }
 
-// --- Saf çekirdek (I/O yok; testler hostile fixture enjekte eder) -------------
+// --- Pure core (no I/O; tests inject hostile fixtures) ---------------------
 
 function expectedDescriptor(service: EnvironmentRecord['services'][number]): string {
-  const script = service.scriptName || '(komut yok)';
-  const port = typeof service.port === 'number' ? `${service.port} portu` : 'portsuz';
+  const script = service.scriptName || '(no command)';
+  const port = typeof service.port === 'number' ? `${service.port} port` : 'portless';
   return `${script} · ${port}`;
 }
 
@@ -1060,8 +1060,8 @@ function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoin
   for (const envelope of fresh) {
     if (envelope.status === 'confirmed') lastVerified = { stage: maskSecrets(envelope.stage), at: envelope.at };
   }
-  // first_gap = son confirmed sonrasındaki İLK non-confirmed (confirmed
-  // yoksa ilk satır) — cli/summarizeFresh aynası.
+  // first_gap = the FIRST non-confirmed after the last confirmed (the first line
+  // if there is no confirmed) — cli/summarizeFresh mirror.
   let lastIndex = -1;
   for (let i = 0; i < fresh.length; i += 1) {
     if (fresh[i].status === 'confirmed') lastIndex = i;
@@ -1071,8 +1071,8 @@ function buildCheckpoints(source: CheckpointSource | null): CoordinatorCheckpoin
     ? { stage: maskSecrets(firstGapRaw.stage), status: firstGapRaw.status, staleReason: firstGapRaw.staleReason, at: firstGapRaw.at }
     : null;
   const actionSource = firstGapRaw ?? fresh[fresh.length - 1];
-  // M-A (#2): doğrulanmamış-deneme kuralı (CLI `needsRetryHint` aynası:
-  // aynı stage'de attempted sonrası confirmed yoksa ipucu).
+  // M-A (#2): attempted-unconfirmed rule (CLI `needsRetryHint` mirror:
+  // a hint when a stage has attempted with no following confirmed).
   let retryHint = false;
   for (let i = 0; i < fresh.length && !retryHint; i += 1) {
     if (fresh[i].sideEffect !== 'attempted') continue;
@@ -1097,9 +1097,9 @@ function buildExplanation(
   supervisor: SupervisorProvenanceRecord[] | null,
 ): CoordinatorExplanation | null {
   const records = supervisor ?? [];
-  // Zarf rev'leri: yalnızca ilk-görülme `at` izlenir (şerit yaşı). Servis
-  // atfı zarfta yoktur — stages/servis kümesi taşınmaz (prune: D3
-  // istemez, wire'da karşılığı yok).
+  // Envelope revs: only the first-seen `at` is tracked (strip age). There is no
+  // service attribution in the envelope — stages/service set is not carried (prune: D3
+  // does not want it, no counterpart on the wire).
   const envelopeRevs = new Map<string, string>();
   if (checkpoint) {
     for (const envelope of checkpoint.envelopes) {
@@ -1131,7 +1131,7 @@ function buildExplanation(
     const live = (storeService ? byId.get(storeService.id) : undefined) ?? byName.get(name);
     const expected = storeService
       ? {
-        cmd: maskSecrets(storeService.scriptName || '(komut yok)'),
+        cmd: maskSecrets(storeService.scriptName || '(no command)'),
         dir: basename(resolve(storeService.repositoryPath)),
         port: typeof storeService.port === 'number' ? storeService.port : null,
       }
@@ -1139,34 +1139,34 @@ function buildExplanation(
     const running = live ? { status: live.status, detail: maskSecrets(live.detail) } : null;
     const diffs: string[] = [];
     if (rec === undefined) {
-      // Kayıt yok — diff üretilemez, note kapsar.
+      // No record — no diff can be produced, the note covers it.
     } else {
       if (expected === null) {
-        diffs.push(maskSecrets('tanımda yok — kayıtlı topolojide karşılığı yok'));
+        diffs.push(maskSecrets('not in definition — no counterpart in the recorded topology'));
       } else if (typeof rec.port === 'number' && typeof expected.port === 'number' && rec.port !== expected.port) {
-        diffs.push(maskSecrets(`port değişti (beklenen: ${expected.port}, çalışan: ${rec.port})`));
+        diffs.push(maskSecrets(`port changed (expected: ${expected.port}, running: ${rec.port})`));
       }
-      if (rec.exitCode !== undefined) diffs.push(maskSecrets(`süreç bitti (çıkış kodu ${rec.exitCode})`));
-      if (rec.dirty === true) diffs.push(maskSecrets('kirli checkout ile başlatıldı'));
+      if (rec.exitCode !== undefined) diffs.push(maskSecrets(`process exited (exit code ${rec.exitCode})`));
+      if (rec.dirty === true) diffs.push(maskSecrets('started with a dirty checkout'));
     }
     let note: string;
-    if (rec === undefined) note = 'kayıt yok — bu servis için provenance kaydı bulunamadı';
-    else if (running === null) note = 'ölçülmedi — canlı durum kaydı yok';
-    else if (rec.exitCode !== undefined) note = `çalışmıyor — çıkış kodu ${rec.exitCode}; günlük için asistanına danış`;
-    else if (running.status === 'starting') note = 'başlatılıyor — Yenile ile tazele';
-    else if (running.status === 'stale') note = 'bayat — Yenile ile tazele';
-    else if (running.status === 'ready') note = 'çalışıyor, bilinen sorun yok';
-    else note = `canlı durum ${running.status} — diff satırlarına bak`;
+    if (rec === undefined) note = 'no record — no provenance record found for this service';
+    else if (running === null) note = 'unmeasured — no live status record';
+    else if (rec.exitCode !== undefined) note = `not running — exit code ${rec.exitCode}; check the logs with your assistant`;
+    else if (running.status === 'starting') note = 'starting — refresh with Refresh';
+    else if (running.status === 'stale') note = 'stale — refresh with Refresh';
+    else if (running.status === 'ready') note = 'running, no known issues';
+    else note = `live status ${running.status} — see the diff lines`;
     const rev = rec?.rev;
-    // M-C: kayıtlı derleme haritası indirgenmiş taşınır (basename + kısa-8).
+    // M-C: the recorded build map is carried reduced (basename + short-8).
     const reduced = reduceArtifactMap(rec?.artifactDigests);
     return {
       service: maskSecrets(name),
       expected,
       running,
       revShort: rev !== undefined ? shortRev(rev) : null,
-      // Tam rev yalnızca kopyala-butonu clipboard payload'ıdır — DOM'a
-      // yazılmaz (hover-title bile yok; tara-test §3).
+      // The full rev is only the copy button's clipboard payload — it is not
+      // written to the DOM (not even a hover title; scan-test §3).
       revFull: rev ?? null,
       revAt: rec?.recordedAt ?? null,
       revDirty: rec?.dirty === true,
@@ -1178,8 +1178,8 @@ function buildExplanation(
     };
   });
 
-  // Rev şeridi: supervisor kayıtlı-rev'leri (recordedAt yaşlı) + zarflardaki
-  // kayıtsız rev'ler (ilk-görülme `at` yaşlı, soluk). En yeni seçili.
+  // Rev strip: supervisor recorded revs (recordedAt-aged) + unrecorded revs
+  // from envelopes (first-seen `at`-aged, dim). The newest is selected.
   const revisions: CoordinatorRevision[] = [];
   const seen = new Set<string>();
   for (const rec of records) {
@@ -1229,7 +1229,7 @@ function buildScenariosSection(
       columns: [],
       rows: [],
       warnings: [],
-      error: read.error ?? 'kayıt yok',
+      error: read.error ?? 'no record',
       ...(read.overlayApplied === true || read.overlayError != null
         ? { overlayApplied: read.overlayApplied === true, overlayFile: read.overlayFile ?? null, boundarySources: read.boundarySources ?? [], overlayError: read.overlayError ?? null }
         : {}),
@@ -1246,19 +1246,19 @@ function buildScenariosSection(
 export function buildCoordinatorSnapshot(input: {
   record: EnvironmentRecord;
   status: EnvironmentStatus;
-  /** Port → dolu mu (ölçülemeyen portlar haritada yok sayılır + warning). */
+  /** Port → busy? (unmeasured ports are ignored in the map + warning). */
   portOccupied: Map<number, boolean>;
-  /** Dolu port → önerilen boş port (yoksa null). */
+  /** Busy port → suggested free port (null if none). */
   freeSuggestion: Map<number, number | null>;
-  /** §0.3 dosya okuma sepeti (zaten Türkçe, yine de maskeden geçer). */
+  /** §0.3 file-read basket (already localized text, still goes through the mask). */
   checkpointWarnings: string[];
-  /** Latest-run checkpoint kaynağı (null → bölüm `null` + "checkpoint yok"). */
+  /** Latest-run checkpoint source (null → section `null` + "no checkpoint"). */
   checkpoint?: CheckpointSource | null;
-  /** Supervisor spawn-kayıtları (ad ile eşleşir; null/boş → kayıt yok). */
+  /** Supervisor spawn records (matched by name; null/empty → no record). */
   supervisor?: SupervisorProvenanceRecord[] | null;
-  /** Senaryo okuma sonucu (null → dosya yok; error → bozuk-dosya kutusu). */
+  /** Scenario read result (null → file missing; error → corrupt-file box). */
   scenarioRead?: { scenarios: ParsedScenario[] | null; error: string | null; warnings: string[]; overlayApplied?: boolean; overlayFile?: string | null; boundarySources?: OverlayBoundarySource[]; overlayError?: string | null } | null;
-  /** Keşfedilen run adları — checkpoints null iken bile wire'a çıkar. */
+  /** Discovered run names — they reach the wire even while checkpoints is null. */
   runs?: string[];
   /** serviceId → {rootBase, revShort} identity (additive-optional).
    * When absent, readiness entries carry no `worktree` field at all
@@ -1274,7 +1274,7 @@ export function buildCoordinatorSnapshot(input: {
 }): CoordinatorSnapshot {
   const warnings = input.checkpointWarnings.map(warning => maskSecrets(warning));
   for (const port of input.unprobedPorts ?? []) {
-    warnings.push(`port yoklaması ölçülemedi: ${port} — preflight bu portu boş sayar`);
+    warnings.push(`port probe unmeasured: ${port} — preflight counts this port as free`);
   }
   // Ledger warnings arrive masked from their builders; the push site does
   // not re-mask (single mask point per string, like readiness above).
@@ -1282,8 +1282,8 @@ export function buildCoordinatorSnapshot(input: {
   const byId = new Map(input.status.services.map(entry => [entry.serviceId, entry]));
   const topologyIds = new Set(input.record.services.map(service => service.id));
 
-  // Reconcile: ortam kapalıysa (down) duran servisler beklenen durumdur;
-  // kısmi/açık ortamda down/failed/stale/skipped her servis kayık satırıdır.
+  // Reconcile: when the environment is down, stopped services are the expected state;
+  // in a partial/up environment every down/failed/stale/skipped service is a drift line.
   const drifts: CoordinatorDrift[] = [];
   const stopped = input.record.state === 'down';
   for (const service of input.record.services) {
@@ -1291,9 +1291,9 @@ export function buildCoordinatorSnapshot(input: {
     if (!entry) {
       drifts.push({
         service: maskSecrets(service.name ?? service.id),
-        field: 'durum',
+        field: 'status',
         expected: maskSecrets(expectedDescriptor(service)),
-        actual: maskSecrets('ölçülmedi'),
+        actual: maskSecrets('unmeasured'),
       });
       continue;
     }
@@ -1301,8 +1301,8 @@ export function buildCoordinatorSnapshot(input: {
     if (entry.status === 'ready' || entry.status === 'starting') continue;
     drifts.push({
       service: maskSecrets(entry.name),
-      field: 'durum',
-      expected: maskSecrets(`çalışıyor (${expectedDescriptor(service)})`),
+      field: 'status',
+      expected: maskSecrets(`running (${expectedDescriptor(service)})`),
       actual: maskSecrets(`${entry.status}: ${entry.detail}`),
     });
   }
@@ -1311,8 +1311,8 @@ export function buildCoordinatorSnapshot(input: {
     drifts.push({
       service: maskSecrets(entry.name),
       field: 'topoloji',
-      expected: maskSecrets('kayıtlı topoloji'),
-      actual: maskSecrets('kayıt dışı süreç izleniyor — topolojide karşılığı yok'),
+      expected: maskSecrets('recorded topology'),
+      actual: maskSecrets('unrecorded process tracked — no counterpart in the topology'),
     });
   }
 
@@ -1337,22 +1337,22 @@ export function buildCoordinatorSnapshot(input: {
   for (const service of input.record.services) {
     const label = maskSecrets(service.name ?? service.id);
     if (typeof service.port !== 'number') {
-      gates.push({ service: label, port: null, free: true, note: 'port yok — süreç izlemesi' });
+      gates.push({ service: label, port: null, free: true, note: 'no port — process tracking' });
       continue;
     }
     if (!input.portOccupied.has(service.port)) {
-      gates.push({ service: label, port: service.port, free: true, note: 'ölçülemedi — boş sayıldı' });
+      gates.push({ service: label, port: service.port, free: true, note: 'unmeasured — counted as free' });
       continue;
     }
     if (!input.portOccupied.get(service.port)) {
-      gates.push({ service: label, port: service.port, free: true, note: `${service.port} portu boş` });
+      gates.push({ service: label, port: service.port, free: true, note: `${service.port} port is free` });
       continue;
     }
     const suggestion = input.freeSuggestion.get(service.port) ?? null;
     const line = suggestion === null
-      ? `${label}: ${service.port} portu dolu`
-      : `${label}: ${service.port} portu dolu (${suggestion} boş görünüyor — topolojiyi değiştir, otomatik yeniden bağlama yok)`;
-    gates.push({ service: label, port: service.port, free: false, note: maskSecrets(`${service.port} portu dolu`) });
+      ? `${label}: ${service.port} port is busy`
+      : `${label}: ${service.port} port is busy (${suggestion} looks free — change the topology, no automatic rebinding)`;
+    gates.push({ service: label, port: service.port, free: false, note: maskSecrets(`${service.port} port is busy`) });
     missing.push(maskSecrets(line));
   }
 
@@ -1377,7 +1377,7 @@ export function buildCoordinatorSnapshot(input: {
   };
 }
 
-// --- Runner-dosya okuma sınırı (§0.3) ------------------------------------------
+// --- Runner-file read boundary (§0.3) ---------------------------------------
 
 export const CHECKPOINT_MAX_BYTES = 256 * 1024;
 export const CHECKPOINT_MAX_LINES = 500;
@@ -1385,17 +1385,17 @@ const CHECKPOINT_MAX_RUNS = 50;
 const runFilePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.jsonl$/;
 
 /**
- * `.ow/checkpoints` bounded okuma: seçili run'un zarfları (normalize
- * edilmiş) + keşfedilen run adları + warnings[] sepeti (kırpma/bozuk/
- * symlink/okunamadı/boş). `runs` listesi source null iken bile döner —
- * null dalındaki seçici buradan beslenir. Seçim: `?run=` adı
- * (allowlist-dışı/yoksa latest + uyarı) yoksa en yeni İÇERİKLİ dosya;
- * D1 uyarı metinleri aynen korunur. Kök dışına çıkış, symlink ve aşırı
- * dosya fail-closed atlanır.
+ * `.ow/checkpoints` bounded read: the selected run's envelopes (normalized)
+ * + discovered run names + warnings[] basket (truncation/corrupt/
+ * symlink/unreadable/empty). The `runs` list is returned even when source is null —
+ * the selector in the null branch is fed from here. Selection: the `?run=` name
+ * (off-allowlist/missing → latest + warning), otherwise the newest NON-EMPTY file;
+ * D1 warning texts are preserved as-is. Escaping the root, symlinks and an
+ * oversized file are skipped fail-closed.
  */
 export async function readCheckpointSource(roots: string[], requestedRun?: string): Promise<{
   source: CheckpointSource | null;
-  /** Keşfedilen run adları — source null iken bile dolu olabilir (seçici). */
+  /** Discovered run names — may be non-empty even while source is null (selector). */
   runs: string[];
   warnings: string[];
 }> {
@@ -1426,7 +1426,7 @@ export async function readCheckpointSource(roots: string[], requestedRun?: strin
         continue;
       }
       if (!entry.isFile() || entry.isSymbolicLink()) {
-        if (entry.isSymbolicLink()) warnings.push(`checkpoint atlandı (symlink izlenmez): ${name}`);
+        if (entry.isSymbolicLink()) warnings.push(`checkpoint skipped (symlink not followed): ${name}`);
         continue;
       }
       const run = name.replace(/\.jsonl$/, '');
@@ -1443,11 +1443,11 @@ export async function readCheckpointSource(roots: string[], requestedRun?: strin
     .sort((a, b) => b[1].mtimeMs - a[1].mtimeMs)
     .map(([run]) => run);
   if (runs.length > CHECKPOINT_MAX_RUNS) {
-    warnings.push(`çalışma listesi kırpıldı (${CHECKPOINT_MAX_RUNS} ad) — en yeniler listelenir`);
+    warnings.push(`run list truncated (${CHECKPOINT_MAX_RUNS} names) — the newest are listed`);
   }
   const trimmedRuns = runs.slice(0, CHECKPOINT_MAX_RUNS);
   if (perRoot.length === 0) return { source: null, runs: trimmedRuns, warnings };
-  // Uyarı sepeti her kökün latest'inden (D1 disiplini).
+  // The warning basket comes from each root's latest (D1 discipline).
   const scanned = new Map<string, ParsedCheckpointEnvelope[]>();
   for (const candidate of perRoot) {
     if (!scanned.has(candidate.path)) {
@@ -1461,16 +1461,16 @@ export async function readCheckpointSource(roots: string[], requestedRun?: strin
     scanned.set(path, parsed);
     return parsed;
   };
-  // Açık istek: allowlist-dışı ad latest'e düşer + uyarı; bulunan dosya
-  // içeriği neyse odur (boş/bozuk → bölüm null + tarama uyarısı).
+  // Explicit request: an off-allowlist name falls back to latest + warning; the found file
+  // is what it is (empty/corrupt → section null + scan warning).
   const requested = (requestedRun ?? '').trim();
   if (requested) {
     if (!RUN_NAME_PATTERN.test(requested)) {
-      warnings.push(maskSecrets(`istenen çalışma geçersiz: ${requested} — en güncel gösteriliyor`));
+      warnings.push(maskSecrets(`requested run invalid: ${requested} — showing the latest`));
     } else {
       const hit = runFiles.get(requested);
       if (!hit) {
-        warnings.push(maskSecrets(`istenen çalışma yok: ${requested} — en güncel gösteriliyor`));
+        warnings.push(maskSecrets(`requested run missing: ${requested} — showing the latest`));
       } else {
         const envelopes = await envelopesOf(hit.path, requested);
         if (envelopes.length === 0) return { source: null, runs: trimmedRuns, warnings };
@@ -1478,24 +1478,24 @@ export async function readCheckpointSource(roots: string[], requestedRun?: strin
       }
     }
   }
-  // Latest: en yeni İÇERİKLİ dosya (D1 tek-dosya davranışı aynı). Taranan
-  // ama içeriksiz kalan dosya sessiz geçilmez — sepet satırı düşer
-  // (zaten uyarılmış Run adı tekrar uyarılmaz).
+  // Latest: the newest NON-EMPTY file (same as D1 single-file behavior). A file that is
+  // scanned but stays empty is not passed silently — a basket line drops
+  // (an already-warned run name is not warned again).
   const ordered = [...perRoot].sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const candidate of ordered) {
     const before = warnings.length;
     const envelopes = await envelopesOf(candidate.path, candidate.run);
     if (envelopes.length > 0) return { source: { run: candidate.run, envelopes, runs: trimmedRuns }, runs: trimmedRuns, warnings };
     if (!warnings.slice(before).some(warning => warning.includes(candidate.run))) {
-      warnings.push(maskSecrets(`checkpoint boş: ${candidate.run} — bölüm etkilenmedi`));
+      warnings.push(maskSecrets(`checkpoint empty: ${candidate.run} — section unaffected`));
     }
   }
   return { source: null, runs: trimmedRuns, warnings };
 }
 
 /**
- * Tek checkpoint dosyasını bounded tara: 256KB chunk + 500 satır cap +
- * şekil-sıkı normalize. Uyarılar her çağrıda sepete işlenir.
+ * Bounded scan of a single checkpoint file: 256KB chunk + 500 line cap +
+ * shape-strict normalize. Warnings are processed into the basket on every call.
  */
 async function scanCheckpointFile(path: string, run: string, warnings: string[]): Promise<ParsedCheckpointEnvelope[]> {
   const envelopes: ParsedCheckpointEnvelope[] = [];
@@ -1503,7 +1503,7 @@ async function scanCheckpointFile(path: string, run: string, warnings: string[])
   try {
     handle = await open(path, 'r');
   } catch {
-    warnings.push(`checkpoint okunamadı: ${run} — bölüm etkilenmedi`);
+    warnings.push(`checkpoint unreadable: ${run} — section unaffected`);
     return envelopes;
   }
   try {
@@ -1532,12 +1532,12 @@ async function scanCheckpointFile(path: string, run: string, warnings: string[])
       }
       envelopes.push(normalized.envelope);
     }
-    // Cap penceresi dışında kalan dolu satırlar overCap sayılır.
+    // Non-blank lines beyond the cap window count as overCap.
     const overCap = truncated || processed >= CHECKPOINT_MAX_LINES;
-    if (overCap) warnings.push(`checkpoint kırpıldı: ${run} (256KB/500 kayıt sınırı)`);
-    if (corrupt > 0) warnings.push(`checkpoint bozuk satır atlandı: ${run} (${corrupt})`);
+    if (overCap) warnings.push(`checkpoint truncated: ${run} (256KB/500 record limit)`);
+    if (corrupt > 0) warnings.push(`checkpoint corrupt line skipped: ${run} (${corrupt})`);
   } catch {
-    warnings.push(`checkpoint okunamadı: ${run} — bölüm etkilenmedi`);
+    warnings.push(`checkpoint unreadable: ${run} — section unaffected`);
     return [];
   } finally {
     await handle.close().catch(() => {});
@@ -1545,7 +1545,7 @@ async function scanCheckpointFile(path: string, run: string, warnings: string[])
   return envelopes;
 }
 
-/** D1 uyumluluk kabuğu: yalnızca warnings[] sepeti. */
+/** D1 compatibility shell: only the warnings[] basket. */
 export async function readCheckpointWarnings(roots: string[]): Promise<string[]> {
   return (await readCheckpointSource(roots)).warnings;
 }
@@ -1554,11 +1554,11 @@ export const SUPERVISOR_MAX_BYTES = 256 * 1024;
 const SUPERVISOR_MAX_SERVICES = 200;
 
 /**
- * `.ow/supervisor.json` bounded salt-okunur provenance: spawn-kayıtları
- * (ad, port, checkout rev + recordedAt, exitCode). Yoksa sessiz null-kayıt
- * (UI "provenance kaydı yok"); symlink/cap/bozuk fail-closed + warnings[]
- * satırı. Canlı exec yok. `cwdAbs`/`lastReadiness` okunmaz (render
- * edilmeyen alan — yukarıdaki NOT'a bak).
+ * `.ow/supervisor.json` bounded read-only provenance: spawn records
+ * (name, port, checkout rev + recordedAt, exitCode). Otherwise a silent null record
+ * (UI "no provenance record"); symlink/cap/corrupt fail-closed + a warnings[]
+ * line. No live exec. `cwdAbs`/`lastReadiness` are not read (unrendered
+ * fields — see the NOTE above).
  */
 export async function readSupervisorRecords(roots: string[]): Promise<{ records: SupervisorProvenanceRecord[]; warnings: string[] }> {
   const warnings: string[] = [];
@@ -1574,28 +1574,28 @@ export async function readSupervisorRecords(roots: string[]): Promise<{ records:
       continue;
     }
     if (entry.isSymbolicLink()) {
-      warnings.push('provenance atlandı (symlink izlenmez): supervisor.json');
+      warnings.push('provenance skipped (symlink not followed): supervisor.json');
       continue;
     }
     if (!entry.isFile()) continue;
     if (entry.size > SUPERVISOR_MAX_BYTES) {
-      warnings.push(`provenance kırpıldı: ${basename(canonicalRoot)} (256KB sınırı) — bölüm etkilenmedi`);
+      warnings.push(`provenance truncated: ${basename(canonicalRoot)} (256KB limit) — section unaffected`);
       continue;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(path, 'utf8'));
     } catch {
-      warnings.push(`provenance okunamadı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      warnings.push(`provenance unreadable: ${basename(canonicalRoot)} — section unaffected`);
       continue;
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      warnings.push(`provenance okunamadı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      warnings.push(`provenance unreadable: ${basename(canonicalRoot)} — section unaffected`);
       continue;
     }
     const dict = parsed as Record<string, unknown>;
     if (dict['version'] !== 1 || !Array.isArray(dict['services'])) {
-      warnings.push(`provenance sürüm uyuşmazlığı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
+      warnings.push(`provenance version mismatch: ${basename(canonicalRoot)} — section unaffected`);
       continue;
     }
     const services = (dict['services'] as unknown[]).slice(0, SUPERVISOR_MAX_SERVICES);
@@ -1608,7 +1608,7 @@ export async function readSupervisorRecords(roots: string[]): Promise<{ records:
       }
       if (!merged.has(record.name)) merged.set(record.name, { ...record, rootBase: basename(canonicalRoot) });
     }
-    if (corrupt > 0) warnings.push(`provenance bozuk kayıt atlandı: ${basename(canonicalRoot)} (${corrupt})`);
+    if (corrupt > 0) warnings.push(`provenance corrupt record skipped: ${basename(canonicalRoot)} (${corrupt})`);
   }
   return { records: [...merged.values()], warnings };
 }
@@ -1674,7 +1674,7 @@ async function readLedgerHead(canonicalRoot: string): Promise<{ revShort: string
 
 /** Supervisor-file classification (CLI `classifySupervisorFile` mirror:
  * missing/ok/corrupt/bad-version) with symlink-reject (fail-closed
- * `corrupt`; the `provenance atlandı` warning stays solely with
+ * `corrupt`; the `provenance skipped` warning stays solely with
  * `readSupervisorRecords` — this reader emits no duplicate file warnings). */
 async function classifyLedgerSupervisorFile(canonicalRoot: string): Promise<WorktreeFileState> {
   const path = join(canonicalRoot, '.ow', 'supervisor.json');
@@ -1777,7 +1777,7 @@ export async function readWorktreeLedger(roots: string[]): Promise<{
   const warnings: string[] = [];
   const capped = roots.slice(0, maxProjectRoots);
   if (roots.length > capped.length) {
-    warnings.push(maskSecrets(`worktree listesi kırpıldı (${maxProjectRoots} kök sınırı) — ilk ${maxProjectRoots} kök listelenir`));
+    warnings.push(maskSecrets(`worktree list truncated (${maxProjectRoots} root limit) — the first ${maxProjectRoots} roots are listed`));
   }
   const rows: CoordinatorWorktreeEntry[] = [];
   const perRoot: WorktreeLedgerPerRoot[] = [];
@@ -1789,9 +1789,9 @@ export async function readWorktreeLedger(roots: string[]): Promise<{
     const lock = await classifyLedgerLock(canonicalRoot);
     try {
       const lockEntry = await lstat(join(canonicalRoot, '.ow', 'supervisor.lock'));
-      if (lockEntry.isSymbolicLink()) warnings.push(maskSecrets(`kilit atlandı (symlink izlenmez): ${rootBase}`));
+      if (lockEntry.isSymbolicLink()) warnings.push(maskSecrets(`lock skipped (symlink not followed): ${rootBase}`));
     } catch {
-      // Absent lock needs no warning (honest `yok` in the row).
+      // Absent lock needs no warning (honest `missing` in the row).
     }
     const head = await readLedgerHead(canonicalRoot);
     rows.push({
@@ -1814,7 +1814,7 @@ const WORKTREE_ADVISORY_MAX_LINES = 10;
  * only — no `ow.yaml` reads, no farm scan) + same-service double-ownership
  * (recorded without `exitCode` under ≥2 roots). Every line carries
  * `worktree:<base>` scope tags and the non-gating wording; truncation at 10
- * lines + `…[kesildi: N uyarı]`. Callers emit nothing when ≤1 root. */
+ * lines + `…[truncated: N warnings]`. Callers emit nothing when ≤1 root. */
 export function buildWorktreeAdvisories(perRoot: WorktreeLedgerPerRoot[]): string[] {
   const lines: string[] = [];
   const scope = (bases: string[]): string => bases.map(base => `worktree:${base}`).join(' + ');
@@ -1830,7 +1830,7 @@ export function buildWorktreeAdvisories(perRoot: WorktreeLedgerPerRoot[]): strin
   for (const port of [...byPort.keys()].sort((a, b) => a - b)) {
     const bases = byPort.get(port) as string[];
     if (bases.length < 2) continue;
-    lines.push(maskSecrets(`uyarı: ${port} portu dolu — ${scope(bases)} (bilgi amaçlı, engelleme yok)`));
+    lines.push(maskSecrets(`warning: port ${port} is busy — ${scope(bases)} (informational, no blocking)`));
   }
   const byService = new Map<string, string[]>();
   for (const { rootBase, records } of perRoot) {
@@ -1844,19 +1844,19 @@ export function buildWorktreeAdvisories(perRoot: WorktreeLedgerPerRoot[]): strin
   for (const name of [...byService.keys()].sort()) {
     const bases = byService.get(name) as string[];
     if (bases.length < 2) continue;
-    lines.push(maskSecrets(`uyarı: ${name} birden fazla worktree'de kayıtlı — ${scope(bases)} (bilgi amaçlı, engelleme yok)`));
+    lines.push(maskSecrets(`warning: ${name} is registered in more than one worktree — ${scope(bases)} (informational, no blocking)`));
   }
   if (lines.length <= WORKTREE_ADVISORY_MAX_LINES) return lines;
   const kept = lines.slice(0, WORKTREE_ADVISORY_MAX_LINES);
-  kept.push(maskSecrets(`…[kesildi: ${lines.length - WORKTREE_ADVISORY_MAX_LINES} uyarı]`));
+  kept.push(maskSecrets(`…[truncated: ${lines.length - WORKTREE_ADVISORY_MAX_LINES} warnings]`));
   return kept;
 }
 
 const ARTIFACT_BASE_PATTERN = /^[^/\\]+$/;
 const ARTIFACT_DIGEST_PATTERN = /^[0-9a-fA-F]{7,128}$/;
 
-/** M-C kayıtlı-harita girişi seçimi (CLI `pickArtifactEntries` aynası:
- * şekil-sıkı, bozuk girdi düşer; basename ≤512ch, `..`/`.` yok). */
+/** M-C recorded-map entry selection (CLI `pickArtifactEntries` mirror:
+ * shape-strict, a malformed entry drops; basename ≤512ch, no `..`/`.`). */
 function pickArtifactEntries(raw: unknown): Record<string, string> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
   const out: Record<string, string> = {};
@@ -1869,15 +1869,15 @@ function pickArtifactEntries(raw: unknown): Record<string, string> {
   return out;
 }
 
-/** M-C indirgenmiş görünüm (CLI `reduceArtifactMap` aynası: maskeli
- * basename + kısa-8, sıralı ilk 32 + sayaç; tam-yol/tam-digest tele çıkmaz). */
+/** M-C reduced view (CLI `reduceArtifactMap` mirror: masked
+ * basename + short-8, first 32 in order + counter; a full path/full digest never reaches the wire). */
 function reduceArtifactMap(map: Record<string, string> | undefined): { shown: { base: string; digest: string }[]; rest: number } {
   const bases = Object.keys(map ?? {}).sort();
   const shown = bases.slice(0, 32).map(base => ({ base: maskSecrets(base), digest: (map as Record<string, string>)[base].slice(0, 8) }));
   return { shown, rest: Math.max(0, bases.length - shown.length) };
 }
 
-/** Saf supervisor-kayıt normalizasyonu (testler hostile rev'i buradan sokar). */
+/** Pure supervisor-record normalization (tests inject hostile revs through here). */
 export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRecord | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const dict = raw as Record<string, unknown>;
@@ -1902,8 +1902,8 @@ export function normalizeSupervisorService(raw: unknown): SupervisorProvenanceRe
       record.recordedAt = prov['recordedAt'] as string;
     }
   }
-  // M-C: derleme haritası şekil-sıkı alınır (bozuk harita düşer, kayıt yaşar;
-  // bozuk girdiler düşer, geçerli yaşar).
+  // M-C: the build map is taken shape-strict (a malformed map drops, the record survives;
+  // malformed entries drop, valid ones survive).
   if (dict['artifactDigests'] !== undefined) {
     if (typeof dict['artifactDigests'] === 'object' && dict['artifactDigests'] !== null && !Array.isArray(dict['artifactDigests'])) {
       const picked = pickArtifactEntries(dict['artifactDigests']);
@@ -2089,10 +2089,10 @@ async function readRootOverlay(
 }
 
 /**
- * `<root>/ow.scenarios.yaml` bounded salt-okunur senaryo matrisi kaynağı.
- * Kök-dışı/symlink/cap disiplini §0.3 ile aynı; dosya YOKSA sessiz
- * null-kayıt (UI "senaryo dosyası bağlı değil"), bozuksa error kutusu
- * (diğer paneller sağlam). Çok kökte ilk-kazanan adla birleşir.
+ * `<root>/ow.scenarios.yaml` bounded read-only scenario-matrix source.
+ * Off-root/symlink/cap discipline is the same as §0.3; if the file is MISSING a silent
+ * null record (UI "no scenario file attached"), if corrupt an error box
+ * (the other panels stay intact). With multiple roots it merges by first-wins name.
  * M9: each root's local overlay convention (`.ow/boundaries.local.yaml`)
  * applies per-scenario REPLACE before the cross-root merge; an invalid
  * overlay keeps the base rows and surfaces `overlayError` (error box,
@@ -2125,20 +2125,20 @@ export async function readScenariosSource(roots: string[]): Promise<{
       continue;
     }
     if (entry.isSymbolicLink()) {
-      warnings.push(`senaryo atlandı (symlink izlenmez): ${SCENARIOS_FILE_NAME}`);
+      warnings.push(`scenario skipped (symlink not followed): ${SCENARIOS_FILE_NAME}`);
       continue;
     }
     if (!entry.isFile()) continue;
     if (entry.size > SCENARIOS_MAX_BYTES) {
-      warnings.push(`senaryo kırpıldı: ${basename(canonicalRoot)} (256KB sınırı) — bölüm etkilenmedi`);
+      warnings.push(`scenario truncated: ${basename(canonicalRoot)} (256KB limit) — section unaffected`);
       continue;
     }
     let text: string;
     try {
       text = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(path));
     } catch {
-      warnings.push(`senaryo okunamadı: ${basename(canonicalRoot)} — bölüm etkilenmedi`);
-      if (error === null) error = 'dosya okunamadı';
+      warnings.push(`scenario unreadable: ${basename(canonicalRoot)} — section unaffected`);
+      if (error === null) error = 'file unreadable';
       continue;
     }
     found = true;
@@ -2147,7 +2147,7 @@ export async function readScenariosSource(roots: string[]): Promise<{
       parsed = normalizeScenarios(text);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      warnings.push(maskSecrets(`senaryo bozuk: ${basename(canonicalRoot)} (${reason}) — bölüm etkilenmedi`));
+      warnings.push(maskSecrets(`scenario corrupt: ${basename(canonicalRoot)} (${reason}) — section unaffected`));
       if (error === null) error = maskSecrets(reason);
       continue;
     }
@@ -2185,16 +2185,16 @@ export async function readScenariosSource(roots: string[]): Promise<{
             boundarySources.push({ scenario: maskSecrets(scenario.name), boundary: maskSecrets(boundary), source: 'base' });
           }
         }
-      } else warnings.push(maskSecrets(`senaryo yinelendi: ${scenario.name} (${basename(canonicalRoot)})`));
+      } else warnings.push(maskSecrets(`scenario duplicated: ${scenario.name} (${basename(canonicalRoot)})`));
     }
   }
   const overlayFile = overlayApplied ? OVERLAY_LOCAL_FILE : null;
   if (!found && error === null) return { scenarios: null, error: null, warnings, overlayApplied: false, overlayFile: null, boundarySources: [], overlayError };
-  if (merged.size === 0) return { scenarios: null, error: error ?? 'kayıt yok', warnings, overlayApplied: false, overlayFile: null, boundarySources: [], overlayError };
+  if (merged.size === 0) return { scenarios: null, error: error ?? 'no record', warnings, overlayApplied: false, overlayFile: null, boundarySources: [], overlayError };
   return { scenarios: [...merged.values()], error: null, warnings, overlayApplied, overlayFile, boundarySources, overlayError };
 }
 
-// --- Servis kablosu ------------------------------------------------------------
+// --- Service wire -----------------------------------------------------------
 
 export interface CoordinatorRuntime {
   list?: Parameters<typeof environmentStatus>[3];

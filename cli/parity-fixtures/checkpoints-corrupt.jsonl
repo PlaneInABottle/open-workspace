@@ -1,4 +1,4 @@
 {"stage":"build","status":"confirmed","proof":{"ok":true},"at":"2026-10-09T08:00:00.000Z","by":"runner","code":{"script_hash":"abc123"}}
-bozuk-satir {{{ degil-json
+corrupt-line {{{ not-json
 {"stage":"test","status":"stale","proof":"x","at":"2026-10-09T08:30:00.000Z","by":"runner"}
-{"stage":"deploy","status":"not_observed","proof":"olculmedi","at":"2026-10-09T09:00:00.000Z","by":"runner"}
+{"stage":"deploy","status":"not_observed","proof":"unmeasured","at":"2026-10-09T09:00:00.000Z","by":"runner"}

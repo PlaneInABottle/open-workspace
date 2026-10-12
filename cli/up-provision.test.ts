@@ -82,7 +82,7 @@ const treeSnapshot = async (root: string): Promise<Map<string, number>> => {
 }
 
 describe("provision --check (ready shape)", () => {
-  test("exit 0 + frozen human lines + summary (never hazır:)", async () => {
+  test("exit 0 + frozen human lines + summary (never ready:)", async () => {
     const { root, file, cleanup } = await readyFixture()
     try {
       const io = capture()
@@ -169,7 +169,7 @@ describe("provision --check (ready shape)", () => {
 })
 
 describe("provision --check (broken shape)", () => {
-  test("dangling .env symlink + missing venv → exit 1 + eksik lines + summary count", async () => {
+  test("dangling .env symlink + missing venv → exit 1 + missing lines + summary count", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -312,7 +312,7 @@ describe("provision hostile (witness-not-actor)", () => {
     }
   })
 
-  test("bayraksız TCP yoklaması çalışmaz (exec-sıfır kanıtı)", async () => {
+  test("unflagged TCP probe does not run (exec-zero proof)", async () => {
     const { root, file, cleanup } = await readyFixture()
     try {
       let calls = 0

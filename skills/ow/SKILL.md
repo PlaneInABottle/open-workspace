@@ -48,23 +48,23 @@ Output labels (English, quoted verbatim): `task:` task header,
 `(output:)` on failures. Budgets: success excerpts 2KB stored and
 300 chars shown, failures up to 16KB; 3h of history runs about 150KB.
 
-## `--json` anahtarları (tek tablo, additive)
+## `--json` keys (single table, additive)
 
-Turkish human lines; stable English `--json` keys (old keys never change, new keys only add):
+English human lines; stable English `--json` keys (old keys never change, new keys only add):
 
-| komut | zarf |
+| command | envelope |
 |---|---|
-| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` yalnız `depends_on` varsa) |
+| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` only when `depends_on` exists) |
 | `up -d --wait --json` | `{ready, services[] ({name, port?, status, waitedSec, exitCode?, healthPath?, readiness?}), noPort[], note?}` |
-| `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` yalnız başarısızlıkta) |
+| `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` only on failure) |
 | `down [--rm]`, `down <svc> --json` | `{stopped[] ({name, stopped, note}), warnings[]}` |
 | `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
 | `logs --json` | `{service, lines[]}` |
-| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[], readiness[] (yalnız --probe ile)}` |
+| `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[], readiness[] (only with --probe)}` |
 | `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, neden, readiness}})}` |
 | `preflight --json` | `{pass, gates[] ({name: reconcile\|provenance\|readiness\|boundary, pass, detail}), missing[], envelopes[]}` |
 | `readiness --json` | `{ready, missing[], stale[], falseGreens[] ({kind, service, hint}), gates[]}` |
 | `scenarios --check --json` | `{file, scenarios[] ({name, services, boundaries, targets, probes[] ({id, argvShape, timeout}), checkpoints}), boundariesNormalized[], boundaryWarnings[], warnings[]}` |
-| `doctor --json` | `{checks[] ({name, ok, detail})}` (çıkışa `up`/`trace` katılmaz) |
+| `doctor --json` | `{checks[] ({name, ok, detail})}` (`up`/`trace` are not part of the exit) |
 
 Full schema, caps, and non-goals: product `cli/README.md`.

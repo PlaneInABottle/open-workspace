@@ -51,8 +51,8 @@ export type LiveUnit = {
   /** M3 last-known readiness (client-observed probe verdict, merged only
    * while the probed pid matches the live unit). */
   lastReadiness?: UpServiceState["lastReadiness"]
-  /** M-C probe-beyanlı derleme kimliği (basename → tam-digest ham;
-   * readiness zarfıyla birleşir, respawn'da diriltilmez). */
+  /** M-C probe-declared build identity (basename → full digest, raw;
+   * merged with the readiness envelope, not revived on respawn). */
   artifactDigests?: Record<string, string>
 }
 
@@ -70,7 +70,7 @@ export type SupervisorCtx = {
   persist: () => Promise<void>
 }
 
-/** Resolve + validate cwd against the ow.yaml dir. Symlink-escaped targets rejected; throws Turkish usage error. */export const resolveServiceCwd = async (rootDir: string, cwd: string | undefined): Promise<string | undefined> => {
+/** Resolve + validate cwd against the ow.yaml dir. Symlink-escaped targets rejected; throws an English usage error. */export const resolveServiceCwd = async (rootDir: string, cwd: string | undefined): Promise<string | undefined> => {
   if (cwd === undefined) return undefined
   const abs = resolve(rootDir, cwd)
   let info
@@ -238,7 +238,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   const portConflicts = new Map<string, boolean>()
   let stopping = false
   /** Restart/down victims: their exits are supervisor-induced, never
-   * spontaneous failures (and never `logs komutu bitti` noise). */
+   * spontaneous failures (and never `logs command finished` noise). */
   const retiring = new Set<object>()
   const now = () => new Date().toISOString()
   const persist = async (): Promise<void> => {
@@ -463,7 +463,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
  * `portConflict`, `envNames`/`dependsOn`) are only inherited when the
  * process identity (pid+lstart) matches — a respawned service never
  * inherits its predecessor's settlement, stale liveness flags, recycled
- * handles, or phantom config (the latter would fake `config-farklı`
+ * handles, or phantom config (the latter would fake a `config-mismatch`
  * drift). An inherited `cmd`/`logsCmd` is re-masked (B3). `startedAt`
  * likewise follows the fresh record on identity change. No new lock
  * files — the supervisor is the sole writer while live, `down` only marks
@@ -481,7 +481,7 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
     // service starts clean, or stale flags/handles/config would haunt the
     // new process (resurrected settlement, phantom `lstartUnknown`, a
     // recycled `logsPid`, a `portConflict` that predates the new bind, or
-    // `envNames`/`dependsOn` faking a `config-farklı` drift in reconcile,
+    // `envNames`/`dependsOn` faking a `config-mismatch` drift in reconcile,
     // `provenance` haunting a new pid with the old process's checkout, or
     // `lastReadiness` certifying a process that never passed a probe).
     const staleOnRespawn: ReadonlySet<keyof UpServiceState> = new Set([
@@ -592,7 +592,7 @@ export const findLiveOrphans = async (rootDir: string): Promise<UpServiceState[]
   return orphans
 }
 
-/** Throw a Turkish usage error naming live orphans, or resolve silently. */
+/** Throw an English usage error naming live orphans, or resolve silently. */
 export const assertNoLiveOrphans = async (rootDir: string): Promise<void> => {
   const orphans = await findLiveOrphans(rootDir)
   if (orphans.length === 0) return
@@ -750,8 +750,8 @@ const pruneUnitHandles = (ctx: SupervisorCtx, unit: LiveUnit): void => {
   // A respawned slot starts unsettled: the old readiness verdict belongs to
   // the dead pid and must never be re-recorded under the new one.
   unit.lastReadiness = undefined
-  // M-C: ölü pid'in yüklediği derleme kimliği de diriltilmez (aksi halde
-  // yeni pid'e eski-digest musallat olur — sahte derleme-eski).
+  // M-C: the build identity loaded by the dead pid is not revived either
+  // (otherwise the old digest would haunt the new pid — a fake stale-build).
   unit.artifactDigests = undefined
 }
 
@@ -891,9 +891,9 @@ export const processServiceRequest = async (ctx: SupervisorCtx, request: Service
       at: outcome.at,
       kind: "probe",
     }
-    // M-C derleme kimliği: aynı pid-korumalı zarfta taşınan beyan
-    // haritası şekil-sıkı birleşir (bozuk girdi düşer, geçerli yaşar;
-    // servis-başı cap; aynı-digest yeniden-yazımı no-op).
+    // M-C build identity: the declaration map carried in the same
+    // pid-guarded envelope merges shape-strict (a malformed entry drops, a
+    // valid one survives; per-service cap; a same-digest rewrite is a no-op).
     if (outcome.artifacts !== undefined) {
       const picked = pickArtifactEntries(outcome.artifacts)
       if (Object.keys(picked).length > 0) {

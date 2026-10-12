@@ -7,7 +7,7 @@ description: Wire OpenTelemetry tracing into a repo's ow.yaml per stack and prov
 
 Wire opt-in distributed tracing for a repo supervised by `ow`, then prove
 spans actually flow. End state is PROVEN (spans flowing), not files-written.
-Exact `ow.yaml` blocks live in product `cli/README.md` ("İzleme tarifleri")
+Exact `ow.yaml` blocks live in product `cli/README.md` ("Tracing recipes")
 — copy from there, never from memory. This skill only routes per stack.
 
 ## Detect stack, write the trace block

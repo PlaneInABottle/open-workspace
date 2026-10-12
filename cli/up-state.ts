@@ -50,26 +50,26 @@ export type UpServiceState = {
    * records: the compare skips rather than drifting. */
   envNames?: string[]
   dependsOn?: string[]
-  /** M2 spawn-time provenance (observed/inferred, ham argv yok). Absent on
+  /** M2 spawn-time provenance (observed/inferred, no raw argv). Absent on
    * older records and on best-effort recording failure. */
   provenance?: Provenance
-  /** M3 last-known readiness (P2-B tolerant okur; yoksa `not_observed`).
-   * Yalnızca istemci-tarafı probe kayıtları yazar (supervisor asla
-   * çalıştırmaz); respawn'da diriltilmez (aşağıdaki skip-listesi). */
+  /** M3 last-known readiness (P2-B tolerant read; otherwise `not_observed`).
+   * Only client-side probe records are written (the supervisor never
+   * runs them); not revived on respawn (see the skip list below). */
   lastReadiness?: {
     ok: boolean
     note?: string
     at: string
     kind?: string
   }
-  /** M-C probe-beyanlı derleme kimliği: basename → tam-digest (ham;
-   * tel/insan YALNIZCA basename + kısa-8 indirgenmiş görür). Yalnızca
-   * supervisor istek-kanalı yazar (tek-yazar); respawn'da diriltilmez
-   * (ölü pid'in yüklediği derleme yeni pid'e bulaşmaz). */
+  /** M-C probe-declared build identity: basename → full digest (raw;
+   * wire/human sees ONLY basename + short-8 reduced). Only the
+   * supervisor request channel writes it (sole writer); not revived on respawn
+   * (a dead pid's build does not contaminate the new pid). */
   artifactDigests?: Record<string, string>
 }
 
-/** M-C: servis-başı derleme-harita cap'i (önerilen 200 — kilitli). */
+/** M-C: per-service build-map cap (recommended 200 — locked). */
 export const ARTIFACT_DIGESTS_MAX = 200
 
 export type UpSupervisorState = {
@@ -147,7 +147,7 @@ export const resolveWorkspaceRoot = async (startDir: string): Promise<string> =>
 }
 
 /** Honest-empty suffix naming the searched reality: the start dir plus one
- * directive clause. Paths are operator-known (same as `dizin:` lines);
+ * directive clause. Paths are operator-known (same as the `dir:` lines);
  * never env values or span/log bodies. */
 export const noStateNote = (startDir: string): string =>
   `.ow/ not found — searched: ${startDir}; run from the workspace root or pass --file`
@@ -369,7 +369,7 @@ const writeLockExclusive = (lockFile: string, lock: UpLock): boolean => {
   }
 };
 
-/** Acquire the single-supervisor lock or throw a Turkish usage error. Stale
+/** Acquire the single-supervisor lock or throw an English usage error. Stale
  * AND corrupt locks are reclaimed with a warning (warn-only spirit kept:
  * the supervisor is dead, only its marker is broken). Creation is
  * exclusive: a lost creation race re-classifies — a now-live/unknown lock

@@ -1,11 +1,11 @@
-/** M2 runtime provenance: spawn-anında gözlem kaydı (supervisor içinde,
- * best-effort) + kayıtlı-değer render yardımcıları. Ham argv YOK (B3:
- * yalnızca maskeli-şekil/sayı/ad); env İÇERİKLERİ asla (dosya ADLARI +
- * env:/required-env ADLARI); secret değer ve tam komut-satırı state'e
- * girmez. `python -V` gibi sürüm exec'i YOK (inferred disiplini).
- * Yürütme YERİ (B4): buradaki exec'ler YALNIZCA supervisor spawn-anı +
- * explicit `reconcile --check` yolundan çağrılır; `ps`/`ps --explain`
- * bu modülün exec'lerine dokunmaz (saf render). */
+/** M2 runtime provenance: observation record at spawn time (inside the
+ * supervisor, best-effort) + recorded-value render helpers. NO raw argv (B3:
+ * only masked-shape/count/name); NEVER env CONTENTS (file NAMES +
+ * env:/required-env NAMES); secret values and the full command line never
+ * enter state. NO version exec like `python -V` (inferred discipline).
+ * Execution SITE (B4): the execs here are called ONLY from supervisor spawn
+ * time + the explicit `reconcile --check` path; `ps`/`ps --explain`
+ * never touch this module's execs (pure render). */
 
 import { readdir, realpath } from "node:fs/promises"
 import { basename, resolve } from "node:path"
@@ -27,9 +27,9 @@ export type Provenance = {
   recordedAt: string
 }
 
-/** Enjekte edilebilir exec (default gerçek spawn; testler sayaçlı sahte
- * verir — ps yolunun git/lsof ÇALIŞTIRMADIĞI böyle kanıtlanır). Best-effort:
- * timeout/zaman-aşımı/hata → null, asla throw. */
+/** Injectable exec (default the real spawn; tests provide a counting fake —
+ * this is how the ps path is proven NOT to run git/lsof). Best-effort:
+ * timeout/expiry/error → null, never throws. */
 export type ExecFn = (argv: string[], opts: { cwd: string; timeoutMs: number }) => Promise<string | null>
 
 const runExec: ExecFn = async (argv, opts) => {
@@ -54,8 +54,8 @@ const runExec: ExecFn = async (argv, opts) => {
   }
 }
 
-/** `git rev-parse HEAD` + `status --porcelain` (kayıt-anı observed).
- * Repo değilse/hataysa null → checkout alanı atlanır (UNVERIFIED render). */
+/** `git rev-parse HEAD` + `status --porcelain` (observed at record time).
+ * null if not a repo/on error → the checkout field is dropped (UNVERIFIED render). */
 export const gitCheckout = async (
   cwd: string,
   exec: ExecFn = runExec,
@@ -73,10 +73,10 @@ export const gitCheckout = async (
   }
 }
 
-/** Process-cwd best-effort (`lsof -a -p <pid> -d cwd -Fn`; `-a` AND
- * demektir — onsuz `-p`/`-d` OR birleşir ve ilk sürecin cwd'si döner).
- * Platform çıktısı değişkendir (UNVERIFIED) — parse tutmazsa null. Kill
- * YOK, read-only. */
+/** Process-cwd best-effort (`lsof -a -p <pid> -d cwd -Fn`; `-a` means AND
+ * — without it `-p`/`-d` combine as OR and the first process's cwd is
+ * returned). Platform output varies (UNVERIFIED) — null if the parse fails.
+ * NO kill, read-only. */
 export const procCwdOf = async (pid: number, exec: ExecFn = runExec, timeoutMs = 2000): Promise<string | null> => {
   try {
     const out = await exec(["lsof", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { cwd: "/", timeoutMs })
@@ -94,8 +94,8 @@ export const procCwdOf = async (pid: number, exec: ExecFn = runExec, timeoutMs =
   }
 }
 
-/** Maskeli argv-şekli (observed-şekil): parça sayısı/sırası korunur,
- * değerler düşer. */
+/** Masked argv shape (observed shape): part count/order is preserved,
+ * values drop. */
 export const argvShapeOf = (cmd: string | string[] | undefined): string[] | undefined => {
   if (cmd === undefined) return undefined
   const parts = Array.isArray(cmd) ? [...cmd] : cmd.split(/\s+/)
@@ -109,8 +109,8 @@ export const argvShapeOf = (cmd: string | string[] | undefined): string[] | unde
 
 const INTERPRETER_PATTERN = /^(python(\d+(\.\d+)*)?|uv|bun|node(\d+)?|java|gradlew)([^a-zA-Z0-9]|$)/
 
-/** argv-şekilden interpreter eşleşmesi = inferred (`python -V`
- * ÇALIŞTIRILMAZ). Eşleşme yoksa alan atlanır. */
+/** Interpreter match from the argv shape = inferred (`python -V` is NOT
+ * run). The field is dropped when there is no match. */
 export const inferInterpreter = (cmd: string | string[] | undefined): ProvenanceInterpreter | undefined => {
   if (cmd === undefined) return undefined
   const first = (Array.isArray(cmd) ? cmd[0] : cmd.split(/\s+/)[0] ?? "").trim()
@@ -120,8 +120,8 @@ export const inferInterpreter = (cmd: string | string[] | undefined): Provenance
   return { name: basename(first), source: "inferred" }
 }
 
-/** `-cp`/`-classpath` girdileri + `-jar` adı (sayı + JAR ADLARI,
- * inferred). Yalnızca java interpreter'ında; kanıt yoksa atlanır. */
+/** `-cp`/`-classpath` entries + the `-jar` name (count + JAR NAMES,
+ * inferred). Only on the java interpreter; dropped when there is no evidence. */
 export const javaInfoOf = (
   cmd: string | string[] | undefined,
   interpreter: ProvenanceInterpreter | undefined,
@@ -146,7 +146,7 @@ export const javaInfoOf = (
   }
 }
 
-/** cwd'deki `.env*` DOSYA ADLARI (içerik ASLA okunmaz). Hata → atlanır. */
+/** `.env*` FILE NAMES in cwd (contents are NEVER read). On error → dropped. */
 export const envFilesOf = async (cwdAbs: string): Promise<string[] | undefined> => {
   try {
     const names = (await readdir(cwdAbs)).filter((name) => name.startsWith(".env")).sort().slice(0, 16)
@@ -158,10 +158,10 @@ export const envFilesOf = async (cwdAbs: string): Promise<string[] | undefined> 
 
 const stripTrailingSlash = (path: string): string => (path.length > 1 ? path.replace(/\/+$/, "") : path)
 
-/** Spawn-anı provenance kaydı (supervisor içinde, best-effort ≤2s/exec).
- * Asla throw etmez: exec/readdir hatası ilgili alanı düşürür (spawn
- * devam eder). procCwd lsof-karşılaştırması tutmazsa `cwdAbs`
- * düşürülür → explain `cwd-doğrulanamadı(UNVERIFIED)` render eder. */
+/** Spawn-time provenance record (inside the supervisor, best-effort ≤2s/exec).
+ * Never throws: an exec/readdir error drops the field in question (the spawn
+ * continues). If the procCwd lsof comparison does not hold, `cwdAbs` is
+ * dropped → explain renders `cwd-unverified (UNVERIFIED)`. */
 export const recordProvenance = async (opts: {
   svc: UpService
   cwdAbs: string
@@ -176,11 +176,11 @@ export const recordProvenance = async (opts: {
     envFilesOf(opts.cwdAbs),
     opts.pid === undefined ? Promise.resolve(null) : procCwdOf(opts.pid, exec).catch(() => null),
   ])
-  // cwdAbs: resolve edilmiş observed değer; lsof karşı-doğrulaması
-  // çelişirse vouch edilemez → düşür (explain UNVERIFIED gösterir).
-  // Karşılaştırma realpath-normalized (macOS /private toleransı);
-  // altyapı hatasında düşürme YOK (fail-safe: şüphe vouch'u bozmaz,
-  // yalnızca kanıtlanmış çelişki düşürür).
+  // cwdAbs: resolved observed value; if the lsof counter-check contradicts
+  // it cannot be vouched for → drop (explain shows UNVERIFIED). The
+  // comparison is realpath-normalized (macOS /private tolerance); an
+  // infrastructure error does NOT drop it (fail-safe: doubt does not break a
+  // vouch, only a proven contradiction drops it).
   let cwdAbs: string | undefined = opts.cwdAbs
   if (procCwd !== null) {
     const [normProc, normAbs] = await Promise.all([
@@ -202,6 +202,6 @@ export const recordProvenance = async (opts: {
   return provenance
 }
 
-/** Service-cwd çözümleme (resolve edilmiş observed taban). */
+/** Service-cwd resolution (resolve against the observed base). */
 export const resolveCwdAbs = (rootDir: string, cwd: string | undefined): string =>
   cwd === undefined ? resolve(rootDir) : resolve(rootDir, cwd)

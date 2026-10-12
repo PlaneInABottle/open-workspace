@@ -240,14 +240,14 @@ describe("trace-receiver HTTP contract", () => {
     try {
       const { receiver, warnings } = await startTestReceiver(root)
       try {
-        const full = validBody("gizli-payload-RX7q2")
+        const full = validBody("secret-payload-RX7q2")
         const res = await postTraces(receiver.port, full.subarray(0, full.length - 5))
         expect(res.status).toBe(400)
         expect(receiver.rejected["decode-failed"]).toBe(1)
         const text = warnings.join("\n")
         expect(text).toContain("decode-failed")
         expect(text).toContain("offset=")
-        expect(text).not.toContain("gizli-payload-RX7q2")
+        expect(text).not.toContain("secret-payload-RX7q2")
         expect(existsSync(join(root, ".ow", "traces", "spans.jsonl"))).toBe(false)
       } finally {
         await receiver.stop()
@@ -559,7 +559,7 @@ describe("trace supervisor wire-in", () => {
 
   test("bind failure names host+port with directive; services still spawn", async () => {
     const root = await tempRoot()
-    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("meşgul") })
+    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("busy") })
     const warnings: string[] = []
     try {
       const receiver = await startTraceReceiver({
@@ -583,7 +583,7 @@ describe("trace supervisor wire-in", () => {
 
   test("bind failure → one warning, services still spawn on the normal rule", async () => {
     const root = await tempRoot()
-    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("meşgul") })
+    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("busy") })
     const spy = captureConsole()
     try {
       const { lines, onLine } = collectLines()
@@ -676,7 +676,7 @@ describe("trace: schema block", () => {
     expect(file.warnings.map((w) => w.message)).toContain("trace: enabled must be true/false, ignored")
   })
 
-  test("invalid port reuses the geçersiz port hard error", () => {
+  test("invalid port reuses the shared port validation error", () => {
     expect(() => parseUpFile(`trace:\n  port: abc\n${services}`)).toThrow(/invalid port/)
     expect(() => parseUpFile(`trace:\n  port: 99999\n${services}`)).toThrow(/invalid port/)
   })

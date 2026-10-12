@@ -163,7 +163,7 @@ describe("preflight CLI (fixture composition)", () => {
         { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: true } },
         { name: "b", pid: b.pid, lstart: b.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: true } },
       ])
-      await writeRun(root, "gece", FRESH_RUN)
+      await writeRun(root, "night", FRESH_RUN)
       const io = capture()
       let code = -1
       try {
@@ -231,7 +231,7 @@ describe("preflight CLI (fixture composition)", () => {
       await writeState(root, [
         { name: "a", pid: a.pid, lstart: a.lstart, startedAt: "t", cmd: "sleep 30", lastReadiness: { ok: true } },
       ])
-      await writeRun(root, "gece", STALE_RUN)
+      await writeRun(root, "night", STALE_RUN)
       const io = capture()
       let code = -1
       try {
@@ -414,7 +414,7 @@ describe("preflight CLI (fixture composition)", () => {
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      await writeFile(paths.supervisorFile, "bozuk{{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt{{{", "utf8")
       const io = capture()
       let code = -1
       try {

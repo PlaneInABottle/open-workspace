@@ -71,7 +71,7 @@ describe("up state roundtrip", () => {
       const back = await readSupervisorState(paths.supervisorFile)
       expect(back?.version).toBe(1)
       expect(back?.services[0]).toMatchObject({ name: "web", pid: 4242 })
-      expect(await readSupervisorState(join(paths.stateDir, "yok.json"))).toBeNull()
+      expect(await readSupervisorState(join(paths.stateDir, "missing.json"))).toBeNull()
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -82,7 +82,7 @@ describe("up state roundtrip", () => {
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       expect(await readSupervisorState(paths.supervisorFile)).toBeNull()
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -129,12 +129,12 @@ describe("lstart kill guard", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt: new Date().toISOString(),
-        services: [{ name: "yabanci", pid: sleeper.pid, lstart: "bogus-lstart-asla-eslesmez", startedAt: new Date().toISOString() }],
+        services: [{ name: "foreign", pid: sleeper.pid, lstart: "bogus-lstart-never-matches", startedAt: new Date().toISOString() }],
       })
-      expect(await isLivePid(sleeper.pid, "bogus-lstart-asla-eslesmez")).toBe(false)
+      expect(await isLivePid(sleeper.pid, "bogus-lstart-never-matches")).toBe(false)
       const outcome = await downAll(root)
       expect(outcome.results).toHaveLength(1)
-      expect(outcome.results[0]).toMatchObject({ name: "yabanci", stopped: true })
+      expect(outcome.results[0]).toMatchObject({ name: "foreign", stopped: true })
       // the foreign process survives: the guard never signaled it
       expect(await isLivePid(sleeper.pid, real!)).toBe(true)
     } finally {
@@ -150,11 +150,11 @@ describe("lstart kill guard", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt: new Date().toISOString(),
-        services: [{ name: "hayalet", pid: 987654321, lstart: "bogus", startedAt: new Date().toISOString() }],
+        services: [{ name: "ghost", pid: 987654321, lstart: "bogus", startedAt: new Date().toISOString() }],
       })
       expect(await isLivePid(987654321, "bogus")).toBe(false)
       const outcome = await downAll(root)
-      expect(outcome.results[0]).toMatchObject({ name: "hayalet", stopped: true, note: "not running" })
+      expect(outcome.results[0]).toMatchObject({ name: "ghost", stopped: true, note: "not running" })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -166,9 +166,9 @@ describe("spawn and exit codes", () => {
     const root = await tempRoot()
     try {
       const { lines, onLine } = collectLines()
-      const code = await runSupervised([{ name: "selam", cmd: "echo ok" }], { rootDir: root, onLine })
+      const code = await runSupervised([{ name: "hello", cmd: "echo ok" }], { rootDir: root, onLine })
       expect(code).toBe(0)
-      expect(lines).toContain("[selam|stdout] ok")
+      expect(lines).toContain("[hello|stdout] ok")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -182,16 +182,16 @@ describe("spawn and exit codes", () => {
       const { lines, onLine } = collectLines()
       const code = await runSupervised(
         [
-          { name: "selam", cmd: "echo ok" },
-          { name: "patlak", cmd: "exit 3" },
+          { name: "hello", cmd: "echo ok" },
+          { name: "broken", cmd: "exit 3" },
         ],
         { rootDir: root, stateFile: paths.supervisorFile, onLine },
       )
       expect(code).toBe(1)
-      expect(lines).toContain("[selam|stdout] ok")
+      expect(lines).toContain("[hello|stdout] ok")
       const state = await readSupervisorState(paths.supervisorFile)
-      expect(state?.services.find((svc) => svc.name === "patlak")?.exitCode).toBe(3)
-      expect(state?.services.find((svc) => svc.name === "selam")?.exitCode).toBe(0)
+      expect(state?.services.find((svc) => svc.name === "broken")?.exitCode).toBe(3)
+      expect(state?.services.find((svc) => svc.name === "hello")?.exitCode).toBe(0)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -206,8 +206,8 @@ describe("spawn and exit codes", () => {
       await expect(
         runSupervised(
           [
-            { name: "iyi", cmd: "echo asla" },
-            { name: "kotuklasor", cmd: "echo hi", cwd: "yok-boyle-dizin" },
+            { name: "good", cmd: "echo never" },
+            { name: "badfolder", cmd: "echo hi", cwd: "no-such-dir" },
           ],
           { rootDir: root, stateFile: paths.supervisorFile, onLine },
         ),
@@ -225,14 +225,14 @@ describe("spawn and exit codes", () => {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       const started = Date.now()
-      const code = await runSupervised([{ name: "uyu", cmd: "sleep 30" }], {
+      const code = await runSupervised([{ name: "sleep", cmd: "sleep 30" }], {
         rootDir: root,
         stateFile: paths.supervisorFile,
         shouldStop: () => Date.now() - started > 400,
       })
       expect(code).toBe(0)
       const state = await readSupervisorState(paths.supervisorFile)
-      const recorded = state?.services.find((svc) => svc.name === "uyu")
+      const recorded = state?.services.find((svc) => svc.name === "sleep")
       expect(recorded).toBeDefined()
       expect(await isLivePid(recorded!.pid, recorded!.lstart)).toBe(false)
     } finally {
@@ -252,16 +252,16 @@ describe("down --rm", () => {
         version: 1,
         startedAt: new Date().toISOString(),
         services: [
-          { name: "bitmis", pid: 1, lstart: "bogus", startedAt: new Date().toISOString(), exitCode: 0, exitedAt: new Date().toISOString() },
+          { name: "finished", pid: 1, lstart: "bogus", startedAt: new Date().toISOString(), exitCode: 0, exitedAt: new Date().toISOString() },
         ],
       })
-      await writeFile(join(paths.logsDir, "bitmis.jsonl"), '{"t":"x","stream":"stdout","line":"merhaba"}\n', "utf8")
+      await writeFile(join(paths.logsDir, "finished.jsonl"), '{"t":"x","stream":"stdout","line":"hello"}\n', "utf8")
       await writeFile(paths.lockFile, JSON.stringify({ pid: 987654321, lstart: "bogus", startedAt: new Date().toISOString() }), "utf8")
       const outcome = await downAll(root, true)
       expect(outcome.results).toHaveLength(1)
       expect(existsSync(paths.supervisorFile)).toBe(false)
       expect(existsSync(paths.lockFile)).toBe(false)
-      expect(await readFile(join(paths.logsDir, "bitmis.jsonl"), "utf8")).toContain("merhaba")
+      expect(await readFile(join(paths.logsDir, "finished.jsonl"), "utf8")).toContain("hello")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -277,10 +277,10 @@ describe("down --rm", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt: new Date().toISOString(),
-        services: [{ name: "kisa", pid: sleeper.pid, lstart, startedAt: new Date().toISOString() }],
+        services: [{ name: "short", pid: sleeper.pid, lstart, startedAt: new Date().toISOString() }],
       })
       const outcome = await downAll(root)
-      expect(outcome.results[0]).toMatchObject({ name: "kisa", stopped: true })
+      expect(outcome.results[0]).toMatchObject({ name: "short", stopped: true })
       const state = await readSupervisorState(paths.supervisorFile)
       expect(state?.services[0]?.exitCode).toBeDefined()
       expect(await isLivePid(sleeper.pid, lstart)).toBe(false)
@@ -311,7 +311,7 @@ describe("probePort", () => {
       errors.push(args.map(String).join(" "))
     }
     try {
-      await runSupervised([{ name: "tek", cmd: "echo hi", port: holder.port }], { rootDir: root })
+      await runSupervised([{ name: "single", cmd: "echo hi", port: holder.port }], { rootDir: root })
     } finally {
       console.error = orig
       holder.stop(true)
@@ -331,7 +331,7 @@ describe("probePort", () => {
       errors.push(args.map(String).join(" "))
     }
     try {
-      await runSupervised([{ name: "bos", cmd: "echo hi", port }], { rootDir: root })
+      await runSupervised([{ name: "empty", cmd: "echo hi", port }], { rootDir: root })
     } finally {
       console.error = orig
       await rm(root, { recursive: true, force: true })
@@ -347,7 +347,7 @@ describe("supervisor file classification", () => {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       expect(await classifySupervisorFile(paths.supervisorFile)).toBe("missing")
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       expect(await classifySupervisorFile(paths.supervisorFile)).toBe("corrupt")
       await writeFile(paths.supervisorFile, JSON.stringify({ version: 99, services: [] }), "utf8")
       expect(await classifySupervisorFile(paths.supervisorFile)).toBe("bad-version")
@@ -372,7 +372,7 @@ describe("down exit codes", () => {
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       expect(await run(["down", "--file", file])).toBe(1)
       expect(existsSync(paths.supervisorFile)).toBe(true)
     } finally {
@@ -397,7 +397,7 @@ describe("down exit codes", () => {
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       expect(await run(["down", "--file", file, "--rm"])).toBe(0)
       expect(existsSync(paths.supervisorFile)).toBe(false)
     } finally {
@@ -462,7 +462,7 @@ describe("ow up --check with depends_on", () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
-      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    depends_on: [yok]\n", "utf8")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    depends_on: [missing]\n", "utf8")
       expect(await run(["up", "--check", "--file", file])).toBe(2)
       expect(await run(["up", "-d", "--file", file])).toBe(2)
       expect(existsSync(join(root, ".ow"))).toBe(false)
@@ -636,7 +636,7 @@ describe("polish: --check order + nesting hint", () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
-      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    depends_on: [yok]\n", "utf8")
+      await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    depends_on: [missing]\n", "utf8")
       const io = capture()
       try {
         expect(await run(["up", "--check", "--file", file])).toBe(2)
@@ -673,7 +673,7 @@ describe("H5 empty-lstart refusal", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt: new Date().toISOString(),
-        services: [{ name: "kor", pid: sleeper.pid, lstart: "", startedAt: new Date().toISOString() }],
+        services: [{ name: "blind", pid: sleeper.pid, lstart: "", startedAt: new Date().toISOString() }],
       })
       const outcome = await downAll(root)
       expect(outcome.results).toHaveLength(1)
@@ -701,7 +701,7 @@ describe("H5 empty-lstart refusal", () => {
         startedAt: new Date().toISOString(),
         services: [
           {
-            name: "kuyruk",
+            name: "tail",
             pid: main.pid,
             lstart: mainLstart,
             startedAt: new Date().toISOString(),
@@ -727,12 +727,12 @@ describe("M1 downAll corrupt gate", () => {
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       await expect(downAll(root)).rejects.toThrow(/corrupt/)
       expect(existsSync(paths.supervisorFile)).toBe(true)
       await writeFile(paths.supervisorFile, JSON.stringify({ version: 99, services: [] }), "utf8")
       await expect(downAll(root)).rejects.toThrow(/version/)
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       const outcome = await downAll(root, true)
       expect(outcome.removedState).toBe(true)
       expect(existsSync(paths.supervisorFile)).toBe(false)
@@ -748,7 +748,7 @@ describe("M2 corrupt lock", () => {
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      await writeFile(paths.lockFile, "bozuk {{{", "utf8")
+      await writeFile(paths.lockFile, "corrupt {{{", "utf8")
       expect(await lockFileShape(paths.lockFile)).toBe("corrupt")
       expect((await classifyLock(paths.lockFile)).kind).toBe("corrupt")
       const warnings: string[] = []

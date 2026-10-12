@@ -103,11 +103,11 @@ const STATUS_WORD: Record<string, string> = {
   stale: "stale",
 }
 
-/** Locked summary lines live here (exact strings, Turkish). */
+/** Locked summary lines live here (exact strings, English). */
 export const NO_FINDINGS = "no findings"
 export const singletonLine = (count: number): string => `no-repeat: ${count} unique findings unlisted`
 
-/** Mechanical bucket line (Turkish words, runner-declared values only).
+/** Mechanical bucket line (English words, runner-declared values only).
  * A missing step renders as `-` (human output only; `--json` carries
  * null so a literal runner-declared `"-"` step stays distinguishable). */
 export const formatFailureGroup = (group: FailureTuple): string => {

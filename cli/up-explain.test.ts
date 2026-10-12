@@ -1,5 +1,5 @@
-/** M2 explain: kayıtlı-değer render (ps yolu git/lsof çalıştırmaz) +
- * reconcile rev-satırları + checkout-değişim gate kanıtı. */
+/** M2 explain: recorded-value render (the ps path does not run git/lsof) +
+ * reconcile rev lines + checkout-change gate evidence. */
 
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
@@ -57,7 +57,7 @@ const liveView = (name: string, pid: number, overrides: Partial<PsServiceView> =
 const recordOf = (entry: Record<string, unknown>): UpServiceState => entry as unknown as UpServiceState
 
 describe("explainServices (saf)", () => {
-  test("uyumlu servis: fark yok, M3 nedeni (portlu + UP)", () => {
+  test("matching service: no diff, M3 reason (ported + UP)", () => {
     const items = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30", cwd: ".", port: 3000 }],
@@ -71,7 +71,7 @@ describe("explainServices (saf)", () => {
     expect(items[0].explanation.neden).toContain("add an M3 probe")
   })
 
-  test("config farkları + neden önceliği", () => {
+  test("config diffs + reason priority", () => {
     const items = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 60", cwd: ".", port: 3001, env: { A: "x" } as never }],
@@ -88,36 +88,36 @@ describe("explainServices (saf)", () => {
     expect(items[0].explanation.neden).toContain("ow restart a")
   })
 
-  test("ölü/kayıtsız/tanımsız + lstart kararları", () => {
+  test("dead/unrecorded/undefined + lstart verdicts", () => {
     const items = explainServices({
       rootDir: "/r",
-      expected: [{ name: "a", cmd: "sleep 1" }, { name: "yeni", cmd: "echo hi" }],
+      expected: [{ name: "a", cmd: "sleep 1" }, { name: "new", cmd: "echo hi" }],
       views: [
         { name: "a", status: "stopped", pid: 11, uptimeSec: 1, cpuPct: null, memBytes: null },
-        { name: "hayalet", status: "unknown", pid: 12, uptimeSec: 1, cpuPct: null, memBytes: null },
+        { name: "ghost", status: "unknown", pid: 12, uptimeSec: 1, cpuPct: null, memBytes: null },
       ],
       records: [
         recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 1" }),
-        recordOf({ name: "hayalet", pid: 12, lstart: "yabancı", startedAt: "t", cmd: "sleep 1" }),
+        recordOf({ name: "ghost", pid: 12, lstart: "foreign", startedAt: "t", cmd: "sleep 1" }),
       ],
       snapshotOk: true,
     })
     const byName = new Map(items.map((item) => [item.service, item.explanation]))
     expect(byName.get("a")?.running).toMatchObject({ lstart: "dead" })
     expect(byName.get("a")?.neden).toContain("ow restart a")
-    expect(byName.get("hayalet")?.running).toMatchObject({ lstart: "mismatch" })
-    expect(byName.get("hayalet")?.diffs.join("\n")).toContain("lstart mismatch")
-    expect(byName.get("yeni")?.running).toBeNull()
-    expect(byName.get("yeni")?.neden).toContain("ow up yeni")
-    expect(byName.get("hayalet")?.expected).toBeNull()
-    expect(byName.get("hayalet")?.neden).toContain("ow down hayalet")
+    expect(byName.get("ghost")?.running).toMatchObject({ lstart: "mismatch" })
+    expect(byName.get("ghost")?.diffs.join("\n")).toContain("lstart mismatch")
+    expect(byName.get("new")?.running).toBeNull()
+    expect(byName.get("new")?.neden).toContain("ow up new")
+    expect(byName.get("ghost")?.expected).toBeNull()
+    expect(byName.get("ghost")?.neden).toContain("ow down ghost")
   })
 
-  test("kör lstart + kirli checkout + UNVERIFIED rev", () => {
+  test("blind lstart + dirty checkout + UNVERIFIED rev", () => {
     const items = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30" }],
-      views: [{ name: "a", status: "unknown", pid: 11, uptimeSec: 1, cpuPct: null, memBytes: null, note: "lstart bilinmiyor" }],
+      views: [{ name: "a", status: "unknown", pid: 11, uptimeSec: 1, cpuPct: null, memBytes: null, note: "lstart unknown" }],
       records: [
         recordOf({
           name: "a",
@@ -146,7 +146,7 @@ describe("explainServices (saf)", () => {
     expect(formatExplanation(noRev[0]).join("\n")).toContain("rev=unverifiable(UNVERIFIED)")
   })
 
-  test("readiness tanımı + son-bilinen (maskeli, çalıştırmaz)", () => {
+  test("readiness definition + last-known (masked, never runs it)", () => {
     const spec = { probe: ["./x.sh", "--token", "hunter2"], timeout: "10s" as const, needsPort: true }
     const defined = explainServices({
       rootDir: "/r",
@@ -229,7 +229,7 @@ describe("ps --explain CLI", () => {
     return { root, file, pid: proc.pid, lstart }
   }
 
-  test("insan bloğu: beklenen/çalışan/fark/neden", async () => {
+  test("human block: expected/running/diff/reason", async () => {
     const { root, file } = await fixture()
     try {
       const io = capture()
@@ -251,7 +251,7 @@ describe("ps --explain CLI", () => {
     }
   })
 
-  test("--json: explanation zarfı, ham argv yok, sentinel yok", async () => {
+  test("--json: explanation envelope, no raw argv, no sentinel", async () => {
     const { root, file } = await fixture()
     try {
       const io = capture()
@@ -275,7 +275,7 @@ describe("ps --explain CLI", () => {
     }
   })
 
-  test("tek servis filtresi + bilinmeyen servis exit 2", async () => {
+  test("single-service filter + unknown service exit 2", async () => {
     const { root, file } = await fixture()
     try {
       const io = capture()
@@ -285,7 +285,7 @@ describe("ps --explain CLI", () => {
         io.restore()
       }
       expect(io.out.join("\n")).toContain("a:")
-      expect(await run(["ps", "--explain", "yok", "--file", file])).toBe(2)
+      expect(await run(["ps", "--explain", "missing", "--file", file])).toBe(2)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -300,7 +300,7 @@ describe("ps --explain CLI", () => {
     }
   })
 
-  test("çalışan satırı cwd render eder; düşmüşse UNVERIFIED", () => {
+  test("the running line renders cwd; UNVERIFIED if dropped", () => {
     const withCwd = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30" }],
@@ -321,7 +321,7 @@ describe("ps --explain CLI", () => {
     expect(formatExplanation(dropped[0]).join("\n")).toContain("cwd=unverifiable(UNVERIFIED)")
   })
 
-  test("--explain yalnızca ps dalında okunur (M-C emsali guard'lar)", async () => {
+  test("--explain is read only in the ps branch (M-C precedent guards)", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -330,7 +330,7 @@ describe("ps --explain CLI", () => {
         ["up", "--check", "--explain", "--file", file],
         ["down", "--explain", "--file", file],
         ["reconcile", "--check", "--explain", "--file", file],
-        ["show", "yok-oturum", "--explain"],
+        ["show", "missing-session", "--explain"],
       ]) {
         const io = capture()
         let code = -1
@@ -347,7 +347,7 @@ describe("ps --explain CLI", () => {
     }
   })
 
-  test("secret env değeri hiçbir yola girmez (.env içerik + env değeri)", async () => {
+  test("a secret env value enters no path (.env content + env value)", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -387,7 +387,7 @@ describe("ps --explain CLI", () => {
   })
 })
 
-describe("B4: ps yolu git/lsof çalıştırmaz (sayaç kanıtı)", () => {
+describe("B4: the ps path does not run git/lsof (counter proof)", () => {
   const fakeBin = async (): Promise<{ dir: string; countFile: string }> => {
     const dir = await mkdtemp(join(tmpdir(), "ow-fakebin-"))
     const countFile = join(dir, "count.log")
@@ -402,7 +402,7 @@ describe("B4: ps yolu git/lsof çalıştırmaz (sayaç kanıtı)", () => {
     return { dir, countFile }
   }
 
-  test("explain sahte git/lsof'a dokunmaz (sayaç 0)", async () => {
+  test("explain does not touch the fake git/lsof (counter 0)", async () => {
     const root = await tempRoot()
     const { dir, countFile } = await fakeBin()
     try {
@@ -427,7 +427,7 @@ describe("B4: ps yolu git/lsof çalıştırmaz (sayaç kanıtı)", () => {
       } finally {
         io.restore()
       }
-      // reconcile --check YASAL olarak git çalıştırır (B4-b); ps yolları çalıştırmaz.
+      // reconcile --check LEGALLY runs git (B4-b); the ps paths do not.
       const log = await readFile(countFile, "utf8")
       expect(log).not.toMatch(/lsof/)
       const io2 = capture()
@@ -444,7 +444,7 @@ describe("B4: ps yolu git/lsof çalıştırmaz (sayaç kanıtı)", () => {
     }
   })
 
-  test("spawn yolu aynı sahte git'i çağırır (enjeksiyon çalışıyor)", async () => {
+  test("the spawn path calls the same fake git (injection works)", async () => {
     const root = await tempRoot()
     const { dir, countFile } = await fakeBin()
     try {
@@ -467,7 +467,7 @@ describe("B4: ps yolu git/lsof çalıştırmaz (sayaç kanıtı)", () => {
     }
   })
 
-  test("up-ps.ts kaynağında git/lsof exec izi yok (korkuluk)", async () => {
+  test("no git/lsof exec trace in the up-ps.ts source (guardrail)", async () => {
     const src = await readFile(resolve(import.meta.dir, "up-ps.ts"), "utf8")
     expect(src).not.toContain("lsof")
     expect(src).not.toMatch(/["']git["']/)
@@ -476,7 +476,7 @@ describe("B4: ps yolu git/lsof çalıştırmaz (sayaç kanıtı)", () => {
   })
 })
 
-describe("gate: checkout-değişimi restart-sız eski rev gösterir", () => {
+describe("gate: a checkout change shows the old rev without restart", () => {
   const hasGit = async (): Promise<boolean> => {
     try {
       const proc = Bun.spawn(["git", "--version"], { stdout: "ignore", stderr: "ignore" })
@@ -495,12 +495,12 @@ describe("gate: checkout-değişimi restart-sız eski rev gösterir", () => {
       env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: root },
     })
     await proc.exited
-    if (proc.exitCode !== 0) throw new Error(`git ${args.join(" ")} patladı`)
+    if (proc.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed`)
   }
 
-  test("reconcile fark-satırı + explain kayıtlı rev (restart yok)", async () => {
+  test("reconcile diff line + explain recorded rev (no restart)", async () => {
     if (!(await hasGit())) {
-      console.log("atlandı: git yok")
+      console.log("skipped: no git")
       return
     }
     const root = await tempRoot()
@@ -527,14 +527,14 @@ describe("gate: checkout-değişimi restart-sız eski rev gösterir", () => {
         const start = Date.now()
         for (;;) {
           if (await cond()) return
-          if (Date.now() - start > 15000) throw new Error("supervisor kaydı beklenemedi")
+          if (Date.now() - start > 15000) throw new Error("supervisor record could not be awaited")
           await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
         }
       }
       await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services[0]?.provenance !== undefined)
       const rev1 = (await readSupervisorState(paths.supervisorFile))?.services[0]?.provenance?.checkout?.rev
       expect(rev1).toMatch(/^[0-9a-f]{40}$/)
-      // Checkout değişir, restart YOK.
+      // The checkout changes, NO restart.
       await writeFile(join(root, "iz.txt"), "v2\n", "utf8")
       await git(root, ["add", "-A"])
       await git(root, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "rev2"])
@@ -568,8 +568,8 @@ describe("gate: checkout-değişimi restart-sız eski rev gösterir", () => {
   }, 60000)
 })
 
-describe("merge: provenance respawn'da düşer", () => {
-  test("yeni kimlik eski checkout'u diriltmez", async () => {
+describe("merge: provenance drops on respawn", () => {
+  test("a new identity does not revive the old checkout", async () => {
     const { mergePreservingSettled } = await import("./up-supervisor")
     const merged = mergePreservingSettled(
       [
@@ -578,7 +578,7 @@ describe("merge: provenance respawn'da düşer", () => {
           pid: 1,
           lstart: "x",
           startedAt: "t",
-          provenance: { checkout: { rev: "eski", source: "observed" as const }, recordedAt: "t" },
+          provenance: { checkout: { rev: "old", source: "observed" as const }, recordedAt: "t" },
         },
       ],
       [{ name: "a", pid: 2, lstart: "y", startedAt: "t2" }],
@@ -591,17 +591,17 @@ describe("merge: provenance respawn'da düşer", () => {
           pid: 1,
           lstart: "x",
           startedAt: "t",
-          provenance: { checkout: { rev: "eski", source: "observed" as const }, recordedAt: "t" },
+          provenance: { checkout: { rev: "old", source: "observed" as const }, recordedAt: "t" },
         },
       ],
       [{ name: "a", pid: 1, lstart: "x", startedAt: "t2" }],
     )
-    expect(same[0].provenance).toMatchObject({ checkout: { rev: "eski" } })
+    expect(same[0].provenance).toMatchObject({ checkout: { rev: "old" } })
   })
 })
 
-describe("M-C explain derleme kimliği (basename + kısa-8)", () => {
-  test("kayıtlı harita indirgenmiş listelenir (≤32 + sayaç)", () => {
+describe("M-C explain build identity (basename + short-8)", () => {
+  test("the recorded map is listed reduced (≤32 + counter)", () => {
     const digests: Record<string, string> = { "api.jar": "a1b2c3d4e5f6", "extra.jar": "ffffffffffff" }
     const items = explainServices({
       rootDir: "/r",
@@ -620,7 +620,7 @@ describe("M-C explain derleme kimliği (basename + kısa-8)", () => {
     expect(lines.join("\n")).not.toContain("a1b2c3d4e5f6")
   })
 
-  test("33 kayıt: 32 + sayaç; kayıtsız: satır yok", () => {
+  test("33 records: 32 + counter; unrecorded: no line", () => {
     const digests: Record<string, string> = Object.fromEntries(
       Array.from({ length: 33 }, (_, i) => [`s${String(i).padStart(2, "0")}.jar`, "a1b2c3d4e5"]),
     )
@@ -642,10 +642,10 @@ describe("M-C explain derleme kimliği (basename + kısa-8)", () => {
       snapshotOk: true,
     })
     expect(bare[0].explanation.artifacts).toEqual({ shown: [], rest: 0 })
-    expect(formatExplanation(bare[0]).join("\n")).not.toContain("derleme:")
+    expect(formatExplanation(bare[0]).join("\n")).not.toContain("build:")
   })
 
-  test("JSON katkımsal artifacts taşır (indirgenmiş)", async () => {
+  test("JSON carries additive artifacts (reduced)", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")

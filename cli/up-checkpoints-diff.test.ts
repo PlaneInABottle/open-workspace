@@ -185,8 +185,8 @@ describe("checkpoints diff (M12, read-only)", () => {
     try {
       const file = await yamlFile(root)
       await writeRun(root, "runA", `${envLine("build", "confirmed", { ok: true })}\n`)
-      const bozuk = await readFile(join(FIXTURES, "checkpoints-bozuk.jsonl"), "utf8")
-      await writeRun(root, "runB", bozuk)
+      const corrupt = await readFile(join(FIXTURES, "checkpoints-corrupt.jsonl"), "utf8")
+      await writeRun(root, "runB", corrupt)
       const io = capture()
       let code = -1
       try {

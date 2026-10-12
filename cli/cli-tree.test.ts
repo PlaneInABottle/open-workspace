@@ -107,15 +107,15 @@ describe("tree builder", () => {
   const fixture = () => {
     const by = new Map<string, EnrichedRecord[]>()
     by.set("ses_parent", [
-      rec({ command: "echo start", outcome: "success", taskRef: "iş", timestamp: "2026-10-05T10:00:00.000Z" }),
-      subagentRow("ses_child_b", "implementer", "ikinci iş", "2026-10-05T10:02:00.000Z"),
-      subagentRow("ses_child_a", "explore", "ilk iş", "2026-10-05T10:01:00.000Z"),
+      rec({ command: "echo start", outcome: "success", taskRef: "job", timestamp: "2026-10-05T10:00:00.000Z" }),
+      subagentRow("ses_child_b", "implementer", "second job", "2026-10-05T10:02:00.000Z"),
+      subagentRow("ses_child_a", "explore", "first job", "2026-10-05T10:01:00.000Z"),
     ])
     by.set("ses_child_a", [
-      rec({ command: "grep x", outcome: "success", taskRef: "ara", timestamp: "2026-10-05T10:03:00.000Z", sessionID: "ses_child_a" }),
+      rec({ command: "grep x", outcome: "success", taskRef: "search", timestamp: "2026-10-05T10:03:00.000Z", sessionID: "ses_child_a" }),
     ])
     by.set("ses_child_b", [
-      rec({ command: "ls", outcome: "success", taskRef: "listele", timestamp: "2026-10-05T10:04:00.000Z", sessionID: "ses_child_b" }),
+      rec({ command: "ls", outcome: "success", taskRef: "list", timestamp: "2026-10-05T10:04:00.000Z", sessionID: "ses_child_b" }),
     ])
     return by
   }
@@ -123,40 +123,40 @@ describe("tree builder", () => {
   test("spawn links match agent+sessionID+description in chronological order", () => {
     const links = parseSpawnLinks(fixture().get("ses_parent")!)
     expect(links.map((l) => l.childSessionID)).toEqual(["ses_child_a", "ses_child_b"])
-    expect(links[0]).toMatchObject({ agent: "explore", description: "ilk iş" })
-    expect(links[1]).toMatchObject({ agent: "implementer", description: "ikinci iş" })
+    expect(links[0]).toMatchObject({ agent: "explore", description: "first job" })
+    expect(links[1]).toMatchObject({ agent: "implementer", description: "second job" })
   })
 
   test("children nest under spawn points, orphans still shown", () => {
     const by = fixture()
-    by.set("ses_orphan", [rec({ command: "echo sahipsiz", outcome: "success", taskRef: "kayıp" })])
+    by.set("ses_orphan", [rec({ command: "echo orphan", outcome: "success", taskRef: "lost" })])
     const root = buildTree("ses_parent", by)
     expect(root.children.map((c) => c.sessionID)).toEqual(["ses_child_a", "ses_child_b", "ses_orphan"])
     expect(root.children[2].link).toBeNull()
     const text = formatTree(root, by)
     expect(text).toContain("session ses_parent")
-    expect(text).toContain("↳ child [explore] ilk iş — ses_child_a")
-    expect(text).toContain("↳ child [implementer] ikinci iş — ses_child_b")
+    expect(text).toContain("↳ child [explore] first job — ses_child_a")
+    expect(text).toContain("↳ child [implementer] second job — ses_child_b")
     expect(text).toContain("(unlinked)")
     // child sections reuse grouped lines with short-id tags, indented
-    expect(text).toContain("  task: ara")
+    expect(text).toContain("  task: search")
     expect(text).toContain("[ses_child_a]")
   })
 
   test("subtrees deeper than 2 collapse to a ... line", () => {
     const by = new Map<string, EnrichedRecord[]>()
     const chain = ["ses_0", "ses_1", "ses_2", "ses_3"] as const
-    by.set("ses_0", [subagentRow("ses_1", "a", "bir", "2026-10-05T10:00:00.000Z")])
+    by.set("ses_0", [subagentRow("ses_1", "a", "one", "2026-10-05T10:00:00.000Z")])
     // fix parent tag on the spawn row (helper defaults to ses_parent)
     ;(by.get("ses_0")![0] as Record<string, unknown>).sessionID = "ses_0"
-    by.set("ses_1", [rec({ kind: "tool-call", tool: "subagent", args: JSON.stringify({ agent: "a", sessionID: "ses_2", description: "iki" }), timestamp: "2026-10-05T10:01:00.000Z", outcome: "completed", sessionID: "ses_1" })])
-    by.set("ses_2", [rec({ kind: "tool-call", tool: "subagent", args: JSON.stringify({ agent: "a", sessionID: "ses_3", description: "üç" }), timestamp: "2026-10-05T10:02:00.000Z", outcome: "completed", sessionID: "ses_2" })])
-    by.set("ses_3", [rec({ command: "echo derin", outcome: "success", taskRef: "derin", sessionID: "ses_3" })])
+    by.set("ses_1", [rec({ kind: "tool-call", tool: "subagent", args: JSON.stringify({ agent: "a", sessionID: "ses_2", description: "two" }), timestamp: "2026-10-05T10:01:00.000Z", outcome: "completed", sessionID: "ses_1" })])
+    by.set("ses_2", [rec({ kind: "tool-call", tool: "subagent", args: JSON.stringify({ agent: "a", sessionID: "ses_3", description: "three" }), timestamp: "2026-10-05T10:02:00.000Z", outcome: "completed", sessionID: "ses_2" })])
+    by.set("ses_3", [rec({ command: "echo deep", outcome: "success", taskRef: "deep", sessionID: "ses_3" })])
     const root = buildTree("ses_0", by)
     expect(root.children[0].children[0].children[0].sessionID).toBe("ses_3")
     const text = formatTree(root, by)
     expect(text).toContain("...")
-    expect(text).not.toContain("echo derin")
+    expect(text).not.toContain("echo deep")
     expect(treeIds(root)).toEqual({
       sessionID: "ses_0",
       children: [

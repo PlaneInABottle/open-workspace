@@ -53,7 +53,7 @@ describe("up-schema", () => {
   test("conflicting aliases and missing cmd+logs error", () => {
     expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    command: y\n")).toThrow(UpSchemaError)
     expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    cwd: one\n    working_dir: two\n")).toThrow(UpSchemaError)
-    expect(() => parseUpFile("services:\n  a:\n    port: 3000\n")).toThrow(/cmd ya da logs/)
+    expect(() => parseUpFile("services:\n  a:\n    port: 3000\n")).toThrow(/cmd or logs required/)
     expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    port: 99999\n")).toThrow(/invalid port/)
     expect(() => parseUpFile("services: []\n")).toThrow(/map required/)
     expect(() => parseUpFile("version: 1\n")).toThrow(/map required/)
@@ -77,9 +77,9 @@ describe("up-schema", () => {
     }
     expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    env:\n      A: b\n"))).toBe(true)
     expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    ports:\n      - 3000\n"))).toBe(true)
-    expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    depends_on: [yok]\n"))).toBe(false)
+    expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    depends_on: [missing]\n"))).toBe(false)
     expect(isSubsetNestingError(trap("services:\n  a:\n    cmd: x\n    port: 99999\n"))).toBe(false)
-    expect(isSubsetNestingError(new Error("başka hata"))).toBe(false)
+    expect(isSubsetNestingError(new Error("other error"))).toBe(false)
   })
 
   test("version: is ignored with a warning", () => {
@@ -291,7 +291,7 @@ describe("depends_on ordering", () => {
   })
 
   test("unknown dep names the service and the missing name", () => {
-    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [yok]\n")).toThrow(/a: unknown service inside depends_on: yok/)
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [missing]\n")).toThrow(/a: unknown service inside depends_on: missing/)
   })
 
   test("self-dep fails", () => {
@@ -342,7 +342,7 @@ describe("readiness definition (M3)", () => {
     expect(file.services[0].readiness).toBeDefined()
   })
 
-  test("schema errors: scalar/block forms, bad probe, bad timeout, shell, portsuz", () => {
+  test("schema errors: scalar/block forms, bad probe, bad timeout, shell, portless", () => {
     expect(() => parseUpFile(base("    readiness: ./x.sh"))).toThrow(/inline map/)
     expect(() => parseUpFile("services:\n  api:\n    cmd: x\n    port: 1\n    readiness:\n      probe: [./x.sh]\n")).toThrow(/level 3/)
     expect(() => parseUpFile(base("    readiness: {timeout: 10s}"))).toThrow(/probe must be a list/)
@@ -352,21 +352,21 @@ describe("readiness definition (M3)", () => {
     expect(() => parseUpFile(base(`    readiness: {probe: [${"x".repeat(513)}]}`))).toThrow(/512/)
     expect(() => parseUpFile(base("    readiness: {probe: [sh, -c, echo hi]}"))).toThrow(/shell/)
     expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], timeout: 60s}"))).toThrow(/must be 5s|10s|30s/)
-    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], needsPort: evet}"))).toThrow(/must be true\/false/)
+    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], needsPort: yes}"))).toThrow(/must be true\/false/)
     expect(() => parseUpFile("services:\n  api:\n    cmd: x\n    readiness: {probe: [./x.sh]}\n")).toThrow(/no port is defined/)
   })
 
-  test("shell argv0 reddi: path/case/.exe varyantları; powershell|cmd POSIX-dışı ret", () => {
+  test("shell argv0 rejection: path/case/.exe variants; powershell|cmd rejected as non-POSIX", () => {
     const evil = (argv: string): string =>
       `services:\n  api:\n    cmd: x\n    port: 1\n    readiness: {probe: [${argv}]}\n`
     for (const bad of ["sh", "/bin/sh", "Sh", "SH", "sh.exe", "SH.EXE", "/usr/bin/bash", "TCSH", "csh", "dash", "fish", "ksh"]) {
       expect(() => parseUpFile(evil(`${bad}, -c, echo hi`))).toThrow(/must not start with a shell/)
     }
-    // powershell|cmd şemada shell sayılmaz (gerekçe: POSIX platform,
-    // Windows deferred) — davranış pinli, sessiz değişim yok.
+    // powershell|cmd are not counted as shell in the schema (rationale: POSIX
+    // platform, Windows deferred) — behavior pinned, no silent change.
     expect(parseUpFile(evil("powershell, -c, echo hi")).services[0].readiness).toBeDefined()
     expect(parseUpFile(evil("cmd, /c, echo hi")).services[0].readiness).toBeDefined()
-    // Normal argv geçer (./ ön-eki, mutlak yol, ters-bölü POSIX dosya adıdır).
+    // A normal argv passes (./ prefix, absolute path, a backslash is a POSIX file name char).
     expect(parseUpFile(evil("./ready.sh, --local")).services[0].readiness).toBeDefined()
     expect(parseUpFile(evil("/opt/bin/check, --token, x")).services[0].readiness).toBeDefined()
     expect(parseUpFile(evil("bin\\sh, -c, echo hi")).services[0].readiness).toBeDefined()

@@ -84,7 +84,7 @@ export interface CoordinatorDrift {
 export interface CoordinatorReadinessEntry {
   serviceId: string;
   name: string;
-  /** Kayıtlı kökün dizin adı — tam path asla wire'a girmez. */
+  /** Directory name of the recorded root — a full path never enters the wire. */
   dir: string | null;
   status: string;
   detail: string;
@@ -118,13 +118,13 @@ export interface CoordinatorCheckpointStage {
   stage: string;
   status: CheckpointStageStatus;
   staleReason: string | null;
-  /** Zarf kayıt saati (stage yaşı kaynağı). */
+  /** Envelope record time (the stage-age source). */
   at: string;
-  /** M-A (#2): ham İngilizce bayrak (`null` ≡ eksik → `bilinmiyor`). */
+  /** M-A (#2): raw English flag (`null` ≡ missing → `unknown`). */
   sideEffect: string | null;
   sideEffectAttempted: number | null;
   sideEffectConfirmed: number | null;
-  /** M-A (#3): soy (ikisi de `null` → sahipsiz, ağaç-dışı). */
+  /** M-A (#3): lineage (both `null` → unattributed, outside the tree). */
   scenario: string | null;
   attempt: number | null;
   stepSignature: string | null;
@@ -132,22 +132,22 @@ export interface CoordinatorCheckpointStage {
 
 export interface CoordinatorCheckpoints {
   run: string;
-  /** Keşfedilen run adları (yeni→eski); ?run= seçimi buradan yapılır. */
+  /** Discovered run names (new→old); the ?run= selection comes from here. */
   runs: string[];
   stages: CoordinatorCheckpointStage[];
   summary: { confirmed: number; stale: number; notObserved: number };
   lastVerified: { stage: string; at: string } | null;
   firstGap: { stage: string; status: CheckpointStageStatus; staleReason: string | null; at: string } | null;
-  /** Salt-metin öneri — butona bağlanmaz. */
+  /** Plain-text suggestion — not wired to a button. */
   safeNextAction: string | null;
-  /** M-A (#2): true → kilitli `tekrar-öncesi` metni (eylem yok). */
+  /** M-A (#2): true → the locked `before-retry` text (no action). */
   retryHint: boolean;
 }
 
 export interface CoordinatorRevision {
-  /** Ekrandaki tek temsil (7 karakter). */
+  /** The single on-screen representation (7 characters). */
   short: string;
-  /** YALNIZCA kopyala-butonu clipboard payload'ı — DOM'a yazılmaz. */
+  /** ONLY the copy button's clipboard payload — never written to the DOM. */
   full: string;
   at: string | null;
   current: boolean;
@@ -165,7 +165,7 @@ export interface CoordinatorExplanationEntry {
   revRecorded: boolean;
   diffs: string[];
   note: string;
-  /** M-C derleme kimliği (indirgenmiş: maskeli-basename + kısa-8). */
+  /** M-C build identity (reduced: masked-basename + short-8). */
   artifacts: { base: string; digest: string }[];
   artifactRest: number;
 }
@@ -181,20 +181,20 @@ export interface ScenarioMatrixRow {
   name: string;
   services: string[];
   unverifiedServices: string[];
-  /** YALNIZCA id + timeout: probe argv dosyada kalır, wire'a çıkmaz. */
+  /** ONLY id + timeout: the probe argv stays in the file, never reaches the wire. */
   probes: { id: string; timeout: string }[];
   checkpoints: string[];
-  /** Sütun adından hücre hükmüne (sıra `columns` dizisindedir). */
+  /** From the column name to the cell verdict (order is in the `columns` array). */
   cells: Record<string, ScenarioVerdict>;
 }
 
 export interface CoordinatorScenarios {
-  /** Dosya adı (path değil) — köklerde hep `ow.scenarios.yaml`. */
+  /** File name (not a path) — always `ow.scenarios.yaml` in the roots. */
   file: string;
   columns: string[];
   rows: ScenarioMatrixRow[];
   warnings: string[];
-  /** Bozuk dosya: satırlar boş + neden burada (diğer paneller sağlam). */
+  /** Corrupt file: lines empty + the reason here (the other panels stay intact). */
   error: string | null;
   /** M9 overlay source tags (additive-optional): present only when the
    * local convention applied server-side; absent on old wire. */
@@ -251,13 +251,13 @@ export interface CoordinatorSnapshot {
   preflight: CoordinatorPreflight;
   checkpoints: CoordinatorCheckpoints | null;
   /**
-   * Keşfedilen checkpoint run adları (yeni→eski) — checkpoints null iken
-   * bile dolu olabilir; null dalındaki çalışma seçici buradan beslenir.
+   * Discovered checkpoint run names (new→old) — may be non-empty even while
+   * checkpoints is null; the run selector in the null branch is fed from here.
    */
   runs: string[];
   /**
-   * Dosya yoksa null ("senaryo dosyası bağlı değil"); bozuk dosya
-   * error'lu nesne (hata kutusu).
+   * null when the file is missing ("no scenario file attached"); a corrupt file
+   * is an object with error (error box).
    */
   scenarios: CoordinatorScenarios | null;
   /** Readiness strip (M8, additive-optional): absent without a bound

@@ -48,7 +48,7 @@ describe("doctor up line without sidecars", () => {
   test("no recorded build and no disk sidecar stays silent (existing wording)", async () => {
     const root = await tempRoot()
     try {
-      const lines = await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })
+      const lines = await doctor({ logPath: join(root, "missing.jsonl"), dbPath: join(root, "missing.db"), upRoot: root })
       const up = lines.find((line) => line.name === "up")
       expect(up?.detail).toBe("idle (no running supervisor) — hint: ow reconcile --check")
     } finally {
@@ -63,17 +63,17 @@ describe("doctor up line without sidecars", () => {
       const { readLstart, upPaths } = await import("./up-state")
       const paths = upPaths(root)
       await mkdir(paths.stateDir, { recursive: true })
-      // Stale lock (dead pid) → `bayat` + hint.
+      // Stale lock (dead pid) → `stale` + hint.
       await write(paths.lockFile, JSON.stringify({ pid: 987654321, lstart: "bogus", startedAt: new Date().toISOString() }), "utf8")
-      const stale = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
+      const stale = (await doctor({ logPath: join(root, "missing.jsonl"), dbPath: join(root, "missing.db"), upRoot: root })).find(
         (line) => line.name === "up",
       )
       expect(stale?.ok).toBe(false)
       expect(stale?.detail).toContain("stale")
       expect(stale?.detail).toContain("hint: ow reconcile --check")
-      // Corrupt lock → `doğrulanamıyor` + hint.
-      await write(paths.lockFile, "bozuk{{{", "utf8")
-      const corrupt = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
+      // Corrupt lock → `unverifiable` + hint.
+      await write(paths.lockFile, "corrupt{{{", "utf8")
+      const corrupt = (await doctor({ logPath: join(root, "missing.jsonl"), dbPath: join(root, "missing.db"), upRoot: root })).find(
         (line) => line.name === "up",
       )
       expect(corrupt?.detail).toContain("unverifiable")
@@ -83,7 +83,7 @@ describe("doctor up line without sidecars", () => {
       try {
         const lstart = (await readLstart(keeper.pid))!
         await write(paths.lockFile, JSON.stringify({ pid: keeper.pid, lstart, startedAt: new Date().toISOString() }), "utf8")
-        const live = (await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })).find(
+        const live = (await doctor({ logPath: join(root, "missing.jsonl"), dbPath: join(root, "missing.db"), upRoot: root })).find(
           (line) => line.name === "up",
         )
         expect(live?.ok).toBe(true)
@@ -103,9 +103,9 @@ describe("doctor up line without sidecars", () => {
       const { acquireLock, upPaths } = await import("./up-state")
       const paths = upPaths(root)
       await mkdir(paths.stateDir, { recursive: true })
-      await write(paths.supervisorFile, "bozuk{{{")
+      await write(paths.supervisorFile, "corrupt{{{")
       await acquireLock(paths.lockFile, [])
-      const lines = await doctor({ logPath: join(root, "yok.jsonl"), dbPath: join(root, "yok.db"), upRoot: root })
+      const lines = await doctor({ logPath: join(root, "missing.jsonl"), dbPath: join(root, "missing.db"), upRoot: root })
       const up = lines.find((line) => line.name === "up")
       expect(up?.detail).toBe("running (no state)")
     } finally {

@@ -144,25 +144,25 @@ describe("signature", () => {
 describe("groupByTask", () => {
   test("shows one taskRef header and collapses repeats with xN", () => {
     const records = [
-      { command: "uv run pytest a", outcome: "failure", intent: "deneme 1", messageID: "m1", taskRef: "testleri geçir" },
-      { command: "uv run pytest a", outcome: "failure", intent: "deneme 2", messageID: "m2", taskRef: "testleri geçir" },
-      { command: "uv run pytest a", outcome: "success", intent: "oldu", messageID: "m3", taskRef: "testleri geçir" },
+      { command: "uv run pytest a", outcome: "failure", intent: "attempt 1", messageID: "m1", taskRef: "pass the tests" },
+      { command: "uv run pytest a", outcome: "failure", intent: "attempt 2", messageID: "m2", taskRef: "pass the tests" },
+      { command: "uv run pytest a", outcome: "success", intent: "done", messageID: "m3", taskRef: "pass the tests" },
       { command: "echo hi", outcome: "success", intent: null, messageID: null, taskRef: null },
     ]
     const groups = groupByTask(records)
     expect(groups.length).toBe(2)
     // newest task first: the null-taskRef record came last
     expect(groups[0].taskRef).toBe("(no task)")
-    expect(groups[1].taskRef).toBe("testleri geçir")
+    expect(groups[1].taskRef).toBe("pass the tests")
     expect(groups[1].runs).toBe(3)
     expect(groups[1].fails).toBe(2)
     expect(groups[1].lines.length).toBe(2)
     expect(groups[1].lines[0].runs).toBe(1)
     expect(groups[1].lines[1].runs).toBe(2)
     const text = formatGrouped(groups)
-    expect(text).toContain("task: testleri geçir (3 commands, 2 failed)")
+    expect(text).toContain("task: pass the tests (3 commands, 2 failed)")
     expect(text).toContain("x2")
-    expect(text.match(/task: testleri geçir/g)?.length).toBe(1)
+    expect(text.match(/task: pass the tests/g)?.length).toBe(1)
   })
 
   test("collapses by signature and strips env prefix for display", () => {
@@ -181,10 +181,10 @@ describe("groupByTask", () => {
   })
 
   test("lists distinct variants under one signature line", () => {    const records = [
-      { command: "uv run pytest tests/a.py", outcome: "failure", intent: "bir", messageID: "m1", taskRef: "t" },
-      { command: "uv run pytest tests/b.py", outcome: "failure", intent: "iki", messageID: "m2", taskRef: "t" },
-      { command: "uv run pytest tests/c.py", outcome: "failure", intent: "üç", messageID: "m3", taskRef: "t" },
-      { command: "uv run pytest tests/d.py", outcome: "failure", intent: "dört", messageID: "m4", taskRef: "t" },
+      { command: "uv run pytest tests/a.py", outcome: "failure", intent: "one", messageID: "m1", taskRef: "t" },
+      { command: "uv run pytest tests/b.py", outcome: "failure", intent: "two", messageID: "m2", taskRef: "t" },
+      { command: "uv run pytest tests/c.py", outcome: "failure", intent: "three", messageID: "m3", taskRef: "t" },
+      { command: "uv run pytest tests/d.py", outcome: "failure", intent: "four", messageID: "m4", taskRef: "t" },
     ]
     const groups = groupByTask(records)
     expect(groups[0].lines.length).toBe(1)
@@ -506,7 +506,7 @@ describe("doctor", () => {
     expect(by.hook.detail).toContain("file-edit")
     expect(by.ring.ok).toBe(true)
     expect(by.db.ok).toBe(true)
-    const missing = await doctor({ logPath: joinPath(dir, "yok.jsonl"), dbPath: joinPath(dir, "yok.db") })
+    const missing = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db") })
     expect(missing.every((l) => !l.ok)).toBe(true)
   })
 
@@ -520,12 +520,12 @@ describe("doctor", () => {
     const dir = await mkdtemp(joinPath(tmpdir(), "doctor-up-"))
     const paths = upPaths(dir)
     await ensureUpStateDir(paths.stateDir)
-    const absent = await doctor({ logPath: joinPath(dir, "yok.jsonl"), dbPath: joinPath(dir, "yok.db"), upRoot: dir })
+    const absent = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
     const upAbsent = absent.find((l) => l.name === "up")
     expect(upAbsent?.ok).toBe(false)
     expect(upAbsent?.detail).toContain("idle")
     await acquireLock(paths.lockFile, [])
-    const live = await doctor({ logPath: joinPath(dir, "yok.jsonl"), dbPath: joinPath(dir, "yok.db"), upRoot: dir })
+    const live = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
     expect(live.find((l) => l.name === "up")?.ok).toBe(true)
     expect(live.find((l) => l.name === "up")?.detail).toContain("running")
     await clearLock(paths.lockFile)
@@ -534,7 +534,7 @@ describe("doctor", () => {
       JSON.stringify({ pid: 2147483647, lstart: "bogus", startedAt: new Date().toISOString() }),
       "utf8",
     )
-    const stale = await doctor({ logPath: joinPath(dir, "yok.jsonl"), dbPath: joinPath(dir, "yok.db"), upRoot: dir })
+    const stale = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
     const upStale = stale.find((l) => l.name === "up")
     expect(upStale?.ok).toBe(false)
     expect(upStale?.detail).toContain("stale")

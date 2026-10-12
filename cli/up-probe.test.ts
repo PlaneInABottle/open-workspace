@@ -1,5 +1,5 @@
-/** M3 probe çalıştırıcı: timeout/invalid-JSON/nonzero/secret-maske +
- * sözleşme parse. Supervisor'a girmez (istemci-tarafı one-shot). */
+/** M3 probe runner: timeout/invalid-JSON/nonzero/secret-mask + contract
+ * parse. Never enters the supervisor (client-side one-shot). */
 
 import { describe, expect, test } from "bun:test"
 
@@ -8,22 +8,22 @@ import { artifactBase, declaredArtifactDigests, isArtifactBase, isArtifactDigest
 const specOf = (probe: string[]) => ({ probe, timeout: "10s" as const, needsPort: true })
 
 describe("findFirstJsonObject", () => {
-  test("log-ön-ekli çıktıda ilk objeyi yakalar", () => {
+  test("catches the first object in log-prefixed output", () => {
     expect(findFirstJsonObject('booting...\n{"ready": true}\ntrailing')).toBe('{"ready": true}')
-    expect(findFirstJsonObject("düz yazı")).toBeNull()
+    expect(findFirstJsonObject("plain text")).toBeNull()
     expect(findFirstJsonObject('{"a": {"b": "}"}}')).toBe('{"a": {"b": "}"}}')
   })
 })
 
 describe("parseProbeContract", () => {
-  test("geçerli sözleşme + kırpma + checks filtresi", () => {
+  test("valid contract + truncation + checks filter", () => {
     expect(parseProbeContract('{"ready": true, "note": "ok", "checks": [{"name": "a", "ok": true}]}')).toEqual({
       ready: true,
       note: "ok",
       checks: [{ name: "a", ok: true }],
     })
     expect(parseProbeContract('{"ready": false}')).toEqual({ ready: false })
-    expect(parseProbeContract('{"ready": "evet"}')).toBeNull()
+    expect(parseProbeContract('{"ready": "yes"}')).toBeNull()
     expect(parseProbeContract('{"note": "x"}')).toBeNull()
     const long = parseProbeContract(`{"ready": true, "note": "${"n".repeat(300)}"}`)
     expect(long?.note?.length).toBe(PROBE_NOTE_MAX_CHARS)
@@ -33,7 +33,7 @@ describe("parseProbeContract", () => {
     })
   })
 
-  test("M-C kimlik: path/digest şekil-sıkı alınır, bozuk alan düşer girdi kalır", () => {
+  test("M-C identity: path/digest are shape-strict, a malformed field drops and the entry stays", () => {
     const contract = parseProbeContract(
       '{"ready": true, "checks": [' +
         '{"name": "a", "ok": true, "path": "/opt/svc/api.jar", "digest": "a1b2c3d4e5"},' +
@@ -48,14 +48,14 @@ describe("parseProbeContract", () => {
       { name: "c", ok: true },
       { name: "d", ok: false, path: "/opt/svc/old.jar" },
     ])
-    // Aşırı-uzun path düşer (girdi yaşar).
+    // An over-long path drops (the entry survives).
     const long = parseProbeContract(`{"ready": true, "checks": [{"name": "a", "ok": true, "path": "/${"p".repeat(600)}", "digest": "a1b2c3d4e5"}]}`)
     expect(long?.checks).toEqual([{ name: "a", ok: true, digest: "a1b2c3d4e5" }])
   })
 })
 
-describe("M-C yapıt indirgeme (basename + kısa-8, ≤32 + sayaç)", () => {
-  test("ok-girdiler basename→kısa-8 listelenir, tam-yol taşınmaz", () => {
+describe("M-C artifact reduction (basename + short-8, ≤32 + counter)", () => {
+  test("ok entries are listed basename→short-8, no full path is carried", () => {
     const reduced = reduceArtifacts([
       { name: "a", ok: true, path: "/opt/svc/api.jar", digest: "a1b2c3d4e5f6" },
       { name: "b", ok: false, path: "/opt/svc/old.jar", digest: "bbbbbbbbbb" },
@@ -64,7 +64,7 @@ describe("M-C yapıt indirgeme (basename + kısa-8, ≤32 + sayaç)", () => {
     expect(reduced).toEqual({ shown: [{ base: "api.jar", digest: "a1b2c3d4" }], rest: 0 })
   })
 
-  test("33 girdi: 32 gösterilir, kalan sayılır (sıralı-deterministik)", () => {
+  test("33 entries: 32 shown, the rest counted (ordered-deterministic)", () => {
     const checks = Array.from({ length: 33 }, (_, i) => ({
       name: `s${i}`,
       ok: true,
@@ -77,7 +77,7 @@ describe("M-C yapıt indirgeme (basename + kısa-8, ≤32 + sayaç)", () => {
     expect(reduced.shown[0]).toEqual({ base: "s00.jar", digest: "a1b2c3d4" })
   })
 
-  test("düşmanca basename maskelenir, tam-yol asla çıkmaz", () => {
+  test("a hostile basename is masked, a full path never appears", () => {
     expect(artifactBase("/etc/shadow/x.jar")).toBe("x.jar")
     expect(isArtifactDigest("a1b2c3")).toBe(false)
     expect(isArtifactDigest("a1b2c3d")).toBe(true)
@@ -87,12 +87,12 @@ describe("M-C yapıt indirgeme (basename + kısa-8, ≤32 + sayaç)", () => {
     expect(isArtifactBase("..")).toBe(false)
     expect(isArtifactBase("api.jar")).toBe(true)
     expect(shortDigest("a1b2c3d4e5f6")).toBe("a1b2c3d4")
-    const hostile = reduceArtifacts([{ name: "h", ok: true, path: "/gizli/token=hunter2.jar", digest: "a1b2c3d4e5" }])
+    const hostile = reduceArtifacts([{ name: "h", ok: true, path: "/secret/token=hunter2.jar", digest: "a1b2c3d4e5" }])
     expect(JSON.stringify(hostile)).not.toContain("hunter2")
-    expect(JSON.stringify(hostile)).not.toContain("/gizli")
+    expect(JSON.stringify(hostile)).not.toContain("/secret")
   })
 
-  test("beyan haritası: ok + tam-şekil girdiler (tam-digest, bellek-içi)", () => {
+  test("declaration map: ok + full-shape entries (full digest, in-memory)", () => {
     expect(
       declaredArtifactDigests([
         { name: "a", ok: true, path: "/opt/svc/api.jar", digest: "a1b2c3d4e5" },
@@ -106,25 +106,25 @@ describe("M-C yapıt indirgeme (basename + kısa-8, ≤32 + sayaç)", () => {
 describe("runProbe", () => {
   const env = { ...process.env }
 
-  test("hazır: exit 0 + geçerli JSON + ready:true", async () => {
+  test("ready: exit 0 + valid JSON + ready:true", async () => {
     const outcome = await runProbe({ spec: specOf(["echo", '{"ready": true, "note": "smoke-ok"}']), cwd: "/tmp", env })
     expect(outcome).toMatchObject({ ok: true, note: "smoke-ok", timedOut: false, code: 0 })
   })
 
-  test("nonzero çıkış hazır-değil sayılır (not + kod raporlanır)", async () => {
+  test("a nonzero exit counts as not-ready (note + code are reported)", async () => {
     const outcome = await runProbe({ spec: specOf(["false"]), cwd: "/tmp", env })
     expect(outcome.ok).toBe(false)
     expect(outcome.note).toContain("exit code 1")
     expect(outcome.code).toBe(1)
   })
 
-  test("geçersiz JSON hazır-değil (stdout ham basılmaz)", async () => {
-    const outcome = await runProbe({ spec: specOf(["echo", "düz yazi"]), cwd: "/tmp", env })
+  test("invalid JSON is not-ready (stdout is not printed raw)", async () => {
+    const outcome = await runProbe({ spec: specOf(["echo", "plain text"]), cwd: "/tmp", env })
     expect(outcome.ok).toBe(false)
     expect(outcome.note).toContain("invalid JSON")
   })
 
-  test("timeout: TEK-PID kill + torun-notu, exit beklenmez", async () => {
+  test("timeout: SINGLE-PID kill + grandchild note, exit not awaited", async () => {
     const outcome = await runProbe({ spec: specOf(["sleep", "30"]), cwd: "/tmp", env, timeoutMs: 200 })
     expect(outcome.timedOut).toBe(true)
     expect(outcome.ok).toBe(false)
@@ -132,7 +132,7 @@ describe("runProbe", () => {
     expect(outcome.note).toContain("may-be-leftover-grandchild")
   })
 
-  test("secret-maske: stdout/stderr/not maskeli, ham argv rapora girmez", async () => {
+  test("secret-mask: stdout/stderr/note masked, raw argv never enters the report", async () => {
     const outcome = await runProbe({ spec: specOf(["echo", '{"ready": false, "note": "token=hunter2"}']), cwd: "/tmp", env })
     expect(outcome.ok).toBe(false)
     expect(outcome.note).not.toContain("hunter2")
@@ -146,7 +146,7 @@ describe("runProbe", () => {
     expect(errCase.note).not.toContain("hunter2")
   })
 
-  test("env mirası + OW_SERVICE taşınır (değer çıktıda maskeli)", async () => {
+  test("env inheritance + OW_SERVICE are carried (the value is masked in output)", async () => {
     const bun = process.execPath
     const okCase = await runProbe({
       spec: specOf([bun, "-e", "console.log(JSON.stringify({ready: true, note: process.env.OW_SERVICE}))"]),
@@ -163,7 +163,7 @@ describe("runProbe", () => {
     expect(masked.note).not.toContain("hunter2")
   })
 
-  test("stdout cap 64KB (kesik çıktı geçersiz sayılır)", async () => {
+  test("stdout cap 64KB (truncated output counts as invalid)", async () => {
     const outcome = await runProbe({
       spec: specOf([process.execPath, "-e", 'let s=""; for (let i = 0; i < 70000; i++) s += "p"; console.log(s)']),
       cwd: "/tmp",
@@ -172,13 +172,13 @@ describe("runProbe", () => {
     expect(outcome.ok).toBe(false)
   })
 
-  test("hedef-dışı ağa dokunmaz, komut aynen çalışır (B2 beyan)", async () => {
+  test("touches no network outside the target, the command runs as-is (B2 declaration)", async () => {
     const outcome = await runProbe({ spec: specOf(["echo", '{"ready": true}']), cwd: "/tmp", env })
     expect(outcome.ok).toBe(true)
   })
 })
 
-describe("wait/reconcile/explain bağlama (M3 integration)", () => {
+describe("wait/reconcile/explain wiring (M3 integration)", () => {
   const FIXTURES = new URL("./parity-fixtures/", import.meta.url).pathname
 
   const tempRoot = async (): Promise<string> => {
@@ -205,7 +205,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     } }
   }
 
-  test("TCP-UP-probe-DOWN: wait exit 1 + hazır-değil", async () => {
+  test("TCP-UP-probe-DOWN: wait exit 1 + not-ready", async () => {
     const { writeFile, rm } = await import("node:fs/promises")
     const { join } = await import("node:path")
     const { parseUpFile } = await import("./up-schema")
@@ -235,7 +235,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
         io.restore()
       }
       expect(code).toBe(1)
-      expect(io.out.join("\n")).toContain("not ready: api (probe: kapali)")
+      expect(io.out.join("\n")).toContain("not ready: api (probe: closed)")
     } finally {
       try {
         sleeper.kill("SIGKILL")
@@ -291,7 +291,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 
-  test("needsPort:false portsuz servis probe ile beklenir (noPort'a düşmez)", async () => {
+  test("needsPort:false a portless service is waited on via the probe (does not fall to noPort)", async () => {
     const { waitForUpReady } = await import("./cli")
     const { parseUpFile } = await import("./up-schema")
     const root = await tempRoot()
@@ -308,7 +308,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
           json: true,
           runProbeFn: async () => {
             calls += 1
-            return { ok: true, note: "is-kuyrugu-bos", timedOut: false, code: 0 }
+            return { ok: true, note: "work-queue-empty", timedOut: false, code: 0 }
           },
         })
       } finally {
@@ -327,7 +327,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 
-  test("probe+--health çakışması exit 2 (N5)", async () => {
+  test("probe+--health conflict exit 2 (N5)", async () => {
     const { writeFile, rm } = await import("node:fs/promises")
     const { join } = await import("node:path")
     const { run } = await import("./cli")
@@ -349,7 +349,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 
-  test("--check --json: readiness maskeli-şekil, ham cmd sızmaz (B3)", async () => {
+  test("--check --json: readiness is a masked shape, no raw cmd leaks (B3)", async () => {
     const { writeFile, rm } = await import("node:fs/promises")
     const { join } = await import("node:path")
     const { run } = await import("./cli")
@@ -376,7 +376,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 
-  test("reconcile --probe: drift + readiness satırları, çıkış drift'e göre", async () => {
+  test("reconcile --probe: drift + readiness lines, exit follows drift", async () => {
     const { writeFile, rm } = await import("node:fs/promises")
     const { join } = await import("node:path")
     const { readLstart, upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
@@ -407,7 +407,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
           io.restore()
         }
         expect(code).toBe(0)
-        expect(io.out.join("\n")).toContain("readiness: a not-ready (kapali)")
+        expect(io.out.join("\n")).toContain("readiness: a not-ready (closed)")
         const io2 = capture()
         try {
           expect(await runReconcileCheck({ rootDir: root, file, json: true, probe: true })).toBe(0)
@@ -416,7 +416,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
         }
         const payload = JSON.parse(io2.out.join("\n")) as { reconcile: { inSync: boolean }; readiness: { service: string; ok: boolean }[] }
         expect(payload.reconcile.inSync).toBe(true)
-        expect(payload.readiness).toEqual([{ service: "a", ok: false, note: "kapali" }])
+        expect(payload.readiness).toEqual([{ service: "a", ok: false, note: "closed" }])
       } finally {
         try {
           sleeper.kill("SIGKILL")
@@ -429,7 +429,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 
-  test("reconcile probe bütçesi: takılan + kalan ölçülmedi", async () => {
+  test("reconcile probe budget: the stuck one + the remainder unmeasured", async () => {
     const { writeFile, rm } = await import("node:fs/promises")
     const { join } = await import("node:path")
     const { readLstart, upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
@@ -467,7 +467,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
             runProbeFn: async () => {
               calls += 1
               await new Promise((resolveSleep) => setTimeout(resolveSleep, 40))
-              return { ok: true, note: "gec", timedOut: false, code: 0 }
+              return { ok: true, note: "passed", timedOut: false, code: 0 }
             },
           })
         } finally {
@@ -490,7 +490,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
     }
   })
 
-  test("readiness kaydı: canlı supervisor merge eder, eski pid düşer", async () => {
+  test("readiness record: the live supervisor merges it, the old pid drops", async () => {
     const { writeFile, rm, readFile } = await import("node:fs/promises")
     const { join } = await import("node:path")
     const { readLstart, upPaths, ensureUpStateDir, readSupervisorState } = await import("./up-state")
@@ -520,7 +520,7 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
           const start = Date.now()
           for (;;) {
             if (await cond()) return
-            if (Date.now() - start > 8000) throw new Error("zaman aşımı")
+            if (Date.now() - start > 8000) throw new Error("timeout")
             await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
           }
         }
@@ -528,13 +528,13 @@ describe("wait/reconcile/explain bağlama (M3 integration)", () => {
         const { writeRequest, waitResult } = await import("./up-requests")
         const live = (await readSupervisorState(paths.supervisorFile))!
         const nonce = await writeRequest(paths.requestsDir, "readiness", "a", file, {
-          readiness: { pid: live.services[0].pid, ok: false, note: "kapali", at: new Date().toISOString() },
+          readiness: { pid: live.services[0].pid, ok: false, note: "closed", at: new Date().toISOString() },
         })
         const result = await waitResult(paths.requestsDir, nonce)
         expect(result).toMatchObject({ ok: true, code: "recorded" })
         const after = (await readSupervisorState(paths.supervisorFile))!
-        expect(after.services[0].lastReadiness).toMatchObject({ ok: false, note: "kapali", kind: "probe" })
-        // Eski pid'li verdict düşer (stale), state'e dokunmaz.
+        expect(after.services[0].lastReadiness).toMatchObject({ ok: false, note: "closed", kind: "probe" })
+        // A verdict from the old pid drops (stale), it does not touch state.
         const stale = await processServiceRequest(
           {
             rootDir: root,

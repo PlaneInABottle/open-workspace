@@ -212,25 +212,25 @@ test('D2 hostile rev: secret-shaped revs mask to ***, legit shapes pass through'
     stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner',
     code: { script_hash: 's1', checkout_rev: rev }, runtime: { port: 1, cwd: '/r' },
   });
-  // Hostile: zarf geçerli kalır (fail-safe) ama rev maskelenir.
+  // Hostile: the envelope stays valid (fail-safe) but the rev is masked.
   for (const rev of ['token=hunter2-abcdef1234', 'api_key=hunter2', 'Bearer abcdef', 'sk-live-abc123', '--token hunter2']) {
     const out = envelopeWith(rev);
     assert.equal(out.ok, true);
     assert.equal(out.ok && out.envelope.checkoutRev, '***');
   }
-  // Meşru gerçek şekiller aynen geçer (hex SHA incl. 40-hex, kısa id'ler).
-  for (const rev of ['a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4', 'a1b2c3d', 'rev1', 'abc123', 'r1', 'YENI']) {
+  // Legitimate real shapes pass as-is (hex SHA incl. 40-hex, short ids).
+  for (const rev of ['a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4', 'a1b2c3d', 'rev1', 'abc123', 'r1', 'NEW']) {
     const out = envelopeWith(rev);
     assert.equal(out.ok, true);
     assert.equal(out.ok && out.envelope.checkoutRev, rev);
   }
-  // Supervisor rev yolu da aynı maskeden geçer.
+  // The supervisor rev path goes through the same mask.
   const rec = normalizeSupervisorService({
     name: 'api', provenance: { checkout: { rev: 'token=hunter2-abcdef' }, recordedAt: '2026-10-09T09:00:00.000Z' },
   });
   assert.ok(rec);
   assert.equal(rec.rev, '***');
-  // Wire: maskeli rev *** olarak taşınır, hunter2 hiçbir yerde yok.
+  // Wire: the masked rev is carried as ***, hunter2 appears nowhere.
   const hostileOut = envelopeWith('token=hunter2-abcdef1234');
   assert.equal(hostileOut.ok, true);
   if (!hostileOut.ok || !rec) return;
@@ -271,7 +271,7 @@ test('D2 cwd compare: same basename on different full paths goes stale/runtime',
     checkpoint: { run: 'demo', envelopes: [first.envelope, second.envelope], runs: ['demo'] },
     producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
   });
-  // Basename aynı ("api") ama tam-yol farklı → fail-open kapandı.
+  // Same basename ("api") but a different full path → fail-open closed.
   assert.equal(snapshot.checkpoints?.stages[1].status, 'stale');
   assert.equal(snapshot.checkpoints?.stages[1].staleReason, 'runtime');
   const same = buildCoordinatorSnapshot({
@@ -292,11 +292,11 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
     services: [
       { id: 'api', name: 'api', repositoryPath: f.backend, scriptName: 'dev', port: 3100, dependsOn: [], readiness: { kind: 'http-200' } },
       { id: 'ghost', name: 'ghost', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
-      { id: 'sahipsiz', name: 'sahipsiz', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
+      { id: 'orphan', name: 'orphan', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } },
     ],
   });
   // Latest-run checkpoint file: basis confirmed, same-basis confirmed,
-  // changed-rev confirmed (→ stale script_hash: M-B kod-harita uyuşmazlığı), then a hostile gap.
+  // changed-rev confirmed (→ stale script_hash: M-B code-map mismatch), then a hostile gap.
   const revA = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
   const revB = 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5';
   const dir = join(f.root, '.ow', 'checkpoints');
@@ -305,11 +305,11 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
   await writeFile(join(dir, 'demo.jsonl'), [
     line({ stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revA }, runtime: { port: 3100, cwd: '/Users/x/proj/api' } }),
     line({ stage: 'test', status: 'confirmed', proof: 'ok', at: '2026-10-09T11:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revA }, runtime: { port: 3100, cwd: '/Users/x/proj/api' } }),
-    line({ stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T12:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revB }, runtime: { port: 3100, cwd: '/Users/x/proj/api' }, safe_next_action: 'token=hunter2 --password hunter2 çalıştır' }),
-    line({ stage: 'deploy', status: 'not_observed', proof: 'yok', at: '2026-10-09T12:30:00.000Z', by: 'ow-probe' }),
-    'bozuk-satır{{{',
+    line({ stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T12:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: revB }, runtime: { port: 3100, cwd: '/Users/x/proj/api' }, safe_next_action: 'token=hunter2 --password hunter2 run' }),
+    line({ stage: 'deploy', status: 'not_observed', proof: 'none', at: '2026-10-09T12:30:00.000Z', by: 'ow-probe' }),
+    'corrupt-line{{{',
   ].join('\n'));
-  // Supervisor spawn-kayıtları: api kayıtlı rev'li, ghost kayıtsız.
+  // Supervisor spawn records: api has a recorded rev, ghost does not.
   await writeFile(join(f.root, '.ow', 'supervisor.json'), JSON.stringify({
     version: 1,
     startedAt: '2026-10-09T09:00:00.000Z',
@@ -322,7 +322,7 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
       { name: 'ghost' },
     ],
   }));
-  // Canlı durum: api failed kayıtlı, ghost ölçülmedi.
+  // Live status: api is recorded failed, ghost unmeasured.
   await f.store.update(state => {
     const record = state.environments.flatMap(entry => entry.items).find(item => item.name === 'dev');
     assert.ok(record);
@@ -359,12 +359,12 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
     warnings: string[];
   };
   const wire = JSON.stringify(snapshot);
-  // Secret disiplini: hostile serbest-metin + mutlak path wire'da yok.
+  // Secret discipline: hostile free text + absolute path are absent from the wire.
   assert.ok(!wire.includes('hunter2'), 'secret value must not reach the wire');
   assert.ok(!wire.includes('/Users/x/proj/api'), 'absolute path must not reach the wire');
   assert.ok(wire.includes('***'), 'masking must be visible');
 
-  // P3: tazelik uygulanmış aggregate.
+  // P3: freshness-applied aggregate.
   assert.ok(snapshot.checkpoints);
   assert.equal(snapshot.checkpoints.run, 'demo');
   assert.equal(snapshot.checkpoints.stages.length, 4);
@@ -372,44 +372,44 @@ test('D2 checkpoints+explanation: latest run aggregate, masked, basename-only, r
   assert.equal(snapshot.checkpoints.stages[2].status, 'stale');
   assert.equal(snapshot.checkpoints.stages[2].staleReason, 'script_hash');
   assert.equal(snapshot.checkpoints.lastVerified?.stage, 'test');
-  // first_gap = son confirmed sonrasındaki ilk non-confirmed (stale build).
+  // first_gap = the first non-confirmed after the last confirmed (stale build).
   assert.equal(snapshot.checkpoints.firstGap?.stage, 'build');
   assert.equal(snapshot.checkpoints.firstGap?.staleReason, 'script_hash');
   assert.ok(snapshot.checkpoints.safeNextAction && !snapshot.checkpoints.safeNextAction.includes('hunter2'));
   assert.ok(snapshot.checkpoints.safeNextAction.includes('***'));
-  assert.ok(snapshot.warnings.some(warning => warning.includes('bozuk satır')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('corrupt line')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
 
-  // P4: beklenen/çalışan + rev short/full ayrımı.
+  // P4: expected/running + rev short/full distinction.
   assert.ok(snapshot.explanation);
   const api = snapshot.explanation.entries.find(entry => entry.service === 'api');
   assert.ok(api);
   assert.equal(api.expected?.dir, 'backend');
-  // PM2 yokluğunda kayıtlı sahiplik canlı listeyle eşleşemez: çalışan
-  // "down + ölçülmedi" düşer (D1 drift-emsaliyle aynı zemin).
+  // Without PM2 the recorded ownership cannot match the live list: running
+  // drops to "down + unmeasured" (same basis as the D1 drift precedent).
   assert.equal(api.running?.status, 'down');
   assert.equal(api.revShort, revA.slice(0, 7));
   assert.equal(api.revFull, revA);
   assert.equal(api.revRecorded, true);
   assert.equal(api.revDirty, true);
-  assert.ok(api.diffs.some(diff => diff.includes('kirli checkout')));
+  assert.ok(api.diffs.some(diff => diff.includes('dirty checkout')));
   const ghost = snapshot.explanation.entries.find(entry => entry.service === 'ghost');
   assert.ok(ghost);
-  // Boş supervisor kaydı: rev yok → doğrulanamadı, note canlılığı anlatır.
+  // Empty supervisor record: no rev → unverified, the note describes liveness.
   assert.equal(ghost.revShort, null);
   assert.equal(ghost.revRecorded, false);
-  const sahipsiz = snapshot.explanation.entries.find(entry => entry.service === 'sahipsiz');
-  assert.ok(sahipsiz);
-  assert.ok(sahipsiz.expected);
-  assert.ok(sahipsiz.note.includes('kayıt yok'));
-  // Rev şeridi: kayıtsız zarf rev'i de taşınır (soluk), en yeni seçili.
+  const orphan = snapshot.explanation.entries.find(entry => entry.service === 'orphan');
+  assert.ok(orphan);
+  assert.ok(orphan.expected);
+  assert.ok(orphan.note.includes('no record'));
+  // Rev strip: an unrecorded envelope rev is also carried (dim), the newest is selected.
   const stripB = snapshot.explanation.revisions.find(revision => revision.full === revB);
   assert.ok(stripB);
   assert.equal(stripB.recorded, false);
   assert.equal(stripB.short, revB.slice(0, 7));
   const current = snapshot.explanation.revisions.filter(revision => revision.current);
   assert.equal(current.length, 1);
-  // Tam rev wire'da taşınır (kopyala-butonu clipboard payload'ı) — DOM'a
-  // yazılmaması frontend tara-testinin işidir.
+  // The full rev is carried on the wire (the copy button's clipboard payload) — not
+  // writing it to the DOM is the frontend scan-test's job.
   assert.ok(wire.includes(revA));
 });
 
@@ -440,7 +440,7 @@ test('D2 corrupt supervisor keeps the section alive with a warning', async t => 
     services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
   });
   await mkdir(join(f.root, '.ow'), { recursive: true });
-  await writeFile(join(f.root, '.ow', 'supervisor.json'), 'bozuk{{{');
+  await writeFile(join(f.root, '.ow', 'supervisor.json'), 'corrupt{{{');
   const app = createApp(f.service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
@@ -450,7 +450,7 @@ test('D2 corrupt supervisor keeps the section alive with a warning', async t => 
   };
   assert.equal(snapshot.reconcile.inSync, true);
   assert.equal(snapshot.explanation, null);
-  assert.ok(snapshot.warnings.some(warning => warning.includes('provenance okunamadı')), `expected a provenance warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('provenance unreadable')), `expected a provenance warning, got ${JSON.stringify(snapshot.warnings)}`);
 });
 
 test('oversized/corrupt checkpoint fixture keeps the section alive with warnings', async t => {
@@ -477,8 +477,8 @@ test('oversized/corrupt checkpoint fixture keeps the section alive with warnings
     reconcile: { inSync: boolean }; warnings: string[]; meta: { snapshotId: string };
   };
   assert.equal(snapshot.reconcile.inSync, true);
-  assert.ok(snapshot.warnings.some(warning => warning.includes('kırpıldı')), `expected a trim warning, got ${JSON.stringify(snapshot.warnings)}`);
-  assert.ok(snapshot.warnings.some(warning => warning.includes('bozuk satır')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('truncated')), `expected a trim warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('corrupt line')), `expected a corrupt-line warning, got ${JSON.stringify(snapshot.warnings)}`);
   assert.ok(snapshot.warnings.some(warning => warning.includes('symlink')), `expected a symlink warning, got ${JSON.stringify(snapshot.warnings)}`);
 });
 
@@ -495,23 +495,23 @@ test('D3 scenarios aggregate: matrix verdicts, masked, argv never on wire', asyn
   await mkdir(join(f.root, '.ow', 'checkpoints'), { recursive: true });
   const line = (entry: unknown) => JSON.stringify(entry);
   await writeFile(join(f.root, '.ow', 'checkpoints', 'demo.jsonl'), [
-    line({ stage: 'onay', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: 'r1' } }),
-    line({ stage: 'dagitim', status: 'stale', stale_reason: 'runtime', proof: 'ok', at: '2026-10-09T11:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: 'r1' } }),
+    line({ stage: 'approval', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: 'r1' } }),
+    line({ stage: 'deploy', status: 'stale', stale_reason: 'runtime', proof: 'ok', at: '2026-10-09T11:00:00.000Z', by: 'runner', code: { script_hash: 's1', checkout_rev: 'r1' } }),
   ].join('\n'));
   await writeFile(join(f.root, 'ow.scenarios.yaml'), [
     'version: 1',
     'scenarios:',
-    '  sepet:',
+    '  basket:',
     '    services: [api]',
     '    boundaries: [local, test]',
     '    targets: [http://x/token=hunter2]',
-    '    probes: [{id: hazir, argv: [./x.sh, --token, hunter2]}]',
-    '    checkpoints: [onay]',
-    '  odeme:',
-    '    services: [api, yabanci]',
-    '    boundaries: [real, uydurma-sinir]',
-    '    probes: [{id: saglik, argv: [./y.sh], timeout: 5s}]',
-    '    checkpoints: [dagitim, yok-stage]',
+    '    probes: [{id: ready, argv: [./x.sh, --token, hunter2]}]',
+    '    checkpoints: [approval]',
+    '  payment:',
+    '    services: [api, foreign]',
+    '    boundaries: [real, fake-boundary]',
+    '    probes: [{id: health, argv: [./y.sh], timeout: 5s}]',
+    '    checkpoints: [deploy, missing-stage]',
     '',
   ].join('\n'));
   const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
@@ -541,20 +541,20 @@ test('D3 scenarios aggregate: matrix verdicts, masked, argv never on wire', asyn
   assert.ok(snapshot.scenarios);
   assert.equal(snapshot.scenarios.file, 'ow.scenarios.yaml');
   assert.equal(snapshot.scenarios.error, null);
-  assert.deepEqual(snapshot.scenarios.columns, ['real-read-only', 'real-state-changing', 'unverified', 'uydurma-sinir']);
-  const sepet = snapshot.scenarios.rows.find(row => row.name === 'sepet');
-  assert.ok(sepet);
-  assert.deepEqual(sepet.probes, [{ id: 'hazir', timeout: '10s' }]);
-  assert.deepEqual(sepet.unverifiedServices, []);
-  assert.equal(sepet.cells['real-read-only'], 'pass');
-  assert.equal(sepet.cells['unverified'], 'pass');
-  assert.equal(sepet.cells['real-state-changing'], 'uncovered');
-  const odeme = snapshot.scenarios.rows.find(row => row.name === 'odeme');
-  assert.ok(odeme);
-  assert.deepEqual(odeme.unverifiedServices, ['yabanci']);
-  assert.equal(odeme.cells['real-state-changing'], 'stale');
-  assert.equal(odeme.cells['uydurma-sinir'], 'unverified');
-  assert.equal(odeme.cells['real-read-only'], 'uncovered');
+  assert.deepEqual(snapshot.scenarios.columns, ['real-read-only', 'real-state-changing', 'unverified', 'fake-boundary']);
+  const basket = snapshot.scenarios.rows.find(row => row.name === 'basket');
+  assert.ok(basket);
+  assert.deepEqual(basket.probes, [{ id: 'ready', timeout: '10s' }]);
+  assert.deepEqual(basket.unverifiedServices, []);
+  assert.equal(basket.cells['real-read-only'], 'pass');
+  assert.equal(basket.cells['unverified'], 'pass');
+  assert.equal(basket.cells['real-state-changing'], 'uncovered');
+  const payment = snapshot.scenarios.rows.find(row => row.name === 'payment');
+  assert.ok(payment);
+  assert.deepEqual(payment.unverifiedServices, ['foreign']);
+  assert.equal(payment.cells['real-state-changing'], 'stale');
+  assert.equal(payment.cells['fake-boundary'], 'unverified');
+  assert.equal(payment.cells['real-read-only'], 'uncovered');
 });
 
 test('D3 scenarios empty: no file keeps the section alive with null', async t => {
@@ -582,7 +582,7 @@ test('D3 scenarios corrupt: error box payload, other panels alive', async t => {
     name: 'dev',
     services: [{ id: 'api', repositoryPath: f.backend, scriptName: 'dev', port: null, dependsOn: [], readiness: { kind: 'process-alive' } }],
   });
-  await writeFile(join(f.root, 'ow.scenarios.yaml'), 'version: 1\nscenarios:\n  - blok liste yasak\n');
+  await writeFile(join(f.root, 'ow.scenarios.yaml'), 'version: 1\nscenarios:\n  - block list forbidden\n');
   const app = createApp(f.service, { mcpToken: 'f'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
@@ -596,7 +596,7 @@ test('D3 scenarios corrupt: error box payload, other panels alive', async t => {
   assert.ok(snapshot.scenarios);
   assert.equal(snapshot.scenarios.rows.length, 0);
   assert.ok(snapshot.scenarios.error && snapshot.scenarios.error.length > 0);
-  assert.ok(snapshot.warnings.some(warning => warning.includes('senaryo bozuk')), `expected a scenarios-corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('scenario corrupt')), `expected a scenarios-corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
 });
 
 test('M11 serviceless row: explicit services [] renders with empty services cell', async t => {
@@ -647,30 +647,30 @@ test('D3 ?run=: explicit selection, fallback with warning, runs list', async t =
   const dir = join(f.root, '.ow', 'checkpoints');
   await mkdir(dir, { recursive: true });
   const line = (entry: unknown) => JSON.stringify(entry);
-  await writeFile(join(dir, 'eski.jsonl'), line({ stage: 'kur', status: 'confirmed', proof: 'ok', at: '2026-10-08T10:00:00.000Z', by: 'runner', code: { script_hash: 's0' } }));
-  await writeFile(join(dir, 'yeni.jsonl'), line({ stage: 'kos', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1' } }));
-  // mtime sırası deterministik: eski dosya bilerek geriye alınır.
-  await utimes(join(dir, 'eski.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
+  await writeFile(join(dir, 'old.jsonl'), line({ stage: 'setup', status: 'confirmed', proof: 'ok', at: '2026-10-08T10:00:00.000Z', by: 'runner', code: { script_hash: 's0' } }));
+  await writeFile(join(dir, 'new.jsonl'), line({ stage: 'run', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner', code: { script_hash: 's1' } }));
+  // mtime order is deterministic: the old file is deliberately moved back.
+  await utimes(join(dir, 'old.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
   const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
   type CheckpointWire = { run: string; runs: string[]; stages: Array<{ stage: string }> } | null;
 
   const latest = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
-  assert.equal(latest.checkpoints?.run, 'yeni');
-  assert.deepEqual(latest.checkpoints?.runs, ['yeni', 'eski']);
+  assert.equal(latest.checkpoints?.run, 'new');
+  assert.deepEqual(latest.checkpoints?.runs, ['new', 'old']);
 
-  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=eski`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
-  assert.equal(explicit.checkpoints?.run, 'eski');
-  assert.equal(explicit.checkpoints?.stages[0].stage, 'kur');
+  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=old`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(explicit.checkpoints?.run, 'old');
+  assert.equal(explicit.checkpoints?.stages[0].stage, 'setup');
 
-  const bogus = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=../kacis`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
-  assert.equal(bogus.checkpoints?.run, 'yeni');
-  assert.ok(bogus.warnings.some(warning => warning.includes('istenen çalışma geçersiz')), `expected an invalid-run warning, got ${JSON.stringify(bogus.warnings)}`);
+  const bogus = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=../escape`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(bogus.checkpoints?.run, 'new');
+  assert.ok(bogus.warnings.some(warning => warning.includes('requested run invalid')), `expected an invalid-run warning, got ${JSON.stringify(bogus.warnings)}`);
 
-  const missing = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=yok`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
-  assert.equal(missing.checkpoints?.run, 'yeni');
-  assert.ok(missing.warnings.some(warning => warning.includes('istenen çalışma yok')), `expected a missing-run warning, got ${JSON.stringify(missing.warnings)}`);
+  const missing = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=missing`)).json() as { checkpoints: CheckpointWire; warnings: string[] };
+  assert.equal(missing.checkpoints?.run, 'new');
+  assert.ok(missing.warnings.some(warning => warning.includes('requested run missing')), `expected a missing-run warning, got ${JSON.stringify(missing.warnings)}`);
 });
 
 test('D3 empty newest run warns and shows older content; single empty file stays null with warning', async t => {
@@ -686,9 +686,9 @@ test('D3 empty newest run warns and shows older content; single empty file stays
   const otherDir = join(other, '.ow', 'checkpoints');
   await mkdir(dir, { recursive: true });
   await mkdir(otherDir, { recursive: true });
-  await writeFile(join(otherDir, 'eski.jsonl'), JSON.stringify({ stage: 'kur', status: 'confirmed', proof: 'ok', at: '2026-10-08T10:00:00.000Z', by: 'runner', code: { script_hash: 's0' } }));
-  await writeFile(join(dir, 'yeni.jsonl'), '');
-  await utimes(join(otherDir, 'eski.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
+  await writeFile(join(otherDir, 'old.jsonl'), JSON.stringify({ stage: 'setup', status: 'confirmed', proof: 'ok', at: '2026-10-08T10:00:00.000Z', by: 'runner', code: { script_hash: 's0' } }));
+  await writeFile(join(dir, 'new.jsonl'), '');
+  await utimes(join(otherDir, 'old.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
   const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
@@ -696,26 +696,26 @@ test('D3 empty newest run warns and shows older content; single empty file stays
   const snapshot = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
     checkpoints: { run: string; runs: string[] } | null; runs: string[]; warnings: string[];
   };
-  assert.equal(snapshot.checkpoints?.run, 'eski');
-  assert.deepEqual(snapshot.runs, ['yeni', 'eski']);
-  assert.ok(snapshot.warnings.some(warning => warning.includes('checkpoint boş: yeni')), `expected an empty-newest warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.equal(snapshot.checkpoints?.run, 'old');
+  assert.deepEqual(snapshot.runs, ['new', 'old']);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('checkpoint empty: new')), `expected an empty-newest warning, got ${JSON.stringify(snapshot.warnings)}`);
 
-  // Tek boş dosya: bölüm null kalır (D1 davranışı) + sepet satırı düşer —
-  // ama üst-düzey runs listesi seçiciyi besler.
-  await rm(join(otherDir, 'eski.jsonl'));
+  // A single empty file: the section stays null (D1 behavior) + a basket line drops —
+  // but the top-level runs list feeds the selector.
+  await rm(join(otherDir, 'old.jsonl'));
   const single = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as {
     checkpoints: unknown; runs: string[]; warnings: string[];
   };
   assert.equal(single.checkpoints, null);
-  assert.deepEqual(single.runs, ['yeni']);
-  assert.ok(single.warnings.some(warning => warning.includes('checkpoint boş: yeni')), `expected an empty-file warning, got ${JSON.stringify(single.warnings)}`);
+  assert.deepEqual(single.runs, ['new']);
+  assert.ok(single.warnings.some(warning => warning.includes('checkpoint empty: new')), `expected an empty-file warning, got ${JSON.stringify(single.warnings)}`);
 
-  // Açık boş-run isteği: null + runs listesi (seçici kaybolmaz).
-  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=yeni`)).json() as {
+  // Explicit empty-run request: null + runs list (the selector does not disappear).
+  const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=new`)).json() as {
     checkpoints: unknown; runs: string[]; warnings: string[];
   };
   assert.equal(explicit.checkpoints, null);
-  assert.deepEqual(explicit.runs, ['yeni']);
+  assert.deepEqual(explicit.runs, ['new']);
 });
 
 test('D3 same run name in two roots: newest-wins for ?run= and default, runs deduped', async t => {
@@ -732,29 +732,29 @@ test('D3 same run name in two roots: newest-wins for ?run= and default, runs ded
   await mkdir(dirA, { recursive: true });
   await mkdir(dirB, { recursive: true });
   const envelope = (stage: string, at: string) => JSON.stringify({ stage, status: 'confirmed', proof: 'ok', at, by: 'runner', code: { script_hash: 's0' } });
-  await writeFile(join(dirA, 'demo.jsonl'), envelope('a-icerik', '2026-10-08T10:00:00.000Z'));
-  await writeFile(join(dirB, 'demo.jsonl'), envelope('b-icerik', '2026-10-09T10:00:00.000Z'));
+  await writeFile(join(dirA, 'demo.jsonl'), envelope('a-content', '2026-10-08T10:00:00.000Z'));
+  await writeFile(join(dirB, 'demo.jsonl'), envelope('b-content', '2026-10-09T10:00:00.000Z'));
   await utimes(join(dirA, 'demo.jsonl'), new Date('2026-10-08T10:00:00.000Z'), new Date('2026-10-08T10:00:00.000Z'));
   const app = createApp(f.service, { mcpToken: 'd'.repeat(64), assets: fixtureStaticAssets() });
   const origin = await app.listen(0);
   t.after(() => app.close());
   type CheckpointWire = { run: string; runs: string[]; stages: Array<{ stage: string }> } | null;
 
-  // Aynı ad iki kökte: açık istek ve default-latest YENİ içeriği vurur, ad tek listelenir.
+  // Same name in two roots: the explicit request and default-latest hit the NEW content, the name is listed once.
   const explicit = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=demo`)).json() as { checkpoints: CheckpointWire; runs: string[] };
   assert.equal(explicit.checkpoints?.run, 'demo');
-  assert.equal(explicit.checkpoints?.stages[0].stage, 'b-icerik');
+  assert.equal(explicit.checkpoints?.stages[0].stage, 'b-content');
   const latest = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as { checkpoints: CheckpointWire; runs: string[]; warnings: string[] };
   assert.equal(latest.checkpoints?.run, 'demo');
-  assert.equal(latest.checkpoints?.stages[0].stage, 'b-icerik');
+  assert.equal(latest.checkpoints?.stages[0].stage, 'b-content');
   assert.deepEqual(latest.runs, ['demo']);
 
-  // Yeni dosya boşalırsa: default eski İÇERİĞE düşer + uyarı; açık istek fail-closed null kalır.
+  // If the new file empties: the default falls back to the OLD content + warning; the explicit request stays fail-closed null.
   await writeFile(join(dirB, 'demo.jsonl'), '');
   const fallback = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev`)).json() as { checkpoints: CheckpointWire; runs: string[]; warnings: string[] };
   assert.equal(fallback.checkpoints?.run, 'demo');
-  assert.equal(fallback.checkpoints?.stages[0].stage, 'a-icerik');
-  assert.ok(fallback.warnings.some(warning => warning.includes('checkpoint boş: demo')), `expected an empty-newest warning, got ${JSON.stringify(fallback.warnings)}`);
+  assert.equal(fallback.checkpoints?.stages[0].stage, 'a-content');
+  assert.ok(fallback.warnings.some(warning => warning.includes('checkpoint empty: demo')), `expected an empty-newest warning, got ${JSON.stringify(fallback.warnings)}`);
   const explicitEmpty = await (await fetch(`${origin}/api/workspaces/Coord/coordinator?environment=dev&run=demo`)).json() as { checkpoints: CheckpointWire; runs: string[] };
   assert.equal(explicitEmpty.checkpoints, null);
   assert.deepEqual(explicitEmpty.runs, ['demo']);
@@ -764,28 +764,28 @@ test('M-A side_effect/lineage mirror: normalize lockstep, hostile corrupt, fresh
   const base = { stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner' };
   const good = normalizeCheckpointEnvelope({
     ...base, side_effect: 'attempted', side_effect_counts: { attempted: 2 },
-    scenario: 'gece', attempt: 2, step_signature: 'test-imza',
+    scenario: 'night', attempt: 2, step_signature: 'test-signature',
   });
   assert.equal(good.ok, true);
   if (!good.ok) return;
   assert.equal(good.envelope.sideEffect, 'attempted');
   assert.deepEqual(good.envelope.sideEffectCounts, { attempted: 2 });
-  assert.equal(good.envelope.scenario, 'gece');
+  assert.equal(good.envelope.scenario, 'night');
   assert.equal(good.envelope.attempt, 2);
-  assert.equal(good.envelope.stepSignature, 'test-imza');
-  // Eksik alanlar geçer (tel aynası: null/s tanımsız, render bilinmiyor).
+  assert.equal(good.envelope.stepSignature, 'test-signature');
+  // Missing fields pass (wire mirror: null/undefined, render unknown).
   const bare = normalizeCheckpointEnvelope(base);
   assert.equal(bare.ok, true);
   if (!bare.ok) return;
   assert.equal(bare.envelope.sideEffect, null);
-  // Hostile: CLI ile aynı fail-closed kümesi.
+  // Hostile: the same fail-closed set as the CLI.
   const bad: unknown[] = [
     { ...base, side_effect: 'maybe' },
     { ...base, side_effect: 42 },
     { ...base, side_effect_counts: { attempted: 1000000 } },
     { ...base, side_effect_counts: { confirmed: -1 } },
     { ...base, side_effect_counts: { attempted: 1.5 } },
-    { ...base, scenario: '../kacis' },
+    { ...base, scenario: '../escape' },
     { ...base, scenario: '' },
     { ...base, attempt: 0 },
     { ...base, attempt: 1000 },
@@ -800,8 +800,8 @@ test('M-A P3 mirror: stage flags + retryHint, freshness ignores new fields', () 
     stage: 'build', status: 'confirmed', proof: 'ok', at: '2026-10-09T10:00:00.000Z', by: 'runner',
     code: { script_hash: 's1', checkout_rev: 'r1' }, runtime: { port: 1, cwd: '/r' }, ...raw,
   });
-  const first = mk({ side_effect: 'attempted', scenario: 'gece', attempt: 1 });
-  const second = mk({ at: '2026-10-09T11:00:00.000Z', side_effect: 'attempted', scenario: 'gece', attempt: 2 });
+  const first = mk({ side_effect: 'attempted', scenario: 'night', attempt: 1 });
+  const second = mk({ at: '2026-10-09T11:00:00.000Z', side_effect: 'attempted', scenario: 'night', attempt: 2 });
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   if (!first.ok || !second.ok) return;
@@ -810,15 +810,15 @@ test('M-A P3 mirror: stage flags + retryHint, freshness ignores new fields', () 
     record,
     status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
     portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
-    checkpoint: { run: 'gece-attempt2', envelopes: [first.envelope, second.envelope], runs: ['gece-attempt2'] },
+    checkpoint: { run: 'night-attempt2', envelopes: [first.envelope, second.envelope], runs: ['night-attempt2'] },
     producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
   });
-  // Tazelik yeni alanları yoksayar: iki zarf da confirmed kalır.
+  // Freshness ignores the new fields: both envelopes stay confirmed.
   assert.equal(snapshot.checkpoints?.stages[1].status, 'confirmed');
   assert.equal(snapshot.checkpoints?.stages[0].sideEffect, 'attempted');
-  assert.equal(snapshot.checkpoints?.stages[1].scenario, 'gece');
+  assert.equal(snapshot.checkpoints?.stages[1].scenario, 'night');
   assert.equal(snapshot.checkpoints?.stages[1].attempt, 2);
-  // Doğrulanmamış deneme → retry ipucu bayrağı.
+  // Attempted-unconfirmed → the retry-hint flag.
   assert.equal(snapshot.checkpoints?.retryHint, true);
   const wire = JSON.stringify(snapshot);
   assert.ok(!wire.includes('hunter2'));
@@ -833,23 +833,23 @@ test('M-B code map mirror: 4 slots, legacy alias, conflict corrupt, freshness co
   assert.equal(full.envelope.fixture, 'f1');
   assert.equal(full.envelope.scriptHash, 's1');
   assert.equal(full.envelope.providerContract, 'pc1');
-  // Legacy eşdeğer aynı slotlara eşlenir.
+  // A legacy equivalent maps to the same slots.
   const legacy = normalizeCheckpointEnvelope({ ...base, code: { script_hash: 's1', checkout_rev: 'r1' } });
   assert.equal(legacy.ok, true);
   if (!legacy.ok) return;
   assert.equal(legacy.envelope.scriptHash, 's1');
   assert.equal(legacy.envelope.checkoutRev, 'r1');
-  // Çakışma + disiplinsiz slot → corrupt (fail-closed).
+  // Conflict + undisciplined slot → corrupt (fail-closed).
   const bad: unknown[] = [
     { ...base, code: { script_hash: 's1', body: 's1' } },
     { ...base, code: { checkout_rev: 'r1', runner: 'r1' } },
     { ...base, code: { body: 'x'.repeat(65) } },
     { ...base, code: { runner: '' } },
     { ...base, code: { fixture: 42 } },
-    { ...base, code: { bilinmeyen: 1 } },
+    { ...base, code: { unknown: 1 } },
   ];
   for (const raw of bad) assert.equal(normalizeCheckpointEnvelope(raw).ok, false);
-  // Gizli-şekilli slot fail-safe maskelenir.
+  // A secret-shaped slot fails safe to masked.
   const masked = normalizeCheckpointEnvelope({ ...base, code: { body: 'token=hunter2-abcdef1234' } });
   assert.equal(masked.ok, true);
   if (!masked.ok) return;
@@ -873,10 +873,10 @@ test('M-B P3 freshness: legacy-stable, mixed old/new single divergence, all-abse
     record,
     status: { environmentId: 'env', name: 'dev', state: 'down', order: [], services: [] },
     portOccupied: new Map(), freeSuggestion: new Map(), checkpointWarnings: [],
-    checkpoint: { run: 'harita', envelopes: [basis.envelope, sameNewNames.envelope, diverged.envelope], runs: ['harita'] },
+    checkpoint: { run: 'map', envelopes: [basis.envelope, sameNewNames.envelope, diverged.envelope], runs: ['map'] },
     producedAt: '2026-10-09T12:00:00.000Z', snapshotId: 'a3f9c1d2',
   });
-  // Legacy-yeni aynı değer kararlı; ilk sapmada tek script_hash-bayat.
+  // Legacy-new same value is stable; the first deviation stales a single script_hash.
   assert.deepEqual(snapshot.checkpoints?.stages.map(stage => stage.status), ['confirmed', 'confirmed', 'stale']);
   assert.equal(snapshot.checkpoints?.stages[2].staleReason, 'script_hash');
   const wire = JSON.stringify(snapshot);
@@ -916,9 +916,9 @@ test('M-C supervisor record: hostile artifact map shape-strict, invalid entries 
     name: 'api',
     artifactDigests: {
       'api.jar': 'a1b2c3d4e5',
-      '../kacis': 'a1b2c3d4e5',
-      'kisa': 'zz',
-      'sayi': 42,
+      '../escape': 'a1b2c3d4e5',
+      'short': 'zz',
+      'number': 42,
       '': 'a1b2c3d4e5',
     },
   });
@@ -1064,13 +1064,13 @@ test('M2 ledger: two roots share a service name and port → two rows, merged re
     { rootBase: baseB, revShort: 'bbbbbbb', branch: null, lock: 'stale', liveServices: ['api', 'svc2'], state: 'ok' },
   ]);
   // Advisories: shared port + double-owned service, scoped + non-gating wording.
-  const portLine = `uyarı: 4101 portu dolu — worktree:${baseA} + worktree:${baseB} (bilgi amaçlı, engelleme yok)`;
-  const svcLine = `uyarı: api birden fazla worktree'de kayıtlı — worktree:${baseA} + worktree:${baseB} (bilgi amaçlı, engelleme yok)`;
+  const portLine = `warning: port 4101 is busy — worktree:${baseA} + worktree:${baseB} (informational, no blocking)`;
+  const svcLine = `warning: api is registered in more than one worktree — worktree:${baseA} + worktree:${baseB} (informational, no blocking)`;
   assert.ok(snapshot.warnings.includes(portLine), `missing port advisory, got ${JSON.stringify(snapshot.warnings)}`);
   assert.ok(snapshot.warnings.includes(svcLine), `missing service advisory, got ${JSON.stringify(snapshot.warnings)}`);
   // Advisory-only separation: preflight gates never carry matrix text.
   for (const line of snapshot.preflight.missing) {
-    assert.ok(!line.includes('worktree:') && !line.includes('bilgi amaçlı'), `matrix leaked into preflight: ${line}`);
+    assert.ok(!line.includes('worktree:') && !line.includes('(informational'), `matrix leaked into preflight: ${line}`);
   }
 });
 
@@ -1118,7 +1118,7 @@ test('M2 corrupt root: that row is corrupt + warning, siblings intact', async t 
   await writeFile(join(ra, '.ow', 'supervisor.json'), JSON.stringify({
     version: 1, startedAt: '2026-10-10T00:00:00.000Z', services: [{ name: 'api', port: 4101 }],
   }));
-  await writeFile(join(rb, '.ow', 'supervisor.json'), 'bozuk{{{');
+  await writeFile(join(rb, '.ow', 'supervisor.json'), 'corrupt{{{');
   await f.service.register('M2corrupt', [ra, rb]);
   await f.service.environmentSet('M2corrupt', {
     name: 'dev',
@@ -1136,7 +1136,7 @@ test('M2 corrupt root: that row is corrupt + warning, siblings intact', async t 
   assert.deepEqual(snapshot.worktrees[0].liveServices, ['api']);
   assert.equal(snapshot.worktrees[1].state, 'corrupt');
   assert.deepEqual(snapshot.worktrees[1].liveServices, []);
-  assert.ok(snapshot.warnings.some(warning => warning.includes('provenance okunamadı')), `expected corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
+  assert.ok(snapshot.warnings.some(warning => warning.includes('provenance unreadable')), `expected corrupt warning, got ${JSON.stringify(snapshot.warnings)}`);
 });
 
 test('M2 hostile: secret-shaped rootBase and service name never reach the wire', async t => {
@@ -1183,7 +1183,7 @@ test('M2 single-root: no worktrees key, no matrix warnings (softened no-friction
   };
   assert.ok(!('worktrees' in snapshot), 'single-root snapshot must not carry worktrees');
   assert.ok(!JSON.stringify(snapshot).includes('worktree:'));
-  assert.ok(!snapshot.warnings.some(warning => warning.includes('bilgi amaçlı')));
+  assert.ok(!snapshot.warnings.some(warning => warning.includes('(informational')));
 });
 
 test('M2 lock states: live/stale/absent/corrupt classify without exec', async t => {
@@ -1199,7 +1199,7 @@ test('M2 lock states: live/stale/absent/corrupt classify without exec', async t 
   try {
     await writeFile(join(live, '.ow', 'supervisor.lock'), JSON.stringify({ pid: process.pid, lstart: 't', startedAt: '2026-10-10T00:00:00.000Z' }));
     await writeFile(join(stale, '.ow', 'supervisor.lock'), JSON.stringify({ pid: 1 << 30, lstart: 't', startedAt: '2026-10-10T00:00:00.000Z' }));
-    await writeFile(join(corrupt, '.ow', 'supervisor.lock'), 'bozuk{{{');
+    await writeFile(join(corrupt, '.ow', 'supervisor.lock'), 'corrupt{{{');
     const { rows } = await readWorktreeLedger([live, stale, absent, corrupt]);
     assert.deepEqual(rows.map(row => row.lock), ['live', 'stale', 'absent', 'corrupt']);
     assert.ok(rows.every(row => row.state === 'missing'));
@@ -1215,8 +1215,8 @@ test('M2 caps: advisories truncate at 10 lines, ledger at 20 rows', async t => {
   ];
   const lines = buildWorktreeAdvisories(perRoot);
   assert.equal(lines.length, 11);
-  assert.ok(lines[10].includes('…[kesildi: 14 uyarı]'), `expected truncation line, got ${lines[10]}`);
-  assert.ok(lines.slice(0, 10).every(line => line.includes('bilgi amaçlı, engelleme yok')));
+  assert.ok(lines[10].includes('…[truncated: 14 warnings]'), `expected truncation line, got ${lines[10]}`);
+  assert.ok(lines.slice(0, 10).every(line => line.includes('(informational, no blocking)')));
   const roots: string[] = [];
   for (let index = 0; index < 21; index += 1) {
     roots.push(await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-m2-cap-'))));
@@ -1224,7 +1224,7 @@ test('M2 caps: advisories truncate at 10 lines, ledger at 20 rows', async t => {
   try {
     const ledger = await readWorktreeLedger(roots);
     assert.equal(ledger.rows.length, 20);
-    assert.ok(ledger.warnings.some(warning => warning.includes('worktree listesi kırpıldı (20 kök sınırı)')));
+    assert.ok(ledger.warnings.some(warning => warning.includes('worktree list truncated (20 root limit)')));
   } finally {
     for (const root of roots) await rm(root, { recursive: true, force: true });
   }

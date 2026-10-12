@@ -116,7 +116,7 @@ describe("trace-timeline id extraction", () => {
 })
 
 describe("trace-timeline exact links", () => {
-  test("W3C traceparent in command groups its spans under the agent row (kesin)", async () => {
+  test("W3C traceparent in command groups its spans under the agent row (exact)", async () => {
     const root = await tempRoot()
     try {
       const now = Date.now()
@@ -176,7 +176,7 @@ describe("trace-timeline exact links", () => {
 })
 
 describe("trace-timeline estimated links", () => {
-  test("unreferenced span 3s from a row links tahmini; 60s away links nothing", async () => {
+  test("unreferenced span 3s from a row links estimated; 60s away links nothing", async () => {
     const root = await tempRoot()
     try {
       const now = Date.now()
@@ -287,7 +287,8 @@ describe("trace-timeline json + bounds + empty", () => {
       for (const event of parsed.events) {
         expect(Object.keys(event).every((key) => ["ts", "kind", "text", "traceId", "confidence", "depth"].includes(key))).toBe(true)
       }
-      expect(JSON.stringify(parsed)).not.toMatch(/izleme|servis|kesin|tahmini|kök/)
+      expect(JSON.stringify(parsed)).not.toMatch(/izleme|servis|kesin|tahmini|k\u00f6k/)
+      expect(JSON.stringify(parsed)).not.toMatch(/[\u00e7\u011f\u0131\u015f\u00f6\u00fc\u00c7\u011e\u0130\u015e\u00d6\u00dc]/)
       const tailed = await runTimeline(tlOpts(root, log, { tail: 1 }))
       expect(tailed.stdout.split("\n").length).toBe(1)
       const nanTail = await runTimeline(tlOpts(root, log, { tail: NaN }))
@@ -318,13 +319,13 @@ describe("trace-timeline json + bounds + empty", () => {
     try {
       const now = Date.now()
       const log = join(root, "events.jsonl")
-      await writeFile(log, `bozuk-satır{{{\n${sidecarRow({ session: "ses_tl", at: now - 5000, command: "echo hi" })}\n`)
+      await writeFile(log, `corrupt-line{{{\n${sidecarRow({ session: "ses_tl", at: now - 5000, command: "echo hi" })}\n`)
       await seedSpans(
         root,
         requestBytes("api", [
           { traceId: TRACE_A, spanId: "99".repeat(8), name: "GET /ok", service: "api", startMs: now - 4500, endMs: now - 4000 },
         ]),
-        ["bozuk-span{{{satır"],
+        ["corrupt-span{{{line"],
       )
       const result = await runTimeline(tlOpts(root, log))
       expect(result.code).toBe(0)
@@ -358,7 +359,7 @@ describe("trace-timeline json + bounds + empty", () => {
 })
 
 describe("trace-timeline LIVE PROOF (scripted end-to-end)", () => {
-  test("3 sidecar rows + 2 real-writer spans render one grouped kesin block", async () => {
+  test("3 sidecar rows + 2 real-writer spans render one grouped exact block", async () => {
     const root = await tempRoot()
     try {
       const now = Date.now()

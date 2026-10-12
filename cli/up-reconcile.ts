@@ -1,9 +1,9 @@
-/** M1 salt-okunur reconcile: beklenen (ow.yaml) vs çalışan (state+lstart)
- * drift raporu. Asla mutasyon yapmaz (tanık çizgisi) — yalnızca açık
- * `ow up/restart/down <svc>` komutları önerir. exit 0 ok / 1 drift / 2 kullanım.
- * M3 `--probe` fazı: tanımlı probe'lar istemci-tarafı one-shot çalışır
- * (canlı+kayıtlı servisler, toplam ≤60s soft bütçe); sonuçlar `readiness:`
- * satırları olarak eklenir, çıkışı değiştirmez (drift'e göre). */
+/** M1 read-only reconcile: expected (ow.yaml) vs running (state+lstart)
+ * drift report. Never mutates (witness line) — it only suggests explicit
+ * `ow up/restart/down <svc>` commands. exit 0 ok / 1 drift / 2 usage.
+ * M3 `--probe` phase: defined probes run client-side one-shot
+ * (live+recorded services, total ≤60s soft budget); results are added as
+ * `readiness:` lines, they do not change exit (which follows drift). */
 
 import { parseUpFile, PROBE_TIMEOUT_MS, type UpService } from "./up-schema"
 import { decodeUtf8Fatal } from "./up-schema"
@@ -11,21 +11,21 @@ import { readLstart, readSupervisorState, upPaths, warnWriteFailed, type UpServi
 import { tcpListening } from "./up-net"
 import { gitCheckout, resolveCwdAbs } from "./up-provenance"
 
-/** Secret-shaped argv/cmd yankısı maskeli-şekildir (B3): ham değer asla
- * output/state/log'a girmez. Kurallar: `ad=değer` içinde secret-kelime
+/** Secret-shaped argv/cmd echo is a masked shape (B3): raw values never
+ * enter output/state/log. Rules: a secret word inside `name=value`
  * (`password|secret|api[_-]?key|bearer|token|credential|private_key|
- * `authorization`) → `ad=***`; secret-bayrak sonrası değer
- * (`--password hunter2`) → `***`; sağlayıcı-öneki (ghp_/sk-/xox-) ve
- * ≥32-hex gövdeler → `***`; secret-kelime içeren yalın parça → `***`.
- * Şekil korunur (parça sayısı/sırası aynı), değerler düşer. */
+ * authorization`) → `name=***`; the value after a secret flag
+ * (`--password hunter2`) → `***`; provider prefixes (ghp_/sk-/xox-) and
+ * ≥32-hex bodies → `***`; a bare part containing a secret word → `***`.
+ * Shape is preserved (same part count/order), values drop. */
 const SECRET_WORD = /password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization/i
 const PROVIDER_PREFIX = /^(ghp_|gho_|ghu_|ghs_|sk-(live|test)-|xox[bpas]-|Bearer\s|eyJ[A-Za-z0-9_-]{8,})/
 
-/** B3 maske listesi (P2-A evidence maskesiyle paylaşılır; tek kaynak). */
+/** B3 mask list (shared with the P2-A evidence mask; single source). */
 export const SECRET_WORD_PATTERN = SECRET_WORD
 export const PROVIDER_PREFIX_PATTERN = PROVIDER_PREFIX
 
-/** B3 token maskesi (P2-A evidence maskesiyle paylaşılır; tek kaynak). */
+/** B3 token mask (shared with the P2-A evidence mask; single source). */
 export const maskSecretToken = (token: string, prevIsSecretFlag: boolean): string => {
   if (token.length === 0) return token
   const eq = token.indexOf("=")
@@ -47,10 +47,10 @@ const isSecretFlag = (token: string): boolean =>
   /^(-{1,2})?[A-Za-z0-9_-]*(password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization)$/i.test(token) &&
   !token.includes("=")
 
-/** B3 secret-bayrak testi (P2-A evidence maskesiyle paylaşılır; tek kaynak). */
+/** B3 secret-flag test (shared with the P2-A evidence mask; single source). */
 export const isSecretFlagToken = isSecretFlag
 
-/** Maskeli cmd-şekli: string aynen tokenize edilir, argv listesi parça-parça. */
+/** Masked cmd shape: a string is tokenized as-is, an argv list part-by-part. */
 export const maskCmdShape = (cmd: string | string[] | undefined): string | undefined => {
   if (cmd === undefined) return undefined
   const parts = Array.isArray(cmd) ? cmd : cmd.split(/\s+/)
@@ -63,9 +63,9 @@ export const maskCmdShape = (cmd: string | string[] | undefined): string | undef
   return Array.isArray(cmd) ? masked.join(" ") : masked.join(" ")
 }
 
-/** Mutasyon-öncesi diff satırları (Türkçe) + JSON diff zarfı. `running`
- * null ise servis kayıtlı değil (başlatılacak); `restart` aksiyonunda bu
- * satır kayıtsız-restart'ı adlandırır (L-2: yalın `up` satırından ayrışır). */
+/** Pre-mutation diff lines + JSON diff envelope. `running` null means the
+ * service is not recorded (about to start); on a `restart` action this
+ * line names a record-less restart (L-2: distinct from the plain `up` line). */
 export const diffService = (
   expected: UpService,
   running: UpServiceState | null,
@@ -112,19 +112,20 @@ export type ReconcileInput = {
   name: string
   expected: UpService | null
   running: UpServiceState | null
-  /** Kayıtlı çıkış varsa `durmus` sayılır (canlılık bakılmaz). */
+  /** A recorded exit counts as stopped (liveness is not consulted). */
   liveness: Liveness
-  /** Bildirilen portta loopback dinleyici var mı (tanımlı port için). */
+  /** Whether a loopback listener exists on the declared port (for a defined port). */
   listening: boolean | undefined
-  /** `lsof` best-effort port-sahibi pid'leri; null = ölçülemedi. */
+  /** `lsof` best-effort port-owner pids; null = unmeasured. */
   portOwners: number[] | null
-  /** M-C derleme kimliği: probe-beyanlı (basename → tam-digest) vs kayıtlı
-   * harita. Canlılık/ok-geçidi çağırandadır (çekirdek salt karşılaştırır);
-   * kayıtsız basename drift üretmez (kayıt-gözlem çağıranın işi). */
+  /** M-C build identity: probe-declared (basename → full digest) vs the
+   * recorded map. Liveness/ok-gating belongs to the caller (the core does a
+   * pure comparison); an unrecorded basename produces no drift
+   * (record-observation is the caller's job). */
   artifacts?: { declared: Record<string, string>; recorded: Record<string, string> }
 }
 
-/** Saf drift çekirdeği: I/O yok, enjekte girdilerle test edilir. */
+/** Pure drift core: no I/O, tested with injected inputs. */
 export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   const { name, expected, running, liveness } = input
   if (expected === null && running !== null) {
@@ -176,10 +177,11 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   if (Object.keys(diffs).length > 0) {
     return { service: name, kind: "config-mismatch", expected: diffs, running: { pid: running.pid }, hint: `ow restart ${name}` }
   }
-  // M-C artifact-stale: canlı + uyumlu serviste probe-beyanlı digest ile
-  // kayıtlı harita çelişirse (sıralı ilk basename, deterministik). Digest
-  // karşılaştırması hex-dışıduyarlıdır (küçük-harfe indirgenir); tel/insan
-  // YALNIZCA basename görür (tam-digest expected/running'e girmez).
+  // M-C artifact-stale: on a live + matching service, if the probe-declared
+  // digest contradicts the recorded map (first basename in sort order,
+  // deterministic). The digest comparison is case-insensitive (lowercased);
+  // wire/human sees ONLY the basename (the full digest never enters
+  // expected/running).
   if (input.artifacts !== undefined) {
     const { declared, recorded } = input.artifacts
     for (const base of Object.keys(declared).sort()) {
@@ -211,10 +213,10 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   return null
 }
 
-/** `lsof -i :<port>` read-only port-sahibi yoklaması (best-effort,
- * UNVERIFIED: platform çıktısı değişkendir). Kill yok, hata sessizce
- * null döner. Supervisor spawn-anı + reconcile yolunda çalışır, `ps`
- * içinde asla. */
+/** `lsof -i :<port>` read-only port-owner probe (best-effort,
+ * UNVERIFIED: platform output varies). No kill, an error silently
+ * returns null. Runs at supervisor spawn + on the reconcile path, never
+ * inside `ps`. */
 export const portOwners = async (port: number, timeoutMs = 2000): Promise<number[] | null> => {
   try {
     const proc = Bun.spawn(["lsof", "-i", `:${port}`, "-sTCP:LISTEN", "-t"], { stdout: "pipe", stderr: "ignore" })
@@ -235,7 +237,7 @@ export const portOwners = async (port: number, timeoutMs = 2000): Promise<number
   }
 }
 
-const DRIFT_TR: Record<DriftKind, string> = {
+const DRIFT_EN: Record<DriftKind, string> = {
   missing: "missing",
   extra: "extra",
   stopped: "stopped",
@@ -245,36 +247,36 @@ const DRIFT_TR: Record<DriftKind, string> = {
   "artifact-stale": "stale-build",
 }
 
-/** Kilitli insan şablonu (M-C): `derleme-eski: <svc> (<base> değişti) →
- * yeniden-derle + ow restart <svc>` (öneri-metni; düğme/otomatik eylem yok). */
+/** Locked human template (M-C): `stale-build: <svc> (<base> changed) →
+ * rebuild + ow restart <svc>` (suggestion text; no button/automatic action). */
 export const formatDrift = (drift: ReconcileDrift): string => {
   if (drift.kind === "artifact-stale") {
     const base = (drift.expected as Record<string, unknown> | undefined)?.["artifact"]
     return `stale-build: ${drift.service} (${typeof base === "string" ? base : "?"} changed) → rebuild + ow restart ${drift.service}`
   }
-  return `${DRIFT_TR[drift.kind]}: ${drift.service} → ${drift.hint}`
+  return `${DRIFT_EN[drift.kind]}: ${drift.service} → ${drift.hint}`
 }
 
-/** M3 probe bütçesi (M1 N3): toplam ≤60s SOFT duvar — son başlayan probe
- * bütçeyi tek-timeout kadar aşabilir (koşan probe yarıda kesilmez);
- * aşımda kalan servis `ölçülmedi(timeout-bütçesi)` raporlanır, exit yine
- * drift'e göredir. */
+/** M3 probe budget (M1 N3): total ≤60s SOFT wall — the last-starting probe
+ * may exceed the budget by one timeout (a running probe is not cut short);
+ * on overrun the remaining service is reported `unmeasured (timeout-budget)`,
+ * and exit still follows drift. */
 export const RECONCILE_PROBE_BUDGET_MS = 60_000
 
 export type ReconcileReadiness = { service: string; ok: boolean; note: string }
 
-/** Salt-okunur `reconcile --check` koşusu: exit 0 sync / 1 drift / 2 kullanım.
- * `--probe` ile tanımlı probe'lar istemci-tarafı one-shot çalışır (canlı
- * supervisor'da kayıtlı-canlı servisler); sonuçlar drift raporuna
- * `readiness:` satırları olarak eklenir, çıkışı değiştirmez. */
+/** Read-only `reconcile --check` run: exit 0 sync / 1 drift / 2 usage.
+ * With `--probe`, defined probes run client-side one-shot (recorded-live
+ * services under a live supervisor); results are added to the drift report
+ * as `readiness:` lines, they do not change exit. */
 export const runReconcileCheck = async (opts: {
   rootDir: string
   file: string
   json: boolean
   probe?: boolean
-  /** Enjekte probe çalıştırıcı (default gerçek `runProbe`; testler sahte). */
+  /** Injected probe runner (default the real `runProbe`; tests use a fake). */
   runProbeFn?: import("./up-probe").ProbeFn
-  /** Toplam probe bütçesi (default 60s; testler küçültür). */
+  /** Total probe budget (default 60s; tests shrink it). */
   probeBudgetMs?: number
 }): Promise<number> => {
   let text: string
@@ -309,8 +311,8 @@ export const runReconcileCheck = async (opts: {
   const running = state?.services ?? []
   const names = [...new Set([...expected.map((svc) => svc.name), ...running.map((svc) => svc.name)])].sort()
   const drifts: ReconcileDrift[] = []
-  // M-C: çekirdek girdileri saklanır (probe-sonrası artifact-geçidi aynı
-  // anlık-girdiyle ikinci kez çalışır — deterministik, yeniden-ölçüm yok).
+  // M-C: core inputs are kept (the post-probe artifact pass runs a second
+  // time on the same instant inputs — deterministic, no re-measurement).
   const kernelInputs = new Map<string, { exp: UpService | null; run: UpServiceState | null; liveness: Liveness; listening: boolean | undefined; owners: number[] | null }>()
   for (const name of names) {
     const exp = expected.find((svc) => svc.name === name) ?? null
@@ -377,14 +379,16 @@ export const runReconcileCheck = async (opts: {
   if (!opts.json) {
     for (const line of revLines) console.log(line)
   }
-  // M3 `--probe` fazı: drift'ten bağımsız salt-okunur ölçüm. Yalnızca
-  // kayıtlı-CANLI + tanımlı servisler (ölü/bilinmeyen atlanır — drift
-  // satırları zaten kapsar). Kayıt: canlı kilit varsa istek-kanalıyla
-  // (tek yazar supervisor), yoksa atlanır (rapor korunur).
+  // M3 `--probe` phase: read-only measurement independent of drift. Only
+  // recorded-LIVE + defined services (dead/unknown are skipped — the drift
+  // lines already cover them). Recording: via the request channel when a
+  // live lock exists (sole-writer supervisor), otherwise skipped (the report
+  // is preserved).
   let readiness: ReconcileReadiness[] = []
-  // M-C derleme-kimliği: probe-beyanlı (basename → tam-digest) vs kayıtlı
-  // harita. Uyuşmazlık (canlı + ok-girdi) → artifact-stale drift;
-  // kayıtsız basename → kayıt-gözlem (istek-kanalı, driftsiz/uyarısız).
+  // M-C build identity: probe-declared (basename → full digest) vs the
+  // recorded map. Mismatch (live + ok entry) → artifact-stale drift; an
+  // unrecorded basename → record-observation (request channel, no drift/
+  // warning).
   const artifactStale: { service: string; artifact: string }[] = []
   let artifactJson: Record<string, Record<string, string>> | null = null
   if (opts.probe === true) {
@@ -449,7 +453,7 @@ export const runReconcileCheck = async (opts: {
     }
     readiness = measured
     await recordReadinessResults(opts.rootDir, opts.file, toRecord, opts.json)
-    // JSON teli: kayıtlı haritalar (indirgenmiş kısa-8) + bu tur driftleri.
+    // JSON wire: recorded maps (reduced short-8) + this round's drifts.
     const recordedJson: Record<string, Record<string, string>> = {}
     for (const svc of running) {
       if (svc.artifactDigests === undefined) continue
@@ -475,7 +479,7 @@ export const runReconcileCheck = async (opts: {
         reconcile: { inSync, drifts },
         revisions,
         ...(opts.probe === true ? { readiness } : {}),
-        // M-C katkımsal tel (indirgenmiş kısa-8; ham digest tele çıkmaz).
+        // M-C additive wire (reduced short-8; the raw digest never reaches the wire).
         ...(opts.probe === true ? { artifactDigests: artifactJson ?? {}, artifactStale } : {}),
       }),
     )
@@ -491,8 +495,8 @@ export const runReconcileCheck = async (opts: {
   return inSync ? 0 : 1
 }
 
-/** Probe verdict kayıtları (B1-temiz: canlı kilit → istek-kanalı; kilit
- * yoksa sessiz atlanır). Ack kaybı yalnızca uyarır, verdict'i bozmaz. */
+/** Probe verdict records (B1-clean: live lock → request channel; silently
+ * skipped when no lock). An ack loss only warns and does not break the verdict. */
 export const recordReadinessResults = async (
   rootDir: string,
   file: string,
@@ -532,6 +536,6 @@ export const recordReadinessResults = async (
     }
     await Promise.all(pending)
   } catch {
-    // best-effort: verdict her durumda raporlanmıştır
+    // best-effort: the verdict has already been reported in every case
   }
 }

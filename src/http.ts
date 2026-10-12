@@ -607,8 +607,8 @@ export function createApp(service: WorkspaceService, options: {
           // Coordinator snapshot (dashboard-only in mcpMayCall above).
           // Observer-side read: viewing never records activity, so no
           // recordRead wrapper. Name/env mapping mirrors envStatusMatch.
-          // `?run=` salt-okunur checkpoint-çalışma seçimidir (rol kapısını
-          // etkilemez — gate pathname üzerindendir).
+          // `?run=` is a read-only checkpoint-run selection (it does not affect the
+          // role gate — the gate is based on pathname).
           const coordinatorMatch = new RegExp(`^/api/workspaces/(${nameSegment})/coordinator$`).exec(url.pathname);
           if (coordinatorMatch && request.method === 'GET') {
             const rawEnvironment = url.searchParams.get('environment') ?? '';

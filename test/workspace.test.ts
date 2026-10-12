@@ -309,7 +309,7 @@ test('overlapping selected roots are rejected and one invalid root registers not
   // M2 farm hint (no rule change — refusal text names the worktree pattern).
   await assert.rejects(
     f.service.register('OverlapHint', [f.project, child]),
-    /çiftlik düzeni için her worktree'yi ayrı kök olarak kaydedin/,
+    /register each worktree as its own root/,
   );
 
   const missingRoot = join(f.root, 'not-created');

@@ -93,7 +93,7 @@ describe("parseScenarios negative matrix (exit 1 class)", () => {
     ["missing services", "version: 1\nscenarios:\n  a:\n    probes: [{id: p, argv: [./x.sh]}]\n"],
     ["missing probes", "version: 1\nscenarios:\n  a:\n    services: [api]\n"],
     ["missing argv", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [{id: p}]\n"],
-    ["probe not a map", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [duz-yazi]\n"],
+    ["probe not a map", "version: 1\nscenarios:\n  a:\n    services: [api]\n    probes: [plain-text]\n"],
   ]
   for (const [label, text] of cases) {
     test(label, () => {
@@ -188,8 +188,8 @@ describe("subset block-map: line-numbered error + hint", () => {
   })
 })
 
-describe("sentinel (secret-asla)", () => {
-  test("argv/targets/checkpoints maskeli, hunter2 yok", async () => {
+describe("sentinel (secret-never)", () => {
+  test("argv/targets/checkpoints masked, no hunter2", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.scenarios.yaml")
@@ -246,14 +246,14 @@ describe("exit matrisi", () => {
       const io2 = capture()
       let code = -1
       try {
-        code = await run(["scenarios", "--check", "--file", join(root, "yok.yaml")])
+        code = await run(["scenarios", "--check", "--file", join(root, "missing.yaml")])
       } finally {
         io2.restore()
       }
       expect(code).toBe(1)
       expect(io2.err.join("\n")).toContain("scenario file missing")
       expect(await run(["scenarios", "--file", file])).toBe(2)
-      expect(await run(["scenarios", "--check", "fazla", "--file", file])).toBe(2)
+      expect(await run(["scenarios", "--check", "extra", "--file", file])).toBe(2)
       expect(await run(["scenarios", "--check", "--file", file, "--probe"])).toBe(2)
     } finally {
       await rm(root, { recursive: true, force: true })

@@ -373,7 +373,7 @@ describe("overlay hostile corpus", () => {
     const root = await tempRoot()
     try {
       const file = await writeBase(root)
-      await writeLocal(root, "version: 1\nscenarios:\n  - blok liste yasak\n")
+      await writeLocal(root, "version: 1\nscenarios:\n  - block list forbidden\n")
       const io = capture()
       let code = -1
       try {

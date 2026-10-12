@@ -5,9 +5,9 @@
  * existing `signature()` shape abstraction and span fields print verbatim
  * from the store, so this read path captures zero raw bodies or values.
  *
- * Linking: an ID found in ≥1 sidecar row links EXACTLY (`kesin`); an
+ * Linking: an ID found in ≥1 sidecar row links EXACTLY (`exact`); an
  * unreferenced span attaches to its nearest agent row within
- * ±`TIMELINE_FALLBACK_MS` (`tahmini`); anything else renders standalone
+ * ±`TIMELINE_FALLBACK_MS` (`estimated`); anything else renders standalone
  * with no link claim (confidence omitted — never invented).
  *
  * `--trace` filtering follows `ow trace` list semantics: an unknown id is

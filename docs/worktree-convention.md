@@ -33,8 +33,8 @@ ow provision --check [--json] [--probe]
 - Exit `0` all-ok / `1` any-fail / `2` usage (mirrors the preflight
   contract). Bare `ow provision` without `--check` is a usage error.
 - Human output is one line per check (`ok: <name> …` /
-  `eksik: <name> … → …`) plus a summary (`provision geçti` /
-  `provision eksik: N`). `--json` carries stable English keys
+  `missing: <name> … → …`) plus a summary (`provision passed` /
+  `provision missing: N`). `--json` carries stable English keys
   (`{pass, root, rootBase, revShort, branch, checks, missing, human,
   portBase}`); `root` (absolute) appears only in that local stdout, never on
   the wire or in the DOM. `portBase` is a reserved seam and is always `null`
@@ -47,7 +47,7 @@ ow provision --check [--json] [--probe]
 ## Shared-`ow.yaml` port discipline
 
 Ports are declared once in the shared file. A conflict warns
-(`uyarı: port çakışması … yine de başlatılıyor`) and `up` still spawns —
+(`warning: port conflict: <port> in use (<name> still starting)`) and `up` still spawns —
 warn-and-spawn is unchanged. Per-worktree port offsets or service isolation
 are the application's own architecture decision (ResAI-side follow-up); the
 only ow-side seam is the reserved `portBase` field in provision JSON, which
@@ -78,7 +78,7 @@ polling); single-root snapshots carry no ledger at all.
 Port sharing (same declared port recorded under ≥2 roots) and service
 double-ownership (same service recorded alive under ≥2 roots) surface as
 advisory snapshot warnings only — scoped with `worktree:<base>` tags and
-explicit non-gating wording (`bilgi amaçlı, engelleme yok`). They never fail
+explicit non-gating wording `(informational, no blocking)`. They never fail
 the preflight gate and never block `up` (warn-and-spawn is unchanged).
 
 Ledger-only fallback: if a ≥2-week farm pilot shows zero avoided incidents or

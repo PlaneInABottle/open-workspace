@@ -1,13 +1,13 @@
-/** P2-B preflight kapısı: salt-okunur kompozisyon (mutasyon YOK).
- * Bayraksız: ow.yaml + supervisor state + read-only liveness (ps lstart
- * yeniden-okuma) + kayıtlı `lastReadiness` + checkpoint zarfları okunur;
- * canlı exec YOK (spawn/stop/restart/project-probe/health-HTTP/git/lsof
- * çalıştırılmaz). `--probe` ile: bildirimli portlara one-shot loopback TCP
- * (M1 N3 bütçesi: servis-başı timeout, toplam ≤60s, aşımda
- * `ölçülmedi(timeout-bütçesi)`). M2/M3 land etmedi: `ps --explain` yok
- * (provenance lensi = canlı servislerde beklenen/çalışan config kimliği),
- * `lastReadiness` yoksa kapı `not_observed` ile düşer (Q1). Gating YOK:
- * kapı yalnızca raporlar, runner karar verir. */
+/** P2-B preflight gate: read-only composition (NO mutation).
+ * Unflagged: ow.yaml + supervisor state + read-only liveness (ps lstart
+ * re-read) + recorded `lastReadiness` + checkpoint envelopes are read;
+ * NO live exec (spawn/stop/restart/project-probe/health-HTTP/git/lsof are
+ * not run). With `--probe`: one-shot loopback TCP for declared ports
+ * (M1 N3 budget: per-service timeout, total ≤60s, on overrun
+ * `(unmeasured: timeout-budget)`). M2/M3 did not land: no `ps --explain`
+ * (provenance lens = expected/running config identity on live services);
+ * with no `lastReadiness` the gate drops with `not_observed` (Q1). NO gating:
+ * the gate only reports, the runner decides. */
 
 import { readdir } from "node:fs/promises"
 import { join } from "node:path"
@@ -33,12 +33,12 @@ import { normalizeBoundary, parseScenarios, SCENARIOS_FILE_NAME } from "./up-sce
 export type PreflightGateName = "reconcile" | "provenance" | "readiness" | "boundary"
 export type PreflightGate = { name: PreflightGateName; pass: boolean; detail: object }
 
-/** Toplam TCP bütçesi (M1 N3) + servis-başı timeout (alt sınırlar; üst sabit). */
+/** Total TCP budget (M1 N3) + per-service timeout (lower bounds; the upper is fixed). */
 export const PREFLIGHT_BUDGET_MS = 60_000
 export const PREFLIGHT_PER_SERVICE_MS = 5_000
 
-/** Enjekte edilebilir TCP yoklaması (default gerçek loopback; testler sahte
- * say sayaçla verir — bayraksız koşuda HİÇ çağrılmamalı). */
+/** Injectable TCP probe (default the real loopback; tests provide a fake
+ * with a counter — it must NEVER be called on an unflagged run). */
 export type TcpCheck = (port: number) => Promise<boolean>
 
 const defaultTcpCheck: TcpCheck = (port) => tcpListening(port)
@@ -57,8 +57,8 @@ export const realLiveness: LivenessOf = async (svc) => {
 
 type LastReadiness = { ok: boolean; note?: string }
 
-/** `lastReadiness` hoşgörülü okuma (M3-absent): `{ok: bool}` değilse
- * ölçülmemiş sayılır (kapıyı devirmez, `ölçülmedi` üretir). */
+/** Tolerant `lastReadiness` read (M3-absent): anything but `{ok: bool}` counts
+ * as unmeasured (it does not flip the gate, it produces `unmeasured`). */
 const readLastReadiness = (record: UpServiceState): LastReadiness | null => {
   const raw = (record as unknown as Record<string, unknown>)["lastReadiness"]
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null
@@ -75,9 +75,9 @@ export type PreflightEvaluation = {
   pass: boolean
 }
 
-/** Saf-kompozisyon çekirdeği (IO trampleni `runPreflight`'tedir; testler
- * doğrudan çağırır). `tcpResults`: port → true(açık)/false(kapalı)/
- * "unmeasured" — bayraksız koşuda hep boştur (TCP'ye dokunulmaz). */
+/** Pure-composition core (the IO trampoline is `runPreflight`; tests call it
+ * directly). `tcpResults`: port → true(open)/false(closed)/
+ * "unmeasured" — always empty on an unflagged run (TCP is not touched). */
 export const evaluatePreflight = (opts: {
   expected: UpService[]
   running: UpServiceState[]
@@ -95,8 +95,8 @@ export const evaluatePreflight = (opts: {
   // returned envelopes echo the full input (older runs display-only).
   const gated = newestEnvelopePerStage(opts.envelopes)
 
-  // reconcile geçidi: M1 saf çekirdeği, read-only alt-küme (TCP/lsof yok →
-  // listening/owners boş; port-yabancı bu geçitte ÜRETİLMEZ, belgeli).
+  // reconcile gate: the M1 pure core, read-only subset (no TCP/lsof →
+  // listening/owners empty; foreign-port is NOT PRODUCED in this gate, documented).
   const names = [...new Set([...opts.expected.map((svc) => svc.name), ...opts.running.map((svc) => svc.name)])].sort()
   const drifts: ReconcileDrift[] = []
   for (const name of names) {
@@ -111,9 +111,9 @@ export const evaluatePreflight = (opts: {
   }
   const inSync = drifts.length === 0
 
-  // provenance geçidi (M2-absent provisional): CANLI servislerde
-  // beklenen/çalışan config kimliği (reconcile config-farklı alt-kümesi;
-  // aynı olgu, ikinci lens — ölü/bilinmeyen kayıtlar reconcile'indir).
+  // provenance gate (M2-absent provisional): expected/running config identity
+  // on LIVE services (the reconcile config-mismatch subset; same fact,
+  // second lens — dead/unknown records belong to reconcile).
   const liveConfigDiffs = drifts.filter(
     (drift) => drift.kind === "config-mismatch" && opts.liveness.get(drift.service) === "live",
   )
@@ -122,8 +122,8 @@ export const evaluatePreflight = (opts: {
     human.push(`missing: ${drift.service} [${drift.kind}] → ${drift.hint}`)
   }
 
-  // readiness geçidi: kayıtlı `lastReadiness` (Q1: yoksa düşer) + `--probe`
-  // canlı TCP onayı (ported servislerde ölçüm ZORUNLU: ölçülmedi = düşer).
+  // readiness gate: recorded `lastReadiness` (Q1: drops if absent) + `--probe`
+  // live TCP confirmation (on ported services measurement is MANDATORY: unmeasured = drop).
   const checks: { service: string; ok: boolean; note: string; source: "recorded" | "live-tcp" }[] = []
   for (const svc of opts.expected) {
     const record = runByName.get(svc.name)
@@ -161,7 +161,7 @@ export const evaluatePreflight = (opts: {
     checks.push({ service: svc.name, ok: true, note: "recorded + live TCP", source: "live-tcp" })
   }
 
-  // checkpoint zarfları: bayat/gözlenmedi kapıyı düşürür (fail-closed tanık).
+  // checkpoint envelopes: stale/not-observed drop the gate (fail-closed witness).
   for (const envelope of gated) {
     if (envelope.status === "stale") {
       missing.push(`stale:${envelope.stage}:${envelope.stale_reason}`)
@@ -225,9 +225,9 @@ export const evaluatePreflight = (opts: {
   return { gates, missing, human, envelopes: opts.envelopes, pass }
 };
 
-/** One-shot TCP fazı (yalnızca `--probe`): bildirimli portlar, yaml
- * sırası, ardışık. Bütçe biterse kalanlar ölçülmeden geçilir (sayaç
- * kanıtı için `tcpCheck` çağrılmaz). */
+/** One-shot TCP phase (only `--probe`): declared ports, yaml order,
+ * sequential. When the budget runs out the remainder pass unmeasured
+ * (`tcpCheck` is not called, so the counter proof holds). */
 export const measureTcpPorts = async (opts: {
   ports: number[]
   tcpCheck?: TcpCheck
@@ -363,8 +363,8 @@ export const readBoundaryClaims = async (rootDir: string, flagPath?: string): Pr
   }
   return { claims, scenariosUnreadable: false, overlayError: null, overlayExit: 1, overlay, serviceless }
 }
-/** `ow preflight [--json] [--probe] [--file]`: exit 0 geçti / 1 eksik / 2
- * kullanım (çağrı yeri). Mutasyon YOK. */
+/** `ow preflight [--json] [--probe] [--file]`: exit 0 passed / 1 missing / 2
+ * usage (call site). NO mutation. */
 export const runPreflight = async (opts: {
   rootDir: string
   file: string

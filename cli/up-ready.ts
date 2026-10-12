@@ -1,4 +1,4 @@
-/** Bounded readiness wait for `ow up -d --wait <süre>`: poll each declared
+/** Bounded readiness wait for `ow up -d --wait <duration>`: poll each declared
  * service `port` until a TCP listener accepts, a service exits, or the window
  * elapses. This is not a healthcheck/restart system (still explicit
  * non-goals) — it only answers "did the ports come up", which operators

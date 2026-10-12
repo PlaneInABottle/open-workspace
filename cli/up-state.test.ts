@@ -65,10 +65,10 @@ describe("ensureOwGitignore", () => {
   test("missing parent warns instead of throwing; no values logged", async () => {
     const root = await tempRoot()
     try {
-      const warn = await ensureOwGitignore(join(root, "yok"))
+      const warn = await ensureOwGitignore(join(root, "missing"))
       expect(typeof warn).toBe("string")
       expect(warn as string).toContain(".gitignore")
-      expect(warn as string).not.toContain("yok")
+      expect(warn as string).not.toContain("missing")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -319,7 +319,7 @@ describe("readBuildSidecar", () => {
     try {
       await writeFile(join(root, "ow"), "#!/bin/sh\n")
       expect(await readBuildSidecar(join(root, "ow"))).toBeNull()
-      expect(await readBuildSidecar(join(root, "yok"))).toBeNull()
+      expect(await readBuildSidecar(join(root, "missing"))).toBeNull()
       await writeFile(sidecar(root), "not-json{{{")
       expect(await readBuildSidecar(join(root, "ow"))).toBeNull()
       await writeFile(sidecar(root), JSON.stringify({ sha: "abc", digest: "", time: "t" }))

@@ -21,8 +21,8 @@ this file never repeats its reference. No product-code change is implied.
    `ow trace <traceId> --wait 15s` polls for late arrivals before
    concluding absence (browser batch delay).
 4. `ow timeline [session] [--trace <id>] [--since 1d]` — which agent row
-   goes with which span? `kesin` (exact-ID link) vs `tahmini` (nearest row
-   within ±10s): cite the confidence shown, never upgrade a `tahmini`
+   goes with which span? `exact` (exact-ID link) vs `estimated` (nearest row
+   within ±10s): cite the confidence shown, never upgrade an `estimated`
    link into a causal claim.
 5. `ow doctor` when results look wrong (stale tail, missing session,
    0 spans): it names liveness, `unknown` service, and listener hints.

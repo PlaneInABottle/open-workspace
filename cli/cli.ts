@@ -188,7 +188,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   return { command, sessionID, flags, error: null, extra }
 }
 
-// --json envelopes: stable English keys; human views keep Turkish labels.
+// --json envelopes: stable English keys; human views keep plain English labels.
 export const toSessionsJson = (sessions: Awaited<ReturnType<typeof listSessions>>) => ({ sessions })
 export const toShowJson = (
   sessionID: string,
@@ -205,7 +205,7 @@ export const toStuckJson = (sessionID: string, report: Awaited<ReturnType<typeof
 export const doctorFails = (lines: { name: string; ok: boolean }[]): boolean =>
   lines.filter((l) => l.name !== "up" && l.name !== "trace").some((l) => !l.ok)
 
-/** Supervisor root: --file dizini ya da cwd; state/logs <root>/.ow altında. */
+/** Supervisor root: the --file directory or cwd; state/logs live under <root>/.ow. */
 export const upRootDir = (flags: Record<string, string | boolean | string[]>): string => {
   const file = flag(flags, "--file")
   return file ? dirname(resolve(file)) : process.cwd()
@@ -216,10 +216,10 @@ export const upFilePath = (flags: Record<string, string | boolean | string[]>): 
 }
 export const upStateDir = (rootDir: string): string => join(rootDir, ".ow")
 
-/** `ow up -d --wait <süre> [--health <ad>=<yol> ...]`: block until every
+/** `ow up -d --wait <duration> [--health <name>=<path> ...]`: block until every
  * declared `port` accepts a TCP connection, a service exits, or the window
  * elapses. A service named in `health` additionally waits for HTTP 2xx on
- * `http://127.0.0.1:<port><yol>` after its TCP gate (unflagged services keep
+ * `http://127.0.0.1:<port><path>` after its TCP gate (unflagged services keep
  * pure TCP). M3: a service with a `readiness:` definition additionally runs
  * its project probe (argv-only, one-shot per throttle window) after its TCP
  * gate (or directly when `needsPort: false`); a failing probe keeps the
@@ -372,9 +372,9 @@ export const waitForUpReady = async (opts: {
   return ready ? 0 : 1
 }
 
-/** Parse repeatable `--health <ad>=<yol>` values into a service→path map
+/** Parse repeatable `--health <name>=<path>` values into a service→path map
  * (last wins per service; one occurrence may hold comma-separated pairs).
- * Throws a Turkish usage error when an entry lacks `=`, the path does not
+ * Throws an English usage error when an entry lacks `=`, the path does not
  * start with `/`, the service is unknown, or it declares no port (health
  * needs a TCP gate to build on). */
 export const parseHealthFlags = (
@@ -409,8 +409,9 @@ const flag = (flags: Record<string, string | boolean | string[]>, name: string):
 
 /** `up --check --json` service listings: byte-identical key order to the
  * raw serialization for clean configs, with B3 masking applied — `cmd` /
- * `logs` ham basılmaz, `readiness` ham argv değil maskeli-şekil taşır
- * (`env`/`requiredEnv` non-enumerable kaldığı için zaten görünmez). */
+ * `logs` are never printed raw, `readiness` carries a masked shape rather
+ * than raw argv (`env`/`requiredEnv` are already hidden because they stay
+ * non-enumerable). */
 export const toCheckServicesJson = (services: UpService[]): Record<string, unknown>[] => {
   const maskCmd = (cmd: string | string[] | undefined): string | string[] | undefined => {
     if (cmd === undefined) return undefined
@@ -544,7 +545,7 @@ export const runSingleServiceRequest = async (opts: {
   return 1
 }
 
-/** Lock-yok `down <svc>`: only the target pid is stopped (shared `stopOne`
+/** Lock-less `down <svc>`: only the target pid is stopped (shared `stopOne`
  * guard) and the record is merge-marked; the lock file is never touched
  * and `supervisor.json` is never deleted (B5). `--rm` never reaches here
  * (single `down --rm` is exit 2 at the call site). */
@@ -785,7 +786,7 @@ export const run = async (argv: string[]): Promise<number> => {
         parsed = parseUpFile(text)
       } catch (error) {
         console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
-        // Polish (sürtünme 2): the nesting trap bites hardest at validation
+        // Polish (friction 2): the nesting trap bites hardest at validation
         // time — show the inline example only on the `--check` path.
         if (flags["--check"] === true && isSubsetNestingError(error)) console.error(subsetNestingHint)
         return 2
@@ -844,7 +845,7 @@ export const run = async (argv: string[]): Promise<number> => {
           return 2
         }
       }
-      // N5: tanımlı probe + --health aynı serviste yarışamaz (iki kaynak yok).
+      // N5: a defined probe and --health cannot race on the same service (no two sources).
       for (const svc of parsed.services) {
         if (health[svc.name] !== undefined && svc.readiness !== undefined) {
           console.error(`ow: --health conflicts with readiness: ${svc.name} (pick one)`)
@@ -860,7 +861,7 @@ export const run = async (argv: string[]): Promise<number> => {
           }
           return 2
         }
-        // Polish (sürtünme 5): `--check` prints the resolved spawn order
+        // Polish (friction 5): `--check` prints the resolved spawn order
         // (already topo-sorted by the parser) plus the order-only reminder.
         // Dep-less files keep exact YAML order — and byte-identical output,
         // since both lines print only when some service declares depends_on.
@@ -931,10 +932,10 @@ export const run = async (argv: string[]): Promise<number> => {
       console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
       return 2
     }
-    // `restart`/`reconcile`/tek-servis `down` state-dizini yokluğunda da
-    // kendi honest çıkışını üretir (kilit-yok restart exit 2, reconcile
-    // eksik exit 1, tek `down --rm` kullanım hatası) — erken boş-dal
-    // yalnızca toplu `down` ile klasik okuyuculara aittir.
+    // `restart`/`reconcile`/single-service `down` produce their own honest
+    // exit even without a state directory (no-lock restart exit 2, reconcile
+    // missing exit 1, single `down --rm` usage error) — the early empty branch
+    // belongs only to bulk `down` and the classic readers.
     const earlyEmpty = (command === "down" && positional === undefined) || command === "ps" || command === "logs"
     if (!existsSync(stateDir) && earlyEmpty) {
       if (command === "down") {
@@ -1027,14 +1028,13 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: use reconcile with --check (read-only report, no mutation)")
         return 2
       }
-      // M3: `--probe` bayraklı reconcile, tanımlı probe'ları istemci-tarafı
-      // one-shot çalıştırır (M1 N3 bütçesi); mutasyon yapmaz, çıkış
-      // drift'e göredir.
+      // M3: `--probe`-flagged reconcile runs defined probes client-side
+      // one-shot (M1 N3 budget); it never mutates, exit follows drift.
       const { runReconcileCheck } = await import("./up-reconcile")
       return runReconcileCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
     }
     if (command === "checkpoints") {
-      // P2-A: runner-yazar/ow-okur; salt-okunur, mutasyon yok, canlı exec yok.
+      // P2-A: runner-writes/ow-reads; read-only, no mutation, no live exec.
       if (flags["--probe"] === true) {
         console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
         return 2
@@ -1082,10 +1082,10 @@ export const run = async (argv: string[]): Promise<number> => {
       return runFailures({ rootDir, since: flags["--since"], json })
     }
     if (command === "preflight") {
-      // P2-B: salt-okunur kapı — spawn/stop/restart/probe/health/git/lsof
-      // çağrılmaz (bayraksız); `--probe` yalnızca bildirimli portlara
-      // one-shot loopback TCP (bütçeli). `--probe` burada M3 bayrağı değil,
-      // kapının kendi canlı-onay yoludur.
+      // P2-B: read-only gate — spawn/stop/restart/probe/health/git/lsof are
+      // not called (unflagged); `--probe` only adds one-shot loopback TCP for
+      // declared ports (budgeted). Here `--probe` is not the M3 flag, it is the
+      // gate's own live-confirmation path.
       if (positional !== undefined) {
         console.error("ow: preflight takes no positional arguments")
         return 2
@@ -1138,9 +1138,9 @@ export const run = async (argv: string[]): Promise<number> => {
       return runProvisionCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
     }
     if (command === "scenarios") {
-      // Senaryo validatoru: salt-okunur (probe koşmaz, exec yok). `--file`
-      // senaryo dosyasını gösterir (varsayılan <root>/ow.scenarios.yaml);
-      // services-referansları aynı root'un ow.yaml'ına bakılır.
+      // Scenario validator: read-only (runs no probe, no exec). `--file`
+      // points at the scenario file (default <root>/ow.scenarios.yaml);
+      // service references resolve against the same root's ow.yaml.
       if (positional !== undefined) {
         console.error("ow: scenarios takes no positional arguments")
         return 2

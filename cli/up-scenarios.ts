@@ -1,9 +1,9 @@
-/** P2 senaryo validatoru: `<root>/ow.scenarios.yaml` v1 şema doğrulama.
- * Salt-okunur: parse + validate + services-referans kontrolü (ow.yaml
- * okunur, başka exec YOK); probe ÇALIŞTIRILMAZ, checkpoint
- * üretilmez/tüketilmez. ow.yaml şişmez — senaryolar ayrı dosyadadır.
- * Subset-YAML tek-satır kuralı geçerlidir (blok-map yazımı satırlı hata +
- * inline örnek verir). */
+/** P2 scenario validator: `<root>/ow.scenarios.yaml` v1 schema validation.
+ * Read-only: parse + validate + services-reference check (ow.yaml is read,
+ * no other exec); the probe is NOT run, no checkpoint is
+ * produced/consumed. ow.yaml stays lean — scenarios live in a separate file.
+ * The subset-YAML single-line rule applies (block-map form yields a line error +
+ * an inline example). */
 
 import { join } from "node:path"
 
@@ -24,7 +24,7 @@ import { maskSecrets } from "./up-evidence"
 export const SCENARIOS_FILE_NAME = "ow.scenarios.yaml"
 export const SCENARIOS_VERSION = "1"
 
-/** Senaryo/probe adı (opak string; küçük harf ailesi). */
+/** Scenario/probe name (opaque string; lowercase family). */
 export const SCENARIO_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]{0,63}$/
 
 const BOUNDARY_NEW_BASE: ReadonlySet<string> = new Set([
@@ -464,7 +464,7 @@ export type ReferenceCheck = {
   boundaryWarnings: string[]
 }
 
-/** Services-referans kontrolü: ow.yaml adları KNOWN ise sessiz; yoksa warn
+/** Services-reference check: silent when ow.yaml names are KNOWN, otherwise warn
  * + UNVERIFIED (never a failure). Boundaries are normalized to the M1
  * taxonomy: legacy values map + one `legacy-boundary` warning per value per
  * file; unknown/empty falls back to `unverified` + UNVERIFIED warning (never
@@ -581,11 +581,11 @@ export const toScenariosJson = (file: ScenariosFile): { scenarios: ScenarioJson[
   })),
 })
 
-/** `ow scenarios --check [--json] [--file]`: exit 0 ok (warn'la da 0),
- * 1 şema hatası, 2 kullanım. Dosya YOKSA exit 1 (`senaryo dosyası yok`):
- * `--check` doğrulama fiilidir — yanlış yolda sessiz 0 geçmemeli
- * (`checkpoints list` envanter fiilidir, yokluk orada veridir; burada
- * yokluk doğrulanacak yapıtın yokluğudur). */
+/** `ow scenarios --check [--json] [--file]`: exit 0 ok (also 0 with warnings),
+ * 1 schema error, 2 usage. A MISSING file is exit 1 (`scenario file missing`):
+ * `--check` is a validation verb — it must not silently pass 0 on a wrong
+ * path (`checkpoints list` is an inventory verb, absence there is data; here
+ * absence is the absence of the artifact to validate). */
 export const runScenariosCheck = async (opts: { file: string; rootDir: string; json: boolean; boundariesFlag?: string }): Promise<number> => {
   const { readFileSync } = await import("node:fs")
   let text: string

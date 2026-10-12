@@ -1,5 +1,5 @@
-/** M2 provenance kaydı: saf çıkarım + maske + best-effort exec (enjekte).
- * Secret değer ve tam komut-satırı state'e girmez; env İÇERİĞİ asla. */
+/** M2 provenance record: pure inference + mask + best-effort exec (injected).
+ * Secret values and the full command line never enter state; env CONTENTS never. */
 
 import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -19,15 +19,15 @@ import {
 
 const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-m2prov-"))
 
-describe("argvShapeOf (maskeli-şekil, ham argv yok)", () => {
-  test("string + argv listesi maskelenir, şekil korunur", () => {
+describe("argvShapeOf (masked shape, no raw argv)", () => {
+  test("string + argv list are masked, shape preserved", () => {
     expect(argvShapeOf("deploy --token hunter2 --verbose")).toEqual(["deploy", "--token", "***", "--verbose"])
     expect(argvShapeOf(["./app", "--api-key", "hunter2"])).toEqual(["./app", "***", "***"])
     expect(argvShapeOf("sleep 30")).toEqual(["sleep", "30"])
     expect(argvShapeOf(undefined)).toBeUndefined()
   })
 
-  test("sentinel şekilli yollarda görünmez", () => {
+  test("the sentinel never appears in shaped paths", () => {
     for (const shape of [
       argvShapeOf("run --password hunter2")!,
       argvShapeOf(["./x", "TOKEN=hunter2"])!,
@@ -37,8 +37,8 @@ describe("argvShapeOf (maskeli-şekil, ham argv yok)", () => {
   })
 })
 
-describe("inferInterpreter (eşleşme = inferred, sürüm exec yok)", () => {
-  test("bilinen interpreter'lar", () => {
+describe("inferInterpreter (match = inferred, no version exec)", () => {
+  test("known interpreters", () => {
     expect(inferInterpreter(["python3", "-m", "app"])).toMatchObject({ name: "python3", source: "inferred" })
     expect(inferInterpreter(["uv", "run", "x"])).toMatchObject({ name: "uv", source: "inferred" })
     expect(inferInterpreter("bun run dev")).toMatchObject({ name: "bun", source: "inferred" })
@@ -47,15 +47,15 @@ describe("inferInterpreter (eşleşme = inferred, sürüm exec yok)", () => {
     expect(inferInterpreter(["./gradlew", "bootRun"])).toMatchObject({ name: "gradlew", source: "inferred" })
   })
 
-  test("eşleşme yoksa alan atlanır (sh dahil)", () => {
+  test("the field is dropped with no match (sh included)", () => {
     expect(inferInterpreter("sleep 30")).toBeUndefined()
     expect(inferInterpreter("sh -c 'echo hi'")).toBeUndefined()
     expect(inferInterpreter(undefined)).toBeUndefined()
   })
 })
 
-describe("javaInfoOf (sayı/ad, inferred)", () => {
-  test("-cp girdileri + -jar adı", () => {
+describe("javaInfoOf (count/name, inferred)", () => {
+  test("-cp entries + the -jar name", () => {
     const interp = { name: "java", source: "inferred" as const }
     expect(javaInfoOf(["java", "-cp", "a.jar:lib/b.jar:classes", "Main"], interp)).toEqual({
       classpathCount: 3,
@@ -65,7 +65,7 @@ describe("javaInfoOf (sayı/ad, inferred)", () => {
     expect(javaInfoOf(["java", "-jar", "app.jar"], interp)).toMatchObject({ classpathCount: 1, jarNames: ["app.jar"] })
   })
 
-  test("java değilse ya da kanıt yoksa atlanır", () => {
+  test("dropped when not java or no evidence", () => {
     expect(javaInfoOf(["node", "x.js"], { name: "node", source: "inferred" })).toBeUndefined()
     expect(javaInfoOf(["java", "Main"], { name: "java", source: "inferred" })).toBeUndefined()
     expect(javaInfoOf(undefined, undefined)).toBeUndefined()
@@ -79,37 +79,37 @@ describe("gitCheckout + procCwdOf (enjekte exec, best-effort)", () => {
     return null
   }
 
-  test("rev + dirty bayrağı", async () => {
+  test("rev + dirty flag", async () => {
     expect(await gitCheckout("/r", fakeGit("abc123", ""))).toEqual({ rev: "abc123", dirty: false })
     expect(await gitCheckout("/r", fakeGit("abc123", " M x\n"))).toEqual({ rev: "abc123", dirty: true })
   })
 
-  test("repo-değil/timeout/throw → null (asla throw yok)", async () => {
+  test("not-a-repo/timeout/throw → null (never throws)", async () => {
     expect(await gitCheckout("/r", fakeGit(null, ""))).toBeNull()
     expect(await gitCheckout("/r", fakeGit("!!!", ""))).toBeNull()
     expect(await gitCheckout("/r", async () => null)).toBeNull()
     expect(await gitCheckout("/r", async () => {
-      throw new Error("patlak")
+      throw new Error("broken")
     })).toBeNull()
   })
 
-  test("procCwd -Fn parse + yabancı çıktı null + AND bayrağı", async () => {
+  test("procCwd -Fn parse + foreign output null + AND flag", async () => {
     const seen: string[][] = []
     const lsof: ExecFn = async (argv) => {
       seen.push(argv)
       return "p123\nfcwd\nn/repo/svc\nf0\nn/dev/null\n"
     }
     expect(await procCwdOf(123, lsof)).toBe("/repo/svc")
-    // `-a` yoksa -p/-d OR birleşir (canlı kanıt: ilk sürecin cwd'si
-    // dönerdi) — bayrak sözleşmesi testle pinli.
+    // Without `-a` -p/-d combine as OR (live evidence: the first process's
+    // cwd would be returned) — the flag contract is pinned by this test.
     expect(seen[0]).toContain("-a")
     expect(await procCwdOf(123, async () => "garbage")).toBeNull()
     expect(await procCwdOf(123, async () => null)).toBeNull()
   })
 })
 
-describe("recordProvenance (bütün + sentinel)", () => {
-  test("git + envFiles + interpreter + recordedAt; .env İÇERİĞİ girmez", async () => {
+describe("recordProvenance (whole + sentinel)", () => {
+  test("git + envFiles + interpreter + recordedAt; .env CONTENTS never enter", async () => {
     const root = await tempRoot()
     try {
       await writeFile(join(root, ".env"), "TOKEN=hunter2\n", "utf8")
@@ -139,14 +139,14 @@ describe("recordProvenance (bütün + sentinel)", () => {
     }
   })
 
-  test("exec patlarsa kayıt düşer, throw yok", async () => {
+  test("if exec blows up the record drops, no throw", async () => {
     const root = await tempRoot()
     try {
       const provenance = await recordProvenance({
         svc: { name: "a", cmd: "sleep 30" },
         cwdAbs: root,
         exec: async () => {
-          throw new Error("patlak")
+          throw new Error("broken")
         },
       })
       expect(provenance.checkout).toBeUndefined()
@@ -157,7 +157,7 @@ describe("recordProvenance (bütün + sentinel)", () => {
     }
   })
 
-  test("lsof çelişirse cwdAbs düşer (UNVERIFIED render tetikler)", async () => {
+  test("if lsof contradicts, cwdAbs drops (triggers UNVERIFIED render)", async () => {
     const root = await tempRoot()
     try {
       const exec: ExecFn = async (argv) => {
@@ -171,7 +171,7 @@ describe("recordProvenance (bütün + sentinel)", () => {
     }
   })
 
-  test("symlink-farklı ama aynı dizin: realpath eşleşir, düşmez (macOS /private)", async () => {
+  test("different symlink but same directory: realpath matches, no drop (macOS /private)", async () => {
     const root = await tempRoot()
     try {
       const { realpath } = await import("node:fs/promises")
@@ -187,7 +187,7 @@ describe("recordProvenance (bütün + sentinel)", () => {
     }
   })
 
-  test("spawn kaydı: fake git çağrılır, state'e rev işlenir", async () => {
+  test("spawn record: the fake git is called, the rev is written to state", async () => {
     const root = await tempRoot()
     try {
       const { ensureUpStateDir, readSupervisorState, upPaths } = await import("./up-state")
@@ -222,12 +222,12 @@ describe("recordProvenance (bütün + sentinel)", () => {
 })
 
 describe("envFilesOf", () => {
-  test(".env* adları, içerik yok; yoksa atlanır", async () => {
+  test(".env* names, no contents; dropped if absent", async () => {
     const root = await tempRoot()
     try {
       await writeFile(join(root, ".env"), "S=hunter2", "utf8")
       expect(await envFilesOf(root)).toEqual([".env"])
-      expect(await envFilesOf(join(root, "yok"))).toBeUndefined()
+      expect(await envFilesOf(join(root, "missing"))).toBeUndefined()
     } finally {
       await rm(root, { recursive: true, force: true })
     }

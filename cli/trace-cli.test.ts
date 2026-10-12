@@ -311,7 +311,7 @@ describe("trace tree view", () => {
     const root = await tempRoot()
     try {
       await seedTwoService(root)
-      const result = await runTrace(opts(root, { traceId: TRACE_A, service: "yok-servis" }))
+      const result = await runTrace(opts(root, { traceId: TRACE_A, service: "missing-service" }))
       expect(result.code).toBe(0)
       expect(result.stdout.split("\n").length).toBe(4)
     } finally {
@@ -340,7 +340,7 @@ describe("trace tree view", () => {
     }
   })
 
-  test("render cap: 2100 spans → truncated with kesildi marker", async () => {
+  test("render cap: 2100 spans → truncated with the marker", async () => {
     const root = await tempRoot()
     try {
       const rows: TraceSpan[] = []
@@ -374,7 +374,7 @@ describe("trace tree view", () => {
       await seedRows(
         root,
         [makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0") })],
-        ['bozuk-satır{{{', JSON.stringify({ traceId: "kısa", spanId: "zz" })],
+        ['corrupt-line{{{', JSON.stringify({ traceId: "short", spanId: "zz" })],
       )
       const result = await runTrace(opts(root, { traceId: TRACE_A, json: true }))
       expect(result.code).toBe(0)
@@ -524,7 +524,7 @@ describe("trace quiet paths", () => {
     }
   })
 
-  test(".ow without trace block → kapalı, exit 0", async () => {
+  test(".ow without trace block → disabled, exit 0", async () => {
     const root = await tempRoot()
     try {
       await mkdir(join(root, ".ow"), { recursive: true })
@@ -539,7 +539,7 @@ describe("trace quiet paths", () => {
     }
   })
 
-  test("configured with zero spans → henüz span gelmedi, exit 0", async () => {
+  test("configured with zero spans → no span yet, exit 0", async () => {
     const root = await tempRoot()
     try {
       await mkdir(join(root, ".ow", "traces"), { recursive: true })
@@ -590,7 +590,10 @@ describe("trace --json envelopes", () => {
         ["attrs", "depth", "durMs", "endNano", "kind", "name", "parentSpanId", "service", "spanId", "startNano", "status", "t", "traceId"].sort(),
       )
       expect(JSON.stringify(list)).not.toContain("servis")
+      expect(JSON.stringify(list)).not.toContain("izleme")
+      expect(JSON.stringify(tree)).not.toContain("servis")
       expect(JSON.stringify(tree)).not.toContain("izleme")
+      expect(JSON.stringify(tree)).not.toMatch(/[\u00e7\u011f\u0131\u015f\u00f6\u00fc\u00c7\u011e\u0130\u015e\u00d6\u00dc]/)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1370,7 +1373,7 @@ describe("trace doctor line", () => {
     }
   })
 
-  test("spans report açık regardless of jar; jar note is Java-only and silence-scoped", async () => {
+  test("spans report enabled regardless of jar; jar note is Java-only and silence-scoped", async () => {
     const port = await closedPort()
     const root = await tempRoot()
     try {
@@ -1378,7 +1381,7 @@ describe("trace doctor line", () => {
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
       ], [], yamlWithPort(port))
-      // Python-only setup (no java markers), spans present, jar absent → açık, no jar note
+      // Python-only setup (no java markers), spans present, jar absent → enabled, no jar note
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
       expect(open.detail).toMatch(new RegExp(`open \\(port ${port}, 1 spans, last span .* ago\\)`))
@@ -1397,7 +1400,7 @@ describe("trace doctor line", () => {
     }
   })
 
-  test("Java service with zero spans and no jar names the jar; jar present stays açık", async () => {
+  test("Java service with zero spans and no jar names the jar; jar present stays enabled", async () => {
     const port = await closedPort()
     const root = await tempRoot()
     try {
@@ -1425,12 +1428,12 @@ describe("trace doctor line", () => {
       expect(silent.detail).toBe(`open (port ${port}, 0 spans). hint: no spans — is the service up? ow ps. hint: receiver :${port} not listening — another process may hold the port or the receiver failed to start`)
       const now = Date.now()
       await seedRows(root, [
-        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /gizli-hint-kanarya", startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /secret-hint-canary", startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),
       ], [], yamlWithPort(port))
       const flowing = await checkTraceDoctor(root)
       expect(flowing.ok).toBe(true)
       expect(flowing.detail).not.toContain("no spans")
-      expect(flowing.detail).not.toContain("gizli-hint-kanarya")
+      expect(flowing.detail).not.toContain("secret-hint-canary")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1453,7 +1456,7 @@ describe("trace doctor line", () => {
     }
   })
 
-  test("bilinmeyen service appends the OTEL_SERVICE_NAME hint; named spans stay clean", async () => {
+  test("unknown service appends the OTEL_SERVICE_NAME hint; named spans stay clean", async () => {
     const root = await tempRoot()
     try {
       const spansFile = join(root, ".ow", "traces", "spans.jsonl")
@@ -1478,7 +1481,7 @@ describe("trace doctor line", () => {
         const span: number[] = [
           ...lenField(1, Array.from(Buffer.from(TRACE_A, "hex"))),
           ...lenField(2, Array.from(Buffer.from("cd".repeat(8), "hex"))),
-          ...lenField(5, utf8("GET /gizli-kanarya-bilinmeyen")),
+          ...lenField(5, utf8("GET /secret-canary-unknown")),
           ...tag(6, 0),
           ...encVarint(2),
         ]
@@ -1494,7 +1497,7 @@ describe("trace doctor line", () => {
       expect(hinted.detail).toContain("unnamed spans present")
       expect(hinted.detail).toContain("OTEL_SERVICE_NAME")
       expect(hinted.detail).not.toContain("no spans")
-      expect(hinted.detail).not.toContain("gizli-kanarya")
+      expect(hinted.detail).not.toContain("secret-canary")
       const named = await tempRoot()
       try {
         await mkdir(join(named, ".ow", "traces"), { recursive: true, mode: 0o700 })

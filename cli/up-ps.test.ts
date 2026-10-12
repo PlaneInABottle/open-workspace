@@ -38,7 +38,7 @@ describe("parseEtime", () => {
   })
 
   test("foreign shapes are null, never throw", () => {
-    for (const bad of ["", "bilinmiyor", "1:2:3:4", "99:99", "12:34:56:78", "-5:00", "1:60:00", "abc-def"]) {
+    for (const bad of ["", "unknown", "1:2:3:4", "99:99", "12:34:56:78", "-5:00", "1:60:00", "abc-def"]) {
       expect(parseEtime(bad)).toBeNull()
     }
   })
@@ -62,7 +62,7 @@ describe("parsePsSnapshot", () => {
   test("empty/foreign output degrades to empty, never throws", () => {
     expect(parsePsSnapshot("")).toEqual(new Map())
     expect(parsePsSnapshot("PID TTY TIME CMD\n")).toEqual(new Map())
-    expect(parsePsSnapshot("bozuk satır\n   \n9999 nope x y z\n")).toEqual(new Map())
+    expect(parsePsSnapshot("corrupt line\n   \n9999 nope x y z\n")).toEqual(new Map())
   })
 })
 
@@ -78,12 +78,12 @@ describe("queryPs", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt,
-        services: [{ name: "uyu", pid: sleeper.pid, lstart, startedAt, cmd: "sleep 30", port: 4123, portConflict: true }],
+        services: [{ name: "sleep", pid: sleeper.pid, lstart, startedAt, cmd: "sleep 30", port: 4123, portConflict: true }],
       })
       const services = await queryPs(root)
       expect(services).toHaveLength(1)
       const svc = services[0]
-      expect(svc).toMatchObject({ name: "uyu", status: "running", pid: sleeper.pid, port: 4123 })
+      expect(svc).toMatchObject({ name: "sleep", status: "running", pid: sleeper.pid, port: 4123 })
       expect(typeof svc.uptimeSec).toBe("number")
       expect(svc.uptimeSec!).toBeGreaterThanOrEqual(0)
       expect(svc.memBytes!).toBeGreaterThan(0)
@@ -94,7 +94,7 @@ describe("queryPs", () => {
       expect(svc.listening).toBe(false)
       expect(formatPsLine(svc)).toContain("listen=no")
       expect(toPsServiceJson(svc)).toEqual({
-        name: "uyu",
+        name: "sleep",
         status: "running",
         pid: sleeper.pid,
         uptimeSec: svc.uptimeSec,
@@ -142,7 +142,7 @@ describe("queryPs", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt,
-        services: [{ name: "yabanci", pid: sleeper.pid, lstart: "bogus-lstart", startedAt }],
+        services: [{ name: "foreign", pid: sleeper.pid, lstart: "bogus-lstart", startedAt }],
       })
       const [svc] = await queryPs(root)
       expect(svc.status).toBe("unknown")
@@ -167,18 +167,18 @@ describe("queryPs", () => {
         version: 1,
         startedAt,
         services: [
-          { name: "biten", pid: 987654321, lstart: "bogus", startedAt, cmd: "exit 0", exitCode: 0 },
-          { name: "oldurulen", pid: 987654322, lstart: "bogus", startedAt, cmd: "sleep 30", exitCode: -1 },
-          { name: "sessiz", pid: 987654323, lstart: "bogus", startedAt, cmd: "sleep 30" },
+          { name: "ended", pid: 987654321, lstart: "bogus", startedAt, cmd: "exit 0", exitCode: 0 },
+          { name: "killed", pid: 987654322, lstart: "bogus", startedAt, cmd: "sleep 30", exitCode: -1 },
+          { name: "quiet", pid: 987654323, lstart: "bogus", startedAt, cmd: "sleep 30" },
         ],
       })
       const services = await queryPs(root)
       const by = Object.fromEntries(services.map((svc) => [svc.name, svc]))
-      expect(by["biten"].status).toBe("exited")
-      expect(by["oldurulen"].status).toBe("stopped")
-      expect(by["sessiz"].status).toBe("stopped")
-      expect(formatPsLine(by["biten"])).toContain("exited")
-      expect(formatPsLine(by["sessiz"])).toContain("stopped")
+      expect(by["ended"].status).toBe("exited")
+      expect(by["killed"].status).toBe("stopped")
+      expect(by["quiet"].status).toBe("stopped")
+      expect(formatPsLine(by["ended"])).toContain("exited")
+      expect(formatPsLine(by["quiet"])).toContain("stopped")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -190,7 +190,7 @@ describe("queryPs", () => {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       expect(await queryPs(root)).toEqual([])
-      await writeFile(paths.supervisorFile, "bozuk {{{", "utf8")
+      await writeFile(paths.supervisorFile, "corrupt {{{", "utf8")
       await expect(queryPs(root)).rejects.toThrow("unreadable")
       await writeFile(paths.supervisorFile, JSON.stringify({ version: 99, services: [] }), "utf8")
       await expect(queryPs(root)).rejects.toThrow("version")
@@ -210,7 +210,7 @@ describe("queryPs", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt,
-        services: [{ name: "kor", pid: sleeper.pid, lstart: "", startedAt, lstartUnknown: true }],
+        services: [{ name: "blind", pid: sleeper.pid, lstart: "", startedAt, lstartUnknown: true }],
       })
       const [svc] = await queryPs(root)
       expect(svc.status).toBe("unknown")
@@ -233,7 +233,7 @@ describe("queryPs", () => {
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt,
-        services: [{ name: "hayalet", pid: 987654321, lstart: "", startedAt }],
+        services: [{ name: "ghost", pid: 987654321, lstart: "", startedAt }],
       })
       const [svc] = await queryPs(root)
       expect(svc.status).toBe("unknown")
@@ -275,7 +275,7 @@ describe("queryPs", () => {
       db.close()
       const file = join(dir, "ow.yaml")
       await writeFile(file, "services:\n  web:\n    cmd: echo hi\n", "utf8")
-      // up: reports durgun (ok:false) yet doctor exits 0 — the exclusion holds
+      // up: reports idle (ok:false) yet doctor exits 0 — the exclusion holds
       expect(await run(["doctor", "--db", dbPath, "--log", logPath, "--file", file])).toBe(0)
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -357,8 +357,8 @@ describe("ow up --wait", () => {
     try {
       const file = join(root, "ow.yaml")
       await writeFile(file, "services:\n  web:\n    cmd: echo hi\n    port: 39991\n", "utf8")
-      expect(await run(["up", "-d", "--wait", "5s", "--health", "yok=/health", "--file", file])).toBe(2)
-      expect(await run(["up", "-d", "--wait", "5s", "--health", "web=saglik", "--file", file])).toBe(2)
+      expect(await run(["up", "-d", "--wait", "5s", "--health", "missing=/health", "--file", file])).toBe(2)
+      expect(await run(["up", "-d", "--wait", "5s", "--health", "web=health", "--file", file])).toBe(2)
       expect(await run(["ps", "--file", file])).toBe(0)
     } finally {
       await rm(root, { recursive: true, force: true })

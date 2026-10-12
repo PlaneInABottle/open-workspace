@@ -1,5 +1,5 @@
-/** M-D failures: mekanik demet + iki-deneme kuralı + since filtresi.
- * Salt-okunur (dosya okuma dışında I/O yok); sınıflandırma yok. */
+/** M-D failures: mechanical tuple + two-attempt rule + since filter.
+ * Read-only (no I/O beyond file reads); no classification. */
 
 import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -43,8 +43,8 @@ const fixture = async (): Promise<{ root: string; file: string }> => {
 
 const line = (entry: Record<string, unknown>): string => JSON.stringify(entry)
 
-describe("failures boş + kullanım", () => {
-  test("boş dizin: exit 0 + bulgu yok (metin + json)", async () => {
+describe("failures empty + usage", () => {
+  test("empty directory: exit 0 + no findings (text + json)", async () => {
     const { root, file } = await fixture()
     try {
       const io = capture()
@@ -66,7 +66,7 @@ describe("failures boş + kullanım", () => {
     }
   })
 
-  test("--since çöpü exit 2 (kilitli küme dışı)", async () => {
+  test("--since garbage exit 2 (outside the locked set)", async () => {
     const { root, file } = await fixture()
     try {
       for (const since of ["30d", "x", "", "1H", "24"]) {
@@ -84,7 +84,7 @@ describe("failures boş + kullanım", () => {
     }
   })
 
-  test("konumsal argüman exit 2", async () => {
+  test("positional argument exit 2", async () => {
     const { root, file } = await fixture()
     try {
       const io = capture()
@@ -101,16 +101,16 @@ describe("failures boş + kullanım", () => {
   })
 })
 
-describe("failures mekanik demet", () => {
+describe("failures mechanical tuple", () => {
   const staleBuild = (at: string, extra: Record<string, unknown> = {}): string =>
     line({ stage: "build", status: "stale", stale_reason: "script_hash", proof: "x", at, by: "runner", ...extra })
 
-  test("aynı demet sayılır, adım-imzası ayırır, eksik adım '-' olur", async () => {
+  test("the same tuple is counted, step signature separates, a missing step becomes '-'", async () => {
     const { root, file } = await fixture()
     try {
       const at = new Date().toISOString()
-      await writeRun(root, "kosu1", `${staleBuild(at, { scenario: "gece", attempt: 1, step_signature: "imza-1" })}\n`)
-      await writeRun(root, "kosu2", `${staleBuild(at, { scenario: "gece", attempt: 2, step_signature: "imza-1" })}\n${staleBuild(at, { scenario: "gece", attempt: 2, step_signature: "imza-2" })}\n`)
+      await writeRun(root, "run1", `${staleBuild(at, { scenario: "night", attempt: 1, step_signature: "signature-1" })}\n`)
+      await writeRun(root, "run2", `${staleBuild(at, { scenario: "night", attempt: 2, step_signature: "signature-1" })}\n${staleBuild(at, { scenario: "night", attempt: 2, step_signature: "signature-2" })}\n`)
       const io = capture()
       try {
         expect(await run(["failures", "--file", file])).toBe(0)
@@ -118,8 +118,8 @@ describe("failures mekanik demet", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("finding: build (stale, reason: script_hash, step: imza-1) ×2")
-      expect(text).toContain("finding: build (stale, reason: script_hash, step: imza-2) ×1")
+      expect(text).toContain("finding: build (stale, reason: script_hash, step: signature-1) ×2")
+      expect(text).toContain("finding: build (stale, reason: script_hash, step: signature-2) ×1")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -129,8 +129,8 @@ describe("failures mekanik demet", () => {
     const { root, file } = await fixture()
     try {
       const at = new Date().toISOString()
-      await writeRun(root, "kosu1", `${staleBuild(at, { scenario: "gece", attempt: 1 })}\n`)
-      await writeRun(root, "kosu2", `${staleBuild(at, { scenario: "gece", attempt: 2 })}\n`)
+      await writeRun(root, "run1", `${staleBuild(at, { scenario: "night", attempt: 1 })}\n`)
+      await writeRun(root, "run2", `${staleBuild(at, { scenario: "night", attempt: 2 })}\n`)
       const io = capture()
       try {
         expect(await run(["failures", "--file", file])).toBe(0)
@@ -153,12 +153,12 @@ describe("failures mekanik demet", () => {
     }
   })
 
-  test("--json anahtarları İngilizce + katkımsal (demet + tekil-sayım)", async () => {
+  test("--json keys are English + additive (tuple + singleton count)", async () => {
     const { root, file } = await fixture()
     try {
       const at = new Date().toISOString()
-      await writeRun(root, "kosu1", `${staleBuild(at, { scenario: "gece", attempt: 1 })}\n`)
-      await writeRun(root, "kosu2", `${staleBuild(at, { scenario: "gece", attempt: 2 })}\n`)
+      await writeRun(root, "run1", `${staleBuild(at, { scenario: "night", attempt: 1 })}\n`)
+      await writeRun(root, "run2", `${staleBuild(at, { scenario: "night", attempt: 2 })}\n`)
       const io = capture()
       try {
         expect(await run(["failures", "--file", file, "--json"])).toBe(0)
@@ -180,15 +180,15 @@ describe("failures mekanik demet", () => {
     }
   })
 
-  test("doğrulanmış zarflar asla listelenmez", async () => {
+  test("confirmed envelopes are never listed", async () => {
     const { root, file } = await fixture()
     try {
       const at = new Date().toISOString()
       await writeRun(
         root,
-        "saglam",
-        `${line({ stage: "build", status: "confirmed", proof: "x", at, by: "runner", code: { runner: "r1", body: "s1" }, runtime: { port: 1 }, scenario: "gece", attempt: 1 })}\n` +
-          `${line({ stage: "build", status: "confirmed", proof: "x", at, by: "runner", code: { runner: "r1", body: "s1" }, runtime: { port: 1 }, scenario: "gece", attempt: 2 })}\n`,
+        "solid",
+        `${line({ stage: "build", status: "confirmed", proof: "x", at, by: "runner", code: { runner: "r1", body: "s1" }, runtime: { port: 1 }, scenario: "night", attempt: 1 })}\n` +
+          `${line({ stage: "build", status: "confirmed", proof: "x", at, by: "runner", code: { runner: "r1", body: "s1" }, runtime: { port: 1 }, scenario: "night", attempt: 2 })}\n`,
       )
       const io = capture()
       try {
@@ -202,15 +202,15 @@ describe("failures mekanik demet", () => {
     }
   })
 
-  test("tazelik-hesaplı bayat demete girer", async () => {
+  test("a freshness-computed stale enters the tuple", async () => {
     const { root, file } = await fixture()
     try {
       await writeRun(
         root,
-        "taze",
-        `${line({ stage: "build", status: "confirmed", proof: "x", at: "2026-10-09T08:00:00.000Z", by: "runner", code: { runner: "r1", body: "s1" }, runtime: { port: 1 }, scenario: "gece", attempt: 1 })}\n` +
-          `${line({ stage: "build", status: "confirmed", proof: "x", at: "2026-10-09T09:00:00.000Z", by: "runner", code: { runner: "r1", body: "s2" }, runtime: { port: 1 }, scenario: "gece", attempt: 2 })}\n` +
-          `${line({ stage: "build", status: "confirmed", proof: "x", at: "2026-10-09T10:00:00.000Z", by: "runner", code: { runner: "r1", body: "s2" }, runtime: { port: 1 }, scenario: "gece", attempt: 3 })}\n`,
+        "fresh",
+        `${line({ stage: "build", status: "confirmed", proof: "x", at: "2026-10-09T08:00:00.000Z", by: "runner", code: { runner: "r1", body: "s1" }, runtime: { port: 1 }, scenario: "night", attempt: 1 })}\n` +
+          `${line({ stage: "build", status: "confirmed", proof: "x", at: "2026-10-09T09:00:00.000Z", by: "runner", code: { runner: "r1", body: "s2" }, runtime: { port: 1 }, scenario: "night", attempt: 2 })}\n` +
+          `${line({ stage: "build", status: "confirmed", proof: "x", at: "2026-10-09T10:00:00.000Z", by: "runner", code: { runner: "r1", body: "s2" }, runtime: { port: 1 }, scenario: "night", attempt: 3 })}\n`,
       )
       const io = capture()
       try {
@@ -225,15 +225,15 @@ describe("failures mekanik demet", () => {
   })
 })
 
-describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
+describe("failures two-attempt rule (here, not in show)", () => {
   const gap = (scenario: string, attempt: number, at: string): string =>
     line({ stage: "build", status: "not_observed", proof: "x", at, by: "runner", scenario, attempt })
 
-  test("tekil bastırılır, ikinci deneme listeler (sonek-yeğlemeli)", async () => {
+  test("a singleton is suppressed, the second attempt lists (suffix-preferred)", async () => {
     const { root, file } = await fixture()
     try {
       const at = new Date().toISOString()
-      await writeRun(root, "gece-attempt1", `${gap("gece", 1, at)}\n`)
+      await writeRun(root, "night-attempt1", `${gap("night", 1, at)}\n`)
       const io = capture()
       try {
         expect(await run(["failures", "--file", file])).toBe(0)
@@ -242,8 +242,8 @@ describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
       }
       expect(io.out.join("\n")).toContain("no-repeat: 1 unique findings unlisted")
       expect(io.out.join("\n")).not.toContain("finding: build")
-      // Sonek-çözümlü ikinci deneme (açık alan yok — koşu-adı yedeği).
-      await writeRun(root, "gece-attempt2", `${line({ stage: "build", status: "not_observed", proof: "x", at, by: "runner" })}\n`)
+      // Suffix-resolved second attempt (no explicit field — run-name fallback).
+      await writeRun(root, "night-attempt2", `${line({ stage: "build", status: "not_observed", proof: "x", at, by: "runner" })}\n`)
       const io2 = capture()
       try {
         expect(await run(["failures", "--file", file])).toBe(0)
@@ -258,13 +258,13 @@ describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
     }
   })
 
-  test("demet + tekil bir arada (özet satırı korunur)", async () => {
+  test("tuple + singleton together (the summary line is preserved)", async () => {
     const { root, file } = await fixture()
     try {
       const at = new Date().toISOString()
-      await writeRun(root, "gece-attempt1", `${gap("gece", 1, at)}\n`)
-      await writeRun(root, "gece-attempt2", `${gap("gece", 2, at)}\n`)
-      await writeRun(root, "yalniz", `${line({ stage: "deploy", status: "not_observed", proof: "x", at, by: "runner" })}\n`)
+      await writeRun(root, "night-attempt1", `${gap("night", 1, at)}\n`)
+      await writeRun(root, "night-attempt2", `${gap("night", 2, at)}\n`)
+      await writeRun(root, "alone", `${line({ stage: "deploy", status: "not_observed", proof: "x", at, by: "runner" })}\n`)
       const io = capture()
       try {
         expect(await run(["failures", "--file", file])).toBe(0)
@@ -280,8 +280,8 @@ describe("failures iki-deneme kuralı (burada, show'da değil)", () => {
   })
 })
 
-describe("failures --since filtresi (kilitli küme)", () => {
-  test("eski zarflar elenir, taze kalır (1h|24h|7d)", async () => {
+describe("failures --since filter (locked set)", () => {
+  test("old envelopes are culled, fresh ones remain (1h|24h|7d)", async () => {
     const { root, file } = await fixture()
     try {
       const now = Date.now()
@@ -289,11 +289,11 @@ describe("failures --since filtresi (kilitli küme)", () => {
       const recent = new Date(now - 30 * 60_000).toISOString()
       await writeRun(
         root,
-        "karisik",
-        `${line({ stage: "build", status: "not_observed", proof: "x", at: old, by: "runner", scenario: "eski", attempt: 1 })}\n` +
-          `${line({ stage: "build", status: "not_observed", proof: "x", at: old, by: "runner", scenario: "eski", attempt: 2 })}\n` +
-          `${line({ stage: "test", status: "not_observed", proof: "x", at: recent, by: "runner", scenario: "yeni", attempt: 1 })}\n` +
-          `${line({ stage: "test", status: "not_observed", proof: "x", at: recent, by: "runner", scenario: "yeni", attempt: 2 })}\n`,
+        "mixed",
+        `${line({ stage: "build", status: "not_observed", proof: "x", at: old, by: "runner", scenario: "old", attempt: 1 })}\n` +
+          `${line({ stage: "build", status: "not_observed", proof: "x", at: old, by: "runner", scenario: "old", attempt: 2 })}\n` +
+          `${line({ stage: "test", status: "not_observed", proof: "x", at: recent, by: "runner", scenario: "new", attempt: 1 })}\n` +
+          `${line({ stage: "test", status: "not_observed", proof: "x", at: recent, by: "runner", scenario: "new", attempt: 2 })}\n`,
       )
       const io = capture()
       try {
@@ -324,38 +324,32 @@ describe("failures --since filtresi (kilitli küme)", () => {
   })
 })
 
-describe("failures mekanik-denetim (sınıflandırma yok, exec yok)", () => {
+describe("failures mechanical-audit (no classification, no exec)", () => {
   const FORBIDDEN = [
     "severity",
-    "kritik",
-    "önem",
-    "şiddet",
-    "sınıf",
-    "klas",
-    "küme",
+    "critical",
+    "significance",
+    "severe",
+    "category",
     "cluster",
-    "eğilim",
     "trend",
-    "tavsiye",
-    "öner",
+    "advice",
     "suggest",
     "keyword",
-    "etiket",
     "label",
-    "öncelik",
     "priorit",
   ]
 
-  test("fiil uydurma-sınıflandırma sözcüğü taşımaz", async () => {
+  test("the verb carries no fabricated-classification word", async () => {
     const { readFile } = await import("node:fs/promises")
     const source = await readFile(resolve(import.meta.dir, "up-failures.ts"), "utf8")
     for (const stem of FORBIDDEN) {
       const hit = new RegExp(`\\b${stem}`).exec(source)
-      expect(`${stem} → ${hit?.[0] ?? "yok"}`).toBe(`${stem} → yok`)
+      expect(`${stem} → ${hit?.[0] ?? "none"}`).toBe(`${stem} → none`)
     }
   })
 
-  test("fiil exec/budama çağrısı taşımaz (salt-okunur)", async () => {
+  test("the verb carries no exec/prune call (read-only)", async () => {
     const { readFile } = await import("node:fs/promises")
     const source = await readFile(resolve(import.meta.dir, "up-failures.ts"), "utf8")
     for (const pattern of ["spawn", "exec", "unlink", "writeFile", "rename", "child_process", "fork"] as const) {
@@ -372,7 +366,7 @@ describe("M-g corrupt-only evidence exits 1 (nothing readable)", () => {
       await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
       const { mkdir } = await import("node:fs/promises")
       await mkdir(join(root, ".ow", "checkpoints"), { recursive: true })
-      await writeFile(join(root, ".ow", "checkpoints", "bozuk.jsonl"), "not-json{{{\nmore-junk{{{\n", "utf8")
+      await writeFile(join(root, ".ow", "checkpoints", "corrupt.jsonl"), "not-json{{{\nmore-junk{{{\n", "utf8")
       const io = capture()
       let code = -1
       try {

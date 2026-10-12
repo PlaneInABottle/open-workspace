@@ -61,30 +61,30 @@ const waitFor = async (cond: () => Promise<boolean>, timeoutMs = 8000): Promise<
   const start = Date.now()
   for (;;) {
     if (await cond()) return
-    if (Date.now() - start > timeoutMs) throw new Error("waitFor zaman aşımı")
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timeout")
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
   }
 }
 
 describe("maskCmdShape (B3)", () => {
-  test("key=value secretleri maskeler, şekli korur", () => {
+  test("masks key=value secrets, preserves the shape", () => {
     expect(maskCmdShape("deploy --env production TOKEN=hunter2 PORT=3000")).toBe("deploy --env production TOKEN=*** PORT=3000")
     expect(maskCmdShape("run --password hunter2 --verbose")).toBe("run --password *** --verbose")
     expect(maskCmdShape(["./app", "--token", "hunter2", "--port", "3000"])).toBe("./app --token *** --port 3000")
   })
 
-  test("sağlayıcı öneki ve uzun hex maskelenir", () => {
+  test("provider prefix and long hex are masked", () => {
     expect(maskCmdShape("curl -H Authorization: ghp_abcdef1234567890")).toBe("curl -H *** ***")
     expect(maskCmdShape("run deadbeefdeadbeefdeadbeefdeadbeef ok")).toBe("run *** ok")
   })
 
-  test("secretsiz komut aynen kalır", () => {
+  test("a secret-free command stays as-is", () => {
     expect(maskCmdShape("sleep 30")).toBe("sleep 30")
     expect(maskCmdShape(["echo", "hi"])).toBe("echo hi")
     expect(maskCmdShape(undefined)).toBeUndefined()
   })
 
-  test("sentinel hiçbir maskeli çıktıda görünmez", () => {
+  test("the sentinel never appears in masked output", () => {
     const shapes = [
       maskCmdShape("deploy TOKEN=hunter2")!,
       maskCmdShape("run --password hunter2")!,
@@ -96,7 +96,7 @@ describe("maskCmdShape (B3)", () => {
 })
 
 describe("diffService", () => {
-  test("kayıtsız servis başlatılacak satırı basar (cmd maskeli)", () => {
+  test("an unrecorded service prints a to-start line (cmd masked)", () => {
     const { lines, diff } = diffService(parseUpFile("services:\n  api:\n    cmd: run --token hunter2\n    port: 3000\n").services[0], null)
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain("+ to-start: api")
@@ -104,7 +104,7 @@ describe("diffService", () => {
     expect(diff).toMatchObject({ status: "missing", port: 3000 })
   })
 
-  test("kayıtlı servis yeniden satırı basar", () => {
+  test("a recorded service prints a restart line", () => {
     const { lines } = diffService(parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0], {
       name: "api",
       pid: 4242,
@@ -114,7 +114,7 @@ describe("diffService", () => {
     expect(lines[0]).toContain("restart: api pid=4242")
   })
 
-  test("restart kayıtsız serviste restart-aware satır basar (L-2)", () => {
+  test("restart on an unrecorded service prints a restart-aware line (L-2)", () => {
     const svc = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
     expect(diffService(svc, null, "restart").lines[0]).toContain("+ to-start (restart, no record): api")
     expect(diffService(svc, null).lines[0]).toContain("+ to-start: api")
@@ -122,42 +122,42 @@ describe("diffService", () => {
 })
 
 describe("mergePreservingSettled union (B1)", () => {
-  test("on-disk-only servisler korunur (düşürme bug'ı fix)", () => {
+  test("on-disk-only services are preserved (drop-bug fix)", () => {
     const merged = mergePreservingSettled(
-      [{ name: "eski", pid: 9, lstart: "l", startedAt: "t" }],
-      [{ name: "yeni", pid: 10, lstart: "m", startedAt: "t2" }],
+      [{ name: "old", pid: 9, lstart: "l", startedAt: "t" }],
+      [{ name: "new", pid: 10, lstart: "m", startedAt: "t2" }],
     )
-    expect(merged.map((svc) => svc.name).sort()).toEqual(["eski", "yeni"])
+    expect(merged.map((svc) => svc.name).sort()).toEqual(["new", "old"])
   })
 
-  test("aynı kimlikte startedAt + settlement korunur", () => {
+  test("on the same identity startedAt + settlement are preserved", () => {
     const merged = mergePreservingSettled(
-      [{ name: "a", pid: 1, lstart: "x", startedAt: "ilk", exitCode: 3, exitedAt: "e" }],
-      [{ name: "a", pid: 1, lstart: "x", startedAt: "bayat" }],
+      [{ name: "a", pid: 1, lstart: "x", startedAt: "first", exitCode: 3, exitedAt: "e" }],
+      [{ name: "a", pid: 1, lstart: "x", startedAt: "stale" }],
     )
-    expect(merged[0]).toMatchObject({ startedAt: "ilk", exitCode: 3, exitedAt: "e" })
+    expect(merged[0]).toMatchObject({ startedAt: "first", exitCode: 3, exitedAt: "e" })
   })
 
-  test("yeni kimlikte settlement diriltilmez, startedAt tazelenir", () => {
+  test("on a new identity settlement is not revived, startedAt refreshes", () => {
     const merged = mergePreservingSettled(
-      [{ name: "a", pid: 1, lstart: "x", startedAt: "ilk", exitCode: 3, exitedAt: "e" }],
-      [{ name: "a", pid: 2, lstart: "y", startedAt: "yeniden" }],
+      [{ name: "a", pid: 1, lstart: "x", startedAt: "first", exitCode: 3, exitedAt: "e" }],
+      [{ name: "a", pid: 2, lstart: "y", startedAt: "respawned" }],
     )
-    expect(merged[0]).toMatchObject({ pid: 2, startedAt: "yeniden" })
+    expect(merged[0]).toMatchObject({ pid: 2, startedAt: "respawned" })
     expect(merged[0].exitCode).toBeUndefined()
     expect(merged[0].exitedAt).toBeUndefined()
   })
 
-  test("M-B: respawn bayat süreç-kayıtlarını devralmaz (lstartUnknown/logs/portConflict/env/depends)", () => {
+  test("M-B: respawn does not inherit stale process records (lstartUnknown/logs/portConflict/env/depends)", () => {
     const prior = {
       name: "a",
       pid: 1,
       lstart: "x",
-      startedAt: "ilk",
+      startedAt: "first",
       lstartUnknown: true as const,
     }
     const merged = mergePreservingSettled([prior], [
-      { name: "a", pid: 2, lstart: "y", startedAt: "yeniden" },
+      { name: "a", pid: 2, lstart: "y", startedAt: "respawned" },
     ])
     expect(merged[0].lstartUnknown).toBeUndefined()
     expect(merged[0].logsPid).toBeUndefined()
@@ -167,48 +167,48 @@ describe("mergePreservingSettled union (B1)", () => {
     expect(merged[0].dependsOn).toBeUndefined()
   })
 
-  test("M-B: aynı kimlikte süreç-kayıtları korunur (kontrol)", () => {
+  test("M-B: on the same identity process records are preserved (control)", () => {
     const prior = {
       name: "a",
       pid: 1,
       lstart: "x",
-      startedAt: "ilk",
+      startedAt: "first",
       logsPid: 11,
-      logsLstart: "kuyruk",
+      logsLstart: "tail",
       portConflict: true as const,
       envNames: ["A"],
       dependsOn: ["db"],
     }
-    const merged = mergePreservingSettled([prior], [{ name: "a", pid: 1, lstart: "x", startedAt: "bayat" }])
-    expect(merged[0]).toMatchObject({ startedAt: "ilk", logsPid: 11, portConflict: true, envNames: ["A"], dependsOn: ["db"] })
+    const merged = mergePreservingSettled([prior], [{ name: "a", pid: 1, lstart: "x", startedAt: "stale" }])
+    expect(merged[0]).toMatchObject({ startedAt: "first", logsPid: 11, portConflict: true, envNames: ["A"], dependsOn: ["db"] })
   })
 
-  test("L-3: devralınan ham cmd/logsCmd yeniden maskelenir (sentinel yok)", () => {
+  test("L-3: an inherited raw cmd/logsCmd is re-masked (no sentinel)", () => {
     const merged = mergePreservingSettled(
-      [{ name: "a", pid: 1, lstart: "x", startedAt: "ilk", cmd: "run --token hunter2", logsCmd: "tail API_KEY=hunter2" }],
-      [{ name: "a", pid: 1, lstart: "x", startedAt: "bayat" }],
+      [{ name: "a", pid: 1, lstart: "x", startedAt: "first", cmd: "run --token hunter2", logsCmd: "tail API_KEY=hunter2" }],
+      [{ name: "a", pid: 1, lstart: "x", startedAt: "stale" }],
     )
     expect(JSON.stringify(merged[0])).not.toContain("hunter2")
     expect(merged[0].cmd).toBe("run --token ***")
   })
 
-  test("M-C: artifactDigests aynı-kimlikte korunur, respawn'da düşer (sahte-drift yok)", () => {
+  test("M-C: artifactDigests are preserved on the same identity, drop on respawn (no fake drift)", () => {
     const prior = {
       name: "a",
       pid: 1,
       lstart: "x",
-      startedAt: "ilk",
+      startedAt: "first",
       artifactDigests: { "api.jar": "a1b2c3d4e5" },
     }
-    const same = mergePreservingSettled([prior], [{ name: "a", pid: 1, lstart: "x", startedAt: "yeni" }])
+    const same = mergePreservingSettled([prior], [{ name: "a", pid: 1, lstart: "x", startedAt: "new" }])
     expect(same[0].artifactDigests).toEqual({ "api.jar": "a1b2c3d4e5" })
-    const respawned = mergePreservingSettled([prior], [{ name: "a", pid: 2, lstart: "y", startedAt: "yeniden" }])
+    const respawned = mergePreservingSettled([prior], [{ name: "a", pid: 2, lstart: "y", startedAt: "respawned" }])
     expect(respawned[0].artifactDigests).toBeUndefined()
   })
 })
 
-describe("istek/sonuç sözleşmesi", () => {
-  test("atomic write + FIFO tarama + sonuç okuma/silme", async () => {
+describe("request/result contract", () => {
+  test("atomic write + FIFO scan + result read/delete", async () => {
     const root = await tempRoot()
     try {
       const paths = upPaths(root)
@@ -230,7 +230,7 @@ describe("istek/sonuç sözleşmesi", () => {
         nonce: nonce1,
         ok: true,
         code: "started",
-        message: "başlatıldı: a (pid 1)",
+        message: "started: a (pid 1)",
         pid: 1,
       })
       expect(existsSync(join(paths.requestsDir, target.file))).toBe(false)
@@ -243,21 +243,21 @@ describe("istek/sonuç sözleşmesi", () => {
     }
   })
 
-  test("yanıtsız istek null döner (istemci exit 1 üretir)", async () => {
+  test("an unanswered request returns null (the client yields exit 1)", async () => {
     const root = await tempRoot()
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       process.env.OW_REQUEST_WAIT_MS = "250"
       const started = Date.now()
-      expect(await waitResult(paths.requestsDir, "yok-nonce")).toBeNull()
+      expect(await waitResult(paths.requestsDir, "missing-nonce")).toBeNull()
       expect(Date.now() - started).toBeLessThan(5000)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("yabancı dosya adları taranmaz", () => {
+  test("foreign file names are not scanned", () => {
     expect(parseRequestFileName("up-a.json")).toBeNull()
     expect(parseRequestFileName("../up-a.1.n.json")).toBeNull()
     expect(parseRequestFileName("up-a.1.n.json.bak")).toBeNull()
@@ -265,48 +265,48 @@ describe("istek/sonuç sözleşmesi", () => {
     expect(parseRequestFileName(requestFileName("up", "a", 12, "n1"))).toMatchObject({ action: "up", service: "a", pid: 12, nonce: "n1" })
   })
 
-  test("L-1: zaman aşımı artığı best-effort siler + TTL sweep eskileri toplar", async () => {
+  test("L-1: best-effort deletes timeout leftovers + the TTL sweep collects old ones", async () => {
     const root = await tempRoot()
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       const { mkdir } = await import("node:fs/promises")
       await mkdir(paths.resultsDir, { recursive: true, mode: 0o700 })
-      // Bozuk sonuç dosyası: okunamaz, zaman aşımında silinir.
-      await writeFile(join(paths.resultsDir, "bozuk-nonce.json"), "{{{bozuk", "utf8")
+      // Corrupt result file: unreadable, deleted on timeout.
+      await writeFile(join(paths.resultsDir, "corrupt-nonce.json"), "{{{corrupt", "utf8")
       process.env.OW_REQUEST_WAIT_MS = "250"
-      expect(await waitResult(paths.requestsDir, "bozuk-nonce")).toBeNull()
-      expect(existsSync(join(paths.resultsDir, "bozuk-nonce.json"))).toBe(false)
-      // TTL sweep: eski toplanır, taze kalır.
-      await writeFile(join(paths.resultsDir, "eski-sonuc.json"), "{}", "utf8")
-      await writeFile(join(paths.resultsDir, "taze-sonuc.json"), "{}", "utf8")
+      expect(await waitResult(paths.requestsDir, "corrupt-nonce")).toBeNull()
+      expect(existsSync(join(paths.resultsDir, "corrupt-nonce.json"))).toBe(false)
+      // TTL sweep: old ones are collected, fresh ones remain.
+      await writeFile(join(paths.resultsDir, "old-result.json"), "{}", "utf8")
+      await writeFile(join(paths.resultsDir, "fresh-result.json"), "{}", "utf8")
       const old = new Date(Date.now() - 120_000)
-      await utimes(join(paths.resultsDir, "eski-sonuc.json"), old, old)
+      await utimes(join(paths.resultsDir, "old-result.json"), old, old)
       expect(await sweepStaleResults(paths.requestsDir)).toBe(1)
-      expect(existsSync(join(paths.resultsDir, "eski-sonuc.json"))).toBe(false)
-      expect(existsSync(join(paths.resultsDir, "taze-sonuc.json"))).toBe(true)
-      expect(await sweepStaleResults(join(root, "yok-dizin"))).toBe(0)
+      expect(existsSync(join(paths.resultsDir, "old-result.json"))).toBe(false)
+      expect(existsSync(join(paths.resultsDir, "fresh-result.json"))).toBe(true)
+      expect(await sweepStaleResults(join(root, "missing-dir"))).toBe(0)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 })
 
-describe("reconcileOne (saf çekirdek)", () => {
+describe("reconcileOne (pure core)", () => {
   const base = { liveness: "live" as const, listening: undefined, portOwners: null as number[] | null }
 
-  test("eksik/fazla adlandırır + açık komut önerir", () => {
+  test("names missing/extra + suggests an explicit command", () => {
     const exp = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
     expect(reconcileOne({ name: "api", expected: exp, running: null, ...base })).toMatchObject({
       kind: "missing",
       hint: "ow up api",
     })
     expect(
-      reconcileOne({ name: "silinmis", expected: null, running: { name: "silinmis", pid: 1, lstart: "l", startedAt: "t" }, ...base }),
-    ).toMatchObject({ kind: "extra", hint: "ow down silinmis" })
+      reconcileOne({ name: "removed", expected: null, running: { name: "removed", pid: 1, lstart: "l", startedAt: "t" }, ...base }),
+    ).toMatchObject({ kind: "extra", hint: "ow down removed" })
   })
 
-  test("durmuş/lstart-uyuşmazlığı", () => {
+  test("stopped/lstart-mismatch", () => {
     const exp = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
     const run = { name: "api", pid: 1, lstart: "l", startedAt: "t" }
     expect(reconcileOne({ name: "api", expected: exp, running: { ...run, exitCode: 1 }, ...base })).toMatchObject({ kind: "stopped" })
@@ -316,7 +316,7 @@ describe("reconcileOne (saf çekirdek)", () => {
     })
   })
 
-  test("config-farklı: cmd-şekil/cwd/port/env-adları/depends_on", () => {
+  test("config-mismatch: cmd-shape/cwd/port/env-names/depends_on", () => {
     const services = parseUpFile(
       "services:\n  api:\n    cmd: sleep 60\n    cwd: .\n    port: 3001\n    env: {A: b}\n    depends_on: [db]\n  db:\n    cmd: sleep 30\n",
     ).services
@@ -344,7 +344,7 @@ describe("reconcileOne (saf çekirdek)", () => {
     expect(same).toBeNull()
   })
 
-  test("port-yabancı: dinleyici var ama sahip biz değiliz (kill yok, rapor)", () => {
+  test("foreign-port: a listener exists but we are not the owner (no kill, report)", () => {
     const exp = parseUpFile("services:\n  api:\n    cmd: sleep 30\n    port: 3000\n").services[0]
     const drift = reconcileOne({
       name: "api",
@@ -357,7 +357,7 @@ describe("reconcileOne (saf çekirdek)", () => {
     expect(drift).toMatchObject({ kind: "foreign-port" })
   })
 
-  test("uyumlu kayıt null döner", () => {
+  test("a matching record returns null", () => {
     const exp = parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
     expect(
       reconcileOne({ name: "api", expected: exp, running: { name: "api", pid: 1, lstart: "l", startedAt: "t", cmd: "sleep 30" }, ...base }),
@@ -365,7 +365,7 @@ describe("reconcileOne (saf çekirdek)", () => {
   })
 })
 
-describe("CLI kullanım çıkışları (exit 2/1)", () => {
+describe("CLI usage exits (exit 2/1)", () => {
   const fixture = async (): Promise<{ root: string; file: string }> => {
     const root = await tempRoot()
     const file = join(root, "ow.yaml")
@@ -388,7 +388,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("restart kilit-yokken exit 2", async () => {
+  test("restart without a lock exits 2", async () => {
     const { root, file } = await fixture()
     try {
       const io = captureIo()
@@ -403,7 +403,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("restart konumsal argümansız exit 2", async () => {
+  test("restart without a positional argument exits 2", async () => {
     const { root, file } = await fixture()
     try {
       expect(await run(["restart", "--file", file])).toBe(2)
@@ -412,12 +412,12 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("bilinmeyen servis exit 2", async () => {
+  test("unknown service exit 2", async () => {
     const { root, file } = await fixture()
     try {
       const io = captureIo()
       try {
-        expect(await run(["up", "yok", "--file", file])).toBe(2)
+        expect(await run(["up", "missing", "--file", file])).toBe(2)
       } finally {
         io.restore()
       }
@@ -427,11 +427,11 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("reconcile bayraksız exit 2; --probe bayraksız-probe yolu açar (M3)", async () => {
+  test("reconcile without a flag exits 2; --probe opens the unflag-probe path (M3)", async () => {
     const { root, file } = await fixture()
     try {
       expect(await run(["reconcile", "--file", file])).toBe(2)
-      // Tanımsız servislerde probe yolu boş ölçümle biter: drift var → exit 1.
+      // With undefined services the probe path ends with an empty measurement: drift exists → exit 1.
       const io = captureIo()
       let code = -1
       try {
@@ -475,7 +475,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("down <svc> kilit-yokken hedefi durdurur, kilidi ve supervisor.json'u silmez", async () => {
+  test("down <svc> without a lock stops the target, does not delete the lock or supervisor.json", async () => {
     const { root, file } = await fixture()
     try {
       const paths = upPaths(root)
@@ -507,7 +507,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
     }
   })
 
-  test("lstartUnknown down <svc> refuse exit 1, sürece dokunmaz", async () => {
+  test("lstartUnknown down <svc> refuses exit 1, does not touch the process", async () => {
     const { root, file } = await fixture()
     try {
       const paths = upPaths(root)
@@ -535,7 +535,7 @@ describe("CLI kullanım çıkışları (exit 2/1)", () => {
   })
 })
 
-describe("canlı supervisor tek-servis akışı", () => {
+describe("live supervisor single-service flow", () => {
   const twoService = "services:\n  a:\n    cmd: sleep 30\n  b:\n    cmd: sleep 30\n"
 
   const startLive = async (): Promise<{ root: string; file: string; stop: () => void; done: Promise<number> }> => {
@@ -565,7 +565,7 @@ describe("canlı supervisor tek-servis akışı", () => {
     }, done }
   }
 
-  test("restart b sırasında a pid/lstart sabit, b pid değişir", async () => {
+  test("during restart b, a's pid/lstart stay fixed, b's pid changes", async () => {
     const live = await startLive()
     try {
       const paths = upPaths(live.root)
@@ -600,7 +600,7 @@ describe("canlı supervisor tek-servis akışı", () => {
     }
   })
 
-  test("up <yeni> canlıya eklenir, zaten-çalışan exit 2", async () => {
+  test("up <new> is added live, already-running exits 2", async () => {
     const live = await startLive()
     try {
       const paths = upPaths(live.root)
@@ -628,7 +628,7 @@ describe("canlı supervisor tek-servis akışı", () => {
     }
   })
 
-  test("down <svc> canlıda yalnızca hedefi durdurur", async () => {
+  test("down <svc> live stops only the target", async () => {
     const live = await startLive()
     try {
       const paths = upPaths(live.root)
@@ -656,7 +656,7 @@ describe("canlı supervisor tek-servis akışı", () => {
     }
   })
 
-  test("reconcile sync exit 0, servis-silme fazla exit 1 (durdurma yok)", async () => {
+  test("reconcile sync exit 0, service-removal extra exit 1 (no stop)", async () => {
     const live = await startLive()
     try {
       expect(await run(["reconcile", "--check", "--file", live.file])).toBe(0)
@@ -669,7 +669,7 @@ describe("canlı supervisor tek-servis akışı", () => {
       }
       expect(code).toBe(0)
       expect(JSON.parse(io.logs.join("\n")).reconcile).toMatchObject({ inSync: true, drifts: [] })
-      // Remove b from the definition: `fazla`, nothing is stopped.
+      // Remove b from the definition: `extra`, nothing is stopped.
       await writeFile(live.file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
       const io2 = captureIo()
       try {
@@ -689,7 +689,7 @@ describe("canlı supervisor tek-servis akışı", () => {
     }
   })
 
-  test("M-A: blind unit up => already-running, spawn yok, slot korunur", async () => {
+  test("M-A: blind unit up => already-running, no spawn, slot preserved", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -727,7 +727,7 @@ describe("canlı supervisor tek-servis akışı", () => {
     }
   })
 
-  test("lstartUnknown restart refuse: sinyal yok, süreç yaşar", async () => {    const root = await tempRoot()
+  test("lstartUnknown restart refuses: no signal, the process survives", async () => {    const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
       await writeFile(file, "services:\n  x:\n    cmd: sleep 30\n", "utf8")
@@ -747,7 +747,7 @@ describe("canlı supervisor tek-servis akışı", () => {
           tails: [],
           retiring: new Set(),
           spawnUnit: async () => {
-            throw new Error("spawn olmamalı")
+            throw new Error("must not spawn")
           },
           persist: async () => undefined,
         },
@@ -761,12 +761,12 @@ describe("canlı supervisor tek-servis akışı", () => {
     }
   })
 
-  test("state secret içermez (cmd maskeli-şekil, sentinel yok)", async () => {
+  test("state contains no secret (cmd masked shape, no sentinel)", async () => {
     const root = await tempRoot()
     try {
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
-      const code = await runSupervised([{ name: "gizli", cmd: "true --token hunter2" }], {
+      const code = await runSupervised([{ name: "hidden", cmd: "true --token hunter2" }], {
         rootDir: root,
         stateFile: paths.supervisorFile,
         onLine: () => undefined,
@@ -782,8 +782,8 @@ describe("canlı supervisor tek-servis akışı", () => {
   })
 })
 
-describe("runReconcileCheck çıkışları", () => {
-  test("durum yoksa beklenenler eksik (exit 1)", async () => {
+describe("runReconcileCheck exits", () => {
+  test("without state the expected are missing (exit 1)", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -803,13 +803,13 @@ describe("runReconcileCheck çıkışları", () => {
   })
 })
 
-describe("M-C artifact-stale çekirdeği (saf)", () => {
+describe("M-C artifact-stale core (pure)", () => {
   const liveBase = { liveness: "live" as const, listening: undefined, portOwners: null as number[] | null }
 
   const exp = () => parseUpFile("services:\n  api:\n    cmd: sleep 30\n").services[0]
   const run = { name: "api", pid: 1, lstart: "l", startedAt: "t", cmd: "sleep 30" }
 
-  test("uyuşmazlık → artifact-stale (kilitli şablon)", () => {
+  test("mismatch → artifact-stale (locked template)", () => {
     const drift = reconcileOne({
       name: "api",
       expected: exp(),
@@ -820,12 +820,12 @@ describe("M-C artifact-stale çekirdeği (saf)", () => {
     expect(drift?.kind).toBe("artifact-stale")
     expect(drift).toMatchObject({ service: "api", expected: { artifact: "api.jar" }, hint: "rebuild + ow restart api" })
     expect(formatDrift(drift!)).toBe("stale-build: api (api.jar changed) → rebuild + ow restart api")
-    // Tam-digest satırda yok (indirgenmiş tel).
+    // The full digest is absent from the line (reduced wire).
     expect(JSON.stringify(drift)).not.toContain("a1b2c3d4e5")
     expect(JSON.stringify(drift)).not.toContain("ffffffffff")
   })
 
-  test("eşleşme + kayıtsızlık drift üretmez (kayıt çağıranın işi)", () => {
+  test("a match + no record produce no drift (recording is the caller's job)", () => {
     const same = reconcileOne({
       name: "api",
       expected: exp(),
@@ -844,13 +844,13 @@ describe("M-C artifact-stale çekirdeği (saf)", () => {
     expect(unrecorded).toBeNull()
   })
 
-  test("haritasız girdi eski davranış (null, port-yabancı sırası korunur)", () => {
+  test("input with no map keeps the old behavior (null, foreign-port order preserved)", () => {
     expect(reconcileOne({ name: "api", expected: exp(), running: run, ...liveBase })).toBeNull()
   })
 })
 
-describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
-  const probedService = "services:\n  api:\n    cmd: sleep 30\n    readiness: {probe: [./hazir.sh], timeout: 10s, needsPort: false}\n"
+describe("M-C live record-observation + drift (real request channel)", () => {
+  const probedService = "services:\n  api:\n    cmd: sleep 30\n    readiness: {probe: [./ready.sh], timeout: 10s, needsPort: false}\n"
 
   const startProbedLive = async (): Promise<{ root: string; file: string; stop: () => void; done: Promise<number> }> => {
     const root = await tempRoot()
@@ -878,7 +878,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
 
   const fakeProbe = (checks: { name: string; ok: boolean; path?: string; digest?: string }[]) => async () => ({
     ok: true,
-    note: "hazır",
+    note: "ready",
     checks,
     timedOut: false,
     code: 0,
@@ -887,7 +887,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
   const DIGEST_1 = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   const DIGEST_2 = "ffffffffffffffffffffffffffffffffffffffff"
 
-  test("kayıt-gözlem: ilk tur drift yok + ham kayıt, ikinci tur tek derleme-eski", async () => {
+  test("record-observation: first round no drift + raw record, second round a single stale-build", async () => {
     const live = await startProbedLive()
     try {
       const io = captureIo()
@@ -905,11 +905,11 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
       }
       expect(code).toBe(0)
       expect(io.logs.join("\n")).not.toContain("stale-build")
-      // Kayıt-gözlem: durum dosyasına basename-anahtar + ham digest (tek yazar supervisor).
+      // Record-observation: a basename key + raw digest in the state file (sole-writer supervisor).
       await waitFor(async () =>
         (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["api.jar"] === DIGEST_1,
       )
-      // İkinci tur: digest döndü → tek kilitli drift satırı, exit 1; tam-yol/tam-digest satırda yok.
+      // Second round: the digest changed → a single locked drift line, exit 1; no full path/full digest in the line.
       const io2 = captureIo()
       let code2 = -1
       try {
@@ -936,7 +936,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
     }
   })
 
-  test("--json katkımsal anahtarlar (indirgenmiş kısa-8, ham yok)", async () => {
+  test("--json additive keys (reduced short-8, no raw)", async () => {
     const live = await startProbedLive()
     try {
       const runCheck = (digest: string, json: boolean) => {
@@ -979,7 +979,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
     }
   })
 
-  test("düşmanca yol: mutlak-yol sızmaz (kayıt + insan + tel basename)", async () => {
+  test("hostile path: no absolute path leaks (record + human + wire basename)", async () => {
     const live = await startProbedLive()
     try {
       const io = captureIo()
@@ -989,7 +989,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
           file: live.file,
           json: false,
           probe: true,
-          runProbeFn: fakeProbe([{ name: "h", ok: true, path: "/etc/shadow/gizli.jar", digest: DIGEST_1 }]),
+          runProbeFn: fakeProbe([{ name: "h", ok: true, path: "/etc/shadow/hidden.jar", digest: DIGEST_1 }]),
         })
       } finally {
         io.restore()
@@ -997,7 +997,7 @@ describe("M-C canlı kayıt-gözlem + drift (gerçek istek-kanalı)", () => {
       const out = io.logs.join("\n")
       expect(out).not.toContain("/etc/shadow")
       await waitFor(async () =>
-        (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["gizli.jar"] === DIGEST_1,
+        (await readSupervisorState(upPaths(live.root).supervisorFile))?.services.find((svc) => svc.name === "api")?.artifactDigests?.["hidden.jar"] === DIGEST_1,
       )
       const state = (await readSupervisorState(upPaths(live.root).supervisorFile))!
       expect(JSON.stringify(state.services.find((svc) => svc.name === "api")?.artifactDigests)).not.toContain("/etc/shadow")

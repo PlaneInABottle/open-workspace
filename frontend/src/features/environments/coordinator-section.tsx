@@ -13,36 +13,36 @@ import type {
   ScenarioVerdict,
 } from '@/api';
 import { useObserverFetch, WarningsStrip } from '@/features/observe/use-observer';
-import { checkpointAgeLabel, yasEtiketi } from '@/features/environments/time-label';
+import { checkpointAgeLabel } from '@/features/environments/time-label';
 
-const STAGE_TR: Record<CheckpointStageStatus, string> = {
+const STAGE_EN: Record<CheckpointStageStatus, string> = {
   confirmed: 'confirmed',
   not_observed: 'not-observed',
   stale: 'stale',
 };
 
-const STALE_TR: Record<string, string> = {
+const STALE_EN: Record<string, string> = {
   script_hash: 'script changed',
   checkout_rev: 'code revision changed',
   runtime: 'runtime changed',
   missing_basis: 'no comparison record',
 };
 
-/** M-A (#2): yan-etki Türkçe sözcüğü (`null` ≡ eksik → `bilinmiyor`). */
-const SIDE_EFFECT_TR: Record<string, string> = {
+/** M-A (#2): side-effect word (`null` ≡ missing → `unknown`). */
+const SIDE_EFFECT_EN: Record<string, string> = {
   none: 'none',
   attempted: 'attempted',
   confirmed: 'confirmed',
   unknown: 'unknown',
 };
 
-function yanEtkiSozcugu(sideEffect: string | null): string {
+function sideEffectLabel(sideEffect: string | null): string {
   if (!sideEffect) return 'unknown';
-  return SIDE_EFFECT_TR[sideEffect] ?? 'unknown';
+  return SIDE_EFFECT_EN[sideEffect] ?? 'unknown';
 }
 
-/** M-A (#2): kilitli retry metni (salt-metin; düğme/bağlantı yok). */
-const RETRY_HINT_TR = 'before-retry: ow reconcile --check';
+/** M-A (#2): locked retry text (plain text; no button/link). */
+const RETRY_HINT_EN = 'before-retry: ow reconcile --check';
 
 /** M1 boundary taxonomy: new-enum English labels + legacy dual-read
  * labels (old columns may still arrive). `blocked:<reason>` matches by
@@ -69,27 +69,27 @@ function boundaryLabel(column: string): string {
   return 'unknown';
 }
 
-const VERDICT_TR: Record<Exclude<ScenarioVerdict, 'uncovered'>, string> = {
+const VERDICT_EN: Record<Exclude<ScenarioVerdict, 'uncovered'>, string> = {
   pass: 'pass',
   stale: 'stale',
   skipped: 'skipped',
   unverified: 'unverified',
 };
 
-function staleNedeni(staleReason: string | null): string {
+function staleReasonLabel(staleReason: string | null): string {
   if (!staleReason) return '';
-  return STALE_TR[staleReason] ?? staleReason;
+  return STALE_EN[staleReason] ?? staleReason;
 }
 
 /**
- * Kopyala düğmesi: `full` YALNIZCA tıklama anındaki clipboard payload'ında
- * taşınır — DOM metnine, title'a ya da aria'ya yazılmaz (tara-test §3).
- * Hover ile tam-hash gösterilmez; erişim tıkla-kopyala yolunadır.
+ * Copy button: `full` is carried ONLY in the clipboard payload at click time
+ * — it is not written to DOM text, title or aria (scan-test §3).
+ * The full hash is not shown on hover; access is via the click-to-copy path.
  */
 function CopyButton({ full, label }: { full: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
-  // Unmount'ta sarkan timer kalmaz (tek atımlık geri-sayım; polling yok).
+  // No timer dangles on unmount (one-shot countdown; no polling).
   useEffect(() => () => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
   }, []);
@@ -115,7 +115,7 @@ function CopyButton({ full, label }: { full: string; label: string }) {
   );
 }
 
-/** Mutlak saat + göreli yaş ikilisi; ayrıştırılamayan saat asla bayatlık kanıtlamaz. */
+/** Absolute time + relative age pair; an unparseable time never proves staleness. */
 function witnessAgeLabel(producedAt: string, nowMs: number): { time: string; age: string; stale: boolean } {
   const atMs = Date.parse(producedAt);
   if (!Number.isFinite(atMs)) return { time: 'time unknown', age: 'freshness unknown', stale: false };
@@ -139,7 +139,7 @@ function DiffModal({ drift, onClose }: { drift: CoordinatorDrift; onClose: () =>
       onClose();
       return;
     }
-    // Küçük focus-trap: Tab modal içinde döner.
+    // Small focus trap: Tab cycles inside the modal.
     if (event.key !== 'Tab' || !dialogRef.current) return;
     const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>(
       'button, [href], [tabindex]:not([tabindex="-1"])',
@@ -237,14 +237,14 @@ function PreflightPanel({ snapshot }: { snapshot: CoordinatorSnapshot }) {
 }
 
 /**
- * Koordinatör bölümü: tek aggregate snapshot'tan P1 (reconcile özeti + drift
- * satırları + salt-okunur diff modalı) + P2 (preflight rozeti + eksik
- * akordiyonu) + P3 (checkpoint çizgisi: stage şeridi + bayat kuyruğu +
- * salt-metin sıradaki-adım + çalışma seçimi) + P4 (provenance kartı:
- * beklenen/çalışan tablosu + rev şeridi) + P5 (senaryo matrisi) + tanık
- * çizgisi. Eylem butonu yok; veri üst bardaki Yenile ile one-shot gelir
- * (refreshToken). Çalışma seçimi kullanıcı-tetikli tekil yeniden-çekmedir
- * (timer/polling yok).
+ * Coordinator section: from a single aggregate snapshot P1 (reconcile summary + drift
+ * lines + read-only diff modal) + P2 (preflight badge + missing
+ * accordion) + P3 (checkpoint line: stage strip + stale queue +
+ * plain-text next step + run selector) + P4 (provenance card:
+ * expected/running table + rev strip) + P5 (scenario matrix) + witness
+ * line. No action button; data arrives one-shot from the top bar's Refresh
+ * (refreshToken). The run selection is a user-triggered single refetch
+ * (no timer/polling).
  */
 export function CoordinatorSection({ api, workspace, environment, refreshToken }: {
   api: ApiClient;
@@ -253,14 +253,14 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
   refreshToken: number;
 }) {
   const [openDrift, setOpenDrift] = useState<CoordinatorDrift | null>(null);
-  // Odak dönüşü deterministik: açan düğme tıklama anında yakalanır (modal
-  // mount'undaki autoFocus yarışı ortadan kalkar).
+  // Focus return is deterministic: the opening button is captured at click time (the
+  // autoFocus race on modal mount disappears).
   const openerRef = useRef<HTMLButtonElement | null>(null);
-  // Açık checkpoint-çalışma isteği (null = latest); ortam değişince sıfırlanır.
+  // Explicit checkpoint-run request (null = latest); reset when the environment changes.
   const [run, setRun] = useState<string | null>(null);
-  // Son içerikli yanıttaki çalışma listesi: içeriksiz run seçiminde
-  // (checkpoints null) seçici kaybolmasın diye önbellekte tutulur —
-  // kullanıcı aynı seçiciyle içerikli run'a dönebilir.
+  // The run list from the last non-empty response: kept in cache so the selector
+  // does not disappear on an empty run selection (checkpoints null) —
+  // the user can return to a non-empty run with the same selector.
   const [cachedRuns, setCachedRuns] = useState<string[]>([]);
   const { data, warnings, loading, error } = useObserverFetch<CoordinatorSnapshot>(() =>
     api.coordinator(workspace, environment, run ?? undefined).then(snapshot => ({ data: snapshot, warnings: snapshot.warnings })),
@@ -271,11 +271,11 @@ export function CoordinatorSection({ api, workspace, environment, refreshToken }
     openerRef.current?.focus();
   }
 
-  // Ortam değişince açık modal kapanır, çalışma seçimi latest'e döner.
+  // When the environment changes the open modal closes and the run selection returns to latest.
   useEffect(() => { setOpenDrift(null); setRun(null); setCachedRuns([]); }, [workspace, environment]);
 
-  // İçerikli yanıt geldikçe liste tazelenir; içeriksiz yanıtta korunur.
-  // Üst-düzey `runs` yoksa (eski sunucu) önbellek devreye girer.
+  // The list refreshes as non-empty responses arrive; it is preserved on an empty response.
+  // When there is no top-level `runs` (old server) the cache takes over.
   useEffect(() => {
     const listed = data?.runs ?? [];
     if (listed.length > 0) setCachedRuns(listed);
@@ -423,14 +423,14 @@ function WitnessLine({ snapshot }: { snapshot: CoordinatorSnapshot }) {
 }
 
 /**
- * P3 checkpoint çizgisi: stage akışı yatay `<ol>` şeridi (tamamlanan ✓,
- * sıradaki ▸, bayat turuncu çerçeve + yaş) + first_gap "bayat kuyruğu"
- * (`role=status`) + salt-metin sıradaki-adım kutusu (eylem yok).
+ * P3 checkpoint line: the stage flow is a horizontal `<ol>` strip (completed ✓,
+ * next ▸, stale orange border + age) + first_gap "stale queue"
+ * (`role=status`) + a plain-text next-step box (no action).
  */
 /**
- * Çalışma seçici: etiketli native select (klavye-dostu, tekil yeniden-çekme
- * tetikler — timer/polling yok). Liste ebeveynden gelir; içeriksiz seçimde
- * bile görünür kalır (dead-end yok).
+ * Run selector: a labeled native select (keyboard-friendly, triggers a single
+ * refetch — no timer/polling). The list comes from the parent; it stays
+ * visible even on an empty selection (no dead-end).
  */
 function RunPicker({ runs, run, onRunChange }: {
   runs: string[];
@@ -481,16 +481,16 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
   const currentStage = checkpoints.firstGap?.stage ?? checkpoints.lastVerified?.stage ?? null;
   const staleStages = checkpoints.stages.filter(stage => stage.status === 'stale');
 
-  // M-A: bayrak satırları (zarf-sıralı, tek-metin düğümlü) + deneme ağacı
-  // (senaryo → deneme; sahipsiz zarf ağaç-dışı). Doğrulanmamış-deneme
-  // kuralı CLI `isAttemptedUnconfirmed` aynasıdır.
+  // M-A: flag lines (envelope-ordered, plain-text nodes) + attempt tree
+  // (scenario → attempt; an unattributed envelope stays outside the tree). The attempted-unconfirmed
+  // rule mirrors the CLI `isAttemptedUnconfirmed`.
   const flagText = (stage: CoordinatorCheckpoints['stages'][number]): string => {
     const counts: string[] = [];
     if (stage.sideEffectAttempted !== null) counts.push(`attempted: ${stage.sideEffectAttempted}`);
     if (stage.sideEffectConfirmed !== null) counts.push(`confirmed: ${stage.sideEffectConfirmed}`);
     return counts.length > 0
-      ? `side-effect: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)}, ${counts.join(', ')})`
-      : `side-effect: ${stage.stage} (${yanEtkiSozcugu(stage.sideEffect)})`;
+      ? `side-effect: ${stage.stage} (${sideEffectLabel(stage.sideEffect)}, ${counts.join(', ')})`
+      : `side-effect: ${stage.stage} (${sideEffectLabel(stage.sideEffect)})`;
   };
   const unconfirmedAt = (index: number): boolean => {
     const stage = checkpoints.stages[index];
@@ -499,7 +499,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
   };
   const leafText = (index: number): string => {
     const stage = checkpoints.stages[index];
-    const words = [STAGE_TR[stage.status]];
+    const words = [STAGE_EN[stage.status]];
     if (unconfirmedAt(index)) words.push('unconfirmed');
     return `${stage.stage} (${words.join(', ')})`;
   };
@@ -551,7 +551,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
               ) : (
                 <Badge variant="outline" className="gap-1 text-muted-foreground"><span aria-hidden="true">○</span> not-observed</Badge>
               )}
-              <span className="text-xs text-muted-foreground">{yasEtiketi(stage.at, nowMs)}</span>
+              <span className="text-xs text-muted-foreground">{checkpointAgeLabel(stage.at, nowMs)}</span>
             </li>
           );
         })}
@@ -561,8 +561,8 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
         <div role="status" className="mt-3 rounded-md border border-border p-3">
           <p className="text-sm">
             First gap: <span className="font-medium">{checkpoints.firstGap.stage}</span>
-            {' '}({STAGE_TR[checkpoints.firstGap.status]}{checkpoints.firstGap.staleReason ? ` — ${staleNedeni(checkpoints.firstGap.staleReason)}` : ''})
-            {' · '}{yasEtiketi(checkpoints.firstGap.at, nowMs)}
+            {' '}({STAGE_EN[checkpoints.firstGap.status]}{checkpoints.firstGap.staleReason ? ` — ${staleReasonLabel(checkpoints.firstGap.staleReason)}` : ''})
+            {' · '}{checkpointAgeLabel(checkpoints.firstGap.at, nowMs)}
           </p>
           {staleStages.length > 0 && (
             <div className="mt-2">
@@ -570,7 +570,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
               <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">
                 {staleStages.map(stage => (
                   <li key={stage.stage}>
-                    {stage.stage} — {staleNedeni(stage.staleReason)} · {yasEtiketi(stage.at, nowMs)}
+                    {stage.stage} — {staleReasonLabel(stage.staleReason)} · {checkpointAgeLabel(stage.at, nowMs)}
                   </li>
                 ))}
               </ul>
@@ -587,7 +587,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
 
       {checkpoints.retryHint && (
         <div className="mt-3 rounded-md border border-border p-3">
-          <p className="text-sm">{RETRY_HINT_TR}</p>
+          <p className="text-sm">{RETRY_HINT_EN}</p>
           <p className="mt-1 text-xs text-muted-foreground">This is a suggestion — it runs nothing. Applying it is up to the assistant.</p>
         </div>
       )}
@@ -604,7 +604,7 @@ function CheckpointPanel({ checkpoints, runs, run, onRunChange }: {
                   )),
                 )}
                 {group.flat.map(index => (
-                  <li key={`duz-${index}`}><span>{leafText(index)}</span></li>
+                  <li key={`flat-${index}`}><span>{leafText(index)}</span></li>
                 ))}
               </ul>
             </li>
@@ -649,10 +649,10 @@ function worktreeChipText(entry: CoordinatorExplanation['entries'][number]): str
 }
 
 /**
- * P4 provenance kartı: beklenen/çalışan `<table>`si + rev şeridi
- * (nokta-zaman çizgisi: seçili vurgulu, eski soluk, etiket kısa-hash + yaş)
- * + diff satırları. Rev satırı asla çıplak hash değil; tam-hash yalnızca
- * kopyala-butonu clipboard payload'ındadır.
+ * P4 provenance card: expected/running `<table>` + rev strip
+ * (a dot-time line: selected highlighted, old dim, label short-hash + age)
+ * + diff lines. The rev line is never a bare hash; the full hash is only in the
+ * copy button's clipboard payload.
  *
  * Chip + `wt:<ad>` filter renders ONLY when discriminating info exists
  * (the `worktree` field on readiness — i.e. >1 root); single-root flows
@@ -716,8 +716,8 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
             {visibleEntries.map(entry => (
               <tr
                 key={entry.service}
-                // data-selected yalnızca seçiliyken render edilir ("false"
-                // dizesi DOM'da gürültü yapmaz; seçim saf-görünüm durumudur).
+                // data-selected is rendered only when selected (the "false"
+                // string does not add DOM noise; the selection is pure-view state).
                 {...(entry.revFull !== null && entry.revFull === activeFull ? { 'data-selected': true } : {})}
                 className={`border-b border-border last:border-0 ${entry.revFull !== null && entry.revFull === activeFull ? 'bg-muted/60' : ''}`}
               >
@@ -744,7 +744,7 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
                         <Badge variant="outline" className="gap-1 text-warning"><span aria-hidden="true">?</span> unverified</Badge>
                       )}
                       <span className="text-xs text-muted-foreground">
-                        {entry.revAt ? `saved ${yasEtiketi(entry.revAt, nowMs)}` : 'no record time'}
+                        {entry.revAt ? `saved ${checkpointAgeLabel(entry.revAt, nowMs)}` : 'no record time'}
                       </span>
                       {entry.revFull && <CopyButton full={entry.revFull} label={`copy ${entry.revShort} rev`} />}
                     </span>
@@ -801,7 +801,7 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
                   >
                     <span translate="no" className="font-mono">{revision.short}</span>
                     {' · '}
-                    <span className="text-muted-foreground">{yasEtiketi(revision.at, nowMs)}</span>
+                    <span className="text-muted-foreground">{checkpointAgeLabel(revision.at, nowMs)}</span>
                   </button>
                 </li>
               );
@@ -813,7 +813,7 @@ function ProvenancePanel({ explanation, readiness }: { explanation: CoordinatorE
   );
 }
 
-const WORKTREE_LOCK_TR: Record<CoordinatorWorktreeEntry['lock'], string> = {
+const WORKTREE_LOCK_EN: Record<CoordinatorWorktreeEntry['lock'], string> = {
   live: 'live',
   stale: 'stale',
   absent: 'none',
@@ -821,7 +821,7 @@ const WORKTREE_LOCK_TR: Record<CoordinatorWorktreeEntry['lock'], string> = {
   unknown: 'unverified',
 };
 
-const WORKTREE_STATE_TR: Record<Exclude<CoordinatorWorktreeEntry['state'], 'ok'>, string> = {
+const WORKTREE_STATE_EN: Record<Exclude<CoordinatorWorktreeEntry['state'], 'ok'>, string> = {
   missing: 'no record',
   corrupt: 'corrupt record',
   'bad-version': 'version mismatch',
@@ -852,11 +852,11 @@ function WorktreesPanel({ worktrees }: { worktrees: CoordinatorWorktreeEntry[] |
                   <span translate="no">@{entry.revShort}</span>
                 </Badge>
               )}
-              <Badge variant="outline" className="gap-1">{WORKTREE_LOCK_TR[entry.lock]}</Badge>
+              <Badge variant="outline" className="gap-1">{WORKTREE_LOCK_EN[entry.lock]}</Badge>
             </div>
             <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
               {entry.branch ? `branch: ${entry.branch} · ` : ''}
-              {entry.state !== 'ok' ? `${WORKTREE_STATE_TR[entry.state]} · ` : ''}
+              {entry.state !== 'ok' ? `${WORKTREE_STATE_EN[entry.state]} · ` : ''}
               {entry.liveServices.length > 0 ? `recorded: ${entry.liveServices.join(', ')}` : 'no recorded services'}
             </p>
           </li>
@@ -878,16 +878,16 @@ function ScenarioCell({ verdict }: { verdict: ScenarioVerdict }) {
   return (
     <Badge variant="outline" className={`gap-1 ${verdict === 'pass' ? 'text-success' : verdict === 'stale' ? 'text-warning' : verdict === 'unverified' ? 'text-warning' : 'text-muted-foreground'}`}>
       <span aria-hidden="true">{verdict === 'pass' ? '✓' : verdict === 'stale' ? '!' : verdict === 'unverified' ? '?' : '○'}</span>
-      {VERDICT_TR[verdict]}
+      {VERDICT_EN[verdict]}
     </Badge>
   );
 }
 
 /**
- * P5 senaryo matrisi: gerçek `<table>` (satır = senaryo, sütun = sınır),
- * hücre = rozet metni. Hüküm, seçili run'daki checkpoint tazeliğinden
- * gelir (kayıt yoksa "atlandı"); çalıştırma YOK — matris gösterir,
- * koşturmaz. Sıra: matris → uyarı şeridi → tanık çizgisi (odak sırası).
+ * P5 scenario matrix: a real `<table>` (row = scenario, column = boundary),
+ * cell = badge text. The verdict comes from checkpoint freshness in the
+ * selected run ("skipped" when there is no record); no execution — the matrix shows,
+ * it does not run. Order: matrix → warning strip → witness line (focus order).
  */
 function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScenarios | null; producedAt: string }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -942,7 +942,7 @@ function ScenariosPanel({ scenarios, producedAt }: { scenarios: CoordinatorScena
       {staleSnapshot && (
         <div role="status" className="mt-2 text-xs text-muted-foreground">
           <span className="font-medium text-warning">may be stale — refresh?</span>
-          {' · '}{snapshotTime} · {yasEtiketi(producedAt, nowMs)}
+          {' · '}{snapshotTime} · {checkpointAgeLabel(producedAt, nowMs)}
         </div>
       )}
 
