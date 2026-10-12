@@ -122,6 +122,17 @@ runs unconditionally (try/finally, even after assert failure).
   and validated at parse; fault/soak/load/scheduled/deployed stay
   explicit non-goals.
 
+## Scenario env
+
+`ow scenario env <name> [--json] [--file] [--boundaries <path>]`
+renders the decided boundary matrix as eval-clean environment lines
+(`ow` decides, the app substitutes): one `OW_BOUNDARY_<name>=<mode>`
+line per boundary, modes closed-vocabulary only (never secrets,
+never reasons — `blocked:<reason>` renders `blocked`). Reads the
+merged matrix (flag > local > base) read-only; refusals mirror the
+run gates (unknown scenario / INERT → exit 2, missing file → exit 1);
+key collisions refuse exit 1 (`duplicate env key:`).
+
 ## Data clock (pending M7)
 
 - Data-clock witnessing (`.ow/data-clock.json`, ledger chips,

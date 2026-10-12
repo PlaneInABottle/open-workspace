@@ -84,6 +84,7 @@ export const helpText = (): string =>
     "  record <scenario> [--file]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
     "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
     "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory)",
+    "  scenario env <name> [--file] [--json] [--boundaries <path>]  boundary matrix as OW_BOUNDARY_* lines (read-only render)",
     "  trace [iz] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  izlemeler; iz ile tek ağaç; --wait 15s yeni span bekler",
   "  timeline [oturum] [--trace] [--since] [--tail]  ajan satırları + izleme spanları birleşik zaman çizelgesi",
   "  init [--force] [--tracing]  repo taramasıyla başlangıç ow.yaml iskeleti (--force tek ow.yaml.bak tutar)",
@@ -1168,36 +1169,50 @@ export const run = async (argv: string[]): Promise<number> => {
       // M6: narrowed deterministic run — `run` subverb in the sessionID
       // slot, scenario name in extra (checkpoints-shape precedent). Runner
       // owns restore exec; `ow` spawns declared probes only.
-      if (positional !== "run" || parsed.extra.length !== 1) {
-        console.error("ow: use as scenario run <name> [--file] [--json] [--run <id>] [--off-local]")
-        return 2
-      }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--tracing", "--force"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with scenario run`)
-          return 2
+      // M10: `env` subverb renders the decided boundary matrix as
+      // eval-clean `OW_BOUNDARY_*` lines (read-only, never spawns).
+      if (positional === "run" && parsed.extra.length === 1) {
+        for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--tracing", "--force"]) {
+          if (flags[unsupported] !== undefined) {
+            console.error(`ow: ${unsupported} cannot be used with scenario run`)
+            return 2
+          }
         }
-      }
-      const runId = flag(flags, "--run")
-      if (runId !== undefined) {
-        const { isValidRunName } = await import("./up-checkpoints")
-        if (!isValidRunName(runId)) {
-          console.error(`ow: invalid run id: ${runId}`)
-          return 2
+        const runId = flag(flags, "--run")
+        if (runId !== undefined) {
+          const { isValidRunName } = await import("./up-checkpoints")
+          if (!isValidRunName(runId)) {
+            console.error(`ow: invalid run id: ${runId}`)
+            return 2
+          }
         }
+        const { runScenarioRun } = await import("./up-scenario-run")
+        const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+        const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
+        return runScenarioRun({
+          rootDir,
+          file: scenariosFile,
+          name: parsed.extra[0],
+          runId,
+          offLocal: flags["--off-local"] === true,
+          json,
+          boundariesFlag,
+        })
       }
-      const { runScenarioRun } = await import("./up-scenario-run")
-      const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
-      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runScenarioRun({
-        rootDir,
-        file: scenariosFile,
-        name: parsed.extra[0],
-        runId,
-        offLocal: flags["--off-local"] === true,
-        json,
-        boundariesFlag,
-      })
+      if (positional === "env" && parsed.extra.length === 1) {
+        for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--tracing", "--force", "--run", "--off-local"]) {
+          if (flags[unsupported] !== undefined) {
+            console.error(`ow: ${unsupported} cannot be used with scenario env`)
+            return 2
+          }
+        }
+        const { runScenarioEnv } = await import("./up-scenario-env")
+        const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+        const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
+        return runScenarioEnv({ rootDir, file: scenariosFile, name: parsed.extra[0], json, boundariesFlag })
+      }
+      console.error("ow: use as scenario run <name> [--file] [--json] [--run <id>] [--off-local]")
+      return 2
     }
     if (command === "ps") {
       if (flags["--explain"] === true) {

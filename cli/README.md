@@ -617,6 +617,32 @@ wall-clock only; `OW_TIME_OFFSET` stays a runner-side convention that
 `ow` never reads. Load testing stays project-tool owned and witnessed
 through `ps`/`logs` — never an `ow` surface.
 
+### Scenario env (boundary matrix for app-side resolvers)
+
+`ow` decides, the app substitutes: `ow scenario env <name> [--json]
+[--file ow.scenarios.yaml] [--boundaries <path>]` renders the decided
+boundary matrix of one scenario as environment lines — one
+`OW_BOUNDARY_<name>=<mode>` line per boundary, trivially eval-able
+(`eval $(ow scenario env <name>)`). Modes are closed-vocabulary only
+(`real-read-only | real-state-changing | network-deny | subscribed |
+blocked | unverified`) — never secret values, never reasons, never
+paths. `blocked:<reason>` renders mode `blocked` (the reason stays out
+of env and out of `--json`; full reasons live in `scenarios --check`).
+Env keys uppercase the mode and fold every non-alphanumeric character
+to `_` (`real-read-only` → `OW_BOUNDARY_REAL_READ_ONLY`). Two
+boundaries mapping to the same key (e.g. `[local, real-read-only]` or
+two `blocked:` reasons) refuse exit 1 naming both sources
+(`duplicate env key:`).
+
+The verb reads the MERGED matrix through the overlay helper (flag >
+local convention > base, source tags honored) and renders read-only:
+it never spawns and never writes. Human stdout stays plain `KEY=value`
+(warnings, advisories, and the forgotten-overlay banner go to
+stderr); `--json` prints `{scenario, env}` (+ `overlayApplied`,
+`overlayFile`, `boundarySources` when an overlay is active) and nothing
+else on stdout. Refusals mirror the run gates: unknown scenario →
+exit 2, INERT-marked file → exit 2, missing file → exit 1.
+
 ### Spring tarifi (uyku/curl yerine)
 
 Spring servisleri portu actuator UP olmadan çok önce dinlemeye başlar:
