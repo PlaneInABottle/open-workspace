@@ -339,6 +339,28 @@ digest covers status, stale reason, proof, code/runtime slots and the
 freshness-orthogonal witness fields (side_effect, counts, scenario,
 attempt, step_signature, data).
 
+### Export bundle (one redacted snapshot for tickets)
+
+`ow export --bundle [<run>] [--file] [--out <path>]` composes existing
+readers only — `ps --explain`, per-service `logs` tails (50 per
+service), `failures --since 24h`, `preflight --json`, plus
+`checkpoints show <run>` when a run is given — into ONE local markdown
+file with a fenced `preflight --json` block. No new data collection,
+no trace readers (trace IDs/spans never enter the bundle as readings).
+Redaction applies to every section: trace/span/traceparent-shaped values
+masked, secret masking on all free text, abs paths folded (`<root>` for
+the workspace root, `<elsewhere>/<basename>` for any other absolute
+path), full revs/digests shortened to 8 chars. The preflight fence is
+parsed first and redacted per JSON value with explicit serialization,
+so masking can never corrupt its structure; a present-but-invalid fence
+refuses the bundle loudly instead of embedding broken text. The default
+path is `.ow/bundle-<timestamp>.md`; `--out` must stay root-relative
+(absolute/traversal values refuse with exit 2 echoing the basename
+only). Writes are atomic tmp+rename with `0600` perms. Exits: 0
+written (`bundle: <relative-path>`), 1 nothing readable (no file
+written), 2 usage. Sections with no data render an explicit
+`empty: <reason>` line, never silence.
+
 ### Mechanical failure list (M-D, read-only)
 
 `ow failures [--since 1h|24h|7d] [--json]` lists repeat failure classes

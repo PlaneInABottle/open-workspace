@@ -31,12 +31,12 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "readiness", "provision", "scenarios", "failures", "record", "contract", "scenario"] as const
+const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "readiness", "provision", "scenarios", "failures", "record", "contract", "scenario", "export"] as const
 export type Command = (typeof COMMANDS)[number]
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries", "--out"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local", "--bundle"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -88,6 +88,7 @@ export const helpText = (): string =>
     "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
     "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory)",
     "  scenario env <name> [--file] [--json] [--boundaries <path>]  boundary matrix as OW_BOUNDARY_* lines (read-only render)",
+    "  export --bundle [<run>] [--file] [--out <path>]  one redacted snapshot file for tickets (read-only composition)",
     "  trace [trace] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  traces; one tree per trace; --wait 15s waits for new spans",
   "  timeline [session] [--trace] [--since] [--tail]  agent lines + trace spans as a joined timeline",
   "  init [--force] [--tracing]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
@@ -650,6 +651,12 @@ export const run = async (argv: string[]): Promise<number> => {
     console.error("ow: --explain works only with ps")
     return 2
   }
+  // M13: `--bundle`/`--out` belong only to `export` (same fail-loud
+  // precedent: `ow down --bundle` must refuse, never stop services).
+  if (command !== "export" && (flags["--bundle"] === true || flags["--out"] !== undefined)) {
+    console.error("ow: --bundle/--out work only with export")
+    return 2
+  }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
   const logPath = flag(flags, "--log") ?? DEFAULT_LOG_PATH
   const json = flags["--json"] === true
@@ -697,7 +704,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "readiness" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures" || command === "record" || command === "contract" || command === "scenario") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "readiness" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "failures" || command === "record" || command === "contract" || command === "scenario" || command === "export") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -1304,6 +1311,28 @@ export const run = async (argv: string[]): Promise<number> => {
         console.log(JSON.stringify({ service: positional ?? null, lines: rows, omittedRows: result.omittedRows, omittedFiles: result.omittedFiles }))
       }
       return 0
+    }
+    if (command === "export") {
+      // M13: read-only bundle composition of existing readers. Only
+      // --file/--out/--bundle (+ global --db/--log/--help) belong here;
+      // anything else is a usage error, never a silent no-op.
+      if (flags["--bundle"] !== true) {
+        console.error("ow: export needs --bundle (e.g. ow export --bundle [<run>] [--out <path>])")
+        return 2
+      }
+      for (const key of Object.keys(flags)) {
+        if (!["--file", "--out", "--bundle", "--help", "--db", "--log"].includes(key)) {
+          console.error(`ow: ${key} cannot be used with export`)
+          return 2
+        }
+      }
+      const { runExport } = await import("./up-export")
+      return runExport({
+        rootDir,
+        file: yamlForRead,
+        ...(positional === undefined ? {} : { run: positional }),
+        ...(flag(flags, "--out") === undefined ? {} : { out: flag(flags, "--out") as string }),
+      })
     }
   }
 
