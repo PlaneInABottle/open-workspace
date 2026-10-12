@@ -89,6 +89,13 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 - Do not expose source-package scripts as generic end-user commands or assume the user's app uses Node/pnpm. Do not assume repos share a wrapper directory. Onboarding operates existing checkouts in place with explicit paths and permissions.
 - Project state has one strict schema with explicit `roots` arrays and no versioned upgrades: unknown shapes fail closed and the file stays byte-identical. Additive fields use optional-with-default so old files keep parsing. Invalid input and size failures preserve original bytes. Inspect groups independently, use paths as stable keys, and remove the whole project's registration without touching repository files.
 - Native picker results are path selection, not a registration decision. Use trusted absolute system executables with minimal environment and static code, not caller PATH lookup. Mocked picker output and script compilation do not prove a real GUI selection; document cancellation, headless fallback and any native-interaction gap honestly.
+- Generated trees are part of the diff: `plugins/` mirrors must show regenerated paths whenever a skill changes (byte-compare tests are the gate); a claimed rebuild without them is a defect, not a shortcut.
+- Doc==code: every documented token/exit/flag/shape must be grep-verified against its emitter (seen live: exit tokens, `-` fallback, runner refusal, fence validity). README examples must match code paths, not aspirations.
+- Fail-closed defaults: absent/unreadable input refuses or states an explicit reason — never a vacuous green (empty services, absent overlay, missing file, placeholder probes). Markers (INERT and friends) are checked beyond the first line.
+- `--json` channel discipline: stdout stays parse-clean (diagnostics go to stderr); fenced blocks are always valid JSON or absent, never a placeholder in a JSON fence.
+- Mask-before-cap with union parity: hostile corpora must include quoted/JSON/key-position shapes on BOTH persist and serve channels; persist-then-mask never happens. CLI↔server mirrors require cross-parity tests on a shared corpus, not parallel same-shaped fixtures.
+- Global parser flags require cross-verb guards (fail-loud precedent): a flag accepted by one verb must not silently no-op in another.
+- Evidence honesty: fail-before RED per finding; vary hostile fixtures beyond the benign shape (a suite shaped like `service a` proves nothing about `token-check`); reused evidence is labeled, never re-presented as fresh runs.
 
 ## Safety and capability boundaries
 
