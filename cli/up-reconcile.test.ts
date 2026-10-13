@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { run } from "./cli"
+import { run, runSingleServiceRequest, waitForUpReady } from "./cli"
 import { parseUpFile } from "./up-schema"
 import {
   completeRequest,
@@ -1122,6 +1122,416 @@ describe("G11 revision-stale advisory rides readiness lines (display-only)", () 
       stop = true
       if (done !== null) await done.catch(() => undefined)
       await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+})
+
+describe("single-service --wait readiness (OW-012, live harness + loopback holders)", () => {
+  const holders: { stop: () => void }[] = []
+
+  const freePort = async (): Promise<number> => {
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) })
+    const port = probe.port
+    probe.stop()
+    return port
+  }
+
+  const holdPort = (port: number): void => {
+    holders.push(Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("ok") }))
+  }
+
+  const stopHolders = (): void => {
+    for (const holder of holders.splice(0)) {
+      try {
+        holder.stop()
+      } catch {
+        // already stopped
+      }
+    }
+  }
+
+  const startPortLive = async (yaml: string): Promise<{ root: string; file: string; stop: () => void; done: Promise<number> }> => {
+    const root = await tempRoot()
+    const file = join(root, "ow.yaml")
+    await writeFile(file, yaml, "utf8")
+    const paths = upPaths(root)
+    await ensureUpStateDir(paths.stateDir)
+    const keeper = spawnSleep(60)
+    const keeperLstart = (await readLstart(keeper.pid))!
+    await writeFile(paths.lockFile, JSON.stringify({ pid: keeper.pid, lstart: keeperLstart, startedAt: new Date().toISOString() }), "utf8")
+    const wanted = parseUpFile(yaml).services.length
+    let stopFlag = false
+    const done = runSupervised(parseUpFile(yaml).services, {
+      rootDir: root,
+      stateFile: paths.supervisorFile,
+      requestsDir: paths.requestsDir,
+      owFile: file,
+      onLine: () => undefined,
+      shouldStop: () => stopFlag,
+    })
+    await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services.length === wanted)
+    return { root, file, stop: () => {
+      stopFlag = true
+    }, done }
+  }
+
+  const twoServiceYaml = (port: number, bPort?: number): string =>
+    `services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n  b:\n    cmd: sleep 30\n${bPort === undefined ? "" : `    port: ${bPort}\n`}  c:\n    cmd: sleep 30\n`
+
+  test("restart --wait exits 0 with ready:, other service pid/lstart unchanged", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    holdPort(port)
+    try {
+      const before = (await readSupervisorState(upPaths(live.root).supervisorFile))!
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "a", "--file", live.file, "--wait", "5s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.logs.join("\n")).toContain(`ready: a:${port}`)
+      const after = (await readSupervisorState(upPaths(live.root).supervisorFile))!
+      const bBefore = before.services.find((svc) => svc.name === "b")!
+      const bAfter = after.services.find((svc) => svc.name === "b")!
+      expect(bAfter.pid).toBe(bBefore.pid)
+      expect(bAfter.lstart).toBe(bBefore.lstart)
+      const aBefore = before.services.find((svc) => svc.name === "a")!
+      const aAfter = after.services.find((svc) => svc.name === "a")!
+      expect(aAfter.pid).not.toBe(aBefore.pid)
+    } finally {
+      stopHolders()
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("up <svc> --wait works live (-d stays ignored, same shape)", async () => {
+    const port = await freePort()
+    const live = await startPortLive(`services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n`)
+    holdPort(port)
+    try {
+      // The supervisor re-reads the same ow.yaml per request: add the new
+      // service to the live file (a separate file would read unknown).
+      await writeFile(live.file, `services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n  fresh:\n    cmd: sleep 30\n    port: ${port}\n`, "utf8")
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["up", "fresh", "--file", live.file, "--wait", "5s", "-d"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.logs.join("\n")).toContain(`ready: fresh:${port}`)
+    } finally {
+      stopHolders()
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("--health must name the target (exit 2, no request written)", async () => {
+    const port = await freePort()
+    const other = await freePort()
+    const live = await startPortLive(twoServiceYaml(port, other))
+    try {
+      const paths = upPaths(live.root)
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "a", "--file", live.file, "--wait", "5s", "--health", "b=/x"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.errors.join("\n")).toContain("ow: --health must name the target service: a (got: b)")
+      expect(await scanRequests(paths.requestsDir)).toEqual([])
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("portless target with --wait exits 2 before any request", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    try {
+      const paths = upPaths(live.root)
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "c", "--file", live.file, "--wait", "5s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.errors.join("\n")).toContain("ow: nothing to wait for: c (no port or probe declared)")
+      expect(await scanRequests(paths.requestsDir)).toEqual([])
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("portless --json --wait exits 2 with zero JSON objects on stdout (guards first)", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "c", "--json", "--file", live.file, "--wait", "5s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.logs.join("\n")).toBe("")
+      expect(io.errors.join("\n")).toContain("ow: nothing to wait for: c (no port or probe declared)")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("vacuity through onPayload prints nothing (no double-print under guard relaxation)", async () => {
+    const root = await tempRoot()
+    try {
+      const { parseUpFile } = await import("./up-schema")
+      const services = parseUpFile("services:\n  ghost:\n    cmd: echo hi\n").services
+      const seen: unknown[] = []
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await waitForUpReady({
+          rootDir: root,
+          services,
+          timeoutMs: 1000,
+          json: true,
+          onPayload: (payload) => {
+            seen.push(payload)
+          },
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(seen).toEqual([{ ready: false, services: [], noPort: ["ghost"] }])
+      expect(io.logs.join("\n")).toBe("")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--health without --wait exits 2 (no request written)", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    try {
+      const paths = upPaths(live.root)
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "a", "--file", live.file, "--health", "a=/x"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.errors.join("\n")).toContain("ow: --health works only with --wait (--wait <duration> required)")
+      expect(await scanRequests(paths.requestsDir)).toEqual([])
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("--health conflicting with readiness exits 2 (no request written)", async () => {
+    const port = await freePort()
+    const live = await startPortLive(
+      `services:\n  probed:\n    cmd: sleep 30\n    port: ${port}\n    readiness: {probe: [./probe.sh], timeout: 10s, needsPort: true}\n`,
+    )
+    try {
+      const paths = upPaths(live.root)
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "probed", "--file", live.file, "--wait", "5s", "--health", "probed=/x"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.errors.join("\n")).toContain("ow: --health conflicts with readiness: probed (pick one)")
+      expect(await scanRequests(paths.requestsDir)).toEqual([])
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("timeout exits 1 with a timeout: line", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "a", "--file", live.file, "--wait", "1s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.logs.join("\n")).toContain(`timeout: a:${port}`)
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("exited service exits 1 with an exited: line", async () => {
+    const port = await freePort()
+    const live = await startPortLive(`services:\n  a:\n    cmd: sleep 30\n  doomed:\n    cmd: exit 3\n    port: ${port}\n`)
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["up", "doomed", "--file", live.file, "--wait", "5s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.logs.join("\n")).toContain("exited: doomed (exit code 3)")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("--json --wait emits a single object (two objects = channel violation)", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    holdPort(port)
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "a", "--json", "--file", live.file, "--wait", "5s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.logs).toHaveLength(1)
+      const payload = JSON.parse(io.logs[0]) as Record<string, unknown>
+      expect(payload).toMatchObject({ service: "a", action: "restart", ready: true })
+      expect(Object.keys(payload).sort()).toEqual(["action", "diff", "pid", "ready", "service", "services", "noPort"].sort())
+      expect((payload["services"] as unknown[])).toHaveLength(1)
+    } finally {
+      stopHolders()
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("fake runProbeFn runs single-target for readiness services", async () => {    const live = await startPortLive(
+      "services:\n  probed:\n    cmd: sleep 30\n    readiness: {probe: [./probe.sh], timeout: 10s, needsPort: false}\n",
+    )
+    try {
+      const seen: { name: string | undefined }[] = []
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await runSingleServiceRequest({
+          rootDir: live.root,
+          file: live.file,
+          action: "restart",
+          service: "probed",
+          json: false,
+          wait: "5s",
+          runProbeFn: async (spec) => {
+            seen.push({ name: (spec.env as Record<string, string | undefined>).OW_SERVICE })
+            return { ok: true, note: "fake-ready", timedOut: false, code: 0 }
+          },
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toEqual({ name: "probed" })
+      expect(io.logs.join("\n")).toContain("ready: probed")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("secret-scan: real probe notes mask end-to-end (human + --json)", async () => {
+    const live = await startPortLive(
+      "services:\n  leaking:\n    cmd: sleep 30\n    readiness: {probe: [./probe.sh], timeout: 10s, needsPort: false}\n",
+    )
+    try {
+      const { chmod } = await import("node:fs/promises")
+      await writeFile(join(live.root, "probe.sh"), '#!/bin/sh\necho \'{"ready": false, "note": "token=hunter2 down"}\'\n', "utf8")
+      await chmod(join(live.root, "probe.sh"), 0o755)
+      const human = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "leaking", "--file", live.file, "--wait", "1s"])
+      } finally {
+        human.restore()
+      }
+      expect(code).toBe(1)
+      const humanOut = human.logs.join("\n")
+      expect(humanOut).toContain("not ready: leaking (probe: token=*** down)")
+      expect(humanOut).not.toContain("hunter2")
+      const io = captureIo()
+      try {
+        code = await run(["restart", "leaking", "--json", "--file", live.file, "--wait", "1s"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.logs).toHaveLength(1)
+      const payload = JSON.parse(io.logs[0]) as { services: { readiness?: { note?: string } }[] }
+      expect(payload.services[0].readiness?.note).toBe("token=*** down")
+      expect(io.logs[0]).not.toContain("hunter2")
+      expect(io.errors.join("\n")).not.toContain("hunter2")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("--health success waits HTTP 2xx after TCP (ready: carries path)", async () => {
+    const port = await freePort()
+    const live = await startPortLive(twoServiceYaml(port))
+    holdPort(port)
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["restart", "a", "--file", live.file, "--wait", "5s", "--health", "a=/health"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.logs.join("\n")).toContain(`ready: a:${port}/health`)
+    } finally {
+      stopHolders()
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
     }
   }, 30000)
 })

@@ -28,6 +28,8 @@ describe("cli routing", () => {
     expect(text).toContain("0 ok, 1 structural error, 2 usage error")
     expect(text).toContain("30m|3h|1d|1w")
     expect(text).toContain("show/stuck/meta/sessions/reads/prompts")
+    expect(text).toContain("up <name> [--wait 120s] [--health <name>=<path>]")
+    expect(text).toContain("restart <service> [--file] [--wait 120s] [--health <name>=<path>]")
     expect(text).toContain("probe-only lanes: record + contract check")
     expect(text).toContain("probe-only lanes without restore: record + contract check")
   })

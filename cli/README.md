@@ -156,8 +156,8 @@ services:
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir
-ow up <name> [-d] [--file ow.yaml]  # live: add one service via the supervisor (no live lock → bulk up)
-ow restart <name> [--file ow.yaml]  # live: lstart-verified stop + respawn in place (no lock → exit 2)
+ow up <name> [--wait 120s] [--health <name>=<path>] [--file ow.yaml]  # live: add one service via the supervisor + waited (no live lock → bulk up; -d ignored)
+ow restart <name> [--wait 120s] [--health <name>=<path>] [--file ow.yaml]  # live: lstart-verified stop + respawn in place + waited (no lock → exit 2)
 ow down [name] [--file ow.yaml]  # single: stop only the target (lock/state files kept; --rm is bulk-only → exit 2)
 ow reconcile --check [--json] [--file ow.yaml]  # read-only drift report (never mutates)
 ow provision --check [--json] [--probe] [--file ow.yaml]  # worktree checklist: .env symlink + .venv + HEAD + preflight gate (read-only, exit 0 pass / 1 missing / 2 usage; never gates up/ps/reconcile/preflight)
@@ -188,6 +188,8 @@ exit 2 (`ow: nothing to wait for`), never a silent pass. `--wait` without `-d/--
 spawns, no `.ow` created), as is any `--wait` combined with `--check`
 (`--check` only validates, never waits). `--json` mirrors the human lines with stable
 English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?, healthPath?}], noPort}`).
+Single-service `--wait` (`up`/`restart <name>`, live supervisor only) reuses the same loop target-only;
+see the single-service section below (bulk rules above do not apply there).
 `ps` probes the same way per declared port: human `listen=yes/no`,
 JSON additive `listening` key (present only with `port`).
 
@@ -213,8 +215,14 @@ healthy services are never signaled.
   never an assumed half-spawn). The supervisor is the sole writer; requests
   run FIFO. An already-running target reports `already running:` (exit 2,
   no spawn). A blind target (unverifiable `lstart`) reports `may already be running:` (exit 2, no spawn — the slot is never treated as free). Live
-  single-`up` ignores `-d`/`--wait`: the result wait is always the fixed
-  one-shot 10s, independent of `--wait`. With no live lock, `up <name>` falls
+  single-`up`/`restart` accept `--wait <duration>` (live supervisor only): the action runs first,
+  then readiness waits one-shot for the target alone through the same TCP→HTTP/probe loop as bulk
+  (exit 0 ready, 1 timeout or early exit; `--health <name>=<path>` is target-only and needs `--wait`).
+  With `--json --wait` the action merges one object only on success
+  (`{service,action,pid?,diff,ready,services,noPort}` — failed actions keep the plain shape).
+  `-d` stays ignored on the single-service path (documented, never detached). A `--wait` on a target
+  with no port and no probe refuses exit 2 before any request is written (`ow: nothing to wait for`),
+  never a silent pass. With no live lock, `up <name>` falls
   back to classic bulk `up`, `restart` refuses (exit 2, `no running supervisor for restart`), and
   `down <name>` stops the target directly without touching the lock file. Single `down` confirms
   post-stop (`confirmed: {stopped, code}` in `--json`, `follow-up: ow ps <name>` on human output) —
@@ -272,7 +280,7 @@ A service defines an arbitrary local command via
 `readiness: {probe: [...], timeout: 10s, needsPort: true}`
 (single-line inline; argv-only, no shell; timeout 5s|10s|30s; `needsPort`
 without a port is a schema error). The probe runs ONLY on the client
-(`up -d --wait`, `reconcile --check --probe`) — the supervisor never
+(`up -d --wait`, single `up`/`restart --wait`, `reconcile --check --probe`) — the supervisor never
 runs it, no gating/daemon. Contract: the first JSON object on stdout
 `{ready: bool, note?, checks?}`; `ready:true` + exit 0 +
 timeout-bound + valid JSON = ready, everything else not-ready

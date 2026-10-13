@@ -86,8 +86,8 @@ export const helpText = (): string =>
     "  up [service] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/path]  start services (ow.yaml); --check only validates;",
   "                                -d with --wait: wait until declared ports open (exit: 1 when not ready);",
   "                                --health <name>=<path> (repeatable, only with --wait): that service waits for HTTP 2xx after TCP",
-  "                                single service (up <name>): added to the live supervisor by request, healthy ones unaffected",
-    "  restart <service> [--file]   restart one service on the live supervisor (exit 2 without lock)",
+  "                                single service (up <name> [--wait 120s] [--health <name>=<path>]): added to the live supervisor by request, healthy ones unaffected; --wait waits one-shot (live only, -d ignored)",
+    "  restart <service> [--file] [--wait 120s] [--health <name>=<path>]   restart one service on the live supervisor + waited (live only; exit 2 without lock)",
     "  down [service] [--file] [--rm]  stop services (--rm only with bulk down; exit 2 for a single service)",
     "  reconcile --check [--json] [--probe] [--file]  read-only drift report (no mutation; exit 1 on drift, 0 in sync)",
     "  ps [--file]                   service status (pid, uptime, cpu, memory, port, listen)",
@@ -252,6 +252,10 @@ export const upStateDir = (rootDir: string): string => join(rootDir, ".ow")
  * keys (`ready/services/noPort`) are untouched. */
 export type WaitReadiness = { kind: "tcp" | "http-health" | "probe"; ok: boolean; note?: string; waitedSec: number }
 
+/** Captured wait verdict (lets single-service verbs merge it into their
+ * own single JSON object instead of printing a second one). */
+export type WaitVerdict = { ready: boolean; services: Array<Record<string, unknown>>; noPort: string[] }
+
 export const waitForUpReady = async (opts: {
   rootDir: string
   services: UpService[]
@@ -261,6 +265,11 @@ export const waitForUpReady = async (opts: {
   /** Injected project-probe runner (default: real `runProbe`). Tests pass a
    * fake; the throttle below bounds how often it fires per target. */
   runProbeFn?: import("./up-probe").ProbeFn
+  /** Captured verdict instead of printing (single-service --json merges it
+   * into its own single object; two objects would violate the stdout
+   * channel). When set, every verdict — including the empty-targets
+   * vacuity refusal below — rides onPayload and nothing prints here. */
+  onPayload?: (payload: WaitVerdict) => void
 }): Promise<number> => {
   const { exitedServices, waitForReady } = await import("./up-ready")
   const { httpHealthOk, tcpListening } = await import("./up-net")
@@ -279,9 +288,16 @@ export const waitForUpReady = async (opts: {
   const noPort = opts.services.filter((svc) => svc.port === undefined && svc.readiness === undefined).map((svc) => svc.name)
   if (targets.length === 0) {
     // M-f vacuity refusal: nothing to wait on is a caller error (exit 2),
-    // never a silent pass.
-    if (opts.json) console.log(JSON.stringify({ ready: false, services: [], noPort, note: "no targets to wait for" }))
-    else console.error("ow: nothing to wait for (no services declare ports or probes)")
+    // never a silent pass. With onPayload the verdict rides the single
+    // merged object instead of printing here (no double-print).
+    const vacuous: WaitVerdict = { ready: false, services: [], noPort }
+    if (opts.onPayload !== undefined) {
+      opts.onPayload(vacuous)
+    } else if (opts.json) {
+      console.log(JSON.stringify({ ...vacuous, note: "no targets to wait for" }))
+    } else {
+      console.error("ow: nothing to wait for (no services declare ports or probes)")
+    }
     return 2
   }
   // Per-target probe tracker (N6: probe-function composition — the loop in
@@ -342,7 +358,9 @@ export const waitForUpReady = async (opts: {
     const readiness = readinessOf(result)
     return { ...result, ...(readiness === undefined ? {} : { readiness }) }
   })
-  if (opts.json) {
+  if (opts.onPayload !== undefined) {
+    opts.onPayload({ ready, services: withReadiness, noPort })
+  } else if (opts.json) {
     console.log(JSON.stringify({ ready, services: withReadiness, noPort }))
   } else {
     for (const result of withReadiness) {
@@ -473,6 +491,15 @@ export const runSingleServiceRequest = async (opts: {
   action: "up" | "restart" | "down"
   service: string
   json: boolean
+  /** `--wait` duration for single up/restart (live supervisor only): the
+   * action runs first, then readiness waits one-shot for the target alone
+   * through the shared waitForUpReady loop (same TCP→HTTP/probe discipline). */
+  wait?: string
+  /** Repeatable `--health <name>=<path>` (target-only; shared parse). */
+  health?: string | string[]
+  /** Injected project-probe runner (default: real `runProbe`; tests pass a
+   * fake and assert single-target invocation). */
+  runProbeFn?: import("./up-probe").ProbeFn
 }): Promise<number | null> => {
   let text: string
   try {
@@ -524,6 +551,47 @@ export const runSingleServiceRequest = async (opts: {
     if (opts.action === "down") return runDirectSingleDown(opts.rootDir, opts.service, opts.json)
     return null
   }
+  // Single-service --wait/--health pre-request guards (exit 2, before any
+  // request write): the wait runs only on the live path, after a
+  // successful action, for the named target alone.
+  let waitMs: number | undefined
+  let waitHealth: Record<string, string> = {}
+  if ((opts.action === "up" || opts.action === "restart") && (opts.wait !== undefined || opts.health !== undefined)) {
+    if (opts.health !== undefined && opts.wait === undefined) {
+      console.error("ow: --health works only with --wait (--wait <duration> required)")
+      return 2
+    }
+    if (opts.wait !== undefined) {
+      const parsed = parseWaitDuration(opts.wait)
+      if (parsed === null) {
+        console.error(`ow: invalid --wait: ${opts.wait} (e.g. 15s, at most 5m)`)
+        return 2
+      }
+      waitMs = parsed
+    }
+    if (opts.health !== undefined) {
+      try {
+        waitHealth = parseHealthFlags(opts.health, parsed.services)
+      } catch (error) {
+        console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+        return 2
+      }
+      for (const name of Object.keys(waitHealth)) {
+        if (name !== opts.service) {
+          console.error(`ow: --health must name the target service: ${opts.service} (got: ${name})`)
+          return 2
+        }
+      }
+      if (waitHealth[opts.service] !== undefined && svc.readiness !== undefined) {
+        console.error(`ow: --health conflicts with readiness: ${svc.name} (pick one)`)
+        return 2
+      }
+    }
+    if (waitMs !== undefined && svc.port === undefined && svc.readiness === undefined) {
+      console.error(`ow: nothing to wait for: ${svc.name} (no port or probe declared)`)
+      return 2
+    }
+  }
   const state = await readSupervisorState(paths.supervisorFile)
   const running = state?.services.find((entry) => entry.name === opts.service) ?? null
   const { diffService } = await import("./up-reconcile")
@@ -544,6 +612,48 @@ export const runSingleServiceRequest = async (opts: {
   if (!result) {
     console.error("ow: request unanswered — verify with `ow ps`")
     return 1
+  }
+  // Single-service wait: the action already succeeded; readiness waits
+  // one-shot for the target alone (same loop as bulk, target-only
+  // record). --json merges into ONE object (existing keys unchanged) via
+  // onPayload, which carries every verdict including vacuity — nothing
+  // prints inside waitForUpReady, so the channel holds exactly one object.
+  if (waitMs !== undefined && result.ok) {
+    if (opts.json) {
+      let verdict: WaitVerdict | null = null
+      const code = await waitForUpReady({
+        rootDir: opts.rootDir,
+        services: [svc],
+        timeoutMs: waitMs,
+        json: true,
+        health: waitHealth,
+        runProbeFn: opts.runProbeFn,
+        onPayload: (payload) => {
+          verdict = payload
+        },
+      })
+      const seen = verdict ?? { ready: false, services: [], noPort: [] }
+      console.log(
+        JSON.stringify({
+          service: opts.service,
+          action: opts.action,
+          ...(result.pid !== undefined ? { pid: result.pid } : {}),
+          diff: pre.diff,
+          ready: seen.ready,
+          services: seen.services,
+          noPort: seen.noPort,
+        }),
+      )
+      return code
+    }
+    return waitForUpReady({
+      rootDir: opts.rootDir,
+      services: [svc],
+      timeoutMs: waitMs,
+      json: false,
+      health: waitHealth,
+      runProbeFn: opts.runProbeFn,
+    })
   }
   if (opts.json) {
     console.log(
@@ -883,19 +993,28 @@ export const run = async (argv: string[]): Promise<number> => {
         return 2
       }
       if (positional !== undefined) {
-        // M1 single-service `up`: live supervisor → request channel (the
-        // `--wait`/`--detach` guards below do not apply: the result wait is
-        // a fixed one-shot 10s, independent of `--wait`). No live lock →
-        // classic bulk behavior (plan M1), anchored at this root.
+        // M1 single-service `up`: live supervisor → request channel, then an
+        // optional one-shot `--wait`/`--health` readiness wait for the target
+        // alone (OW-012; same loop as bulk). `-d` stays ignored (no detach
+        // on the request path). No live lock → classic bulk behavior
+        // (plan M1), anchored at this root.
         if (flags["--check"] === true) {
           console.error("ow: --check cannot be used with a single service (validates the whole file)")
           return 2
         }
-        if (flags["--health"] !== undefined) {
-          console.error("ow: --health cannot be used with single-service up")
+        if (flags["--health"] !== undefined && flags["--wait"] === undefined) {
+          console.error("ow: --health works only with --wait (--wait <duration> required)")
           return 2
         }
-        const single = await runSingleServiceRequest({ rootDir, file: yamlForRead, action: "up", service: positional, json })
+        const single = await runSingleServiceRequest({
+          rootDir,
+          file: yamlForRead,
+          action: "up",
+          service: positional,
+          json,
+          wait: flag(flags, "--wait"),
+          health: flags["--health"] as string | string[] | undefined,
+        })
         if (single !== null) return single
         warn(`no live supervisor — bulk starting (requested: ${positional})`)
       }
@@ -1097,13 +1216,21 @@ export const run = async (argv: string[]): Promise<number> => {
         console.error("ow: restart expects a service name (e.g. ow restart api)")
         return 2
       }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
+      for (const unsupported of ["--rm", "--check", "--detach", "--probe"]) {
         if (flags[unsupported] !== undefined) {
           console.error(`ow: ${unsupported} cannot be used with restart`)
           return 2
         }
       }
-      const single = await runSingleServiceRequest({ rootDir, file: yamlForRead, action: "restart", service: positional, json })
+      const single = await runSingleServiceRequest({
+        rootDir,
+        file: yamlForRead,
+        action: "restart",
+        service: positional,
+        json,
+        wait: flag(flags, "--wait"),
+        health: flags["--health"] as string | string[] | undefined,
+      })
       return single ?? 2
     }
     if (command === "reconcile") {

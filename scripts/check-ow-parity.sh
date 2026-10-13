@@ -20,6 +20,9 @@
 # V2 intended deltas (same pattern — assert on new, normalize the diff):
 # - `help` stdout: the `scenarios` line and the `scenario run` line
 #   (probe-only lanes point at `record` + `contract check`).
+# OW-012 intended deltas (same pattern):
+# - `help` stdout: the single-service `up <name>` line and the `restart`
+#   line (single-service `--wait`/`--health`, `-d` ignored).
 set -u
 OLD="${1:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
 NEW="${2:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
@@ -57,7 +60,7 @@ run_case() {
 # binary, then blanked on both sides so the diff still guards every byte.
 # V2 adds the two probe-only scenario lines (same pattern).
 normalize_help() {
-  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//' -e 's/^  scenarios --check.*//' -e 's/^  scenario run <name>.*//'
+  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//' -e 's/^  scenarios --check.*//' -e 's/^  scenario run <name>.*//' -e 's/single service (up <name>.*//' -e 's/^  restart <service>.*//'
 }
 
 run_case_help() {
@@ -74,6 +77,8 @@ run_case_help() {
     '--json  machine output (English keys): doctor/show' \
     'scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs; probe-only lanes: record + contract check)' \
     'scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory; probe-only lanes without restore: record + contract check)' \
+    'single service (up <name> [--wait 120s] [--health <name>=<path>]): added to the live supervisor by request, healthy ones unaffected; --wait waits one-shot (live only, -d ignored)' \
+    'restart <service> [--file] [--wait 120s] [--health <name>=<path>]   restart one service on the live supervisor + waited (live only; exit 2 without lock)' \
   ; do
     if ! grep -qF -- "$line" "$OUT/help.new.out"; then
       echo "PARITY FAIL(help line missing on new): $line"
