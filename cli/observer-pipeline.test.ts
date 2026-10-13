@@ -313,7 +313,128 @@ describe("grouped units (records + durationMs scope)", () => {
   })
 })
 
+describe("joinSession sidecar prefilter (parse-cost only, completeness identical)", () => {
+  const adversarialLog = (target: string): string => {
+    const rows: string[] = [
+      // File-head old-session records (a tail bound would drop these).
+      JSON.stringify({ sessionID: target, messageID: "m-old-1", command: "echo ancient", outcome: "success" }),
+      JSON.stringify({ sessionID: target, messageID: "m-old-2", command: "echo older", outcome: "failure" }),
+      // Foreign sessions (key present, value differs → parse-then-reject).
+      JSON.stringify({ sessionID: "ses_other", messageID: "m-x", command: "echo hi" }),
+      // Our id as a substring of another field (key present → parsed, rejected).
+      JSON.stringify({ sessionID: "ses_other", command: `uses ${target} id`, outcome: "success" }),
+      // Keyless lines (skipped without parse; contributed nothing before either).
+      JSON.stringify({ command: "no key here", outcome: "success" }),
+      JSON.stringify({ note: `${target} mentioned without a key` }),
+      // Broken lines (one carries the key substring → parse attempt, still []).
+      "{{{corrupt",
+      '{"sessionID": ',
+      // Unicode bodies, keyed and keyless.
+      JSON.stringify({ sessionID: target, messageID: "m-uni", command: "echo héllo wörld ✓", outcome: "success" }),
+      JSON.stringify({ note: "çırağan monument ünïcode" }),
+      "",
+      "   ",
+    ]
+    return `${rows.join("\n")}\n`
+  }
+
+  test("EQUIVALENCE: prefilter output byte-identical to full parse on adversarial input", async () => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { writeFile } = await import("node:fs/promises")
+    const target = "ses_target"
+    const dir = await mkdtemp(joinPath(tmpdir(), "prefilter-equiv-"))
+    try {
+      const log = joinPath(dir, "events.jsonl")
+      await writeFile(log, adversarialLog(target), "utf8")
+      // Reference: parse every non-blank line, exact-match filter (pre-prefilter semantics).
+      const { readFile } = await import("node:fs/promises")
+      const text = await readFile(log, "utf8")
+      const expected = text
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .flatMap((line) => {
+          try {
+            const parsed = JSON.parse(line) as unknown
+            const dict = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined
+            return dict && dict["sessionID"] === target ? [dict] : []
+          } catch {
+            return []
+          }
+        })
+      const { joinSession } = await import("./join")
+      const actual = await joinSession({ sessionID: target, logPath: log, dbPath: joinPath(dir, "missing.db") })
+      expect(actual.records).toHaveLength(expected.length)
+      expect(JSON.stringify(actual.records.map(({ intent: _i, taskRef: _t, ...rest }) => rest))).toBe(JSON.stringify(expected))
+      expect(expected.length).toBe(3)
+    } finally {
+      const { rm } = await import("node:fs/promises")
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("parse-count: 10k keyless + 100 relevant lines → exactly 100 parses", async () => {
+    const { mkdtemp, rm, writeFile } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const target = "ses_count"
+    const dir = await mkdtemp(joinPath(tmpdir(), "prefilter-count-"))
+    try {
+      const lines: string[] = []
+      for (let i = 0; i < 10_000; i += 1) lines.push(JSON.stringify({ note: `filler ${i}`, outcome: "success" }))
+      for (let i = 0; i < 100; i += 1) {
+        lines.push(JSON.stringify({ sessionID: target, messageID: `m-${i}`, command: `echo ${i}`, outcome: "success" }))
+      }
+      await writeFile(joinPath(dir, "events.jsonl"), `${lines.join("\n")}\n`, "utf8")
+      let parses = 0
+      const realParse = JSON.parse
+      JSON.parse = ((...args: [string, ...unknown[]]): unknown => {
+        parses += 1
+        return (realParse as (...a: unknown[]) => unknown)(...args)
+      }) as typeof JSON.parse
+      try {
+        const { joinSession } = await import("./join")
+        const actual = await joinSession({ sessionID: target, logPath: joinPath(dir, "events.jsonl"), dbPath: joinPath(dir, "missing.db") })
+        expect(actual.records).toHaveLength(100)
+      } finally {
+        JSON.parse = realParse
+      }
+      expect(parses).toBe(100)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("since filter and agent tags", () => {
+  test("prompts default limit golden: 55 user rows → latest 50, oldest-first, 300-char cap", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { Database } = await import("bun:sqlite")
+    const { PROMPTS_DEFAULT_LIMIT, sessionPrompts } = await import("./join")
+    expect(PROMPTS_DEFAULT_LIMIT).toBe(50)
+    const dir = await mkdtemp(joinPath(tmpdir(), "prompts-golden-"))
+    try {
+      const dbPath = joinPath(dir, "opencode.db")
+      const db = new Database(dbPath)
+      db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
+      const insert = db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, 'user', ?, 0, 0, ?)")
+      for (let i = 1; i <= 55; i += 1) {
+        const body = i === 55 ? "x".repeat(400) : `prompt number ${i}`
+        insert.run(`m${i}`, "ses_g", i, JSON.stringify({ text: body }))
+      }
+      db.close()
+      const prompts = await sessionPrompts({ dbPath, sessionID: "ses_g" })
+      expect(prompts).toHaveLength(50)
+      expect(prompts[0]).toBe("prompt number 6")
+      expect(prompts[48]).toBe("prompt number 54")
+      expect(prompts[49]).toBe("x".repeat(300))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
   test("parseSince accepts m/h/d windows", () => {
     expect(parseSince("30m")).toBe(30 * 60_000)
     expect(parseSince("3h")).toBe(3 * 3_600_000)

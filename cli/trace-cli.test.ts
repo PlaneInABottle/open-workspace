@@ -51,6 +51,45 @@ const TRACE_B = `b1b2c3d4${"0".repeat(24)}`
 const TRACE_C = `c1b2c3d4${"0".repeat(24)}`
 
 describe("trace list view", () => {
+  test("default tail golden: 105 traces render newest 100 + notice", async () => {
+    const root = await tempRoot()
+    try {
+      const { TRACE_LIST_DEFAULT_TAIL } = await import("./trace-cli")
+      expect(TRACE_LIST_DEFAULT_TAIL).toBe(100)
+      const now = Date.now()
+      const rows = []
+      for (let i = 0; i < 105; i += 1) {
+        const traceId = `d1b2c3d4${String(i).padStart(24, "0")}`
+        const rootId = `e${i.toString(16).padStart(15, "0")}`
+        rows.push(
+          makeSpan({ traceId, spanId: rootId, startNano: ns(now - (105 - i) * 60_000), endNano: ns(now - (105 - i) * 60_000 + 1000) }),
+          makeSpan({
+            traceId,
+            spanId: `f${i.toString(16).padStart(15, "0")}`,
+            parentSpanId: rootId,
+            name: "SELECT x",
+            startNano: ns(now - (105 - i) * 60_000 + 100),
+            endNano: ns(now - (105 - i) * 60_000 + 500),
+          }),
+        )
+      }
+      await seedRows(root, rows)
+      const result = await runTrace(opts(root))
+      expect(result.code).toBe(0)
+      const lines = result.stdout.split("\n")
+      expect(lines.length).toBe(101)
+      expect(lines[0].startsWith("d1b2c3d4")).toBe(true)
+      expect(lines[99].startsWith("d1b2c3d4")).toBe(true)
+      expect(lines[100]).toBe("(omitted: 5 older traces (raise --tail))")
+      const asJson = JSON.parse((await runTrace(opts(root, { json: true }))).stdout) as { traces: unknown[]; returned: number; total: number }
+      expect(asJson.traces.length).toBe(100)
+      expect(asJson.returned).toBe(100)
+      expect(asJson.total).toBe(105)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("three traces list newest first; --tail 2 returns two", async () => {
     const root = await tempRoot()
     try {

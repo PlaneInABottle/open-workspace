@@ -24,7 +24,9 @@ import { parseAmountUnit, sinceWindow, windowNotice, type SinceWindow } from "./
 import { parseUpFile } from "./up-schema"
 import { noStateNote } from "./up-state"
 
-export const TRACE_LIST_DEFAULT_TAIL = 20
+/** Default list tail: 100 newest traces (~7KB real-shape at ~69B/line;
+ * the pilot store holds thousands, so 20 showed under 1%). */
+export const TRACE_LIST_DEFAULT_TAIL = 100
 
 /** `--wait` polling discipline: 500 ms steps, 5-minute ceiling. */
 export const TRACE_WAIT_POLL_MS = 500

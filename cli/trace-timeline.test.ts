@@ -300,8 +300,33 @@ describe("trace-timeline json + bounds + empty", () => {
     }
   })
 
-  test("empty inputs exit 0 quiet in both shapes", async () => {
+  test("default tail golden: 310 rows render newest 300 + notice", async () => {
     const root = await tempRoot()
+    try {
+      const now = Date.now()
+      const log = join(root, "events.jsonl")
+      const rows: string[] = []
+      for (let i = 0; i < 310; i += 1) {
+        rows.push(sidecarRow({ session: "ses_tl", at: now - (310 - i) * 1000, command: `job-${String(i).padStart(3, "0")}` }))
+      }
+      await writeFile(log, `${rows.join("\n")}\n`)
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, ".ow", "traces", "spans.jsonl"), "", "utf8")
+      const { TIMELINE_DEFAULT_TAIL } = await import("./trace-timeline")
+      expect(TIMELINE_DEFAULT_TAIL).toBe(300)
+      const human = await runTimeline(tlOpts(root, log))
+      expect(human.code).toBe(0)
+      const lines = human.stdout.split("\n")
+      expect(lines.length).toBe(301)
+      expect(lines[0]).toContain("job-010")
+      expect(lines[299]).toContain("job-309")
+      expect(lines[300]).toBe("(omitted: 10 older events (raise --tail))")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("empty inputs exit 0 quiet in both shapes", async () => {    const root = await tempRoot()
     try {
       const human = await runTimeline(tlOpts(root, join(root, "nope.jsonl"), { sessionID: undefined }))
       expect(human.code).toBe(0)

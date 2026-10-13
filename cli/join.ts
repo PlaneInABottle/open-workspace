@@ -183,6 +183,16 @@ export const joinSession = async (options: {
       .split("\n")
       .filter((line) => line.trim().length > 0)
       .flatMap((line) => {
+        // Parse-cost prefilter only: JSON.parse runs solely on lines
+        // carrying the `"sessionID"` key substring. The log is
+        // interleaved append-only across sessions, so a positional tail
+        // bound would drop file-head records of old sessions — instead
+        // the FULL file is still read (completeness byte-identical) and
+        // only the parse calls are skipped. The exact-match filter below
+        // is unchanged, so id-as-substring rows (our id inside another
+        // field's value, or a foreign id) still parse-then-reject exactly
+        // as before; keyless/corrupt lines contributed nothing and skip.
+        if (!line.includes('"sessionID"')) return []
         try {
           const parsed = JSON.parse(line) as unknown
           const dict = asDict(parsed)
@@ -776,13 +786,16 @@ export const formatMeta = (meta: SessionMeta): string => {
   return out.join("\n")
 }
 
-/** User prompts of a session: latest N, returned chronological. */
+/** User prompts of a session: latest N, returned chronological. Default
+ * 50 (≈15KB at the 300-char cap; all but a handful of real sessions fit). */
+export const PROMPTS_DEFAULT_LIMIT = 50
+
 export const sessionPrompts = async (options: { dbPath?: string; sessionID: string; limit?: number }): Promise<string[]> => {
   try {
     const { Database } = await import("bun:sqlite")
     const db = new Database(options.dbPath ?? DEFAULT_DB_PATH, { readonly: true })
     try {
-      const rows = (db.query("SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT ?").all(options.sessionID, options.limit ?? 20) as { data: unknown }[]).reverse()
+      const rows = (db.query("SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT ?").all(options.sessionID, options.limit ?? PROMPTS_DEFAULT_LIMIT) as { data: unknown }[]).reverse()
       return rows.flatMap((row) => {
         if (typeof row.data !== "string") return []
         try {

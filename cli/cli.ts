@@ -81,7 +81,7 @@ export const helpText = (): string =>
     "                                task summary; --tree shows the subtask tree",
     "  stuck [session] [--since] [--tree]  stuck report (joined records)",
     "  meta [session]                cost/token/changes/turns",
-    "  prompts [session]             last 20 user prompts (oldest first)",
+    "  prompts [session]             last 50 user prompts (oldest first)",
     "  reads [session] [--since]     read summary",
     "  up [service] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/path]  start services (ow.yaml); --check only validates;",
   "                                -d with --wait: wait until declared ports open (exit: 1 when not ready);",

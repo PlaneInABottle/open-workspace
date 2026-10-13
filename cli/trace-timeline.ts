@@ -23,7 +23,9 @@ import { truncateLogLine } from "./up-logs"
 
 /** Estimated-link window: nearest agent row within ±10 s. */
 export const TIMELINE_FALLBACK_MS = 10_000
-export const TIMELINE_DEFAULT_TAIL = 100
+/** Default tail: 300 newest events (~14KB human / ~22KB JSON real-shape;
+ * sidecar p90 is 226 records/session, so 100 truncated the top decile). */
+export const TIMELINE_DEFAULT_TAIL = 300
 export const TIMELINE_MAX_TAIL = 5000
 const ID_SCAN_MAX_CHARS = 20_000
 

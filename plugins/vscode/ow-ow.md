@@ -31,7 +31,7 @@ ow doctor                             # health first
 ow sessions [--since 1d] [--dir /path]
 ow show <session> [--since 30m|3h|1d|1w] [--tree] [--full] [--show N] [--show-fails] [--kind ..] [--tool ..]
 ow stuck [session] [--since] [--tree]  # retries, overlap, slow commands
-ow meta/prompts/reads <session>       # cost/tokens · latest 20 instructions · read summary
+ow meta/prompts/reads <session>       # cost/tokens · latest 50 instructions · read summary
 ow timeline [session] [--trace] [--since]  # agent rows + spans merged
 ow show <session> --json              # stable machine output (all commands, English keys)
 ```
