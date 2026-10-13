@@ -27,6 +27,11 @@
 # - `help` stdout: the `prompts` line (default limit 20 → 50, measured).
 # C batch intended deltas (same pattern):
 # - `help` stdout: the `checkpoints show` line (`--resume` flag + view note).
+# B batch intended deltas (same pattern):
+# - `help` stdout: the `record` line (record-only `--claim-entrypoint` /
+#   `--claim-boundary` flags) plus its one-line `--claim-boundary`
+#   continuation (new-only line: asserted on the new binary, deleted
+#   from the diff; the shared `record` line is blanked on both sides).
 set -u
 OLD="${1:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
 NEW="${2:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
@@ -63,8 +68,11 @@ run_case() {
 # M2 help normalization: the four intended lines are asserted on the new
 # binary, then blanked on both sides so the diff still guards every byte.
 # V2 adds the two probe-only scenario lines (same pattern).
+# B adds the shared `record` line (blanked both sides) plus its new-only
+# `--claim-boundary` continuation (deleted: the old binary has no such
+# line, so blanking would leave a stray empty line in the diff).
 normalize_help() {
-  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//' -e 's/^  scenarios --check.*//' -e 's/^  scenario run <name>.*//' -e 's/single service (up <name>.*//' -e 's/^  restart <service>.*//' -e 's/last [0-9]* user prompts/last N user prompts/' -e 's/^  checkpoints show <run>.*//'
+  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//' -e 's/^  scenarios --check.*//' -e 's/^  scenario run <name>.*//' -e 's/single service (up <name>.*//' -e 's/^  restart <service>.*//' -e 's/last [0-9]* user prompts/last N user prompts/' -e 's/^  checkpoints show <run>.*//' -e 's/^  record <scenario>.*//' -e '/(repeatable, record-only;/d'
 }
 
 run_case_help() {
@@ -85,6 +93,8 @@ run_case_help() {
     'restart <service> [--file] [--wait 120s] [--health <name>=<path>]   restart one service on the live supervisor + waited (live only; exit 2 without lock)' \
     'prompts [session]             last 50 user prompts (oldest first)' \
     'checkpoints show <run> [--file] [--json] [--resume]  shows envelopes as confirmed/stale/not-observed (+ resume view)' \
+    '  record <scenario> [--file] [--claim-entrypoint <text>] [--claim-boundary <name>=<kind>:<ref>]  declarative deterministic scenario capture (.ow/replay; no state-changing)' \
+    '                                --claim-boundary <name>=<kind>:<ref> (repeatable, record-only; kind real|fake; opaque caller claims, stored + rendered verbatim)' \
   ; do
     if ! grep -qF -- "$line" "$OUT/help.new.out"; then
       echo "PARITY FAIL(help line missing on new): $line"

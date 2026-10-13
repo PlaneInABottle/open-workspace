@@ -598,6 +598,25 @@ files fail closed without writing. A recorded not-ready probe also
 prints `probe not-ready: <id> (<note>)` (witness line — exit stays 0,
 a not-ready probe is recorded evidence, not a record failure).
 
+`ow record` also takes opaque caller claims (record-only):
+`--claim-entrypoint <text>` plus repeatable
+`--claim-boundary <name>=<kind>:<ref>` (name runs to the first `=`,
+kind to the first `:` after it, ref is the remainder and may contain
+`:`). `kind` accepts only `real|fake` (stored verbatim, never
+normalized); anything malformed, of unknown kind, or empty refuses
+`invalid-boundary:` exit 2 before any probe runs. Caps: entrypoint
+1-128 chars, at most 32 boundaries, name 1-64 chars, ref 1-256 chars
+(masked, CWD-folded to `<root>`, then capped at ingest — the ref is
+never dereferenced, read, or executed). `ow` never judges claims: the
+record echoes them back verbatim (`claims: entrypoint=…`,
+`claims: boundary <name>=<kind>:<ref>`) and `contract check` reads
+them back the same way (`--json` gains additive per-entry `claims` +
+`claimsStatus`). A claimless record reads
+`claims: unverified (no caller claims recorded)`; tampered misshapen
+claims read `claims: uninterpretable (UNVERIFIED)` — never a crash,
+never a gate. Claims change no digest, no placement, no refusal, and
+no pass/match. Outside `record` both flags refuse exit 2.
+
 `ow contract check [--json] [--file]` is the ship-order gate: it
 recomputes each deterministic scenario's definition digest and
 compares it to the recorded contract hash. The digest covers the full

@@ -453,3 +453,229 @@ describe("M-b self-verifying replay reader (hand-forged fixtures refuse)", () =>
     }
   })
 })
+
+describe("ow record caller claims (boundary witness, opaque)", () => {
+  test("verbatim round-trip: entrypoint + boundaries echo stored values only", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS("real-read-only"), "utf8")
+      const { runRecord } = await import("./up-replay")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runRecord({
+          rootDir: root,
+          file,
+          runName: "cart",
+          probeFn: async () => fakeOutcome(),
+          claimEntrypoint: "smoke-entry",
+          claimBoundary: ["db=fake:stub:v2:extra"],
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const text = io.out.join("\n")
+      const recordIndex = text.indexOf("record: cart")
+      expect(recordIndex).toBeGreaterThanOrEqual(0)
+      expect(text.indexOf("claims: entrypoint=smoke-entry")).toBeGreaterThan(recordIndex)
+      expect(text.indexOf("claims: boundary db=fake:stub:v2:extra")).toBeGreaterThan(recordIndex)
+      const files = (await listAll(root)).filter((name) => name.includes(".ow/replay"))
+      expect(files).toHaveLength(1)
+      const stored = await readReplayFile(join(root, files[0]))
+      expect(stored?.envelope.claims).toEqual({
+        entrypoint: "smoke-entry",
+        boundaries: [{ name: "db", kind: "fake", ref: "stub:v2:extra" }],
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("malformed claim flags exit 2 before any probe exec (zero spawns, nothing written)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS("real-read-only"), "utf8")
+      const { runRecord } = await import("./up-replay")
+      const cases: { entrypoint?: string; boundary?: string[] }[] = [
+        { entrypoint: "" },
+        { boundary: ["no-equals-sign"] },
+        { boundary: ["=real:some-ref"] },
+        { boundary: ["db=bogus:some-ref"] },
+        { boundary: ["db=Real:some-ref"] },
+        { boundary: ["db=real:"] },
+        { boundary: ["db=real"] },
+        { boundary: ["db=:some-ref"] },
+      ]
+      for (const claim of cases) {
+        let spawns = 0
+        const io = capture()
+        let code = -1
+        try {
+          code = await runRecord({
+            rootDir: root,
+            file,
+            runName: "cart",
+            probeFn: async () => {
+              spawns += 1
+              return fakeOutcome()
+            },
+            ...(claim.entrypoint !== undefined ? { claimEntrypoint: claim.entrypoint } : {}),
+            ...(claim.boundary !== undefined ? { claimBoundary: claim.boundary } : {}),
+          })
+        } finally {
+          io.restore()
+        }
+        expect(code).toBe(2)
+        expect(spawns).toBe(0)
+        expect(io.err.join("\n")).toContain("invalid-boundary:")
+      }
+      expect(await listAll(root)).toEqual(["ow.scenarios.yaml"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile malformed claims refuse without leaking secrets to stderr", async () => {
+    const root = await tempRoot()
+    try {
+      const bearerBody = "QwCdefGh0123456789._~-plus-xyz123456789"
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS("real-read-only"), "utf8")
+      const { runRecord } = await import("./up-replay")
+      const cases: { boundary: string[]; absent: string[] }[] = [
+        // No `:` separator: the `token=<secret>` shape must mask.
+        { boundary: ["token=hunter2"], absent: ["hunter2"] },
+        // Unknown kind: the Bearer shape must mask.
+        { boundary: [`svc=bogus:Bearer ${bearerBody}`], absent: [bearerBody] },
+        // Unknown kind with an absolute path: the cwd must fold.
+        { boundary: [`svc=bogus:${root}/shadow/ref`], absent: [root] },
+      ]
+      for (const claim of cases) {
+        let spawns = 0
+        const io = capture()
+        let code = -1
+        try {
+          code = await runRecord({
+            rootDir: root,
+            file,
+            runName: "cart",
+            probeFn: async () => {
+              spawns += 1
+              return fakeOutcome()
+            },
+            claimBoundary: claim.boundary,
+          })
+        } finally {
+          io.restore()
+        }
+        expect(code).toBe(2)
+        expect(spawns).toBe(0)
+        const err = io.err.join("\n")
+        expect(err).toContain("invalid-boundary:")
+        expect(err).toContain("(expected <name>=<kind>:<ref> with kind real|fake)")
+        for (const secret of claim.absent) {
+          expect(err).not.toContain(secret)
+        }
+      }
+      expect(await listAll(root)).toEqual(["ow.scenarios.yaml"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile claim secrets never land in store or output", async () => {
+    const root = await tempRoot()
+    try {
+      const hex40 = "b1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+      const bearerBody = "ZxCdefGh0123456789._~-plus-xyz123456789"
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS("real-read-only"), "utf8")
+      const { runRecord } = await import("./up-replay")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runRecord({
+          rootDir: root,
+          file,
+          runName: "cart",
+          probeFn: async () => fakeOutcome(),
+          claimEntrypoint: `token=hunter2 ${hex40}`,
+          claimBoundary: [`svc=fake:Bearer ${bearerBody} at ${root}/shadow/ref`],
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const files = (await listAll(root)).filter((name) => name.includes(".ow/replay"))
+      expect(files).toHaveLength(1)
+      const stored = await readFile(join(root, files[0]), "utf8")
+      for (const secret of ["hunter2", bearerBody, hex40, root]) {
+        expect(stored).not.toContain(secret)
+      }
+      const text = `${io.out.join("\n")}\n${io.err.join("\n")}`
+      for (const secret of ["hunter2", bearerBody, hex40, root]) {
+        expect(text).not.toContain(secret)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("CUT-1/CUT-2/CUT-3: claims change neither digest, location, refusal, nor kind spelling", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS("real-read-only"), "utf8")
+      const { parseScenarios } = await import("./up-scenarios")
+      const { canonicalScenario, replayLocation, runRecord } = await import("./up-replay")
+      const parsed = parseScenarios(SCENARIOS("real-read-only"))
+      // CUT-1: the canonical digest input has no claims slot.
+      expect(canonicalScenario(parsed.scenarios[0])).not.toContain("claim")
+      // CUT-2: placement derives from scenario boundaries only.
+      const location = replayLocation(root, parsed.scenarios[0])
+      if (location === null) throw new Error("test setup: no recordable boundary")
+      expect(location.primary).toBe("real-read-only")
+      // CUT-2 + CUT-3: a caller-claimed state-changing fake neither
+      // refuses nor relocates; kind stays verbatim (never normalized).
+      const io = capture()
+      let code = -1
+      try {
+        code = await runRecord({
+          rootDir: root,
+          file,
+          runName: "cart",
+          probeFn: async () => fakeOutcome(),
+          claimBoundary: ["real-state-changing=fake:some-ref"],
+        })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const files = (await listAll(root)).filter((name) => name.includes(".ow/replay"))
+      expect(files).toHaveLength(1)
+      expect(files[0].startsWith(".ow/replay/real-read-only/")).toBe(true)
+      const stored = await readReplayFile(join(root, files[0]))
+      expect(stored?.envelope.claims).toEqual({
+        boundaries: [{ name: "real-state-changing", kind: "fake", ref: "some-ref" }],
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("claim flags refuse outside record (exit 2, never silent)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS("real-read-only"), "utf8")
+      expect(await run(["contract", "check", "--file", file, "--claim-entrypoint", "x"])).toBe(2)
+      expect(await run(["contract", "check", "--file", file, "--claim-boundary", "a=real:b"])).toBe(2)
+      expect(await run(["record", "cart", "--file", file, "--claim-boundary", "bogus"])).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

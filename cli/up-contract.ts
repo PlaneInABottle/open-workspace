@@ -9,6 +9,7 @@ import { decodeUtf8Fatal } from "./up-schema"
 import { normalizeBoundary, parseScenarios, type Scenario } from "./up-scenarios"
 import { maskSecrets } from "./up-evidence"
 import {
+  describeStoredClaims,
   readReplayFile,
   replayLocation,
   runnerHashFor,
@@ -117,13 +118,34 @@ export const runContractCheck = async (opts: {
       }
     }
   }
-  const compared: { scenario: string; hash: string; match: boolean; detail: string }[] = []
+  const compared: { scenario: string; hash: string; match: boolean; detail: string; claims: unknown; claimsStatus: string }[] = []
   const missing: string[] = []
   const human: string[] = []
+  // Verbatim claims readback (witness only — never consulted by the
+  // pass/match verdict above or below): one line set per stored record.
+  const claimLines: string[] = []
+  const claimsJson = new Map<string, { claims: unknown; claimsStatus: string }>()
   for (const scenario of parsed.scenarios) {
     const location = replayLocation(opts.rootDir, scenario)
     if (location === null) continue
     const verdict = await readContractVerdict(opts.rootDir, scenario)
+    const stored = await readReplayFile(location.file)
+    if (stored !== null) {
+      const view = describeStoredClaims(stored.envelope)
+      if (view.status === "recorded") {
+        if (view.claims.entrypoint !== undefined) claimLines.push(`claims: entrypoint=${view.claims.entrypoint}`)
+        for (const boundary of view.claims.boundaries ?? []) {
+          claimLines.push(`claims: boundary ${boundary.name}=${boundary.kind}:${boundary.ref}`)
+        }
+        claimsJson.set(scenario.name, { claims: view.claims, claimsStatus: "recorded" })
+      } else if (view.status === "unverified") {
+        claimLines.push("claims: unverified (no caller claims recorded)")
+        claimsJson.set(scenario.name, { claims: null, claimsStatus: "unverified" })
+      } else {
+        claimLines.push("claims: uninterpretable (UNVERIFIED)")
+        claimsJson.set(scenario.name, { claims: null, claimsStatus: "uninterpretable" })
+      }
+    }
     if (verdict.status === "unknown") {
       missing.push(scenario.name)
       human.push(`unknown-record: ${scenario.name}`)
@@ -135,9 +157,9 @@ export const runContractCheck = async (opts: {
       continue
     }
     if (verdict.status === "match") {
-      compared.push({ scenario: scenario.name, hash: verdict.expected.slice(0, 8), match: true, detail: "match" })
+      compared.push({ scenario: scenario.name, hash: verdict.expected.slice(0, 8), match: true, detail: "match", ...(claimsJson.get(scenario.name) ?? { claims: null, claimsStatus: "unverified" }) })
     } else {
-      compared.push({ scenario: scenario.name, hash: verdict.expected.slice(0, 8), match: false, detail: "definition-changed" })
+      compared.push({ scenario: scenario.name, hash: verdict.expected.slice(0, 8), match: false, detail: "definition-changed", ...(claimsJson.get(scenario.name) ?? { claims: null, claimsStatus: "unverified" }) })
       human.push(`contract-mismatch: ${scenario.name}`)
     }
   }
@@ -152,10 +174,12 @@ export const runContractCheck = async (opts: {
   }
   if (pass) {
     console.log(`contract: ${compared.length} scenarios match`)
+    for (const line of claimLines) console.log(line)
     for (const line of overlayBanner) console.log(line)
     return 0
   }
   for (const line of human) console.log(line)
+  for (const line of claimLines) console.log(line)
   for (const line of overlayBanner) console.log(line)
   return 1
 }

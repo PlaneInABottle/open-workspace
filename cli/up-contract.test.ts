@@ -330,3 +330,181 @@ describe("M-b hand-forged runnerHash refuses (definition hash right, runnerHash 
     }
   })
 })
+
+type ClaimsContractJson = ContractJson & {
+  compared: (ContractJson["compared"][number] & { claims: unknown; claimsStatus: string })[]
+}
+
+const recordWithClaims = async (root: string, file: string): Promise<void> => {
+  const { runRecord } = await import("./up-replay")
+  const io = capture()
+  try {
+    expect(
+      await runRecord({
+        rootDir: root,
+        file,
+        runName: "cart",
+        probeFn: async () => fakeOutcome(),
+        claimEntrypoint: "smoke-entry",
+        claimBoundary: ["db=fake:stub:v2:extra"],
+      }),
+    ).toBe(0)
+  } finally {
+    io.restore()
+  }
+}
+
+describe("contract claims readback (verbatim witness, never a verdict)", () => {
+  test("claimless record reads the unverified gap (human + json, pass kept)", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS, "utf8")
+      await recordGolden(root, file)
+      const io = capture()
+      let code = -1
+      try {
+        code = await runContractCheck({ rootDir: root, file, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("claims: unverified (no caller claims recorded)")
+      const io2 = capture()
+      try {
+        expect(await runContractCheck({ rootDir: root, file, json: true })).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as ClaimsContractJson
+      expect(payload.pass).toBe(true)
+      expect(payload.compared[0].claims).toBeNull()
+      expect(payload.compared[0].claimsStatus).toBe("unverified")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("CUT-5: recorded fake claims pass through verbatim without affecting pass", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS, "utf8")
+      await recordWithClaims(root, file)
+      const io = capture()
+      let code = -1
+      try {
+        code = await runContractCheck({ rootDir: root, file, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const text = io.out.join("\n")
+      expect(text).toContain("contract: 1 scenarios match")
+      expect(text).toContain("claims: entrypoint=smoke-entry")
+      expect(text).toContain("claims: boundary db=fake:stub:v2:extra")
+      const io2 = capture()
+      try {
+        expect(await runContractCheck({ rootDir: root, file, json: true })).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as ClaimsContractJson
+      expect(payload.pass).toBe(true)
+      expect(payload.compared[0].claims).toEqual({
+        entrypoint: "smoke-entry",
+        boundaries: [{ name: "db", kind: "fake", ref: "stub:v2:extra" }],
+      })
+      expect(payload.compared[0].claimsStatus).toBe("recorded")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("tampered malformed claims read as uninterpretable without gating", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS, "utf8")
+      await recordWithClaims(root, file)
+      const { replayLocation, readReplayFile } = await import("./up-replay")
+      const { parseScenarios } = await import("./up-scenarios")
+      const parsed = parseScenarios(SCENARIOS)
+      const location = replayLocation(root, parsed.scenarios[0])
+      if (location === null) throw new Error("expected a replay location")
+      const stored = await readReplayFile(location.file)
+      if (stored === null) throw new Error("expected a stored record")
+      // NOTE: envelope-only tamper keeps per-line digests valid, so the
+      // reader still parses; only the claims view must degrade.
+      const forged = { ...stored.envelope, claims: { entrypoint: 42 } }
+      const lines = [JSON.stringify(forged)]
+      for (const line of stored.lines) lines.push(JSON.stringify(line))
+      await writeFile(location.file, `${lines.join("\n")}\n`, "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runContractCheck({ rootDir: root, file, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.out.join("\n")).toContain("claims: uninterpretable (UNVERIFIED)")
+      const io2 = capture()
+      try {
+        expect(await runContractCheck({ rootDir: root, file, json: true })).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as ClaimsContractJson
+      expect(payload.pass).toBe(true)
+      expect(payload.compared[0].claims).toBeNull()
+      expect(payload.compared[0].claimsStatus).toBe("uninterpretable")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile claim secrets stay absent from human and json readback", async () => {
+    const root = await tempRoot()
+    try {
+      const hex40 = "c1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+      const bearerBody = "WxCdefGh0123456789._~-plus-xyz123456789"
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(file, SCENARIOS, "utf8")
+      const { runRecord } = await import("./up-replay")
+      const io0 = capture()
+      try {
+        expect(
+          await runRecord({
+            rootDir: root,
+            file,
+            runName: "cart",
+            probeFn: async () => fakeOutcome(),
+            claimEntrypoint: `token=hunter2 ${hex40}`,
+            claimBoundary: [`svc=fake:Bearer ${bearerBody}`],
+          }),
+        ).toBe(0)
+      } finally {
+        io0.restore()
+      }
+      const io = capture()
+      try {
+        expect(await runContractCheck({ rootDir: root, file, json: false })).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const io2 = capture()
+      try {
+        expect(await runContractCheck({ rootDir: root, file, json: true })).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const text = `${io.out.join("\n")}\n${io.err.join("\n")}\n${io2.out.join("\n")}\n${io2.err.join("\n")}`
+      for (const secret of ["hunter2", bearerBody, hex40]) {
+        expect(text).not.toContain(secret)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

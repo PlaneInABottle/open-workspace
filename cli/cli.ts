@@ -52,14 +52,14 @@ export const OVERLAY_READER_LABELS = ["scenarios", "preflight", "readiness", "pr
 export const SINCE_READERS = ["sessions", "show", "stuck", "reads", "logs", "failures", "trace", "timeline"] as const
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries", "--out"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries", "--out", "--claim-entrypoint", "--claim-boundary"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local", "--bundle", "--resume"])
 
 export type ParsedArgs = {
   command: Command | null
   sessionID: string | undefined
-  /** `--health` is repeatable and accumulates into a string array; every
-   * other value flag holds a single string. */
+  /** `--health` and `--claim-boundary` are repeatable and accumulate
+   * into a string array; every other value flag holds a single string. */
   flags: Record<string, string | boolean | string[]>
   error: string | null
   /** Second and later positionals (`checkpoints show <run> /
@@ -101,7 +101,8 @@ export const helpText = (): string =>
     "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
   "  provision --check [--file] [--json] [--probe]  workspace checklist (.env symlink + .venv + HEAD + pre-gate; read-only, exit 0 pass / 1 missing)",
     "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs; probe-only lanes: record + contract check)",
-    "  record <scenario> [--file]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
+    "  record <scenario> [--file] [--claim-entrypoint <text>] [--claim-boundary <name>=<kind>:<ref>]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
+    "                                --claim-boundary <name>=<kind>:<ref> (repeatable, record-only; kind real|fake; opaque caller claims, stored + rendered verbatim)",
     "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
     "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory; probe-only lanes without restore: record + contract check)",
     "  scenario env <name> [--file] [--json] [--boundaries <path>]  boundary matrix as OW_BOUNDARY_* lines (read-only render)",
@@ -139,7 +140,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       if (VALUE_FLAGS.has(arg)) {
         const value = argv[i + 1]
         if (value === undefined || value.startsWith("--")) return fail(`value expected: ${arg}`)
-        if (arg === "--health") {
+        if (arg === "--health" || arg === "--claim-boundary") {
           const prior = flags[arg]
           flags[arg] = [...(Array.isArray(prior) ? prior : prior !== undefined ? [prior as string] : []), value]
         } else {
@@ -808,6 +809,12 @@ export const run = async (argv: string[]): Promise<number> => {
     console.error("ow: --run/--off-local work only with scenario run")
     return 2
   }
+  // Caller-claim flags belong to `record` only (same fail-loud
+  // precedent: a narrowed flag elsewhere is a usage error, never silent).
+  if ((flags["--claim-entrypoint"] !== undefined || flags["--claim-boundary"] !== undefined) && command !== "record") {
+    console.error("ow: --claim-entrypoint/--claim-boundary work only with record")
+    return 2
+  }
   if (command !== "checkpoints" && command !== "scenario" && parsed.extra.length > 0) {
     console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
     console.error(helpText())
@@ -1397,7 +1404,14 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runRecord } = await import("./up-replay")
       const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
       const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runRecord({ rootDir, file: scenariosFile, runName: positional, boundariesFlag })
+      return runRecord({
+        rootDir,
+        file: scenariosFile,
+        runName: positional,
+        boundariesFlag,
+        claimEntrypoint: flag(flags, "--claim-entrypoint"),
+        claimBoundary: flags["--claim-boundary"] as string | string[] | undefined,
+      })
     }
     if (command === "contract") {
       // M5: digest-compare + ship-order gate. `check` is the only second

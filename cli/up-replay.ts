@@ -16,7 +16,7 @@ import { basename, dirname, join } from "node:path"
 import { decodeUtf8Fatal, PROBE_TIMEOUT_MS } from "./up-schema"
 import { normalizeBoundary as normalizeScenarioBoundary, parseScenarios, type Scenario } from "./up-scenarios"
 import { maskCmdShape } from "./up-reconcile"
-import { maskSecrets } from "./up-evidence"
+import { capText, maskSecrets } from "./up-evidence"
 import { isArtifactDigest, runProbeJob, type ProbeFn, type ProbeOutcome } from "./up-probe"
 
 export const REPLAY_DIR_NAME = "replay"
@@ -90,6 +90,36 @@ export type ReplayProvenance = {
   runnerHash: string
 }
 
+/** Opaque caller claims (boundary witness, APPROVED B): `ow` never
+ * judges them — it records the caller's words verbatim and reads them
+ * back verbatim. `kind` is stored exactly as flagged (accepted only
+ * `real|fake` at the flag gate, never normalized, never routed through
+ * `normalizeBoundary` or the legacy map); `name`/`ref` are opaque
+ * (never dereferenced, read, or executed). Absence of the field is
+ * today's shape: claimless envelopes read exactly as before. */
+export type ReplayClaimBoundary = {
+  name: string
+  kind: string
+  ref: string
+}
+
+export type ReplayClaims = {
+  entrypoint?: string
+  boundaries?: ReplayClaimBoundary[]
+}
+
+/** Claim caps (opaque, enforced at ingest: mask, then CWD-fold, then
+ * cap — the probe-note precedent). Over-long values cap; empty or
+ * misshapen values refuse at the flag gate (exit 2, never stored). */
+export const CLAIM_ENTRYPOINT_MAX_CHARS = 128
+export const CLAIM_BOUNDARIES_MAX = 32
+export const CLAIM_NAME_MAX_CHARS = 64
+export const CLAIM_REF_MAX_CHARS = 256
+
+/** Accepted claim kinds (flag gate only; stored verbatim, never
+ * normalized — `Real`/`FAKE` refuse like any unknown kind). */
+const CLAIM_KINDS: ReadonlySet<string> = new Set(["real", "fake"])
+
 export type ReplayEnvelope = {
   v: 1
   at: string
@@ -100,6 +130,7 @@ export type ReplayEnvelope = {
   provenance: ReplayProvenance
   replayedFrom: null | { hash: string; at: string }
   contract: { hash: string }
+  claims?: ReplayClaims
 }
 
 export type ReplayProbeLine = {
@@ -126,6 +157,117 @@ export const validateProvenance = (value: unknown): value is ReplayProvenance =>
     typeof record["runnerHash"] === "string" &&
     (record["runnerHash"] as string).length > 0
   )
+}
+
+/** Single `--claim-boundary <name>=<kind>:<ref>` read: name runs to
+ * the first `=`, kind to the first `:` after it, ref is the remainder
+ * (it may itself contain `:`). Empty parts, a missing separator, or a
+ * kind outside `real|fake` refuse with the locked string (exit 2 at
+ * the call site, before any probe exec). The echoed flag value is
+ * secret-bearing, so it is masked + CWD-folded at construction
+ * (mask-before-fold); the `invalid-boundary:` prefix and the grammar
+ * hint stay byte-identical. Values stay opaque here —
+ * masking/folding/capping of the stored parts happens in
+ * `buildReplayClaims`. */
+export const parseClaimBoundary = (
+  raw: string,
+  cwd: string,
+): { ok: true; value: { name: string; kind: string; ref: string } } | { ok: false; error: string } => {
+  const usage = `invalid-boundary: ${foldCwd(maskSecrets(raw), cwd)} (expected <name>=<kind>:<ref> with kind real|fake)`
+  const eq = raw.indexOf("=")
+  if (eq <= 0) return { ok: false, error: usage }
+  const rest = raw.slice(eq + 1)
+  const colon = rest.indexOf(":")
+  if (colon <= 0) return { ok: false, error: usage }
+  const name = raw.slice(0, eq)
+  const kind = rest.slice(0, colon)
+  const ref = rest.slice(colon + 1)
+  if (name.length === 0 || kind.length === 0 || ref.length === 0) return { ok: false, error: usage }
+  if (!CLAIM_KINDS.has(kind)) return { ok: false, error: usage }
+  return { ok: true, value: { name, kind, ref } }
+}
+
+/** Claim ingest (record path only): validate the flag shapes first
+ * (any refusal exits before probes run), then mask, CWD-fold, and cap
+ * each opaque value at construction — the stored object is already
+ * safe, so the write-echo below can quote it directly. No flags means
+ * no field (absence is today's shape, never an empty object). */
+export const buildReplayClaims = (opts: {
+  entrypoint?: string
+  boundary?: string | string[]
+  cwd: string
+}): { ok: true; claims: ReplayClaims | undefined } | { ok: false; error: string } => {
+  const rawBoundaries = opts.boundary === undefined ? [] : Array.isArray(opts.boundary) ? opts.boundary : [opts.boundary]
+  if (opts.entrypoint === undefined && rawBoundaries.length === 0) return { ok: true, claims: undefined }
+  let entrypoint: string | undefined
+  if (opts.entrypoint !== undefined) {
+    if (opts.entrypoint.length === 0) {
+      return { ok: false, error: `invalid-boundary: ${opts.entrypoint} (claim entrypoint must be 1-${CLAIM_ENTRYPOINT_MAX_CHARS} characters)` }
+    }
+    entrypoint = capText(foldCwd(maskSecrets(opts.entrypoint), opts.cwd), CLAIM_ENTRYPOINT_MAX_CHARS)
+  }
+  const boundaries: ReplayClaimBoundary[] = []
+  for (const raw of rawBoundaries) {
+    const parsed = parseClaimBoundary(raw, opts.cwd)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    boundaries.push({
+      name: capText(foldCwd(maskSecrets(parsed.value.name), opts.cwd), CLAIM_NAME_MAX_CHARS),
+      kind: parsed.value.kind,
+      ref: capText(foldCwd(maskSecrets(parsed.value.ref), opts.cwd), CLAIM_REF_MAX_CHARS),
+    })
+  }
+  return {
+    ok: true,
+    claims: {
+      ...(entrypoint === undefined ? {} : { entrypoint }),
+      ...(boundaries.length === 0 ? {} : { boundaries: boundaries.slice(0, CLAIM_BOUNDARIES_MAX) }),
+    },
+  }
+}
+
+/** Stored-claims view (read path only): valid shapes quote verbatim,
+ * absent claims are the unverified gap, anything misshapen (tampered
+ * or foreign) is uninterpretable — never a crash, never a gate. This
+ * is the SOLE claims reader; the contract verdict never consults it. */
+export type StoredClaimsView =
+  | { status: "recorded"; claims: ReplayClaims }
+  | { status: "unverified" }
+  | { status: "uninterpretable" }
+
+export const describeStoredClaims = (envelope: unknown): StoredClaimsView => {
+  if (typeof envelope !== "object" || envelope === null) return { status: "uninterpretable" }
+  const raw = (envelope as { claims?: unknown }).claims
+  if (raw === undefined) return { status: "unverified" }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { status: "uninterpretable" }
+  const dict = raw as Record<string, unknown>
+  let entrypoint: string | undefined
+  if (dict["entrypoint"] !== undefined) {
+    if (typeof dict["entrypoint"] !== "string" || dict["entrypoint"].length === 0) return { status: "uninterpretable" }
+    entrypoint = dict["entrypoint"]
+  }
+  let boundaries: ReplayClaimBoundary[] | undefined
+  if (dict["boundaries"] !== undefined) {
+    if (!Array.isArray(dict["boundaries"]) || dict["boundaries"].length > CLAIM_BOUNDARIES_MAX) return { status: "uninterpretable" }
+    const picked: ReplayClaimBoundary[] = []
+    for (const entry of dict["boundaries"]) {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return { status: "uninterpretable" }
+      const row = entry as Record<string, unknown>
+      if (
+        typeof row["name"] !== "string" ||
+        (row["name"] as string).length === 0 ||
+        typeof row["kind"] !== "string" ||
+        !CLAIM_KINDS.has(row["kind"] as string) ||
+        typeof row["ref"] !== "string" ||
+        (row["ref"] as string).length === 0
+      ) {
+        return { status: "uninterpretable" }
+      }
+      picked.push({ name: row["name"] as string, kind: row["kind"] as string, ref: row["ref"] as string })
+    }
+    boundaries = picked
+  }
+  if (entrypoint === undefined && (boundaries === undefined || boundaries.length === 0)) return { status: "uninterpretable" }
+  return { status: "recorded", claims: { ...(entrypoint === undefined ? {} : { entrypoint }), ...(boundaries === undefined ? {} : { boundaries }) } }
 }
 
 const sanitizeDir = (name: string): string => name.replace(/[^A-Za-z0-9._-]/g, "_")
@@ -271,6 +413,11 @@ export const runRecord = async (opts: {
   runName: string
   probeFn?: ProbeFn
   boundariesFlag?: string
+  /** Opaque caller claims (record-only flags; refused elsewhere at the
+   * call site). Parsed before any probe exec — a malformed claim exits
+   * 2 with zero spawns. */
+  claimEntrypoint?: string
+  claimBoundary?: string | string[]
 }): Promise<number> => {
   const { readFileSync } = await import("node:fs")
   let text: string
@@ -296,6 +443,15 @@ export const runRecord = async (opts: {
   const { hasInertMarker } = await import("./up-init")
   if (hasInertMarker(text)) {
     console.error(`INERT: ${opts.file}`)
+    return 2
+  }
+  // Caller claims ingest (fail-closed, before overlay + probes): a
+  // malformed claim exits 2 here, so no probe ever spawns for it. The
+  // stored object below is already masked/folded/capped — the echo
+  // quotes it directly and the ref is never executed.
+  const builtClaims = buildReplayClaims({ entrypoint: opts.claimEntrypoint, boundary: opts.claimBoundary, cwd: opts.rootDir })
+  if (!builtClaims.ok) {
+    console.error(`ow: ${builtClaims.error}`)
     return 2
   }
   // M9: capture resolves through the shared overlay helper (flag > local
@@ -382,6 +538,7 @@ export const runRecord = async (opts: {
     },
     replayedFrom: null,
     contract: { hash: scenarioDefinitionHash(scenario) },
+    ...(builtClaims.claims === undefined ? {} : { claims: builtClaims.claims }),
   }
   if (!validateProvenance(envelope.provenance)) {
     console.error(`ow: provenance-missing: ${scenario.name}`)
@@ -397,6 +554,12 @@ export const runRecord = async (opts: {
     return 1
   }
   console.log(`record: ${scenario.name} (${outcomes.length} probes, ${envelope.contract.hash.slice(0, 8)})`)
+  // Claims write-echo (verbatim quote of the STORED object, after the
+  // record line): the caller's words back at them, never a judgment.
+  if (envelope.claims?.entrypoint !== undefined) console.log(`claims: entrypoint=${envelope.claims.entrypoint}`)
+  for (const boundary of envelope.claims?.boundaries ?? []) {
+    console.log(`claims: boundary ${boundary.name}=${boundary.kind}:${boundary.ref}`)
+  }
   // Witness-only surfacing: each not-ready probe names itself (exit stays
   // 0 — a not-ready probe is recorded evidence, not a record failure).
   for (const outcome of outcomes) {

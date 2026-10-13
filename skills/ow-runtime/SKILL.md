@@ -120,6 +120,16 @@ stays future-HTTP-only, never on probe transport.
   `unknown-record:` / `provenance-missing:`, 2 usage or a
   state-changing scenario in scope. `--json` is `{pass, compared[]
   ({scenario, hash, match, detail}), missing[]}`.
+- Opaque caller claims (record-only): `--claim-entrypoint <text>` +
+  repeatable `--claim-boundary <name>=<kind>:<ref>` (kind `real|fake`
+  only, stored verbatim). Malformed claims refuse `invalid-boundary:`
+  exit 2 before any probe runs; outside `record` both flags refuse
+  exit 2. Record echoes and `contract check` reads back verbatim
+  (`claims: …` lines; `--json` gains `claims` + `claimsStatus`).
+  Claimless records read the unverified gap
+  (`claims: unverified (no caller claims recorded)`); tampered ones
+  read `claims: uninterpretable (UNVERIFIED)`.
+  Claims never affect digests, placement, refusals, or pass/match.
 - Scrubber runs BEFORE the cap: B3 value masking plus CWD-absolute
   paths folding to `<root>`. Checkpoints stay runner-written —
   `ow` writes replay only, never checkpoints.
