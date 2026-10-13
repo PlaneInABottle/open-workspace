@@ -99,6 +99,10 @@ Startup opens the secret-free canonical dashboard URL once after readiness; use 
 - Global parser flags require cross-verb guards (fail-loud precedent): a flag accepted by one verb must not silently no-op in another.
 - Evidence honesty: fail-before RED per finding; vary hostile fixtures beyond the benign shape (a suite shaped like `service a` proves nothing about `token-check`); reused evidence is labeled, never re-presented as fresh runs.
 - Absence sweeps need a positive control: an empty repo-wide "no X anywhere" result is evidence only after a control probe has hit a known-X file with the same command (seen live: a diacritic-class sweep reported zero while ASCII-spelled Turkish survived; gitignored/hidden paths silently vanish without `--hidden --no-ignore`).
+- Remedy efficacy: a condition hint must name the effective remedy per the recording/clearing code path plus explicit non-remedies — scope transparency without an effective remedy is a false promise (seen live: a stale-supervisor hint prescribed per-service restart, but `state.build` is boot-resolved and only a supervisor restart re-records it).
+- Guard scope: fail-closed guards cover only the changed prefix; pin untouched-path HEAD parity with RED-before proof (seen live: a global quote refusal broke byte-identical non-env inference until scoped to env-prefixed strings).
+- Interleaved-log bounds: never positionally bound (tail) an interleaved append-only log — file-head records of old sessions silently drop (seen live: a 25% tail lost 312/369 sessions on the real sidecar). Optimize parse cost with full-read + prefilter and prove byte-equivalence including file-head records.
+- Single suppression point: when one flag adds a second print site (normal + vacuous/empty verdicts), route every verdict through one suppression point — a caller-side guard is not airtightness (seen live: a vacuity branch printed past `onPayload` until routed through it).
 
 ## Safety and capability boundaries
 
