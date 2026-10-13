@@ -100,10 +100,10 @@ export const helpText = (): string =>
     "  preflight [--file] [--json] [--probe]  read-only gate (no mutation; exit 1 when failing)",
     "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
   "  provision --check [--file] [--json] [--probe]  workspace checklist (.env symlink + .venv + HEAD + pre-gate; read-only, exit 0 pass / 1 missing)",
-    "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs)",
+    "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs; probe-only lanes: record + contract check)",
     "  record <scenario> [--file]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
     "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
-    "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory)",
+    "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory; probe-only lanes without restore: record + contract check)",
     "  scenario env <name> [--file] [--json] [--boundaries <path>]  boundary matrix as OW_BOUNDARY_* lines (read-only render)",
     "  export --bundle [<run>] [--file] [--out <path>]  one redacted snapshot file for tickets (read-only composition)",
     "  trace [trace] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  traces; one tree per trace; --wait 15s waits for new spans",
@@ -552,6 +552,12 @@ export const runSingleServiceRequest = async (opts: {
         action: opts.action,
         ...(result.pid !== undefined ? { pid: result.pid } : {}),
         diff: pre.diff,
+        // Post-stop confirmation (down-only: the pre-shape `diff` above
+        // goes stale once the process is gone, and down carries no
+        // post-handle pid — unlike up/restart, whose result pid already
+        // confirms post-state — so the confirmation + ps pointer below
+        // close the loop instead).
+        ...(opts.action === "down" ? { confirmed: { stopped: result.ok, code: result.code } } : {}),
         ...(result.ok ? {} : { code: result.code }),
       }),
     )
@@ -560,6 +566,7 @@ export const runSingleServiceRequest = async (opts: {
   } else {
     console.error(`ow: ${result.message}`)
   }
+  if (opts.action === "down" && !opts.json) console.log(`follow-up: ow ps ${opts.service} (confirm state)`)
   if (result.ok) return 0
   if (result.code === "already-running" || result.code === "unknown-service" || result.code === "invalid-config") return 2
   return 1

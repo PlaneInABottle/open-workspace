@@ -14,16 +14,26 @@ export const RING_MAX_LINES = 50_000
 export type DoctorLine = { name: string; ok: boolean; detail: string }
 
 /** Stale-supervisor compare, pure for testability: names both build times
- * when a recorded digest differs from the current binary's, else silent.
- * Empty digests and either side missing mean "cannot tell" → silent. */
+ * plus the affected scope (count + names, capped) when a recorded digest
+ * differs from the current binary's, else silent. Empty digests and
+ * either side missing mean "cannot tell" → silent. Service names are
+ * operator-local (never secrets); absent/empty service lists read as
+ * unrecorded, never as zero. */
 export const staleSupervisorHint = (
   recorded: UpBuildInfo | null | undefined,
   current: UpBuildInfo | null,
+  serviceNames: string[] = [],
 ): string => {
   if (!recorded || !current) return ""
   if (recorded.digest.length === 0 || current.digest.length === 0) return ""
   if (recorded.digest === current.digest) return ""
-  return `. hint: running supervisor stale (running ${recorded.time}, installed ${current.time}) — refresh with ow down && ow up -d`
+  const shown = serviceNames.slice(0, 5).join(", ")
+  const more = serviceNames.length > 5 ? ` (+${serviceNames.length - 5} more)` : ""
+  const scope =
+    serviceNames.length > 0
+      ? ` affecting ${serviceNames.length} service${serviceNames.length === 1 ? "" : "s"} (${shown}${more})`
+      : " (no recorded services)"
+  return `. hint: running supervisor stale (running ${recorded.time}, installed ${current.time})${scope} — restart the supervisor itself (ow down, then ow up) to refresh; per-service restart does not refresh a stale supervisor`
 }
 
 export const doctor = async (options: { logPath?: string; dbPath?: string; upRoot?: string } = {}): Promise<DoctorLine[]> => {
@@ -84,7 +94,8 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
       const done = state?.services.filter((svc) => svc.exitCode !== undefined).length ?? 0
       let detail = total > 0 ? `running (${total} services${done > 0 ? `, ${done} exited` : ""})` : "running (no state)"
       try {
-        detail += staleSupervisorHint(state?.build, await readOwnBuildSidecar())
+        // Absent service lists (old builds) stay tolerated: unrecorded scope.
+        detail += staleSupervisorHint(state?.build, await readOwnBuildSidecar(), state?.services?.map((svc) => svc.name))
       } catch {
         // compare must never throw; silence on any failure
       }

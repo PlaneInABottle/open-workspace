@@ -32,15 +32,34 @@ describe("staleSupervisorHint", () => {
     expect(staleSupervisorHint({ ...built, digest: "" }, { ...built, digest: "" })).toBe("")
   })
 
-  test("digest mismatch names both times plus the refresh directive", () => {
+  test("digest mismatch names both times, the scope, and the effective remedy", () => {
     const hint = staleSupervisorHint(
       { sha: "old", digest: "d-old", time: "2026-10-07T07:00:00Z" },
       { sha: "new", digest: "d-new", time: "2026-10-08T07:00:00Z" },
+      ["api", "web"],
     )
     expect(hint).toContain("stale")
     expect(hint).toContain("2026-10-07T07:00:00Z")
     expect(hint).toContain("2026-10-08T07:00:00Z")
-    expect(hint).toContain("ow down && ow up -d")
+    expect(hint).toContain("affecting 2 services (api, web)")
+    expect(hint).toContain("restart the supervisor itself (ow down, then ow up) to refresh")
+    expect(hint).toContain("per-service restart does not refresh a stale supervisor")
+    expect(hint).not.toContain("ow restart api")
+    expect(hint).not.toContain("blanket root down/up")
+  })
+
+  test("scope caps names, singularizes one service, and reads absent lists as unrecorded", () => {
+    const built = (digest: string) => ({ sha: "s", digest, time: "2026-10-08T07:00:00Z" })
+    const many = staleSupervisorHint(built("d-old"), built("d-new"), ["a", "b", "c", "d", "e", "f", "g"])
+    expect(many).toContain("affecting 7 services (a, b, c, d, e (+2 more))")
+    const one = staleSupervisorHint(built("d-old"), built("d-new"), ["solo"])
+    expect(one).toContain("affecting 1 service (solo)")
+    expect(one).not.toContain("ow restart solo")
+    expect(one).toContain("per-service restart does not refresh a stale supervisor")
+    const bare = staleSupervisorHint(built("d-old"), built("d-new"))
+    expect(bare).toContain("(no recorded services)")
+    expect(bare).toContain("restart the supervisor itself (ow down, then ow up) to refresh")
+    expect(bare).toContain("per-service restart does not refresh a stale supervisor")
   })
 })
 

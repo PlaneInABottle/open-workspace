@@ -209,7 +209,12 @@ export const runScenarioRun = async (opts: {
     return 2
   }
   if (scenario.restore === null) {
-    console.error(`ow: cannot run ${scenario.name} — no restore declared`)
+    // Probe-only lanes (no services) legitimately carry no restore: point
+    // them at the record + contract-check path instead of a bare refusal.
+    const probeOnly = scenario.services.length === 0
+    console.error(
+      `ow: cannot run ${scenario.name} — no restore declared${probeOnly ? " (probe-only lanes use record + contract check instead)" : ""}`,
+    )
     if (banner !== null) {
         if (opts.json) console.error(banner)
         else console.log(banner)

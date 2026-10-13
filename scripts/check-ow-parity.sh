@@ -12,11 +12,14 @@
 #   the `--json` verb list (+`doctor`).
 # - `sessions --json`: additive `"window":null` on the new binary
 #   (unwindowed call) — asserted present, stripped on both sides.
-# - `doctor --json`: additive top-level `identity` envelope (new in M2;
-#   the old binary predates it) — asserted by key shape on the new
-#   binary, stripped from the old-vs-new top-keys diff.
+# - `doctor --json`: top-level `identity` envelope (introduced in M2) —
+#   asserted by key shape on BOTH binaries (HEAD contains the committed
+#   identity work), stripped from the old-vs-new top-keys diff.
 # - exits/stderr: unchanged everywhere (new notices are flag-gated and no
 #   fixture passes those flags; `up --check` never announces state).
+# V2 intended deltas (same pattern — assert on new, normalize the diff):
+# - `help` stdout: the `scenarios` line and the `scenario run` line
+#   (probe-only lanes point at `record` + `contract check`).
 set -u
 OLD="${1:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
 NEW="${2:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
@@ -52,8 +55,9 @@ run_case() {
 
 # M2 help normalization: the four intended lines are asserted on the new
 # binary, then blanked on both sides so the diff still guards every byte.
+# V2 adds the two probe-only scenario lines (same pattern).
 normalize_help() {
-  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//'
+  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//' -e 's/^  scenarios --check.*//' -e 's/^  scenario run <name>.*//'
 }
 
 run_case_help() {
@@ -68,6 +72,8 @@ run_case_help() {
     'failures [--since 30m|3h|1d|1w]' \
     'scenario-run/scenario-env only' \
     '--json  machine output (English keys): doctor/show' \
+    'scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs; probe-only lanes: record + contract check)' \
+    'scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory; probe-only lanes without restore: record + contract check)' \
   ; do
     if ! grep -qF -- "$line" "$OUT/help.new.out"; then
       echo "PARITY FAIL(help line missing on new): $line"
@@ -170,9 +176,18 @@ if ! diff -u "$OUT/doctor.old.keys" "$OUT/doctor.new.keys"; then
   echo "PARITY FAIL(keys): doctor"
   fail=1
 fi
-# M2 intended delta: the old binary predates `identity`; the new one pins it.
-if ! grep -qx "identity=<absent>" "$OUT/doctor.old.ident"; then
-  echo "PARITY FAIL(identity): old binary unexpectedly carries identity"
+# V2 reality: HEAD contains the committed M2 `identity` work, so the old
+# binary carries it too — pin the same key shape on old (values vary by
+# construction: no sidecar ships beside the scratch old binary, so its
+# `installed` reads None by build method; both exact shapes accepted).
+for expected in "identity=present" "supervisor=['sha8', 'startedAt', 'state', 'time']" "matchkey=True"; do
+  if ! grep -qxF "$expected" "$OUT/doctor.old.ident"; then
+    echo "PARITY FAIL(identity keys, old): $expected"
+    fail=1
+  fi
+done
+if ! grep -qxE "installed=(None|\['binary8', 'dirty', 'sha8', 'time'\])" "$OUT/doctor.old.ident"; then
+  echo "PARITY FAIL(identity keys, old): installed shape"
   fail=1
 fi
 for expected in "identity=present" "installed=['binary8', 'dirty', 'sha8', 'time']" "supervisor=['sha8', 'startedAt', 'state', 'time']" "matchkey=True"; do

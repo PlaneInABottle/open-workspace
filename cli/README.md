@@ -216,7 +216,9 @@ healthy services are never signaled.
   single-`up` ignores `-d`/`--wait`: the result wait is always the fixed
   one-shot 10s, independent of `--wait`. With no live lock, `up <name>` falls
   back to classic bulk `up`, `restart` refuses (exit 2, `no running supervisor for restart`), and
-  `down <name>` stops the target directly without touching the lock file.
+  `down <name>` stops the target directly without touching the lock file. Single `down` confirms
+  post-stop (`confirmed: {stopped, code}` in `--json`, `follow-up: ow ps <name>` on human output) —
+  the pre-shape `diff` goes stale once the process is gone, so re-verify with `ps`.
 - `ow reconcile --check` is the witness line: it never mutates, only reports
   `missing | extra | stopped | config-mismatch(cmd-shape/cwd/port/env-names/
   depends_on) | lstart-mismatch | foreign-port` plus the suggested open

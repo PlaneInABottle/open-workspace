@@ -656,6 +656,59 @@ describe("live supervisor single-service flow", () => {
     }
   })
 
+  test("down <svc> live --json carries additive post-stop confirmation (pre diff intact)", async () => {
+    const live = await startLive()
+    try {
+      const io = captureIo()
+      let code = -1
+      try {
+        code = await run(["down", "b", "--json", "--file", live.file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(io.logs.join("\n")) as Record<string, unknown>
+      expect(payload).toMatchObject({ service: "b", action: "down", diff: { status: "running" } })
+      expect(payload["confirmed"]).toEqual({ stopped: true, code: "stopped" })
+      // A second down confirms already-stopped distinctly (same additive key).
+      const io2 = captureIo()
+      try {
+        code = await run(["down", "b", "--json", "--file", live.file])
+      } finally {
+        io2.restore()
+      }
+      expect(code).toBe(0)
+      expect((JSON.parse(io2.logs.join("\n")) as Record<string, unknown>)["confirmed"]).toEqual({
+        stopped: true,
+        code: "already-stopped",
+      })
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
+  test("down <svc> live human output points at the ps follow-up reader", async () => {
+    const live = await startLive()
+    try {
+      const io = captureIo()
+      try {
+        expect(await run(["down", "b", "--file", live.file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const out = io.logs.join("\n")
+      expect(out).toContain("to-stop: b")
+      expect(out).toContain("stopped: b")
+      expect(out).toContain("follow-up: ow ps b (confirm state)")
+    } finally {
+      live.stop()
+      await live.done
+      await rm(live.root, { recursive: true, force: true })
+    }
+  })
+
   test("reconcile sync exit 0, service-removal extra exit 1 (no stop)", async () => {
     const live = await startLive()
     try {

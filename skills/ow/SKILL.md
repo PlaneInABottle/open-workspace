@@ -64,7 +64,8 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 | `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` only when `depends_on` exists) |
 | `up -d --wait --json` | `{ready, services[] ({name, port?, status, waitedSec, exitCode?, healthPath?, readiness?}), noPort[], note?}` |
 | `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` only on failure) |
-| `down [--rm]`, `down <svc> --json` | `{stopped[] ({name, stopped, note}), warnings[]}` |
+| `down <svc> --json` (live supervisor) | `{service, action, diff, code?, confirmed? ({stopped, code})}` (row above + `confirmed`; `confirmed.stopped` is a state witness — read `code` for stopped/already-stopped/refused) |
+| `down [--rm]`, `down <svc> --json` (lock-less, no supervisor) | `{stopped[] ({name, stopped, note}), warnings[]}` |
 | `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
 | `logs --json` | `{service, lines[]}` |
 | `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[], readiness[] (only with --probe)}` |

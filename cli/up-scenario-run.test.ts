@@ -221,6 +221,49 @@ describe("ow scenario run refusals", () => {
     }
   })
 
+  test("missing restore refuses exit 2; probe-only lanes get the record pointer", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      const base = [
+        "version: 1",
+        "scenarios:",
+        "  audit:",
+        "    boundaries: [real-read-only]",
+        "    targets: [http://127.0.0.1:8901/approval]",
+        "    probes: [{id: ready, argv: [./ready.sh], timeout: 10s}]",
+        "    checkpoints: [approval-ready]",
+        "",
+      ].join("\n")
+      const { runScenarioRun } = await import("./up-scenario-run")
+      // Probe-only (no services): refusal points at record + contract check.
+      await writeFile(file, base.replace("  audit:", "  audit:\n    services: []"), "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await runScenarioRun({ rootDir: root, file, name: "audit", json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(2)
+      expect(io.err.join("\n")).toContain("ow: cannot run audit — no restore declared (probe-only lanes use record + contract check instead)")
+      // Serviced lane without restore: same exit, bare refusal (unchanged).
+      await writeFile(file, base.replace("  audit:", "  audit:\n    services: [api]"), "utf8")
+      const io2 = capture()
+      let code2 = -1
+      try {
+        code2 = await runScenarioRun({ rootDir: root, file, name: "audit", json: false })
+      } finally {
+        io2.restore()
+      }
+      expect(code2).toBe(2)
+      expect(io2.err.join("\n")).toContain("ow: cannot run audit — no restore declared")
+      expect(io2.err.join("\n")).not.toContain("probe-only lanes")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("tampered contract exits 1 without executing probes", async () => {
     const root = await tempRoot()
     try {
