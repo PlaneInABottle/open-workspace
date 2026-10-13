@@ -20,7 +20,7 @@ import {
   summarizeTrace,
   type TraceSummary,
 } from "./trace-query"
-import { parseAmountUnit } from "./join"
+import { parseAmountUnit, sinceWindow, windowNotice, type SinceWindow } from "./join"
 import { parseUpFile } from "./up-schema"
 import { noStateNote } from "./up-state"
 
@@ -43,6 +43,10 @@ export type TraceRunOptions = {
   traceId?: string
   tail?: number
   sinceMs?: number | null
+  /** Raw `--since` flag (echoed in the human-only window notice + JSON window). */
+  since?: string
+  /** Injected clock for the window envelope (default live; tests pin it). */
+  now?: number
   service?: string
   json?: boolean
   /** Poll `spans.jsonl` this long for a newly arriving matching span before
@@ -61,7 +65,14 @@ export type TraceRunOptions = {
 
 export type TraceRunResult = { code: number; stdout: string; stderr: string }
 
-const quietJson = (): string => JSON.stringify({ traces: [] })
+const quietJson = (window: SinceWindow | null): string => JSON.stringify({ traces: [], window })
+
+/** Store-backed quiet shape (scoped to the store/no-span path only —
+ * unconfigured exits keep the bare quiet above): `stored` is the raw span
+ * count read, `reason` disambiguates an empty store from stored-but-invalid
+ * spans. */
+const quietStoreJson = (stored: number, reason: string, window: SinceWindow | null): string =>
+  JSON.stringify({ traces: [], stored, reason, window })
 
 /** Newest activity first, traceId ascending as the deterministic tiebreak. */
 const byRecency = (a: TraceSummary, b: TraceSummary): number =>
@@ -81,7 +92,7 @@ const clampNumber = <F extends number | undefined>(
   return Math.min(Math.max(value, rule.min), rule.max)
 }
 
-const toListJson = (summaries: TraceSummary[]): string =>
+const toListJson = (summaries: TraceSummary[], returned: number, total: number, window: SinceWindow | null): string =>
   JSON.stringify({
     traces: summaries.map((summary) => ({
       traceId: summary.traceId,
@@ -92,6 +103,9 @@ const toListJson = (summaries: TraceSummary[]): string =>
       startedAt: summary.startedAt,
       status: summary.status,
     })),
+    returned,
+    total,
+    window,
   })
 
 const formatListLine = (summary: TraceSummary, now: number): string => {
@@ -142,6 +156,9 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   const json = options.json === true
   const ok = (stdout: string): TraceRunResult => ({ code: 0, stdout, stderr: "" })
   const fail = (code: number, stderr: string): TraceRunResult => ({ code, stdout: "", stderr })
+  // Single clock (injectable for the deterministic window envelope).
+  const now = options.now ?? Date.now()
+  const traceWindow = sinceWindow(options.since, options.sinceMs ?? null, now)
 
   const rawId = options.traceId
   let idFilter: string | null = null
@@ -154,20 +171,20 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   }
 
   if (!existsSync(join(options.rootDir, ".ow"))) {
-    return ok(json ? quietJson() : `no traces (${noStateNote(options.searchStart ?? options.rootDir)})`)
+    return ok(json ? quietJson(traceWindow) : `no traces (${noStateNote(options.searchStart ?? options.rootDir)})`)
   }
 
   try {
     const text = readFileSync(options.owYamlPath, "utf8")
     const parsed = parseUpFile(text)
     if (parsed.trace === undefined) {
-      return ok(json ? quietJson() : "tracing off (no trace: block in ow.yaml)")
+      return ok(json ? quietJson(traceWindow) : "tracing off (no trace: block in ow.yaml)")
     }
     if (!parsed.trace.enabled) {
-      return ok(json ? quietJson() : "tracing off (trace disabled)")
+      return ok(json ? quietJson(traceWindow) : "tracing off (trace disabled)")
     }
   } catch {
-    return ok(json ? quietJson() : "tracing off (no trace: block in ow.yaml)")
+    return ok(json ? quietJson(traceWindow) : "tracing off (no trace: block in ow.yaml)")
   }
 
   let stored: TraceSpan[]
@@ -185,7 +202,7 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   // not failure). The since cutoff freezes at entry so aging traces cannot
   // spuriously trip the "new arrival" signature mid-wait.
   const waitMs = clampNumber(options.waitMs, { integer: false, min: 0, max: TRACE_WAIT_MAX_MS }, 0)
-  const sinceCutoff = options.sinceMs != null ? Date.now() - options.sinceMs : null
+  const sinceCutoff = options.sinceMs != null ? now - options.sinceMs : null
   const matchingSignature = (rows: TraceSpan[]): string => {
     const summaries = [...groupSpansByTrace(rows)].map(([traceId, spans]) => summarizeTrace(traceId, spans))
     summaries.sort(byRecency)
@@ -231,15 +248,21 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
       }
     }
   }
-  const done = (stdout: string): TraceRunResult =>
-    waitExpired ? { code: 0, stdout, stderr: "warning: wait expired (no new spans)" } : ok(stdout)
+  // Human-only per-verb cutoff notice (post-read renders only — the
+  // unconfigured exits above stay exactly quiet).
+  const windowNote = !json && traceWindow !== null ? windowNotice(traceWindow) : ""
+  const done = (stdout: string): TraceRunResult => {
+    if (!waitExpired) return windowNote.length > 0 ? { code: 0, stdout, stderr: windowNote } : ok(stdout)
+    return { code: 0, stdout, stderr: ["warning: wait expired (no new spans)", windowNote].filter((line) => line.length > 0).join("\n") }
+  }
 
   if (selectValidSpans(stored).length === 0) {
-    return done(json ? quietJson() : "no traces (no spans yet)")
+    // FALSE-EMPTY split: the store itself holds no valid spans (true
+    // empty, human string unchanged); filter empties split below.
+    return done(json ? quietStoreJson(stored.length, stored.length === 0 ? "empty-store" : "no-valid-spans", traceWindow) : "no traces (no spans yet)")
   }
 
   const groups = groupSpansByTrace(stored)
-  const now = Date.now()
   const all = [...groups].map(([traceId, spans]) => summarizeTrace(traceId, spans))
   all.sort(byRecency)
 
@@ -258,6 +281,9 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
           trace: summary.traceId,
           spans: tree.nodes.map((node) => ({ ...node.span, depth: node.depth })),
           truncated: tree.truncated,
+          returned: tree.nodes.length,
+          total: spans.length,
+          window: traceWindow,
         }),
       )
     }
@@ -293,9 +319,13 @@ export const runTrace = async (options: TraceRunOptions): Promise<TraceRunResult
   // of slicing to an empty page.
   const tail = clampNumber(options.tail, { integer: true, min: 1, max: Number.POSITIVE_INFINITY }, TRACE_LIST_DEFAULT_TAIL)
   const page = listed.slice(0, tail)
-  if (json) return done(toListJson(page))
-  if (page.length === 0) return done("no traces (no spans yet)")
-  return done(page.map((summary) => formatListLine(summary, now)).join("\n"))
+  if (json) return done(toListJson(page, page.length, listed.length, traceWindow))
+  // FALSE-EMPTY split: valid spans exist but every filter hid them — name
+  // the stored count instead of claiming nothing exists yet.
+  if (page.length === 0) return done(`no traces (no matches; ${selectValidSpans(stored).length} spans stored)`)
+  const lines = page.map((summary) => formatListLine(summary, now))
+  if (listed.length > page.length) lines.push(`(omitted: ${listed.length - page.length} older traces (raise --tail))`)
+  return done(lines.join("\n"))
 }
 
 export type TraceDoctorCheck = { ok: boolean; detail: string }
@@ -384,11 +414,11 @@ export const checkTraceDoctor = async (rootDir: string): Promise<TraceDoctorChec
     return { ok: false, detail: `no javaagent jar (.ow/otel/opentelemetry-javaagent.jar)${silentSuffix}` }
   }
   if (count === 0 || lastEnd === null) {
-    return { ok: true, detail: `open (port ${port}, 0 spans). hint: no spans — is the service up? ow ps${silentSuffix}` }
+    return { ok: true, detail: `open (port ${port}, 0 spans retained). hint: no spans — is the service up? ow ps${silentSuffix}` }
   }
   const agoMs = Math.max(0, Date.now() - Number(lastEnd / 1_000_000n))
-  const open = `open (port ${port}, ${count} spans, last span ${formatAgo(agoMs)})${silentSuffix}`
-  // Sibling of the 0-span hint: a stored `bilinmeyen` service means the
+  const open = `open (port ${port}, ${count} spans retained, last span ${formatAgo(agoMs)})${silentSuffix}`
+  // Sibling of the 0-span hint: a stored `unknown` service means the
   // exporter never sent `service.name`. Static text only, same pattern.
   // The two hints never co-fire (unnamed needs ≥1 span by construction).
   return unnamed

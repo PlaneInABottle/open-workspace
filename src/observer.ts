@@ -72,6 +72,12 @@ export interface GroupedLine {
   sessions: string[];
   models: string[];
   failReason: string | null;
+  /** Distinct reasons beyond the first (cap 2 stored; see failReasonCount). */
+  failReasons: string[];
+  /** Distinct reasons observed across merged records (may exceed stored). */
+  failReasonCount: number;
+  /** Provenance of the reasons; null when no reason was observed. */
+  failReasonSource: string | null;
   variants: string[];
   excerpts: string[];
   results: string[];
@@ -1171,6 +1177,20 @@ export function failReason(command: string): string | null {
   return match ? match[1] : null;
 }
 
+/** Provenance tag for command-text reasons (wire mirror of the CLI contract). */
+export const FAIL_REASON_SOURCE = 'command-text';
+
+/** Outcome-gated failure reason: only failure/error records with a command
+ * contribute. Unmasked by doctrine (this read model serves stored rows raw
+ * on the dev-only loopback surface — `variants` already carry the raw
+ * command text, so reasons add no new surface class); the CLI twin masks
+ * before emit. */
+function recordFailReason(outcome: string, record: EnrichedRecord): string | null {
+  if (outcome !== 'failure' && outcome !== 'error') return null;
+  if (typeof record.command !== 'string') return null;
+  return failReason(record.command);
+}
+
 const TEST_RUNNER_HINTS = ['pytest', 'tsx --test', 'pnpm test', 'npm test', 'go test', 'cargo test', 'jest', 'vitest', 'mocha', 'tsc ', 'typecheck'];
 
 /** Test-runner signatures get a verdict line (their last output line). */
@@ -1248,8 +1268,18 @@ export function groupByTask(records: EnrichedRecord[], briefings: Map<string, Se
         if (result && !existing.results.includes(result) && existing.results.length < 2) existing.results.push(result);
         if (intent && !existing.intents.includes(intent) && existing.intents.length < 2) existing.intents.push(intent);
         if (messageID && !existing.messageIDs.includes(messageID) && existing.messageIDs.length < 5) existing.messageIDs.push(messageID);
+        const mergeReason = recordFailReason(outcome, record);
+        if (mergeReason !== null && !existing.failReasons.includes(mergeReason)) {
+          if (existing.failReasons.length < 2) existing.failReasons.push(mergeReason);
+          existing.failReasonCount += 1;
+        }
+        if (existing.failReason === null && mergeReason !== null) {
+          existing.failReason = mergeReason;
+          existing.failReasonSource = FAIL_REASON_SOURCE;
+        }
         continue;
       }
+      const reason = recordFailReason(outcome, record);
       const line: GroupedLine = {
         ref: lines.length + 1,
         signature: sig,
@@ -1258,7 +1288,10 @@ export function groupByTask(records: EnrichedRecord[], briefings: Map<string, Se
         agents: agent ? [agent] : [],
         sessions: sess ? [sess] : [],
         models: model ? [model] : [],
-        failReason: typeof record.command === 'string' ? failReason(record.command) : null,
+        failReason: reason,
+        failReasons: reason === null ? [] : [reason],
+        failReasonCount: reason === null ? 0 : 1,
+        failReasonSource: reason === null ? null : FAIL_REASON_SOURCE,
         variants: [full],
         excerpts: excerpt ? [excerpt] : [],
         results: result ? [result] : [],
@@ -1971,6 +2004,8 @@ export async function globalMistakes(options: {
       taskRefKind,
       signature: signature(command ?? full),
       outcome: typeof record.outcome === 'string' ? record.outcome : 'unknown',
+      // No outcome gate here: globalMistakes pre-filters failure/error
+      // rows, so every record reaching this site is already one or the other.
       failReason: command ? failReason(command) : null,
       excerpt: typeof record.excerpt === 'string' && record.excerpt.length > 0 ? record.excerpt : null,
       agent: agentOf(record),

@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { spawn } from 'node:child_process';
 import { Store, writePrivateJson } from '../src/store.js';
+import { persistRunSummary } from '../src/run-summaries.js';
 import { WorkspaceService } from '../src/workspace.js';
 import { createApp } from '../src/http.js';
 import { fixtureStaticAssets } from './helpers/static-assets.js';
@@ -219,4 +221,63 @@ test('real stdio MCP applies raw environment_propose output to environment_set',
     await app.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('stdio initialize instructions carry relevant past lessons after one recorded lesson plus a matching run', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-mcp-lessons-')));
+  const store = new Store(join(root, 'state')); await store.initialize();
+  const project = join(root, 'project'); await mkdir(project);
+  await writeFile(join(project, 'package.json'), '{"scripts":{"test":"node --test"}}');
+  const service = new WorkspaceService(store);
+  const workspace = await service.register('Lesson startup project', [project]);
+  const run = await persistRunSummary(store.directory, {
+    workspaceId: workspace.id,
+    scriptName: 'test',
+    outcome: 'failed',
+    durationMs: 120,
+    output: 'not ok 1 startup proof case',
+    outputTruncated: false,
+  });
+  await service.recordLearning({
+    title: 'Startup proof lesson',
+    file: 'AGENTS.md',
+    evidenceRefs: [run.id],
+    failureSignature: { tests: ['startup proof case'], errorClasses: [] },
+  });
+  // Raw stdio initialize (no SDK): the instructions line is asserted verbatim.
+  const child = spawn(process.execPath, [
+    fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url)),
+    fileURLToPath(new URL('../src/mcp.ts', import.meta.url)),
+  ], {
+    env: { PATH: process.env.PATH || '', OPENWORKSPACE_HOME: store.directory },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let stdout = '';
+  const response = await new Promise<unknown>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('initialize response timeout')), 30000);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      for (const line of stdout.split('\n')) {
+        try {
+          const parsed = JSON.parse(line) as { id?: unknown; result?: unknown };
+          if (parsed.id === 1 && parsed.result !== undefined) {
+            clearTimeout(timer);
+            resolve(parsed.result);
+            return;
+          }
+        } catch { /* partial line or log noise */ }
+      }
+    });
+    child.on('error', reject);
+    child.stdin?.write(`${JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'openworkspace-test', version: '1.0.0' } },
+    })}\n`);
+  });
+  const instructions = (response as { instructions?: unknown }).instructions;
+  assert.equal(typeof instructions, 'string');
+  assert.match(instructions as string, /Relevant past lessons: /);
+  assert.match(instructions as string, /Startup proof lesson/);
 });

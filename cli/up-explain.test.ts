@@ -68,7 +68,7 @@ describe("explainServices (saf)", () => {
     expect(items).toHaveLength(1)
     expect(items[0].explanation.diffs).toEqual([])
     expect(items[0].explanation.running).toMatchObject({ lstart: "matched" })
-    expect(items[0].explanation.neden).toContain("add an M3 probe")
+    expect(items[0].explanation.reason).toContain("add an M3 probe")
   })
 
   test("config diffs + reason priority", () => {
@@ -85,7 +85,7 @@ describe("explainServices (saf)", () => {
     expect(diffs).toContain("command changed")
     expect(diffs).toContain("port changed")
     expect(diffs).toContain("port 3002 not listening")
-    expect(items[0].explanation.neden).toContain("ow restart a")
+    expect(items[0].explanation.reason).toContain("ow restart a")
   })
 
   test("dead/unrecorded/undefined + lstart verdicts", () => {
@@ -104,13 +104,13 @@ describe("explainServices (saf)", () => {
     })
     const byName = new Map(items.map((item) => [item.service, item.explanation]))
     expect(byName.get("a")?.running).toMatchObject({ lstart: "dead" })
-    expect(byName.get("a")?.neden).toContain("ow restart a")
+    expect(byName.get("a")?.reason).toContain("ow restart a")
     expect(byName.get("ghost")?.running).toMatchObject({ lstart: "mismatch" })
     expect(byName.get("ghost")?.diffs.join("\n")).toContain("lstart mismatch")
     expect(byName.get("new")?.running).toBeNull()
-    expect(byName.get("new")?.neden).toContain("ow up new")
+    expect(byName.get("new")?.reason).toContain("ow up new")
     expect(byName.get("ghost")?.expected).toBeNull()
-    expect(byName.get("ghost")?.neden).toContain("ow down ghost")
+    expect(byName.get("ghost")?.reason).toContain("ow down ghost")
   })
 
   test("blind lstart + dirty checkout + UNVERIFIED rev", () => {
@@ -133,7 +133,7 @@ describe("explainServices (saf)", () => {
     })
     expect(items[0].explanation.running).toMatchObject({ lstart: "unknown" })
     expect(items[0].explanation.diffs.join("\n")).toContain("started with dirty checkout (rev=abc)")
-    expect(items[0].explanation.neden).toContain("no safe action")
+    expect(items[0].explanation.reason).toContain("no safe action")
     const lines = formatExplanation(items[0])
     expect(lines.join("\n")).toContain("rev=abc(observed)+dirty")
     const noRev = explainServices({
@@ -262,12 +262,12 @@ describe("ps --explain CLI", () => {
       }
       const payload = JSON.parse(io.out.join("\n")) as {
         services: { name: string }[]
-        explanations: { service: string; explanation: { expected: unknown; running: unknown; diffs: unknown[]; provenance: Record<string, unknown>; neden: string } }[]
+        explanations: { service: string; explanation: { expected: unknown; running: unknown; diffs: unknown[]; provenance: Record<string, unknown>; reason: string } }[]
       }
       expect(payload.services.map((svc) => svc.name)).toEqual(["a"])
       expect(payload.explanations).toHaveLength(1)
       const explanation = payload.explanations[0].explanation
-      expect(Object.keys(explanation).sort()).toEqual(["artifacts", "diffs", "expected", "neden", "provenance", "readiness", "running"])
+      expect(Object.keys(explanation).sort()).toEqual(["artifacts", "diffs", "expected", "provenance", "readiness", "reason", "running"])
       expect(JSON.stringify(payload)).not.toContain("hunter2")
       expect(JSON.stringify(explanation.provenance)).not.toContain("hunter2")
     } finally {

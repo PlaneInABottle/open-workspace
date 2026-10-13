@@ -298,7 +298,7 @@ export type Explanation = {
   /** Recorded provenance verbatim (masked shapes/names by construction). */
   provenance: Provenance | null
   /** Single reason line (human `reason:` body, no prefix). */
-  neden: string
+  reason: string
   /** M3 readiness: masked definition + last-known result (never executed). */
   readiness: ExplainReadiness
   /** M-C build identity (reduced from the recorded map: masked-basename +
@@ -398,16 +398,16 @@ export const explainServices = (opts: {
     const rev = provenance?.checkout?.rev
     if (rev !== undefined && provenance?.checkout?.dirty === true) diffs.push(`started with dirty checkout (rev=${rev})`)
     const hasConfigDiff = diffs.some((line) => line.startsWith("command changed") || line.startsWith("cwd changed") || line.startsWith("port changed") || line.startsWith("env names changed"))
-    let neden: string
-    if (rec === undefined) neden = `no record → start with ow up ${name}`
-    else if (exp === undefined) neden = `not in definition → stop with ow down ${name}`
-    else if (verdict === "mismatch") neden = "lstart mismatch — suspected pid reuse, clean with ow down"
-    else if (verdict === "dead") neden = `not running → inspect with ow logs ${name}, refresh with ow restart ${name}`
-    else if (verdict === "unknown") neden = "pid unverifiable (lstart unknown) — no safe action"
-    else if (hasConfigDiff) neden = `recorded command/cwd/port changed → refresh with ow restart ${name}`
-    else if (view?.status === "running" && rec.port !== undefined) neden = "UP but no /endpoint → readiness undefined, add an M3 probe"
-    else if (view?.status === "running") neden = "running (port undefined, no TCP expected)"
-    else neden = "running, no known issues"
+    let reason: string
+    if (rec === undefined) reason = `no record → start with ow up ${name}`
+    else if (exp === undefined) reason = `not in definition → stop with ow down ${name}`
+    else if (verdict === "mismatch") reason = "lstart mismatch — suspected pid reuse, clean with ow down"
+    else if (verdict === "dead") reason = `not running → inspect with ow logs ${name}, refresh with ow restart ${name}`
+    else if (verdict === "unknown") reason = "pid unverifiable (lstart unknown) — no safe action"
+    else if (hasConfigDiff) reason = `recorded command/cwd/port changed → refresh with ow restart ${name}`
+    else if (view?.status === "running" && rec.port !== undefined) reason = "UP but no /endpoint → readiness undefined, add an M3 probe"
+    else if (view?.status === "running") reason = "running (port undefined, no TCP expected)"
+    else reason = "running, no known issues"
     const spec = exp?.readiness
     const readiness: ExplainReadiness =
       spec === undefined
@@ -419,7 +419,7 @@ export const explainServices = (opts: {
             needsPort: spec.needsPort,
             last: readRecordedReadiness(rec),
           }
-    return { service: name, explanation: { expected, running, diffs, provenance, neden, readiness, artifacts: reduceArtifactMap(rec?.artifactDigests) } }
+    return { service: name, explanation: { expected, running, diffs, provenance, reason, readiness, artifacts: reduceArtifactMap(rec?.artifactDigests) } }
   })
 }
 
@@ -474,7 +474,7 @@ export const formatExplanation = (item: ServiceExplanation): string[] => {
     const chips = explanation.artifacts.shown.map((entry) => `${entry.base}@${entry.digest}`).join(", ")
     lines.push(`  build: ${chips}${explanation.artifacts.rest > 0 ? ` (+${explanation.artifacts.rest} more)` : ""}`)
   }
-  lines.push(`  reason: ${explanation.neden}`)
+  lines.push(`  reason: ${explanation.reason}`)
   return lines
 }
 

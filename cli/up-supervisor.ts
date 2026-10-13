@@ -196,6 +196,11 @@ export type UpRunOptions = {
    * (lets embedders/tests pin it); `undefined` reads the running binary's
    * sidecar, `null`/missing sidecar records nothing. */
   build?: UpBuildInfo | null
+  /** Supervisor boot instant for the top-level `startedAt` (the entry
+   * point passes its lock `startedAt`; tests leave it unset and the
+   * runner captures boot itself — never absent). Per-service `startedAt`
+   * stays per-process; only the top level is the boot clock. */
+  supervisorStartedAt?: string
   /** When present and enabled, an OTLP/HTTP receiver runs for the
    * supervisor's lifetime. Absent → tracing is a no-op (no listener,
    * no `.ow/traces/`, no warnings). Failures are warn-only (D7). */
@@ -241,15 +246,17 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
    * spontaneous failures (and never `logs command finished` noise). */
   const retiring = new Set<object>()
   const now = () => new Date().toISOString()
+  // Top-level `startedAt` is the supervisor boot clock (entry-point lock
+  // time, else captured here — never absent, never a unit's spawn time).
+  const bootAt = options.supervisorStartedAt ?? now()
   const persist = async (): Promise<void> => {
     if (!options.stateFile) return
     // A fast-exiting tail can trigger persist (via its exit handler) before
     // later services spawn: only spawned units are written, never placeholders.
     const spawned = units.filter((unit) => unit.main !== undefined || unit.tail !== undefined)
-    const first = spawned[0]?.main ?? spawned[0]?.tail
     const state = {
       version: 1,
-      startedAt: first?.startedAt ?? now(),
+      startedAt: bootAt,
       services: spawned.map((unit) => toUnitState(unit.svc, unit.main, unit.tail, portConflicts.get(unit.svc.name) === true, unit.provenance, unit.lastReadiness, unit.artifactDigests)),
       ...(build === null ? {} : { build }),
     }
@@ -530,9 +537,11 @@ export const persistMerged = async (supervisorFile: string, state: { version: 1;
     return
   }
   const build = state.build ?? onDisk.build
+  // Fresh top-level `startedAt` wins (supervisor boot clock): the old
+  // sticky on-disk override is dropped. Down paths pass the on-disk state
+  // back through here, so their mark-write preserves it byte-identically.
   await writeSupervisorState(supervisorFile, {
     ...state,
-    startedAt: onDisk.startedAt,
     services: mergePreservingSettled(onDisk.services, state.services),
     ...(build === undefined ? {} : { build }),
   })

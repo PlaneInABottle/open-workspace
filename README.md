@@ -68,7 +68,7 @@ The `ow` CLI keeps its own repo-local state in `<root>/.ow/` (0700/0600), and it
 - **Bounded discovery:** manifests, guidance filenames, script **names** and Compose-file presence per registered root; hidden/dependency/symlinked entries skipped; found executables shown separately from unverified runtime/readiness.
 - **Private project state:** one strict schema, explicit `roots` arrays, no versioned upgrades; unknown shapes fail closed and stay byte-identical.
 
-Owned-environment start/stop with readiness (`environment_up`/`environment_down`) and receipt-bound verification of one repo-native script (`environment_verify`) are available over MCP and the dashboard, authorized by your assistant's permission model and recorded in recent activity. Docker is presence-only inventory; commands, logs and process control stay in your own shell.
+Owned-environment start/stop with readiness (`environment_up`/`environment_down`) and receipt-bound verification of one repo-native script (`environment_verify`) are available over MCP and the dashboard, authorized by your assistant's permission model and recorded in recent activity. One owner per service/port: start refuses a held port (never kills, never reassigns) and stop touches only owned processes — foreign listeners are never touched. Docker is presence-only inventory; commands, logs and process control stay in your own shell.
 
 ## Security boundary
 

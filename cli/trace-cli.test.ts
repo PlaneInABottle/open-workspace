@@ -71,7 +71,9 @@ describe("trace list view", () => {
       expect(lines[2].startsWith("a1b2c3d4")).toBe(true)
       const tailed = await runTrace(opts(root, { tail: 2, minSpans: 1 }))
       expect(tailed.code).toBe(0)
-      expect(tailed.stdout.split("\n").length).toBe(2)
+      const tailedLines = tailed.stdout.split("\n")
+      expect(tailedLines.length).toBe(3)
+      expect(tailedLines[2]).toBe("(omitted: 1 older traces (raise --tail))")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -518,7 +520,7 @@ describe("trace quiet paths", () => {
       expect(human.stdout).toBe(`no traces (.ow/ not found — searched: ${root}; run from the workspace root or pass --file)`)
       const asJson = await runTrace(opts(root, { json: true }))
       expect(asJson.code).toBe(0)
-      expect(asJson.stdout).toBe('{"traces":[]}')
+      expect(asJson.stdout).toBe('{"traces":[],"window":null}')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -533,7 +535,7 @@ describe("trace quiet paths", () => {
       expect(human.code).toBe(0)
       expect(human.stdout).toBe("tracing off (no trace: block in ow.yaml)")
       const asJson = await runTrace(opts(root, { json: true }))
-      expect(asJson.stdout).toBe('{"traces":[]}')
+      expect(asJson.stdout).toBe('{"traces":[],"window":null}')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -548,10 +550,102 @@ describe("trace quiet paths", () => {
       expect(human.code).toBe(0)
       expect(human.stdout).toBe("no traces (no spans yet)")
       const asJson = await runTrace(opts(root, { json: true }))
-      expect(asJson.stdout).toBe('{"traces":[]}')
+      expect(asJson.stdout).toBe('{"traces":[],"stored":0,"reason":"empty-store","window":null}')
       const withId = await runTrace(opts(root, { traceId: TRACE_A }))
       expect(withId.code).toBe(0)
       expect(withId.stdout).toBe("no traces (no spans yet)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("trace false-empty split + truncation + window notice", () => {
+  const oneSpan = (now: number) => [
+    makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 60_000), endNano: ns(now - 59_000) }),
+  ]
+
+  test("filter-empty names the stored count instead of claiming nothing (confusion guard)", async () => {
+    const root = await tempRoot()
+    try {
+      await seedRows(root, oneSpan(Date.now()))
+      const human = await runTrace(opts(root, { service: "nope", minSpans: 1 }))
+      expect(human.code).toBe(0)
+      expect(human.stdout).toBe("no traces (no matches; 1 spans stored)")
+      const asJson = await runTrace(opts(root, { service: "nope", minSpans: 1, json: true }))
+      expect(JSON.parse(asJson.stdout)).toEqual({ traces: [], returned: 0, total: 0, window: null })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("tail truncation notices + returned/total on both shapes", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      await seedRows(root, [
+        makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), startNano: ns(now - 300_000), endNano: ns(now - 299_000) }),
+        makeSpan({ traceId: TRACE_B, spanId: "b1".padEnd(16, "0"), startNano: ns(now - 200_000), endNano: ns(now - 199_000) }),
+        makeSpan({ traceId: TRACE_C, spanId: "c1".padEnd(16, "0"), startNano: ns(now - 100_000), endNano: ns(now - 99_000) }),
+      ])
+      const human = await runTrace(opts(root, { tail: 2, minSpans: 1 }))
+      expect(human.code).toBe(0)
+      const lines = human.stdout.split("\n")
+      expect(lines.length).toBe(3)
+      expect(lines[2]).toBe("(omitted: 1 older traces (raise --tail))")
+      const asJson = JSON.parse((await runTrace(opts(root, { tail: 2, minSpans: 1, json: true }))).stdout) as {
+        traces: unknown[]
+        returned: number
+        total: number
+      }
+      expect(asJson.traces.length).toBe(2)
+      expect(asJson.returned).toBe(2)
+      expect(asJson.total).toBe(3)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--since notice rides stderr on human renders, never on --json", async () => {
+    const root = await tempRoot()
+    try {
+      await seedRows(root, oneSpan(Date.now()))
+      const human = await runTrace(opts(root, { sinceMs: 3_600_000, since: "1h", minSpans: 1 }))
+      expect(human.code).toBe(0)
+      expect(human.stderr).toContain("window: --since 1h (cutoff ")
+      expect(human.stdout).not.toContain("window:")
+      const asJson = await runTrace(opts(root, { sinceMs: 3_600_000, since: "1h", minSpans: 1, json: true }))
+      expect(asJson.code).toBe(0)
+      expect(asJson.stderr).toBe("")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--json envelopes carry window (null unwindowed, frozen object with now injection)", async () => {
+    const root = await tempRoot()
+    const now = Date.parse("2026-10-05T12:00:00.000Z")
+    const window = { since: "1h", cutoff: "2026-10-05T11:00:00.000Z" }
+    try {
+      await seedRows(root, oneSpan(Date.now()))
+      const list = JSON.parse(
+        (await runTrace(opts(root, { json: true, minSpans: 1, since: "1h", sinceMs: 3_600_000, now }))).stdout,
+      ) as { traces: unknown[]; window: unknown }
+      expect(list.traces.length).toBe(1)
+      expect(list.window).toEqual(window)
+      const tree = JSON.parse(
+        (await runTrace(opts(root, { traceId: TRACE_A, json: true, since: "1h", sinceMs: 3_600_000, now }))).stdout,
+      ) as { trace: string; window: unknown }
+      expect(tree.window).toEqual(window)
+      const bare = await tempRoot()
+      try {
+        const quiet = JSON.parse(
+          (await runTrace(opts(bare, { json: true, since: "1h", sinceMs: 3_600_000, now }))).stdout,
+        ) as { traces: unknown[]; window: unknown }
+        expect(quiet).toEqual({ traces: [], window })
+      } finally {
+        await rm(bare, { recursive: true, force: true })
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -576,7 +670,7 @@ describe("trace --json envelopes", () => {
       const list = JSON.parse((await runTrace(opts(root, { json: true, minSpans: 1 }))).stdout) as {
         traces: Record<string, unknown>[]
       }
-      expect(Object.keys(list).sort()).toEqual(["traces"])
+      expect(Object.keys(list).sort()).toEqual(["returned", "total", "traces", "window"])
       expect(Object.keys(list.traces[0]).sort()).toEqual(
         ["durMs", "root", "services", "spans", "startedAt", "status", "traceId"].sort(),
       )
@@ -585,7 +679,7 @@ describe("trace --json envelopes", () => {
         spans: Record<string, unknown>[]
         truncated: boolean
       }
-      expect(Object.keys(tree).sort()).toEqual(["spans", "trace", "truncated"])
+      expect(Object.keys(tree).sort()).toEqual(["returned", "spans", "total", "trace", "truncated", "window"])
       expect(Object.keys(tree.spans[0]).sort()).toEqual(
         ["attrs", "depth", "durMs", "endNano", "kind", "name", "parentSpanId", "service", "spanId", "startNano", "status", "t", "traceId"].sort(),
       )
@@ -1338,7 +1432,7 @@ describe("trace doctor line", () => {
     return port
   }
 
-  test("listening receiver keeps the healthy line byte-identical", async () => {
+  test("listening receiver keeps the healthy line (spans retained)", async () => {
     const listener = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) })
     const root = await tempRoot()
     try {
@@ -1348,7 +1442,7 @@ describe("trace doctor line", () => {
       ], [], yamlWithPort(listener.port))
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toBe(`open (port ${listener.port}, 1 spans, last span 0s ago)`)
+      expect(open.detail).toBe(`open (port ${listener.port}, 1 spans retained, last span 0s ago)`)
     } finally {
       listener.stop()
       await rm(root, { recursive: true, force: true })
@@ -1365,7 +1459,7 @@ describe("trace doctor line", () => {
       ], [], yamlWithPort(port))
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toContain(`open (port ${port}, 1 spans,`)
+      expect(open.detail).toContain(`open (port ${port}, 1 spans retained,`)
       expect(open.detail).toContain(`hint: receiver :${port} not listening`)
       expect(doctorFails([{ name: "trace", ok: false }])).toBe(false)
     } finally {
@@ -1384,7 +1478,7 @@ describe("trace doctor line", () => {
       // Python-only setup (no java markers), spans present, jar absent → enabled, no jar note
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toMatch(new RegExp(`open \\(port ${port}, 1 spans, last span .* ago\\)`))
+      expect(open.detail).toMatch(new RegExp(`open \\(port ${port}, 1 spans retained, last span .* ago\\)`))
       expect(open.detail).not.toContain("jar")
       const bare = await tempRoot()
       try {
@@ -1412,7 +1506,7 @@ describe("trace doctor line", () => {
       await writeFile(join(root, ".ow", "otel", "opentelemetry-javaagent.jar"), "")
       const open = await checkTraceDoctor(root)
       expect(open.ok).toBe(true)
-      expect(open.detail).toContain(`open (port ${port}, 0 spans)`)
+      expect(open.detail).toContain(`open (port ${port}, 0 spans retained)`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1425,7 +1519,7 @@ describe("trace doctor line", () => {
       await seedRows(root, [], [], yamlWithPort(port))
       const silent = await checkTraceDoctor(root)
       expect(silent.ok).toBe(true)
-      expect(silent.detail).toBe(`open (port ${port}, 0 spans). hint: no spans — is the service up? ow ps. hint: receiver :${port} not listening — another process may hold the port or the receiver failed to start`)
+      expect(silent.detail).toBe(`open (port ${port}, 0 spans retained). hint: no spans — is the service up? ow ps. hint: receiver :${port} not listening — another process may hold the port or the receiver failed to start`)
       const now = Date.now()
       await seedRows(root, [
         makeSpan({ traceId: TRACE_A, spanId: "a1".padEnd(16, "0"), name: "GET /secret-hint-canary", startNano: ns(now - 5_000), endNano: ns(now - 4_000) }),

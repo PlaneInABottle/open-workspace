@@ -14,7 +14,7 @@ export async function runMcpBridge(): Promise<void> {
   // Base instructions stay well under the 760-byte cap so the optional
   // learning-loop line below still fits; per-tool detail lives in each tool
   // description and in the lazily fetched onboarding_plan text.
-  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicit repository roots; workspace_register reads bounded metadata and re-registering replaces roots. The service cannot install tools. The dashboard records what ran. Your harness keeps commands, logs and process control — MCP is only environment orchestration plus memory. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically. Mirror major milestones to the workspace milestones file; micro-steps may stay native.';
+  const baseInstructions = 'A local workspace companion, not a coding agent. Projects hold explicit repository roots; workspace_register reads bounded metadata and re-registering replaces roots. The service cannot install tools. The dashboard records what ran. Your harness keeps commands, logs and process control — MCP is only environment orchestration plus memory. Invoke learn-from-mistake on demand to write reusable skill and AGENTS.md guidance; it never runs automatically.';
   let instructions = baseInstructions;
   try {
     const suffix = await learningInstructionSuffix(stateDirectory());

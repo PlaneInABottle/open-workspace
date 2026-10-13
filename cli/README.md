@@ -80,6 +80,18 @@ tree loader (`tree.ts`); `ow` subcommands map 1:1 to those views.
 
 `join.ts` is fail-soft: unreadable DB or missing message table yields records with `intent: null` plus a stderr warning, never a crash. The DB schema is OpenCode-internal; if a future version moves the table, only intent attachment degrades — shell logging is unaffected.
 
+Grouped `show` counts records, not commands: the task header
+`(N records, M failed)` sums every joined row (shell commands, file
+edits, tool calls alike), and `Σruns` over groups always reconciles to
+the input row count. `durationMs` scopes narrower: `stuck` `slow:` only
+considers command rows with `durationMs ≥ 30s` (edits/reads never
+surface there); retries key on command signatures. `--since` windows
+announce themselves (`window: --since <raw> (cutoff <ISO>)` on stderr,
+human only) and ride `--json` as the additive `window: {since, cutoff}`
+(or null; absent only on the no-state early-empty `logs` path, where no
+window applies); empty renders stay honest (`no X (store: …; window: …)`
+naming the searched store, never a silent blank or a false empty).
+
 ## Service supervision (`ow up/down/ps/logs`)
 
 A user-agent-written `ow.yaml` at a repo root declares dev services; `ow`
@@ -208,7 +220,12 @@ healthy services are never signaled.
 - `ow reconcile --check` is the witness line: it never mutates, only reports
   `missing | extra | stopped | config-mismatch(cmd-shape/cwd/port/env-names/
   depends_on) | lstart-mismatch | foreign-port` plus the suggested open
-  command (`ow up/restart/down <name>`). Exit 0 in sync, 1 on drift, 2 on
+  command (`ow up/restart/down <name>`). A descendant listener (the
+  supervisor records the launcher pid; forking launchers put the listener
+  on a child) is owned, not foreign; a partly foreign port reports
+  `foreign-port` with additive `ownership: "shared"` (JSON only) and the
+  hint `port <p> also held by a foreign listener (UNVERIFIED) — no kill,
+  verify the owner`. Exit 0 in sync, 1 on drift, 2 on
   usage. `--json` adds the `reconcile: {inSync, drifts: [{service, kind,
   expected?, running?, hint}]}` envelope (additive). Probes run only on the
   witness verbs: `--probe` works with `reconcile --check`, `preflight`,
@@ -239,7 +256,7 @@ For each service it prints `expected:` (ow.yaml cmd-shape/cwd/port/env-names) vs
 `readiness:` (probe definition + last-known) + `diff:` lines + a single `reason:`
 line. `--json` adds
 `{services, explanations: [{service, explanation:
-{expected, running, diffs[], provenance, neden, readiness}}]}`.
+{expected, running, diffs[], provenance, reason, readiness}}]}`.
 `reconcile --check`
 also shows the recorded rev + live checkout rev (`diff: revision
 <old>→<new> (live checkout; no restart needed, report)` — not a
@@ -263,6 +280,13 @@ tcp|http-health|probe, ok, note?, waitedSec}`); `reconcile --check
 --probe` reports drift + `readiness: ready/not-ready` (total ≤60s
 soft budget — the last-starting probe may exceed by one timeout; on overrun
 `unmeasured (timeout-budget)`; exit follows drift).
+Probe notes classify strictly (no tolerant parser): `no JSON object
+(expected first stdout object)` (nothing to parse), `invalid JSON
+(expected first stdout object)` (unparseable), `invalid contract
+(ready must be true/false)` (parsed, `ready` not boolean); stdout
+claiming `ready:true` with a nonzero exit reports
+`ready:true on stdout but exit code N` (the claim is suspect, never
+trusted).
 If `--health` collides with a defined probe, exit 2. Results are recorded
 via the request channel (`lastReadiness`, pid-verified); `ps --explain`
 shows the definition + result, never runs it.
@@ -323,7 +347,7 @@ missing `side_effect` ≡ `unknown` (no warning); the counts are render-only
 `step_signature` 1..128ch opaque string — all three additive-optional; a
 malformed value breaks the line) is grouped into a `scenario: <name>` →
 `attempt <N>: <stage> (<status>[, unconfirmed])` tree: explicit fields win,
-otherwise the run-name suffix (`-attempt<N>`/`-deneme<N>`) is the fallback,
+otherwise the run-name suffix (`-attempt<N>`) is the fallback,
 and with neither the line stays unattributed (in the flat list, never
 grouped). Freshness ignores these fields (orthogonal). A missing file is
 exit 1, corrupt lines are skipped as `corrupt-line: N (skipped)`, an
@@ -366,12 +390,20 @@ written (`bundle: <relative-path>`), 1 nothing readable (no file
 written), 2 usage. Sections with no data render an explicit
 `empty: <reason>` line, never silence.
 
+Composition runs in a killable child under a 60s deadline (timers
+alone cannot interrupt synchronous in-process work, so the parent
+SIGKILLs the child on expiry): timeout prints
+`export: timed out after <N>ms (no bundle written)`, exits 1, and
+writes no file. Cooperative phase checks abort slow-but-moving runs
+at section boundaries with the same line.
+
 ### Mechanical failure list (M-D, read-only)
 
-`ow failures [--since 1h|24h|7d] [--json]` lists repeat failure classes
+`ow failures [--since 30m|3h|1d|1w] [--json]` lists repeat failure classes
 across every retained checkpoint run. Candidates are post-freshness
-non-confirmed envelopes, optionally filtered by envelope `at`
-(`--since` outside the locked set is a usage error, exit 2). Buckets use
+non-confirmed envelopes, optionally filtered by envelope `at` (any
+`<amount>m|h|d|w` window; `--since` outside the shared grammar is a
+usage error, exit 2). Buckets use
 strictly the runner-declared tuple `(stage, status, stale_reason,
 step_signature)` — a missing step forms its own bucket and renders
 as `-` in human output (`step: null` in `--json`, so a literal
@@ -381,11 +413,13 @@ here, never in `show`: a `(scenario, stage)` partition renders only with
 2+ non-confirmed occurrences (explicit lineage fields win, run-name
 suffix is the fallback, unattributed lines partition under no scenario);
 singletons fold into one fixed line, `no-repeat: <n> unique findings
-unlisted`. Empty output is `no findings`. Exit is 0 except when files
+unlisted`. Empty output names its store (`no findings (store: <dir>;
+window: <raw|all>)`). Exit is 0 except when files
 exist but nothing is readable (all corrupt/capped → exit 1). The command
 never executes, writes, or prunes (bounded file reads only). `--json`
 returns additive English keys `{groups: [{stage, status, stale_reason,
-step, count}], singletons, skipped: {corrupt, overCap}}`.
+step, count}], singletons, skipped: {corrupt, overCap}, window}` (`window`
+is `{since, cutoff}` when `--since` filters, else null).
 
 ### Preflight gate (P2-B, read-only)
 `ow preflight [--json] [--probe] [--file ow.yaml]` is the single gate
@@ -527,7 +561,9 @@ verbs. INERT scaffold files refuse on all three verbs (`record`,
 `contract check`, `scenario run` → exit 2 `INERT: <file>`): a
 placeholder contract is meaningless — edit real probes first.
 Unknown scenario names, unverified-only scenarios, and missing
-files fail closed without writing.
+files fail closed without writing. A recorded not-ready probe also
+prints `probe not-ready: <id> (<note>)` (witness line — exit stays 0,
+a not-ready probe is recorded evidence, not a record failure).
 
 `ow contract check [--json] [--file]` is the ship-order gate: it
 recomputes each deterministic scenario's definition digest and
@@ -759,8 +795,26 @@ never installs anything, never spawns app code.
 
 State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.
+Two clocks: top-level `startedAt` is the supervisor boot (the entry
+lock time — a restart never moves it), per-service `startedAt` is the
+process spawn (a restart refreshes it). `down` mark-writes preserve
+both byte-identically; old files (first-unit-derived top level) still
+parse and normalize on the next persist.
+
+`doctor --json` adds the build `identity` envelope beside `checks`:
+`installed` (the running binary's sidecar: short-8 `sha8`/`binary8`,
+`dirty`, `time` — null with no sidecar) vs the recorded `supervisor`
+block (`state` recorded/absent/unreadable, `startedAt`, shorts), plus
+`match` (digests compared internally, never emitted: true/false/null).
+Human output prints two plain `identity:` lines outside the check
+lines, so the exit rule never sees them.
 `ow up` also ensures the repo-root `.gitignore` covers `.ow/`
 (create-or-append, warn-only) so tooling state never gets committed.
+Writers announce their root (`state dir: <root>/.ow` on stderr,
+suppressed under `--json`): `up` (except `--check`), `restart`,
+`down`, `record`, `contract`, `scenario run`. A nested state dir (a
+`.ow`-named root or an ancestor workspace) warns — writers stay put
+while readers walk up.
 Readers (`ps`/`logs`/`trace`/`down`/`doctor`) resolve the root upward to the
 nearest real `.ow/` (explicit `--file` always wins); writers stay put — `ow up`
 creates state in the cwd only, never in a parent repo.

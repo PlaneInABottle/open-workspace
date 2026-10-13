@@ -14,7 +14,7 @@
  * honest-empty exit 0 (a listing surface), while malformed/ambiguous ids
  * are usage errors. */
 
-import { joinSession, latestSession, type EnrichedRecord } from "./join"
+import { joinSession, latestSession, sinceWindow, windowNotice, type EnrichedRecord, type SinceWindow } from "./join"
 import { signature } from "./signature"
 import { readSpansFile, tracePaths } from "./trace-store"
 import { buildTraceTree, formatDur, groupSpansByTrace, HEX_ID } from "./trace-query"
@@ -88,6 +88,10 @@ export type TimelineOptions = {
   traceId?: string
   tail?: number
   sinceMs?: number | null
+  /** Raw `--since` flag (echoed in the human-only window notice + JSON window). */
+  since?: string
+  /** Injected clock for window + cutoff (default live; tests pin it). */
+  now?: number
   json?: boolean
 }
 
@@ -102,17 +106,26 @@ type TimelineEvent = {
   depth?: number
 }
 
-const quietEnvelope = (warnings: string[]): string => JSON.stringify({ events: [], warnings })
+const quietEnvelope = (warnings: string[], window: SinceWindow | null): string =>
+  JSON.stringify({ events: [], warnings, returned: 0, total: 0, window })
 
 export const runTimeline = async (options: TimelineOptions): Promise<TimelineResult> => {
   const json = options.json === true
+  // Assigned once records are joined (post-read renders only — the
+  // no-session quiet above stays exactly quiet).
+  let windowNote = ""
+  const joinStderr = (warnings: string[]): string =>
+    json ? "" : [warnings.join("\n"), windowNote].filter((line) => line.length > 0).join("\n")
   const ok = (stdout: string, warnings: string[]): TimelineResult => ({
     code: 0,
     stdout,
-    stderr: json ? "" : warnings.join("\n"),
+    stderr: joinStderr(warnings),
   })
   const fail = (code: number, stderr: string): TimelineResult => ({ code, stdout: "", stderr })
-  const quiet = (warnings: string[]): TimelineResult => ok(json ? quietEnvelope(warnings) : "no timeline", warnings)
+  // Empty split: no session stays the bare line; a joined-but-eventless
+  // render names it (never a silent blank).
+  const quiet = (warnings: string[], emptyNote = "no timeline", window: SinceWindow | null = null): TimelineResult =>
+    ok(json ? quietEnvelope(warnings, window) : emptyNote, warnings)
 
   const rawId = options.traceId
   let idFilter: string | null = null
@@ -128,7 +141,7 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
   const sessionID = options.sessionID ?? (logPath === undefined ? null : await latestSession(logPath))
   if (sessionID === null || sessionID === undefined) return quiet([])
 
-  const now = Date.now()
+  const now = options.now ?? Date.now()
   const { records, warnings } = await joinSession({
     dbPath: options.dbPath,
     logPath,
@@ -136,6 +149,8 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
     sinceMs: options.sinceMs ?? null,
     now,
   })
+  const timelineWindow = sinceWindow(options.since, options.sinceMs ?? null, now)
+  if (!json && timelineWindow !== null) windowNote = windowNotice(timelineWindow)
   const cutoff = options.sinceMs != null ? now - options.sinceMs : null
   const rows: AgentRow[] = []
   for (const record of records) {
@@ -182,8 +197,8 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
     const matches = [...candidates].filter((id) => id.startsWith(idFilter as string))
     if (matches.length === 0) {
       return json
-        ? ok(quietEnvelope(warnings), warnings)
-        : { code: 0, stdout: `no timeline (trace not found: ${rawId})`, stderr: warnings.join("\n") }
+        ? ok(quietEnvelope(warnings, timelineWindow), warnings)
+        : { code: 0, stdout: `no timeline (trace not found: ${rawId})`, stderr: joinStderr(warnings) }
     }
     if (matches.length > 1) {
       return fail(2, `ow: multiple traces matched (${matches.length} candidates, narrow the prefix)`)
@@ -245,7 +260,7 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
       ? Math.min(Math.max(1, options.tail), TIMELINE_MAX_TAIL)
       : TIMELINE_DEFAULT_TAIL
   const page = events.slice(-tail)
-  if (page.length === 0) return quiet(warnings)
+  if (page.length === 0) return quiet(warnings, "no timeline (no events)", timelineWindow)
 
   if (json) {
     return ok(
@@ -258,6 +273,9 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
           return row
         }),
         warnings,
+        returned: page.length,
+        total: events.length,
+        window: timelineWindow,
       }),
       warnings,
     )
@@ -268,5 +286,6 @@ export const runTimeline = async (options: TimelineOptions): Promise<TimelineRes
     const tag = event.confidence === "exact" ? " [exact]" : event.confidence === "estimated" ? " [estimated]" : ""
     return `${iso} TRACE ${event.text}${tag}`
   })
+  if (events.length > page.length) lines.push(`(omitted: ${events.length - page.length} older events (raise --tail))`)
   return ok(lines.join("\n"), warnings)
 }

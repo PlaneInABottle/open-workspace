@@ -118,10 +118,33 @@ describe("runProbe", () => {
     expect(outcome.code).toBe(1)
   })
 
-  test("invalid JSON is not-ready (stdout is not printed raw)", async () => {
-    const outcome = await runProbe({ spec: specOf(["echo", "plain text"]), cwd: "/tmp", env })
+  test("contract faults classify 3-way (no-object / unparseable / non-boolean-ready)", async () => {
+    const plain = await runProbe({ spec: specOf(["echo", "plain text"]), cwd: "/tmp", env })
+    expect(plain.ok).toBe(false)
+    expect(plain.note).toContain("no JSON object")
+    const broken = await runProbe({ spec: specOf(["printf", '{"ready": tru}']), cwd: "/tmp", env })
+    expect(broken.ok).toBe(false)
+    expect(broken.note).toContain("invalid JSON")
+    const nonBool = await runProbe({ spec: specOf(["echo", '{"ready": "yes"}']), cwd: "/tmp", env })
+    expect(nonBool.ok).toBe(false)
+    expect(nonBool.note).toContain("ready must be true/false")
+    const { classifyProbeContract } = await import("./up-probe")
+    expect(classifyProbeContract("plain")).toBe("no-object")
+    expect(classifyProbeContract('{"ready": tru}')).toBe("unparseable")
+    expect(classifyProbeContract('{"ready": "yes"}')).toBe("non-boolean-ready")
+    expect(classifyProbeContract('{"ready": true}')).toBeNull()
+  })
+
+  test("ready:true on stdout but nonzero exit names the contradiction", async () => {
+    const bun = process.execPath
+    const outcome = await runProbe({
+      spec: specOf([bun, "-e", 'console.log(JSON.stringify({ready: true, note: "all good"})); process.exit(3)']),
+      cwd: "/tmp",
+      env,
+    })
     expect(outcome.ok).toBe(false)
-    expect(outcome.note).toContain("invalid JSON")
+    expect(outcome.note).toContain("ready:true on stdout but exit code 3")
+    expect(outcome.code).toBe(3)
   })
 
   test("timeout: SINGLE-PID kill + grandchild note, exit not awaited", async () => {

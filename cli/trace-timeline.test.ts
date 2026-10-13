@@ -282,7 +282,7 @@ describe("trace-timeline json + bounds + empty", () => {
       const result = await runTimeline(tlOpts(root, log, { json: true }))
       expect(result.code).toBe(0)
       const parsed = JSON.parse(result.stdout) as { events: Record<string, unknown>[]; warnings: unknown[] }
-      expect(Object.keys(parsed).sort()).toEqual(["events", "warnings"])
+      expect(Object.keys(parsed).sort()).toEqual(["events", "returned", "total", "warnings", "window"])
       expect(Array.isArray(parsed.warnings)).toBe(true)
       for (const event of parsed.events) {
         expect(Object.keys(event).every((key) => ["ts", "kind", "text", "traceId", "confidence", "depth"].includes(key))).toBe(true)
@@ -290,7 +290,9 @@ describe("trace-timeline json + bounds + empty", () => {
       expect(JSON.stringify(parsed)).not.toMatch(/izleme|servis|kesin|tahmini|k\u00f6k/)
       expect(JSON.stringify(parsed)).not.toMatch(/[\u00e7\u011f\u0131\u015f\u00f6\u00fc\u00c7\u011e\u0130\u015e\u00d6\u00dc]/)
       const tailed = await runTimeline(tlOpts(root, log, { tail: 1 }))
-      expect(tailed.stdout.split("\n").length).toBe(1)
+      const tailedLines = tailed.stdout.split("\n")
+      expect(tailedLines.length).toBe(2)
+      expect(tailedLines[1]).toBe("(omitted: 1 older events (raise --tail))")
       const nanTail = await runTimeline(tlOpts(root, log, { tail: NaN }))
       expect(nanTail.stdout.split("\n").length).toBe(2)
     } finally {
@@ -306,9 +308,97 @@ describe("trace-timeline json + bounds + empty", () => {
       expect(human.stdout).toBe("no timeline")
       const asJson = await runTimeline(tlOpts(root, join(root, "nope.jsonl"), { sessionID: undefined, json: true }))
       expect(asJson.code).toBe(0)
-      expect(asJson.stdout).toBe('{"events":[],"warnings":[]}')
+      expect(asJson.stdout).toBe('{"events":[],"warnings":[],"returned":0,"total":0,"window":null}')
       const noSpans = await runTimeline(tlOpts(root, join(root, "nope2.jsonl")))
       expect(noSpans.code).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("joined-but-eventless render names itself (empty split)", async () => {
+    const root = await tempRoot()
+    try {
+      const log = join(root, "events.jsonl")
+      // Session resolves, but the row has no parseable time → no events.
+      await writeFile(log, `${JSON.stringify({ sessionID: "ses_tl", command: "echo hi", outcome: "success" })}\n`)
+      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
+      await writeFile(join(root, ".ow", "traces", "spans.jsonl"), "", "utf8")
+      const human = await runTimeline(tlOpts(root, log))
+      expect(human.code).toBe(0)
+      expect(human.stdout).toBe("no timeline (no events)")
+      const asJson = await runTimeline(tlOpts(root, log, { json: true }))
+      expect(JSON.parse(asJson.stdout)).toEqual({ events: [], warnings: expect.anything(), returned: 0, total: 0, window: null })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("tail truncation notices + returned/total on the events envelope", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      const log = join(root, "events.jsonl")
+      await writeFile(
+        log,
+        [
+          sidecarRow({ session: "ses_tl", at: now - 5000, command: "echo one" }),
+          sidecarRow({ session: "ses_tl", at: now - 4000, command: "echo two" }),
+          sidecarRow({ session: "ses_tl", at: now - 3000, command: "echo three" }),
+        ].join("\n") + "\n",
+      )
+      await seedSpans(root, requestBytes("api", []))
+      const human = await runTimeline(tlOpts(root, log, { tail: 2 }))
+      expect(human.code).toBe(0)
+      const lines = human.stdout.split("\n")
+      expect(lines.length).toBe(3)
+      expect(lines[2]).toBe("(omitted: 1 older events (raise --tail))")
+      const asJson = JSON.parse((await runTimeline(tlOpts(root, log, { tail: 2, json: true }))).stdout) as {
+        events: unknown[]
+        returned: number
+        total: number
+      }
+      expect(asJson.events.length).toBe(2)
+      expect(asJson.returned).toBe(2)
+      expect(asJson.total).toBe(3)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--since notice rides stderr on human renders, never on --json", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      const log = join(root, "events.jsonl")
+      await writeFile(log, `${sidecarRow({ session: "ses_tl", at: now - 5000, command: "echo hi" })}\n`)
+      await seedSpans(root, requestBytes("api", []))
+      const human = await runTimeline(tlOpts(root, log, { sinceMs: 3_600_000, since: "1h" }))
+      expect(human.code).toBe(0)
+      expect(human.stderr).toContain("window: --since 1h (cutoff ")
+      expect(human.stdout).not.toContain("window:")
+      const asJson = await runTimeline(tlOpts(root, log, { sinceMs: 3_600_000, since: "1h", json: true }))
+      expect(asJson.code).toBe(0)
+      expect(asJson.stderr).toBe("")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--json envelopes carry window (frozen object with now injection)", async () => {
+    const root = await tempRoot()
+    try {
+      const now = Date.now()
+      const frozen = Date.parse("2026-10-05T12:00:00.000Z")
+      const window = { since: "1h", cutoff: "2026-10-05T11:00:00.000Z" }
+      const log = join(root, "events.jsonl")
+      await writeFile(log, `${sidecarRow({ session: "ses_tl", at: now - 5000, command: "echo hi" })}\n`)
+      await seedSpans(root, requestBytes("api", []))
+      const asJson = JSON.parse(
+        (await runTimeline(tlOpts(root, log, { json: true, since: "1h", sinceMs: 3_600_000, now: frozen }))).stdout,
+      ) as { events: unknown[]; window: unknown }
+      expect(asJson.events.length).toBe(1)
+      expect(asJson.window).toEqual(window)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

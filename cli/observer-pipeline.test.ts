@@ -160,7 +160,7 @@ describe("groupByTask", () => {
     expect(groups[1].lines[0].runs).toBe(1)
     expect(groups[1].lines[1].runs).toBe(2)
     const text = formatGrouped(groups)
-    expect(text).toContain("task: pass the tests (3 commands, 2 failed)")
+    expect(text).toContain("task: pass the tests (3 records, 2 failed)")
     expect(text).toContain("x2")
     expect(text.match(/task: pass the tests/g)?.length).toBe(1)
   })
@@ -201,6 +201,115 @@ describe("groupByTask", () => {
     expect(groups[0].lines.length).toBe(1)
     expect(groups[0].lines[0].signature).toBe("uv run python [py:json]")
     expect(groups[0].lines[0].signature).not.toContain("trial")
+  })
+})
+
+describe("failure reasons (outcome-gated, multi, masked)", () => {
+  const fail = (command: string, messageID: string) => ({ command, outcome: "failure", intent: null, messageID, taskRef: "t" })
+
+  test("the outcome gate skips success records carrying raise text (RED-before: reason set)", () => {
+    const groups = groupByTask([
+      { command: `python -c "raise RuntimeError('boom')"`, outcome: "success", intent: null, messageID: "m1", taskRef: "t" },
+    ])
+    const line = groups[0].lines[0]
+    expect(line.failReason).toBeNull()
+    expect(line.failReasons).toEqual([])
+    expect(line.failReasonCount).toBe(0)
+    expect(line.failReasonSource).toBeNull()
+    expect(formatGrouped(groups)).not.toContain("(reason:")
+  })
+
+  test("a single reason keeps the exact legacy string", () => {
+    const groups = groupByTask([fail(`python -c "raise RuntimeError('boom')"`, "m1")])
+    const line = groups[0].lines[0]
+    expect(line.failReason).toBe("boom")
+    expect(line.failReasons).toEqual(["boom"])
+    expect(line.failReasonCount).toBe(1)
+    expect(line.failReasonSource).toBe("command-text")
+    expect(formatGrouped(groups)).toContain("(reason: boom)")
+    expect(formatGrouped(groups)).not.toContain("+1 more")
+  })
+
+  test("merged distinct reasons collapse to first + count", () => {
+    const groups = groupByTask([
+      fail(`uv run pytest a; python -c "raise RuntimeError('db down')"`, "m1"),
+      fail(`uv run pytest b; python -c "raise RuntimeError('timeout')"`, "m2"),
+    ])
+    expect(groups[0].lines.length).toBe(1)
+    const line = groups[0].lines[0]
+    expect(line.runs).toBe(2)
+    expect(line.failReason).toBe("db down")
+    expect(line.failReasons).toEqual(["db down", "timeout"])
+    expect(line.failReasonCount).toBe(2)
+    expect(formatGrouped(groups)).toContain("(reason: db down; +1 more)")
+  })
+
+  test("a third distinct reason counts beyond the stored cap", () => {
+    const groups = groupByTask([
+      fail(`uv run pytest a; python -c "raise RuntimeError('one')"`, "m1"),
+      fail(`uv run pytest b; python -c "raise RuntimeError('two')"`, "m2"),
+      fail(`uv run pytest c; python -c "raise RuntimeError('three')"`, "m3"),
+    ])
+    const line = groups[0].lines[0]
+    expect(line.failReasons).toEqual(["one", "two"])
+    expect(line.failReasonCount).toBe(3)
+    expect(formatGrouped(groups)).toContain("(reason: one; +2 more)")
+    const drill = showLine(groups, 1)
+    expect(drill).toContain("--- reasons (from command text) ---")
+    expect(drill).toContain("- one")
+    expect(drill).toContain("- two")
+    expect(drill).toContain("(+1 more)")
+  })
+
+  test("reasons are masked before emit (secret shapes never reach reason output)", () => {
+    const groups = groupByTask([fail(`python -c "raise ValueError('token=hunter2 bad')"`, "m1")])
+    const line = groups[0].lines[0]
+    expect(line.failReason).toBe("token=*** bad")
+    expect(line.failReasons).toEqual(["token=*** bad"])
+    const drill = showLine(groups, 1)
+    expect(drill).toContain("- token=*** bad")
+    // (The raw `record:` variant keeps pre-existing raw-command behavior;
+    // the masked invariant covers the new reason surfaces only.)
+    expect(formatGrouped(groups)).toContain("(reason: token=*** bad)")
+    const wire = JSON.parse(JSON.stringify(line)) as Record<string, unknown>
+    expect(JSON.stringify([wire["failReason"], wire["failReasons"]])).not.toContain("hunter2")
+  })
+
+  test("wire carries the additive reason keys", () => {
+    const groups = groupByTask([fail(`python -c "raise RuntimeError('boom')"`, "m1")])
+    const wire = JSON.parse(JSON.stringify(groups[0].lines[0])) as Record<string, unknown>
+    expect(wire["failReason"]).toBe("boom")
+    expect(wire["failReasons"]).toEqual(["boom"])
+    expect(wire["failReasonCount"]).toBe(1)
+    expect(wire["failReasonSource"]).toBe("command-text")
+  })
+})
+
+describe("grouped units (records + durationMs scope)", () => {
+  test("reconciliation: group runs sum to the command + file-edit record count", () => {
+    const records = [
+      { command: "uv run pytest a", outcome: "failure", intent: null, messageID: "m1", taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", intent: null, messageID: "m2", taskRef: "t" },
+      { kind: "file-edit", tool: "edit", path: "src/a.ts", outcome: "completed", messageID: "m3", taskRef: "t" },
+      { kind: "file-edit", tool: "edit", path: "src/b.ts", outcome: "completed", messageID: "m4", taskRef: "t" },
+    ]
+    const groups = groupByTask(records)
+    const runs = groups.reduce((sum, group) => sum + group.runs, 0)
+    const lineRuns = groups.flatMap((group) => group.lines).reduce((sum, line) => sum + line.runs, 0)
+    expect(runs).toBe(4)
+    expect(lineRuns).toBe(4)
+    expect(formatGrouped(groups)).toContain("(4 records, 1 failed)")
+  })
+
+  test("durationMs scope: slow signals come from command records only", async () => {
+    const { stuckReport } = await import("./join")
+    const report = await stuckReport({
+      records: [
+        { kind: "file-edit", tool: "edit", path: "src/a.ts", outcome: "completed", durationMs: 61000, timestamp: "2026-10-05T10:03:00.000Z" },
+      ] as never,
+      sessionID: "nope-session",
+    })
+    expect(report.slow).toEqual([])
   })
 })
 
@@ -539,6 +648,104 @@ describe("doctor", () => {
     expect(upStale?.ok).toBe(false)
     expect(upStale?.detail).toContain("stale")
     await clearLock(paths.lockFile)
+  })
+})
+
+describe("doctor build identity", () => {
+  test("shape: installed shorts + supervisor record + match (match 3-ways)", async () => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { doctorIdentity } = await import("./doctor")
+    const { ensureUpStateDir, upPaths, writeSupervisorState } = await import("./up-state")
+    const dir = await mkdtemp(joinPath(tmpdir(), "doctor-id-"))
+    const paths = upPaths(dir)
+    await ensureUpStateDir(paths.stateDir)
+    const installed = { sha: "a1b2c3d4e5f60718293a4b5c6d7e8f90", digest: "d".repeat(64), time: "2026-10-01T00:00:00Z", dirty: false }
+    // No state file → supervisor absent, match unknown.
+    expect(await doctorIdentity({ upRoot: dir, installed })).toEqual({
+      installed: { sha8: "a1b2c3d4", dirty: false, time: "2026-10-01T00:00:00Z", binary8: "d".repeat(8) },
+      supervisor: { state: "absent", startedAt: null, sha8: null, time: null },
+      match: null,
+    })
+    await writeSupervisorState(paths.supervisorFile, {
+      version: 1,
+      startedAt: "2026-10-07T00:00:00.000Z",
+      services: [],
+      build: { sha: "a1b2c3d4e5f60718293a4b5c6d7e8f90", digest: "d".repeat(64), time: "2026-10-07T00:00:00Z" },
+    })
+    // Same digest → match.
+    const same = await doctorIdentity({ upRoot: dir, installed })
+    expect(same.supervisor).toMatchObject({ state: "recorded", startedAt: "2026-10-07T00:00:00.000Z", sha8: "a1b2c3d4" })
+    expect(same.match).toBe(true)
+    // Differing digest → mismatch (compared internally, shorts on the wire).
+    const other = await doctorIdentity({ upRoot: dir, installed: { ...installed, digest: "e".repeat(64) } })
+    expect(other.match).toBe(false)
+    expect(other.installed?.binary8).toBe("e".repeat(8))
+    // Recorded but nothing installed → unknown.
+    const none = await doctorIdentity({ upRoot: dir, installed: null })
+    expect(none.installed).toBeNull()
+    expect(none.match).toBeNull()
+  })
+
+  test("missing sidecar reads null installed; dirty flag parses", async () => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { doctorIdentity, formatIdentity } = await import("./doctor")
+    const { readBuildSidecar } = await import("./up-state")
+    const dir = await mkdtemp(joinPath(tmpdir(), "doctor-id-"))
+    expect(await readBuildSidecar(joinPath(dir, "missing-bin"))).toBeNull()
+    const withDirty = await (async () => {
+      const binDir = await mkdtemp(joinPath(tmpdir(), "doctor-bin-"))
+      await writeFile(
+        joinPath(binDir, "ow.build.json"),
+        JSON.stringify({ sha: "s".repeat(40), digest: "d".repeat(64), time: "2026-10-01T00:00:00Z", dirty: true }),
+        "utf8",
+      )
+      await writeFile(joinPath(binDir, "fake-ow"), "", "utf8")
+      return readBuildSidecar(joinPath(binDir, "fake-ow"))
+    })()
+    expect(withDirty?.dirty).toBe(true)
+    const identity = await doctorIdentity({ upRoot: dir, installed: null })
+    expect(identity.installed).toBeNull()
+    expect(formatIdentity(identity)).toEqual(["identity: installed unknown (no sidecar)", "identity: supervisor absent: unknown"])
+  })
+
+  test("NEGATIVE: no paths/execPath/secrets or full digests in identity JSON; exit unchanged", async () => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { doctorFails } = await import("./cli")
+    const { doctor, doctorIdentity } = await import("./doctor")
+    const { ensureUpStateDir, upPaths, writeSupervisorState } = await import("./up-state")
+    const dir = await mkdtemp(joinPath(tmpdir(), "doctor-id-"))
+    const paths = upPaths(dir)
+    await ensureUpStateDir(paths.stateDir)
+    const secretSha = `token=hunter2${"a".repeat(28)}`
+    await writeSupervisorState(paths.supervisorFile, {
+      version: 1,
+      startedAt: "2026-10-07T00:00:00.000Z",
+      services: [],
+      build: { sha: secretSha, digest: "d".repeat(64), time: "2026-10-07T00:00:00Z" },
+    })
+    const installed = { sha: "b".repeat(40), digest: "e".repeat(64), time: "2026-10-01T00:00:00Z" }
+    const identity = await doctorIdentity({ upRoot: dir, installed })
+    const wire = JSON.stringify(identity)
+    expect(wire).not.toContain(process.execPath)
+    expect(wire).not.toContain(secretSha)
+    expect(wire).not.toContain("d".repeat(64))
+    expect(wire).not.toContain("e".repeat(64))
+    expect(wire).not.toContain(dir)
+    // Human lines carry shorts only; identity never enters `lines`, so the
+    // exit rule (which filters `lines`) is unchanged by identity.
+    const lines = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
+    expect(lines.every((l) => l.name !== "identity")).toBe(true)
+    const { formatIdentity } = await import("./doctor")
+    const human = formatIdentity(identity)
+    expect(human.length).toBe(2)
+    expect(human.join("\n")).not.toContain("d".repeat(64))
+    expect(doctorFails(lines)).toBe(doctorFails(lines.filter((l) => l.name !== "identity")))
   })
 })
 

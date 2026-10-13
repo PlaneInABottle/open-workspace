@@ -147,6 +147,29 @@ describe("ow record round-trip (injected probes)", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test("not-ready probes surface as witness lines with exit staying 0", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.scenarios.yaml")
+      await writeFile(
+        file,
+        "version: 1\nscenarios:\n  cart:\n    services: [api]\n    boundaries: [subscribed]\n    probes: [{id: echoer, argv: [echo, hello], timeout: 5s}]\n",
+        "utf8",
+      )
+      const { runRecord } = await import("./up-replay")
+      const io = capture()
+      try {
+        expect(await runRecord({ rootDir: root, file, runName: "cart" })).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.out.join("\n")).toContain("record: cart (1 probes, ")
+      expect(io.out.join("\n")).toContain("probe not-ready: echoer (")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("ow record refusals (fail-closed)", () => {

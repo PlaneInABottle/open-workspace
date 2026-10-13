@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
 import { signature } from "./signature"
+import { maskSecrets } from "./up-evidence"
 
 export const DEFAULT_LOG_PATH = join(homedir(), ".local", "share", "opencode-shell-log", "shell-events.jsonl")
 export const DEFAULT_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db")
@@ -229,6 +230,12 @@ export type GroupedLine = {
   sessions: string[]
   models: string[]
   failReason: string | null
+  /** Distinct reasons beyond the first (cap 2 stored; see failReasonCount). */
+  failReasons: string[]
+  /** Distinct reasons observed across merged records (may exceed stored). */
+  failReasonCount: number
+  /** Provenance of the reasons; null when no reason was observed. */
+  failReasonSource: string | null
   variants: string[]
   excerpts: string[]
   results: string[]
@@ -285,6 +292,29 @@ export const parseAmountUnit = (
 export const parseSince = (value: string | undefined): number | null =>
   parseAmountUnit(value, /^(\d+)\s*([mhdw])$/i, { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 })
 
+/** Shared `--since` example tokens (single source for help + invalid
+ * messages; doc==code greps pin them). The grammar accepts any
+ * `<amount>m|h|d|w` — these are the canonical examples, not the limit. */
+export const SINCE_TOKENS = "30m|3h|1d|1w"
+
+/** Additive `--since` window envelope: raw flag echo + frozen cutoff ISO.
+ * Null when no window was requested (never a vacuous object). */
+export type SinceWindow = { since: string; cutoff: string }
+
+/** Freeze a requested window against `now` (injectable for determinism). */
+export const sinceWindow = (raw: string | undefined, windowMs: number | null | undefined, now: number): SinceWindow | null => {
+  if (raw === undefined || windowMs === null || windowMs === undefined) return null
+  return { since: raw, cutoff: new Date(now - windowMs).toISOString() }
+}
+
+/** Human-only stderr notice naming the applied window (stdout stays clean). */
+export const windowNotice = (window: SinceWindow): string => `window: --since ${window.since} (cutoff ${window.cutoff})`
+
+/** Honest-empty scope chip: names the searched store + the applied window
+ * (`all` when unwindowed). Composes with existing suffixes, never replaces. */
+export const storeWindow = (store: string, window: SinceWindow | null): string =>
+  `(store: ${store}; window: ${window?.since ?? "all"})`
+
 export const filterSince = (records: EnrichedRecord[], windowMs: number | null, now = Date.now()): EnrichedRecord[] => {
   if (!windowMs) return [...records].sort((a, b) => timeOf(a) - timeOf(b))
   const cutoff = now - windowMs
@@ -319,6 +349,18 @@ export const failReason = (command: string): string | null => {
   const scan = command.length > 20_000 ? command.slice(0, 20_000) : command
   const m = scan.match(/raise\s+(?:SystemExit|RuntimeError|AssertionError|ValueError)\(\s*['"]([^'"\n)]{1,80})/)
   return m ? m[1] : null
+}
+
+/** Provenance tag for command-text reasons (wire + drill-down). */
+export const FAIL_REASON_SOURCE = "command-text"
+
+/** Outcome-gated failure reason: only failure/error records with a command
+ * contribute; masked before emit (command text may carry secrets). */
+const recordFailReason = (outcome: string, record: EnrichedRecord): string | null => {
+  if (outcome !== "failure" && outcome !== "error") return null
+  if (typeof record.command !== "string") return null
+  const reason = failReason(record.command)
+  return reason === null ? null : maskSecrets(reason)
 }
 
 /** Latest sessionID from the sidecar tail (newest record wins). */
@@ -854,8 +896,18 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
         if (result && !existing.results.includes(result) && existing.results.length < 2) existing.results.push(result)
         if (intent && !existing.intents.includes(intent) && existing.intents.length < 2) existing.intents.push(intent)
         if (messageID && !existing.messageIDs.includes(messageID) && existing.messageIDs.length < 5) existing.messageIDs.push(messageID)
+        const mergeReason = recordFailReason(outcome, record)
+        if (mergeReason !== null && !existing.failReasons.includes(mergeReason)) {
+          if (existing.failReasons.length < 2) existing.failReasons.push(mergeReason)
+          existing.failReasonCount += 1
+        }
+        if (existing.failReason === null && mergeReason !== null) {
+          existing.failReason = mergeReason
+          existing.failReasonSource = FAIL_REASON_SOURCE
+        }
         continue
       }
+      const reason = recordFailReason(outcome, record)
       const line: GroupedLine = {
         ref: lines.length + 1,
         signature: sig,
@@ -864,7 +916,10 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
         agents: agent ? [agent] : [],
         sessions: sess ? [sess] : [],
         models: model ? [model] : [],
-        failReason: typeof record.command === "string" ? failReason(record.command) : null,
+        failReason: reason,
+        failReasons: reason === null ? [] : [reason],
+        failReasonCount: reason === null ? 0 : 1,
+        failReasonSource: reason === null ? null : FAIL_REASON_SOURCE,
         variants: [full],
         excerpts: excerpt ? [excerpt] : [],
         results: result ? [result] : [],
@@ -891,11 +946,16 @@ export const formatGrouped = (groups: TaskGroup[], full = false, withSession = f
   }
   const out: string[] = []
   for (const group of groups) {
-    out.push(`task: ${group.taskRef} (${group.runs} commands${group.fails > 0 ? `, ${group.fails} failed` : ""})`)
+    out.push(`task: ${group.taskRef} (${group.runs} records${group.fails > 0 ? `, ${group.fails} failed` : ""})`)
     for (const line of group.lines) {
       const repeat = line.runs > 1 ? ` x${line.runs}` : ""
       const who = line.agents.length > 0 ? ` (${line.agents.join("+")})` : ""
-      const reason = (line.outcome === "failure" || line.outcome === "error") && line.failReason ? ` (reason: ${line.failReason})` : ""
+      const reason =
+        (line.outcome === "failure" || line.outcome === "error") && line.failReason
+          ? line.failReasonCount > 1
+            ? ` (reason: ${line.failReason}; +${line.failReasonCount - 1} more)`
+            : ` (reason: ${line.failReason})`
+          : ""
       const where = withSession && line.sessions.length > 0 ? ` [${line.sessions.join(",")}]` : ""
       out.push(`  [${line.ref}]${who} ${line.signature} — ${line.outcome}${repeat}${reason}${where}`)
       const rawMode = full && !sectionBudget
@@ -938,6 +998,11 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
       out.push(`--- record ${i + 1}/${line.variants.length} ---`)
       out.push(showBody(variant))
     })
+    if ((line.outcome === "failure" || line.outcome === "error") && line.failReasons.length > 0) {
+      out.push(`--- reasons (from command text) ---`)
+      for (const item of line.failReasons) out.push(`- ${item}`)
+      if (line.failReasonCount > line.failReasons.length) out.push(`(+${line.failReasonCount - line.failReasons.length} more)`)
+    }
     if (line.intents.length > 0) {
       out.push(`--- intents ---`)
       for (const intent of line.intents) out.push(`- ${intent}`)

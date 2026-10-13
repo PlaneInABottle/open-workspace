@@ -82,8 +82,10 @@ export type UpSupervisorState = {
   build?: UpBuildInfo
 }
 
-/** Build identity stamped into the binary at `pnpm ow:build` time. */
-export type UpBuildInfo = { sha: string; digest: string; time: string }
+/** Build identity stamped into the binary at `pnpm ow:build` time.
+ * `dirty` is additive (worktree dirtiness at build time); absent on older
+ * sidecars (never a failure, reads as undefined). */
+export type UpBuildInfo = { sha: string; digest: string; time: string; dirty?: boolean }
 
 /** Read an `ow.build.json` sidecar sitting next to the given binary path,
  * resolving symlinks first (covers a `~/.local/bin/ow` shim). Returns the
@@ -94,10 +96,10 @@ export const readBuildSidecar = async (execPath: string): Promise<UpBuildInfo | 
     const parsed = JSON.parse(await readFile(join(dir, "ow.build.json"), "utf8")) as unknown
     if (typeof parsed !== "object" || parsed === null) return null
     const record = parsed as Record<string, unknown>
-    const { sha, digest, time } = record
+    const { sha, digest, time, dirty } = record
     if (typeof sha !== "string" || typeof digest !== "string" || typeof time !== "string") return null
     if (sha.length === 0 || digest.length === 0 || time.length === 0) return null
-    return { sha, digest, time }
+    return { sha, digest, time, ...(typeof dirty === "boolean" ? { dirty } : {}) }
   } catch {
     return null
   }
@@ -286,6 +288,40 @@ export const readLstart = async (pid: number): Promise<string | null> => {
 export const isLivePid = async (pid: number, lstart: string): Promise<boolean> => {
   const current = await readLstart(pid)
   return current !== null && current === lstart
+}
+
+/** One snapshot row of the process table (pid → parent + start time). */
+export type ProcessTableEntry = { ppid: number; lstart: string }
+
+/** Snapshot of the process table keyed by pid. Null means unreadable. */
+export type ProcessTable = Map<number, ProcessTableEntry>
+
+/** Process-table snapshot cap (bounded parse, never unbounded). */
+export const PROCESS_TABLE_MAX_ROWS = 20_000
+
+/** Full `pid → {ppid, lstart}` snapshot built on the existing `runPs`
+ * spawn/timeout/kill discipline (DRY: no second spawn implementation).
+ * Parses `ps -eo pid=,ppid=,lstart=` stdout as first-two-tokens=pid/ppid +
+ * REMAINDER=lstart (`lstart` contains spaces). Null on spawn failure,
+ * empty output, or no parsable row. */
+export const readProcessTable = async (): Promise<ProcessTable | null> => {
+  const out = await runPs(["-eo", "pid=,ppid=,lstart="])
+  if (!out) return null
+  const table: ProcessTable = new Map()
+  for (const line of out.split("\n")) {
+    if (table.size >= PROCESS_TABLE_MAX_ROWS) break
+    const trimmed = line.trim()
+    if (trimmed.length === 0) continue
+    const parts = trimmed.split(/\s+/)
+    if (parts.length < 3) continue
+    const pid = Number(parts[0])
+    const ppid = Number(parts[1])
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(ppid) || ppid < 0) continue
+    const lstart = trimmed.slice(trimmed.indexOf(parts[2]))
+    if (lstart.length === 0) continue
+    table.set(pid, { ppid, lstart })
+  }
+  return table.size > 0 ? table : null
 }
 
 export type LockStatus =

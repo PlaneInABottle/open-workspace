@@ -85,6 +85,36 @@ export const findFirstJsonObject = (text: string): string | null => {
 
 type ParsedContract = { ready: boolean; note?: string; checks?: ProbeCheck[] }
 
+/** Probe-note 3-way classifier (strict, NO tolerant parser): why stdout
+ * carries no usable contract — no JSON object at all, an unparseable
+ * object, or a parsed object without boolean `ready`. Null = usable. */
+export type ProbeContractFault = "no-object" | "unparseable" | "non-boolean-ready"
+
+export const classifyProbeContract = (text: string): ProbeContractFault | null => {
+  const raw = findFirstJsonObject(text)
+  if (raw === null) return "no-object"
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return "unparseable"
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "unparseable"
+  if (typeof (parsed as Record<string, unknown>)["ready"] !== "boolean") return "non-boolean-ready"
+  return null
+}
+
+/** Human note for a classified contract fault (masked downstream). */
+export const probeContractFaultNote = (fault: ProbeContractFault, truncatedStdout: boolean): string => {
+  const base =
+    fault === "no-object"
+      ? "no JSON object (expected first stdout object)"
+      : fault === "unparseable"
+        ? "invalid JSON (expected first stdout object)"
+        : "invalid contract (ready must be true/false)"
+  return truncatedStdout ? `${base} — output capped` : base
+}
+
 /** `{ready: bool, note?: ≤200ch, checks?: [{name, ok, path?, digest?}]}` contract:
  * ready is a MANDATORY bool (otherwise invalid); note is truncated; checks are
  * taken only from shape-holding entries (malformed entries drop, not fatal).
@@ -252,6 +282,17 @@ export const runProbe = async (opts: {
   if (code !== 0) {
     const contract = parseProbeContract(stdout)
     const errBit = stderr.trim().length > 0 ? ` — stderr: ${stderr.trim().slice(0, 200)}` : ""
+    // Contradiction first: stdout claims ready but the exit failed — the
+    // claim is suspect, so the note names the contradiction, not the note.
+    if (contract?.ready === true) {
+      return {
+        ok: false,
+        note: maskSecrets(`ready:true on stdout but exit code ${code ?? "?"}${errBit}`).slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
+        timedOut: false,
+        code,
+        ...(contract?.checks === undefined ? {} : { checks: contract.checks }),
+      }
+    }
     return {
       ok: false,
       note: maskSecrets(`${contract?.note ?? "not ready"} (exit code ${code ?? "?"})${errBit}`).slice(0, PROBE_RESULT_NOTE_MAX_CHARS),
@@ -262,7 +303,7 @@ export const runProbe = async (opts: {
   }
   const contract = parseProbeContract(stdout)
   if (contract === null) {
-    return fail(`invalid JSON (expected first stdout object)${truncatedStdout ? " — output capped" : ""}`, { code })
+    return fail(probeContractFaultNote(classifyProbeContract(stdout) ?? "unparseable", truncatedStdout), { code })
   }
   if (!contract.ready) {
     return {

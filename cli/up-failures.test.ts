@@ -60,16 +60,40 @@ describe("failures empty + usage", () => {
       } finally {
         io2.restore()
       }
-      expect(JSON.parse(io2.out.join("\n"))).toEqual({ groups: [], singletons: 0, skipped: { corrupt: 0, overCap: 0 } })
+      expect(JSON.parse(io2.out.join("\n"))).toEqual({ groups: [], singletons: 0, skipped: { corrupt: 0, overCap: 0 }, window: null })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("--since garbage exit 2 (outside the locked set)", async () => {
+  test("empty checkpoints dir + populated sidecar: checkpoint-scoped, store named (confusion guard)", async () => {
     const { root, file } = await fixture()
     try {
-      for (const since of ["30d", "x", "", "1H", "24"]) {
+      // A populated sidecar log must not leak into failures: only
+      // <root>/.ow/checkpoints/*.jsonl is read (here: an empty dir).
+      const { mkdir } = await import("node:fs/promises")
+      await mkdir(join(root, ".ow", "checkpoints"), { recursive: true })
+      await writeFile(
+        join(root, "sidecar.jsonl"),
+        `${JSON.stringify({ sessionID: "ses_x", timestamp: "2026-10-05T11:00:00.000Z", command: "exit 1", outcome: "failure" })}\n`,
+        "utf8",
+      )
+      const io = capture()
+      try {
+        expect(await run(["failures", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.out.join("\n")).toBe(`no findings (store: ${join(root, ".ow", "checkpoints")}; window: all)`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--since garbage exit 2 (outside the shared window grammar)", async () => {
+    const { root, file } = await fixture()
+    try {
+      for (const since of ["x", "", "24", "30s"]) {
         const io = capture()
         let code = -1
         try {
@@ -79,13 +103,64 @@ describe("failures empty + usage", () => {
         }
         expect(`${since} → ${code}`).toBe(`${since} → 2`)
       }
+      // The invalid message joins the shared family (same tokens as --help).
+      const io = capture()
+      try {
+        expect(await run(["failures", "--file", file, "--since", "x"])).toBe(2)
+      } finally {
+        io.restore()
+      }
+      expect(io.err.join("\n")).toContain("invalid --since: x (30m|3h|1d|1w)")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("positional argument exit 2", async () => {
+  test("--since follows the shared grammar (RED-before: 2d/30m were exit 2)", async () => {
     const { root, file } = await fixture()
+    try {
+      for (const since of ["2d", "30m", "3h", "1w", "1H"]) {
+        const io = capture()
+        let code = -1
+        try {
+          code = await run(["failures", "--file", file, "--since", since])
+        } finally {
+          io.restore()
+        }
+        expect(`${since} → ${code}`).toBe(`${since} → 0`)
+        // Human-only cutoff notice on stderr; the stdout empty line names
+        // the store (no bare claim) without the notice shape.
+        expect(io.err.join("\n")).toContain(`window: --since ${since} (cutoff `)
+        expect(io.out.join("\n")).not.toContain("window: --since")
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--json carries the additive window envelope (now-injected, deterministic)", async () => {
+    const { runFailures } = await import("./up-failures")
+    const { root } = await fixture()
+    try {
+      const { upPaths } = await import("./up-state")
+      const { ensureUpStateDir } = await import("./up-state")
+      await ensureUpStateDir(upPaths(root).stateDir)
+      const io = capture()
+      try {
+        expect(await runFailures({ rootDir: root, since: "3h", json: true, now: Date.parse("2026-10-05T12:00:00.000Z") })).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(JSON.parse(io.out.join("\n"))).toMatchObject({
+        window: { since: "3h", cutoff: "2026-10-05T09:00:00.000Z" },
+      })
+      expect(io.err.join("\n")).not.toContain("window:")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("positional argument exit 2", async () => {    const { root, file } = await fixture()
     try {
       const io = capture()
       let code = -1
@@ -169,7 +244,7 @@ describe("failures mechanical tuple", () => {
         groups: { stage: string; status: string; stale_reason: string | null; step: string | null; count: number }[]
         singletons: number
       }
-      expect(Object.keys(payload).sort()).toEqual(["groups", "singletons", "skipped"])
+      expect(Object.keys(payload).sort()).toEqual(["groups", "singletons", "skipped", "window"])
       expect(payload.groups).toEqual([
         { stage: "build", status: "stale", stale_reason: "script_hash", step: null, count: 2 },
       ])

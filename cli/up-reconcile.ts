@@ -7,7 +7,7 @@
 
 import { parseUpFile, PROBE_TIMEOUT_MS, type UpService } from "./up-schema"
 import { decodeUtf8Fatal } from "./up-schema"
-import { readLstart, readSupervisorState, upPaths, warnWriteFailed, type UpServiceState } from "./up-state"
+import { readLstart, readProcessTable, readSupervisorState, upPaths, warnWriteFailed, type ProcessTable, type UpServiceState } from "./up-state"
 import { tcpListening } from "./up-net"
 import { gitCheckout, resolveCwdAbs } from "./up-provenance"
 
@@ -104,6 +104,9 @@ export type ReconcileDrift = {
   expected?: Record<string, unknown>
   running?: Record<string, unknown>
   hint: string
+  /** Additive: present only on a partially foreign port (one owner is ours,
+   * another is not). JSON-only: `formatDrift` never prints it. */
+  ownership?: "shared"
 }
 
 export type Liveness = "live" | "dead" | "lstart-mismatch" | "unknown"
@@ -118,11 +121,58 @@ export type ReconcileInput = {
   listening: boolean | undefined
   /** `lsof` best-effort port-owner pids; null = unmeasured. */
   portOwners: number[] | null
+  /** Additive optional bounded-descendant owners (subset of `portOwners`
+   * proven to descend from the recorded pid via `descendantOwnersOf`).
+   * Undefined = unmeasured: the core falls back to legacy exact-match. */
+  descendantOwners?: number[]
   /** M-C build identity: probe-declared (basename → full digest) vs the
    * recorded map. Liveness/ok-gating belongs to the caller (the core does a
    * pure comparison); an unrecorded basename produces no drift
    * (record-observation is the caller's job). */
   artifacts?: { declared: Record<string, string>; recorded: Record<string, string> }
+}
+
+/** Pure bounded-descendant ownership: which `owners` descend from the
+ * recorded pid through the process table (≤16 hops, cycle-safe). Owner
+ * pids never enter output — the result is only consumed by the drift
+ * predicate. Returns null when ownership cannot be proven (null table,
+ * recorded pid absent, or recorded `lstart` mismatch after
+ * whitespace normalization): the caller falls back to legacy exact-match
+ * and never claims ownership. An owner equal to the recorded pid is
+ * exact-match, not a descendant, and is skipped here. A hop ending at
+ * ppid<=1 or an unknown pid is not a descendant. */
+export const descendantOwnersOf = (
+  running: { pid: number; lstart: string },
+  owners: number[],
+  table: ProcessTable | null,
+): number[] | null => {
+  if (table === null) return null
+  const norm = (value: string): string => value.replace(/\s+/g, " ").trim()
+  const self = table.get(running.pid)
+  if (self === undefined) return null
+  if (running.lstart === "" || norm(self.lstart) !== norm(running.lstart)) return null
+  const found: number[] = []
+  for (const owner of owners) {
+    if (owner === running.pid) continue
+    const row = table.get(owner)
+    if (row === undefined) continue
+    const visited = new Set<number>([owner])
+    let current = row
+    for (let hop = 0; hop < 16; hop += 1) {
+      const parent = current.ppid
+      if (parent === running.pid) {
+        found.push(owner)
+        break
+      }
+      if (parent <= 1) break
+      if (visited.has(parent)) break
+      visited.add(parent)
+      const next = table.get(parent)
+      if (next === undefined) break
+      current = next
+    }
+  }
+  return found
 }
 
 /** Pure drift core: no I/O, tested with injected inputs. */
@@ -197,12 +247,30 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
       }
     }
   }
-  if (
-    expected.port !== undefined &&
-    input.listening === true &&
-    input.portOwners !== null &&
-    !input.portOwners.includes(running.pid)
-  ) {
+  // Residual (accepted, non-destructive): an owner missing from the
+  // snapshot (row cap, short-lived pid) still reports foreign-port rather
+  // than claiming ownership it cannot prove. Residual (narrow): the
+  // liveness-vs-table window can let the legacy fallback claim ownership
+  // when the table lags a respawn the liveness check already passed.
+  if (expected.port !== undefined && input.listening === true && input.portOwners !== null) {
+    const owners = input.portOwners
+    // An empty owner list is no owner evidence (lsof ok, nothing held):
+    // never drift on it.
+    if (owners.length === 0) return null
+    if (owners.includes(running.pid)) return null
+    const descendants = new Set(input.descendantOwners ?? [])
+    const owned = owners.filter((pid) => descendants.has(pid))
+    const foreign = owners.filter((pid) => !descendants.has(pid))
+    if (owned.length > 0 && foreign.length === 0) return null
+    if (owned.length > 0 && foreign.length > 0) {
+      return {
+        service: name,
+        kind: "foreign-port",
+        ownership: "shared",
+        running: { pid: running.pid, port: expected.port },
+        hint: `port ${expected.port} also held by a foreign listener (UNVERIFIED) — no kill, verify the owner`,
+      }
+    }
     return {
       service: name,
       kind: "foreign-port",
@@ -278,6 +346,10 @@ export const runReconcileCheck = async (opts: {
   runProbeFn?: import("./up-probe").ProbeFn
   /** Total probe budget (default 60s; tests shrink it). */
   probeBudgetMs?: number
+  /** Injected process-table reader (default the real `readProcessTable`;
+   * tests use a fake or a counter). Called lazily: only when owners are
+   * non-empty and the recorded pid is not among them. */
+  ownershipTableFn?: () => Promise<ProcessTable | null>
 }): Promise<number> => {
   let text: string
   try {
@@ -313,7 +385,7 @@ export const runReconcileCheck = async (opts: {
   const drifts: ReconcileDrift[] = []
   // M-C: core inputs are kept (the post-probe artifact pass runs a second
   // time on the same instant inputs — deterministic, no re-measurement).
-  const kernelInputs = new Map<string, { exp: UpService | null; run: UpServiceState | null; liveness: Liveness; listening: boolean | undefined; owners: number[] | null }>()
+  const kernelInputs = new Map<string, { exp: UpService | null; run: UpServiceState | null; liveness: Liveness; listening: boolean | undefined; owners: number[] | null; descendants: number[] | undefined }>()
   for (const name of names) {
     const exp = expected.find((svc) => svc.name === name) ?? null
     const run = running.find((svc) => svc.name === name) ?? null
@@ -335,9 +407,30 @@ export const runReconcileCheck = async (opts: {
       listening = await tcpListening(port)
       if (listening === true) owners = await portOwners(port)
     }
-    const drift = reconcileOne({ name, expected: exp, running: run, liveness, listening, portOwners: owners })
+    // Bounded descendant ownership (lazy: the table is read only when
+    // owners are non-empty and the recorded pid is not among them, so
+    // the exact-match and unmeasured paths never spawn `ps`).
+    let descendants: number[] | undefined
+    if (
+      port !== undefined &&
+      run !== null &&
+      liveness === "live" &&
+      listening === true &&
+      owners !== null &&
+      owners.length > 0 &&
+      !owners.includes(run.pid)
+    ) {
+      try {
+        const table = await (opts.ownershipTableFn ?? readProcessTable)()
+        const proven = descendantOwnersOf({ pid: run.pid, lstart: run.lstart }, owners, table)
+        descendants = proven ?? undefined
+      } catch {
+        descendants = undefined
+      }
+    }
+    const drift = reconcileOne({ name, expected: exp, running: run, liveness, listening, portOwners: owners, descendantOwners: descendants })
     if (drift) drifts.push(drift)
-    kernelInputs.set(name, { exp, run, liveness, listening, owners })
+    kernelInputs.set(name, { exp, run, liveness, listening, owners, descendants })
   }
   // M2 revision witness (B4 point b: explicit `--check` one-shot, best
   // effort): recorded rev per service + live checkout rev. Display-only —
@@ -442,6 +535,7 @@ export const runReconcileCheck = async (opts: {
             liveness: prev.liveness,
             listening: prev.listening,
             portOwners: prev.owners,
+            descendantOwners: prev.descendants,
             artifacts: { declared, recorded },
           })
           if (artifactDrift?.kind === "artifact-stale") {

@@ -397,6 +397,11 @@ export const runRecord = async (opts: {
     return 1
   }
   console.log(`record: ${scenario.name} (${outcomes.length} probes, ${envelope.contract.hash.slice(0, 8)})`)
+  // Witness-only surfacing: each not-ready probe names itself (exit stays
+  // 0 — a not-ready probe is recorded evidence, not a record failure).
+  for (const outcome of outcomes) {
+    if (!outcome.ok) console.log(`probe not-ready: ${outcome.id} (${outcome.note})`)
+  }
   // M9 forgotten-overlay banner: provenance-bearing output emitted while
   // an overlay is active names it (absent overlay prints nothing new).
   if (overlay !== null && overlay.applied) console.log(`overlay-active: ${overlay.file}`)

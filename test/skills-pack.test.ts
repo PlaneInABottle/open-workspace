@@ -159,8 +159,12 @@ test('shipped skills and packs never reference removed views', async () => {
   // must not be reachable from consumer guidance: agents following a stale
   // pointer would invent a surface that no longer exists. Denial statements
   // ("there is no workstream surface") live in canonical prose, not in these
-  // pointer patterns, so a match here is always a stale reference.
-  const staleViewPattern = /records view|recent_runs|activity_list|create new project|choose a project|learned lessons|projectsview|recordsview|connectionview|workstream-board|workstream board|\/api\/lessons|lesson shelf|what happened here/i;
+  // pointer patterns, so a match here is always a stale reference. The
+  // pruned lesson read routes are covered too — bare `/api/learnings`
+  // (GET) is gone while `/api/learnings/record` (POST) stays, hence the
+  // lookahead. Milestone notes have no reader or writer hint left, so the
+  // phrase is stale anywhere it appears.
+  const staleViewPattern = /records view|recent_runs|activity_list|create new project|choose a project|learned lessons|projectsview|recordsview|connectionview|workstream-board|workstream board|\/api\/lessons|lesson shelf|milestone notes|\/api\/learnings(?!\/record)|what happened here/i;
   const collect = async (root: string): Promise<string[]> => {
     const out: string[] = [];
     const walk = async (dir: string) => {

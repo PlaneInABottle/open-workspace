@@ -72,7 +72,8 @@ UNVERIFIED rather than refuse. `--boundaries` is accepted by
 `scenarios`, `preflight`, `readiness`, `provision`, `record`,
 `contract`, `scenario run` and `scenario env` only; other commands exit
 2. Keep shared rows in the base file and note worktree-only rows in the
-worktree handoff.
+worktree handoff. Remove a stale overlay by deleting the file
+yourself — `ow` never writes, deletes, or backs up overlays.
 
 Scaffolded files (`ow init`) are INERT: the exact header
 `# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented`,
@@ -87,7 +88,10 @@ keeping `--check` green, and a commented boundary matrix.
   confirmed/stale/not_observed + last-verified/first-gap +
   `safe_next_action` passthrough (never prunes, never judges proof
   content).
-- `ow failures [--since 1h|24h|7d] [--file] [--json]` lists recurring
+- `ow checkpoints diff <runA> <runB> [--file] [--json]` compares two
+  runs envelope-by-stage (status/proof/digest deltas, one-sided stages
+  render `missing`, identical runs print one `identical:` line).
+- `ow failures [--since 30m|3h|1d|1w] [--file] [--json]` lists recurring
   findings (read-only, mechanical).
 
 ## Preflight runner recipe

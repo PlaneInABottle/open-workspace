@@ -8,8 +8,7 @@ import { listPm2Processes, runPm2Action, runPm2Logs, runPm2Start, serviceInvento
 import { listDockerContainers, runDockerLogs } from './services-docker.js';
 import { verifyMessages, type CommandRunner } from './verify.js';
 import { parseExternalRunImport, importExternalRun, externalImportInvalidMessage, listRecentRuns, listRunIds, type RunListEntry, type RunSummary } from './run-summaries.js';
-import { listMilestones } from './milestones.js';
-import { appendLearningRule, collectRecentLocalRuns, countRecurrences, entryMeasured, maxLearningEntries, readLearningIndex, type LearningRuleEntry } from './rule-index.js';
+import { appendLearningRule, type LearningRuleEntry } from './rule-index.js';
 import { recordActivity, recentActivity, type ActivityEntry } from './activity.js';
 import { environmentStatus, environmentUp, environmentDown, environmentVerify, getEnvironment, listEnvironments, proposeForWorkspace, renameEnvironment, setEnvironment } from './environment.js';
 import { coordinatorSnapshot, type CoordinatorRuntime } from './coordinator.js';
@@ -21,20 +20,6 @@ export interface RootInspection {
   warnings: string[];
   unavailable: boolean;
   error?: string;
-}
-
-/**
- * Read-only dashboard projection of one learning-index entry: title plus
- * source file ref only, never the rule body. `measured` marks failure-evidence
- * lessons; unmeasured (situational) lessons never auto-flag and always read a
- * recurrence count of zero.
- */
-export interface LearnedLesson {
-  title: string;
-  file: string;
-  measured: boolean;
-  status: 'active' | 'suspect';
-  recurrenceCount: number;
 }
 
 // Canonical workspace-path messages. Not-found throws reference
@@ -248,37 +233,6 @@ export class WorkspaceService {
     const state = await this.store.read();
     const workspace = resolveWorkspaceRecord(state, parsed.workspace, externalImportInvalidMessage, verifyMessages.notFoundRegister);
     return importExternalRun(this.store.directory, parsed, workspace.id, undefined, this.store);
-  }
-
-  async learnings(): Promise<{ milestones: Awaited<ReturnType<typeof listMilestones>> }> {
-    return { milestones: await listMilestones(this.store.directory) };
-  }
-
-  /**
-   * Read-only learned-lessons shelf: title + source file ref only, never rule
-   * bodies (mirrors the rule-index title-only design). Global to the state
-   * directory like the milestone notes — lessons are not workspace-scoped.
-   * Suspects sort first, then newest; capped at the index ceiling. The stored
-   * status is reported as-is; suspect flips persist on the injection path, so
-   * this read never writes.
-   */
-  async lessonShelf(): Promise<LearnedLesson[]> {
-    const entries = await readLearningIndex(this.store.directory);
-    const corpus = await collectRecentLocalRuns(this.store.directory);
-    return entries
-      .sort((a, b) => {
-        if (a.status !== b.status) return a.status === 'suspect' ? -1 : 1;
-        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
-        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-      })
-      .slice(0, maxLearningEntries)
-      .map(entry => ({
-        title: entry.title,
-        file: entry.file,
-        measured: entryMeasured(entry),
-        status: entry.status,
-        recurrenceCount: countRecurrences(entry, corpus),
-      }));
   }
 
   /**

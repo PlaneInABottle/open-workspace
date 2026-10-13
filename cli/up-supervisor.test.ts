@@ -971,6 +971,129 @@ describe("supervisor build identity", () => {
   })
 })
 
+describe("top-level startedAt is the supervisor boot clock", () => {
+  const waitFor = async (cond: () => Promise<boolean>, timeoutMs = 8000): Promise<void> => {
+    const start = Date.now()
+    for (;;) {
+      if (await cond()) return
+      if (Date.now() - start > timeoutMs) throw new Error("waitFor timeout")
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
+    }
+  }
+
+  test("persistMerged: fresh top-level startedAt wins (RED-before: sticky on-disk)", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: "2026-10-07T00:00:00.000Z",
+        services: [],
+      })
+      await persistMerged(paths.supervisorFile, { version: 1, startedAt: "2026-10-08T00:00:00.000Z", services: [] })
+      expect((await readSupervisorState(paths.supervisorFile))?.startedAt).toBe("2026-10-08T00:00:00.000Z")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("old-file parse: a first-unit-derived top level still reads, then normalizes", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: "2026-10-07T00:00:01.000Z",
+        services: [{ name: "a", pid: 1, lstart: "x", startedAt: "2026-10-07T00:00:01.000Z" }],
+      })
+      expect((await readSupervisorState(paths.supervisorFile))?.startedAt).toBe("2026-10-07T00:00:01.000Z")
+      await persistMerged(paths.supervisorFile, { version: 1, startedAt: "2026-10-09T00:00:00.000Z", services: [] })
+      expect((await readSupervisorState(paths.supervisorFile))?.startedAt).toBe("2026-10-09T00:00:00.000Z")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("live restart moves only the service clock; the top level stays boot", async () => {
+    const root = await tempRoot()
+    let stopFlag = false
+    let done: Promise<number> | null = null
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      const keeper = spawnSleep(60)
+      const keeperLstart = (await readLstart(keeper.pid))!
+      await writeFile(paths.lockFile, JSON.stringify({ pid: keeper.pid, lstart: keeperLstart, startedAt: new Date().toISOString() }), "utf8")
+      done = runSupervised(parseUpFile("services:\n  a:\n    cmd: sleep 30\n").services, {
+        rootDir: root,
+        stateFile: paths.supervisorFile,
+        requestsDir: paths.requestsDir,
+        owFile: file,
+        onLine: () => undefined,
+        shouldStop: () => stopFlag,
+        supervisorStartedAt: "2026-10-07T00:00:00.000Z",
+      })
+      await waitFor(async () => (await readSupervisorState(paths.supervisorFile))?.services.length === 1)
+      const before = (await readSupervisorState(paths.supervisorFile))!
+      expect(before.startedAt).toBe("2026-10-07T00:00:00.000Z")
+      expect(await run(["restart", "a", "--file", file])).toBe(0)
+      await waitFor(async () => {
+        const state = await readSupervisorState(paths.supervisorFile)
+        return state?.services.find((svc) => svc.name === "a")?.pid !== before.services.find((svc) => svc.name === "a")?.pid
+      })
+      const after = (await readSupervisorState(paths.supervisorFile))!
+      expect(after.startedAt).toBe("2026-10-07T00:00:00.000Z")
+      expect(after.services.find((svc) => svc.name === "a")?.startedAt).not.toBe(
+        before.services.find((svc) => svc.name === "a")?.startedAt,
+      )
+    } finally {
+      stopFlag = true
+      if (done !== null) await done.catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("downAll preserves the top-level startedAt byte-identically", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: "2026-10-07T00:00:00.000Z",
+        services: [{ name: "ghost", pid: 987654321, lstart: "bogus", startedAt: "2026-10-07T00:00:00.000Z" }],
+      })
+      const outcome = await downAll(root, false)
+      expect(outcome.results).toHaveLength(1)
+      expect((await readSupervisorState(paths.supervisorFile))?.startedAt).toBe("2026-10-07T00:00:00.000Z")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("single down preserves the top-level startedAt byte-identically", async () => {
+    const root = await tempRoot()
+    try {
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: "2026-10-07T00:00:00.000Z",
+        services: [{ name: "ghost", pid: 987654321, lstart: "bogus", startedAt: "2026-10-07T00:00:00.000Z" }],
+      })
+      const { runDirectSingleDown } = await import("./cli")
+      expect(await runDirectSingleDown(root, "ghost", true)).toBe(0)
+      expect((await readSupervisorState(paths.supervisorFile))?.startedAt).toBe("2026-10-07T00:00:00.000Z")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("H-b detached start freshness gate (no stale-file false-green)", () => {
   test("unwritable stale supervisor.json never reads as started", async () => {
     const root = await tempRoot()

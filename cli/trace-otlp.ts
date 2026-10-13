@@ -604,7 +604,7 @@ const decodeSpan = (
  * field-1 `KeyValue` entries); decode each entry directly. The service name
  * runs the same sanitize shape as span names (S1 strip, S2 segment
  * masking, S3 credential masking, S5 byte cap). Best-effort: failures keep
- * the `"bilinmeyen"` fallback and the spans still decode. */
+ * the `"unknown"` fallback and the spans still decode. */
 const decodeServiceName = (reader: Reader, resourceBytes: Uint8Array, attrValueMaxBytes: number): string => {
   let fields: Field[]
   try {

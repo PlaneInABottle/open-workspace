@@ -39,13 +39,20 @@ ow show <session> --json              # stable machine output (all commands, Eng
 No ID known: last sidecar line, or bare for latest. Exits: 0 ok,
 1 failure, 2 usage error; non-interactive. `doctor` first when results
 look wrong; sidecar rows land ~5s after session end, spans 5–15s late.
-Report only what the output shows, never invent causes. Stuck claims
+Baseline first: run `ow doctor` and note the health lines before
+changing anything, re-run after. Report only what the output shows,
+never invent causes. Stuck claims
 need `--stuck` numbers, not impressions. Check counts first, keep
-`--since` narrow; open failures one by one, repeats first.
+`--since` narrow; open failures one by one, repeats first. Handoff
+between agents carries readings (`ow ps`, state dir, `up:` line),
+never pids/logs/env — detail: `ow-runtime`.
 
-Output labels (English, quoted verbatim): `task:` task header,
+Output labels (English, quoted verbatim): `task:` task header
+(`N records, M failed` — every joined row counts, not just commands),
 `record:` real command, `intent:` agent sentence, `(reason:)` /
-`(output:)` on failures. Budgets: success excerpts 2KB stored and
+`(output:)` on failures (several distinct reasons collapse to
+`(reason: <first>; +N more)`, drilled down as
+`--- reasons (from command text) ---` under `--show N`). Budgets: success excerpts 2KB stored and
 300 chars shown, failures up to 16KB; 3h of history runs about 150KB.
 
 ## `--json` keys (single table, additive)
@@ -61,10 +68,10 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 | `ps --json` | `{services[] ({name, status, pid, uptimeSec, cpuPct, memBytes, port?, listening?, exitCode?})}` |
 | `logs --json` | `{service, lines[]}` |
 | `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[], readiness[] (only with --probe)}` |
-| `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, neden, readiness}})}` |
+| `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, reason, readiness}})}` |
 | `preflight --json` | `{pass, gates[] ({name: reconcile\|provenance\|readiness\|boundary, pass, detail}), missing[], envelopes[]}` |
 | `readiness --json` | `{ready, missing[], stale[], falseGreens[] ({kind, service, hint}), gates[]}` |
 | `scenarios --check --json` | `{file, scenarios[] ({name, services, boundaries, targets, probes[] ({id, argvShape, timeout}), checkpoints}), boundariesNormalized[], boundaryWarnings[], warnings[]}` |
-| `doctor --json` | `{checks[] ({name, ok, detail})}` (`up`/`trace` are not part of the exit) |
+| `doctor --json` | `{checks[] ({name, ok, detail}), identity: {installed {sha8, dirty, time, binary8}\|null, supervisor {state, startedAt, sha8, time}, match}}` (`up`/`trace` are not part of the exit; digests compared internally, shorts only on the wire) |
 
 Full schema, caps, and non-goals: product `cli/README.md`.

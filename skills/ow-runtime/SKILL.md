@@ -61,7 +61,11 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
 
 - `ow reconcile --check` drift kinds with English hints (`missing`,
   `extra`, `stopped`, `config-mismatch`, `lstart-mismatch`,
-  `foreign-port`, `stale-build` for stale build identity).
+  `foreign-port`, `stale-build` for stale build identity). A descendant
+  listener (forking launcher) is owned, not foreign; a partly foreign
+  port reports `foreign-port` with `ownership: "shared"` (JSON only) and
+  `port <p> also held by a foreign listener (UNVERIFIED) — no kill,
+  verify the owner`. Never kill a port-holder on this output.
 - `ow preflight [--file] [--json] [--probe]`: read-only gate, no
   mutation; exits 0 pass / 1 missing / 2 usage. `--probe` is one-shot
   loopback TCP on declared ports only (≤60s budget).
@@ -89,7 +93,7 @@ ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervi
   byte-identical); `--force` keeps exactly one `.bak` per yaml.
   The scenarios file is INERT (commented probes, placeholder keeps
   `--check` green; the singular runner refuses it until uncommented).
-  A bounded `soru:` question catalog prints when scaffolding.
+  A bounded `question:` question catalog prints when scaffolding.
 - `ow provision --check [--file] [--json] [--probe]` is the
   workspace checklist (`.env` symlink + `.venv` + HEAD + preflight
   gate). Read-only, exits 0 pass / 1 missing; never gates other verbs.
@@ -119,6 +123,15 @@ stays future-HTTP-only, never on probe transport.
 - Scrubber runs BEFORE the cap: B3 value masking plus CWD-absolute
   paths folding to `<root>`. Checkpoints stay runner-written —
   `ow` writes replay only, never checkpoints.
+
+## Handoff (between agents/sessions)
+
+Hand over supervision with readings, never handles: `ow ps` status,
+the `<root>/.ow/` location, and supervisor liveness (the `ow doctor`
+`up:` line). Never hand over bare pids (they recycle — `lstart`
+guards them), log contents, or env values. The next agent
+re-verifies with `ow ps` and `ow reconcile --check` before acting; a
+dead supervisor means `ow down` first, never adoption.
 
 ## Trace (OpenTelemetry, optional)
 

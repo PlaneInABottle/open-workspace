@@ -50,8 +50,9 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
     return 1
   }
   const warnings: string[] = []
+  let lock: import("./up-state").UpLock
   try {
-    await acquireLock(paths.lockFile, warnings)
+    lock = await acquireLock(paths.lockFile, warnings)
   } catch (error) {
     console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
     return 2
@@ -77,6 +78,7 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
       requestsDir: paths.requestsDir,
       owFile: abs,
       trace: parsed.trace,
+      supervisorStartedAt: lock.startedAt,
       onLine: opts?.quiet ? () => undefined : (name, stream, line) => console.log(`[${name}|${stream}] ${line}`),
     })
   } catch (error) {

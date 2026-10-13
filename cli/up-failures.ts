@@ -19,23 +19,15 @@ import { join } from "node:path"
 
 import { CHECKPOINTS_DIR_NAME, isValidRunName, lineageOf, readCheckpointFile, viewOf } from "./up-checkpoints"
 import type { EvidenceEnvelope } from "./up-evidence"
+import { parseSince, SINCE_TOKENS, sinceWindow, storeWindow, windowNotice, type SinceWindow } from "./join"
 import { upPaths } from "./up-state"
 
-/** Locked `--since` set (anything else is a usage error). */
-export const FAILURES_SINCE_OPTIONS = ["1h", "24h", "7d"] as const
-
-const SINCE_MS: Record<string, number> = {
-  "1h": 3_600_000,
-  "24h": 24 * 3_600_000,
-  "7d": 7 * 24 * 3_600_000,
-}
-
-/** `--since` in English units: undefined = every retained envelope;
- * null = outside the locked set (caller reports usage, exit 2). */
+/** `--since` in the shared window grammar: undefined = every retained
+ * envelope; null = outside the grammar (caller reports usage, exit 2). */
 export const parseFailuresSince = (raw: string | boolean | undefined): number | undefined | null => {
   if (raw === undefined) return undefined
   if (typeof raw !== "string") return null
-  return SINCE_MS[raw] ?? null
+  return parseSince(raw)
 }
 
 export type FailureTuple = {
@@ -103,8 +95,12 @@ const STATUS_WORD: Record<string, string> = {
   stale: "stale",
 }
 
-/** Locked summary lines live here (exact strings, English). */
-export const NO_FINDINGS = "no findings"
+/** Locked empty line lives here (exact shape, English): names the searched
+ * checkpoints dir + the applied window, never a bare claim. */
+export const NO_FINDINGS = (store: string, window: SinceWindow | null): string =>
+  `no findings ${storeWindow(store, window)}`
+
+/** Locked singleton line (exact string, English). */
 export const singletonLine = (count: number): string => `no-repeat: ${count} unique findings unlisted`
 
 /** Mechanical bucket line (English words, runner-declared values only).
@@ -121,13 +117,15 @@ export const formatFailureGroup = (group: FailureTuple): string => {
  * (bounded per-file caps, corrupt lines counted and skipped — the file
  * is never touched). Empty → `no findings`; exit 0 except when files
  * exist but nothing is readable (exit 1). */
-export const runFailures = async (opts: { rootDir: string; since: string | boolean | undefined; json: boolean }): Promise<number> => {
+export const runFailures = async (opts: { rootDir: string; since: string | boolean | undefined; json: boolean; now?: number }): Promise<number> => {
   const sinceMs = parseFailuresSince(opts.since)
   if (sinceMs === null) {
-    console.error(`ow: invalid --since: ${typeof opts.since === "string" ? opts.since : ""} (allowed: 1h|24h|7d)`)
+    console.error(`ow: invalid --since: ${typeof opts.since === "string" ? opts.since : ""} (${SINCE_TOKENS})`)
     return 2
   }
-  const now = Date.now()
+  const now = opts.now ?? Date.now()
+  const window = sinceWindow(typeof opts.since === "string" ? opts.since : undefined, sinceMs, now)
+  if (window !== null && !opts.json) console.error(windowNotice(window))
   const dir = join(upPaths(opts.rootDir).stateDir, CHECKPOINTS_DIR_NAME)
   let files: string[]
   try {
@@ -160,11 +158,11 @@ export const runFailures = async (opts: { rootDir: string; since: string | boole
   if (overCap > 0 && !opts.json) console.error(`skipped(${overCap}): over cap (file read within 500-line/256KB limit)`)
   const folded = foldFailures(candidates)
   if (opts.json) {
-    console.log(JSON.stringify({ groups: folded.groups, singletons: folded.singletons, skipped: { corrupt, overCap } }))
+    console.log(JSON.stringify({ groups: folded.groups, singletons: folded.singletons, skipped: { corrupt, overCap }, window }))
     return candidates.length === 0 && (corrupt > 0 || overCap > 0) && files.length > 0 ? 1 : 0
   }
   if (candidates.length === 0) {
-    console.log(NO_FINDINGS)
+    console.log(NO_FINDINGS(dir, window))
     // M-g: files present but nothing readable (all corrupt/capped) exits
     // 1 — a genuinely empty dir or all-confirmed evidence stays exit 0.
     return corrupt + overCap > 0 && files.length > 0 ? 1 : 0

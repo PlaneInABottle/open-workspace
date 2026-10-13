@@ -468,3 +468,79 @@ describe("export absent-preflight fence (follow-up)", () => {
     }
   })
 })
+
+describe("export composition guard OW-011 (killable child + deadline)", () => {
+  test("timeout RED-proof: a hanging composition is killed — explicit line, exit 1, no file", async () => {
+    const { runExport } = await import("./up-export")
+    const root = await tempRoot()
+    try {
+      const file = await yamlFile(root)
+      let killed = false
+      const hanging = (): { result: Promise<{ code: number; stdout: string; stderr: string }>; kill: () => void } => ({
+        result: new Promise(() => undefined),
+        kill: () => {
+          killed = true
+        },
+      })
+      const io = capture()
+      const start = Date.now()
+      let code = -1
+      try {
+        code = await runExport({ rootDir: root, file, out: "bundle.md", timeoutMs: 200, spawnFn: hanging })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(Date.now() - start).toBeLessThan(5000)
+      expect(killed).toBe(true)
+      expect(io.err.join("\n")).toContain("export: timed out after 200ms (no bundle written)")
+      expect(io.out.join("\n")).toBe("")
+      const { existsSync } = await import("node:fs")
+      expect(existsSync(join(root, "bundle.md"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("cooperative deadline: a past deadline aborts in-process before any write", async () => {
+    const { runExportInProcess } = await import("./up-export")
+    const root = await tempRoot()
+    try {
+      const file = await yamlFile(root)
+      const io = capture()
+      let code = -1
+      try {
+        code = await runExportInProcess({ rootDir: root, file, out: "bundle.md", timeoutMs: 200, deadlineMs: Date.now() - 1 })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.err.join("\n")).toContain("export: timed out after 200ms (no bundle written)")
+      const { existsSync } = await import("node:fs")
+      expect(existsSync(join(root, "bundle.md"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("empty-witness through the guarded path: nothing readable, exit 1, no file", async () => {
+    const root = await tempRoot()
+    try {
+      const file = join(root, "ow.yaml")
+      await writeFile(file, "not: [valid, yaml\n", "utf8")
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["export", "--bundle", "--file", file, "--out", "bundle.md"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      expect(io.err.join("\n")).toContain("export: nothing readable (no state, no checkpoints, no findings)")
+      const { existsSync } = await import("node:fs")
+      expect(existsSync(join(root, "bundle.md"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+})

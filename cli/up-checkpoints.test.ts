@@ -425,7 +425,7 @@ describe("M-A side_effect flags + retry hint + attempt tree", () => {
     }
   })
 
-  test("suffix alias: run-name `-deneme<N>` groups the same as `-attempt<N>`", async () => {
+  test("ungrouped-negative: run-name `-deneme<N>` no longer groups (removed alias)", async () => {
     const root = await tempRoot()
     try {
       const file = join(root, "ow.yaml")
@@ -438,8 +438,9 @@ describe("M-A side_effect flags + retry hint + attempt tree", () => {
         io.restore()
       }
       const text = io.out.join("\n")
-      expect(text).toContain("scenario: night")
-      expect(text).toContain("attempt 2: build (confirmed)")
+      expect(text).not.toContain("scenario: night")
+      expect(text).not.toContain("attempt 2:")
+      expect(text).toContain("confirmed: build")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

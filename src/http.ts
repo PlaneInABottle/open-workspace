@@ -140,8 +140,6 @@ function mcpMayCall(role: ApiRole, method: string, pathname: string) {
   // do unknown routes.
   if (method === 'GET' && (pathname === '/api/overview'
     || pathname === '/api/activity'
-    || pathname === '/api/learnings'
-    || pathname === '/api/lessons'
     || pathname === '/api/runs/recent'
     || new RegExp(`^/api/workspaces/${nameSegment}(?:/onboarding)?$`).test(pathname)
     || new RegExp(`^/api/workspaces/${nameSegment}/environments(?:/status)?$`).test(pathname))) return true;
@@ -366,19 +364,6 @@ export function createApp(service: WorkspaceService, options: {
               throw new Error(workspaceMessages.resultLimit);
             }
             json(response, 200, entries.slice(-limit));
-            return;
-          }
-          if (url.pathname === '/api/learnings' && request.method === 'GET') {
-            // Reader-only narrative spine. Like activity/run reads, viewing
-            // these agent-written notes never records activity.
-            json(response, 200, await service.learnings());
-            return;
-          }
-          if (url.pathname === '/api/lessons' && request.method === 'GET') {
-            // Read-only learned-lessons shelf: titles plus source file refs
-            // only, never rule bodies. Global like the milestone notes;
-            // viewing never records activity and never writes the index.
-            json(response, 200, await service.lessonShelf());
             return;
           }
           if (url.pathname === '/api/runs/recent' && request.method === 'GET') {

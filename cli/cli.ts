@@ -18,10 +18,15 @@ import {
   sessionMeta,
   sessionPrompts,
   showLine,
+  SINCE_TOKENS,
+  sinceWindow,
+  storeWindow,
   stuckReport,
+  windowNotice,
   type EnrichedRecord,
+  type SinceWindow,
 } from "./join"
-import { doctor, formatDoctor } from "./doctor"
+import { doctor, formatDoctor, formatIdentity, doctorIdentity } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./trace-cli"
 import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, PROBE_TIMEOUT_MS, subsetNestingHint } from "./up-schema"
@@ -29,10 +34,22 @@ import { isSecretFlagToken, maskCmdShape, maskSecretToken } from "./up-reconcile
 import { maskSecrets } from "./up-evidence"
 import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 
-const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "readiness", "provision", "scenarios", "failures", "record", "contract", "scenario", "export"] as const
+export const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "readiness", "provision", "scenarios", "failures", "record", "contract", "scenario", "export"] as const
 export type Command = (typeof COMMANDS)[number]
+
+/** The overlay readers (single source for help + the fail-loud guard +
+ * refusal below; the help-coverage test derives from this). `scenario`
+ * covers both subverbs — see OVERLAY_READER_LABELS for the eight names. */
+export const OVERLAY_READERS = ["scenarios", "preflight", "readiness", "provision", "record", "contract", "scenario"] as const
+
+/** All eight reader names for help/refusal (`scenario` splits in two). */
+export const OVERLAY_READER_LABELS = ["scenarios", "preflight", "readiness", "provision", "record", "contract", "scenario run", "scenario env"] as const
+
+/** The eight `--since` readers (single source for help + the fail-loud
+ * cross-verb guard below; the help-coverage test derives from this). */
+export const SINCE_READERS = ["sessions", "show", "stuck", "reads", "logs", "failures", "trace", "timeline"] as const
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
 const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries", "--out"])
@@ -79,7 +96,7 @@ export const helpText = (): string =>
     "  checkpoints list [--file] [--json]  recorded evidence runs (read-only)",
     "  checkpoints show <run> [--file] [--json]  shows envelopes as confirmed/stale/not-observed",
     "  checkpoints diff <runA> <runB> [--file] [--json]  envelope-by-stage status/proof/digest deltas (read-only)",
-    "  failures [--since 1h|24h|7d] [--file] [--json]  repeated findings (read-only, mechanical)",
+    "  failures [--since 30m|3h|1d|1w] [--file] [--json]  repeated findings (read-only, mechanical)",
     "  preflight [--file] [--json] [--probe]  read-only gate (no mutation; exit 1 when failing)",
     "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
   "  provision --check [--file] [--json] [--probe]  workspace checklist (.env symlink + .venv + HEAD + pre-gate; read-only, exit 0 pass / 1 missing)",
@@ -92,11 +109,11 @@ export const helpText = (): string =>
     "  trace [trace] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  traces; one tree per trace; --wait 15s waits for new spans",
   "  timeline [session] [--trace] [--since] [--tail]  agent lines + trace spans as a joined timeline",
   "  init [--force] [--tracing]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
-    "  --boundaries <path>  overlay file (root-relative; flag wins over .ow/boundaries.local.yaml; scenarios/preflight/readiness/provision/record/contract/scenario-run only)",
+    `  --boundaries <path>  overlay file (root-relative; flag wins over .ow/boundaries.local.yaml; ${OVERLAY_READER_LABELS.map((label) => label.replace(" ", "-")).join("/")} only)`,
     "",
     "general: --db <path> --log <path> --json --help",
-    "  --since  window: 30m|3h|1d|1w (default 1d; sessions/show/stuck/reads)",
-    "  --json  machine output (English keys): show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace/timeline/reconcile/checkpoints/failures/preflight/readiness/provision/scenarios/contract/scenario (+ up --check)",
+    `  --since  window: ${SINCE_TOKENS} (${SINCE_READERS.join("/")})`,
+    "  --json  machine output (English keys): doctor/show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace/timeline/reconcile/checkpoints/failures/preflight/readiness/provision/scenarios/contract/scenario (+ up --check)",
     "exit: 0 ok, 1 structural error, 2 usage error",
     "",
     "example: ow show <session> --tree --since 1d",
@@ -165,7 +182,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   if (flags["--help"]) return { command, sessionID, flags, error: null, extra }
   if (!command) return fail("command expected: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline|init (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
-  if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${flags["--since"]} (30m|3h|1d|1w)`)
+  if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${flags["--since"]} (${SINCE_TOKENS})`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
   if (typeof flags["--bytes"] === "string" && bytes === null) return fail(`invalid --bytes: ${flags["--bytes"]} (512|1k|4k|1m)`)
   if (typeof flags["--show"] === "string" && !Number.isFinite(Number(flags["--show"]))) {
@@ -189,16 +206,19 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
 }
 
 // --json envelopes: stable English keys; human views keep plain English labels.
-export const toSessionsJson = (sessions: Awaited<ReturnType<typeof listSessions>>) => ({ sessions })
+// `window` is the additive `--since` envelope ({since, cutoff} or null).
+export const toSessionsJson = (sessions: Awaited<ReturnType<typeof listSessions>>, window: SinceWindow | null = null) => ({ sessions, window })
 export const toShowJson = (
   sessionID: string,
   warnings: string[],
   groups: ReturnType<typeof groupByTask>,
   tree?: ReturnType<typeof treeIds>,
-) => (tree ? { session: sessionID, warnings, groups, tree } : { session: sessionID, warnings, groups })
-export const toStuckJson = (sessionID: string, report: Awaited<ReturnType<typeof stuckReport>>) => ({
+  window: SinceWindow | null = null,
+) => (tree ? { session: sessionID, warnings, groups, tree, window } : { session: sessionID, warnings, groups, window })
+export const toStuckJson = (sessionID: string, report: Awaited<ReturnType<typeof stuckReport>>, window: SinceWindow | null = null) => ({
   session: sessionID,
   report,
+  window,
 })
 
 /** `doctor` exit rule: `up` and `trace` lines are informational only. */
@@ -596,6 +616,30 @@ const resolveSession = async (
   logPath: string,
 ): Promise<string | null> => positional ?? (await latestSession(logPath))
 
+/** Nested-state warning (basename check + ancestor scan): writers stay
+ * put in rootDir, so a `.ow`-named root or an ancestor workspace means the
+ * new state nests inside another world — readers walk up, writers do not.
+ * Null when standalone. */
+const nestedStateWarning = async (rootDir: string): Promise<string | null> => {
+  if (basename(rootDir) === ".ow") return `warning: nested state dir: ${rootDir} is itself a .ow dir (writers stay put)`
+  const { lstat } = await import("node:fs/promises")
+  let dir = dirname(rootDir)
+  for (let level = 0; level < 32; level += 1) {
+    try {
+      const info = await lstat(join(dir, ".ow"))
+      if (info.isDirectory() && !info.isSymbolicLink()) {
+        return `warning: nested state dir: ${join(rootDir, ".ow")} sits inside workspace ${dir} (writers stay put; readers walk up)`
+      }
+    } catch {
+      // missing/unreadable here: keep walking outward
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
+}
+
 export const run = async (argv: string[]): Promise<number> => {
   if (argv[0] === "__supervise") {
     const fileIndex = argv.indexOf("--file")
@@ -622,18 +666,24 @@ export const run = async (argv: string[]): Promise<number> => {
   // `checkpoints diff <runA> <runB>` (M12), plus `scenario run <name>`
   // (M6, same subverb-plus-target shape).
   // M9: `--boundaries <path>` rides the value-flag slot and is consumed
-  // only by the six overlay readers below (scenarios, preflight,
-  // readiness, provision, record, contract, scenario); anywhere else it
-  // is a usage error (exit 2), never a silent no-op.
+  // only by the eight overlay readers below (scenarios, preflight,
+  // readiness, provision, record, contract, scenario run, scenario env);
+  // anywhere else it is a usage error (exit 2), never a silent no-op.
+  // Single source: OVERLAY_READERS drives this guard, OVERLAY_READER_LABELS
+  // the help line above and the refusal below.
   const boundariesFlag = flag(flags, "--boundaries")
   if (boundariesFlag !== undefined) {
-    const overlayReader =
-      command === "scenarios" || command === "preflight" || command === "readiness" ||
-      command === "provision" || command === "record" || command === "contract" || command === "scenario"
-    if (!overlayReader) {
-      console.error("ow: --boundaries can only be used with scenarios, preflight, readiness, provision, record, contract, scenario run")
+    if (!(OVERLAY_READERS as readonly string[]).includes(command)) {
+      console.error(`ow: --boundaries can only be used with ${OVERLAY_READER_LABELS.join(", ")}`)
       return 2
     }
+  }
+  // `--since` outside the eight readers refuses (exit 2), never a silent
+  // no-op on any command (single source: SINCE_READERS drives this guard
+  // and the help line above).
+  if (flags["--since"] !== undefined && !(SINCE_READERS as readonly string[]).includes(command)) {
+    console.error(`ow: --since can only be used with ${SINCE_READERS.join(", ")}`)
+    return 2
   }
   // LOW-2: scenario-run flags outside `scenario run` refuse (exit 2), never
   // a silent no-op on any command (`scenario env` rejects them per-verb below).
@@ -670,19 +720,29 @@ export const run = async (argv: string[]): Promise<number> => {
     const upRoot =
       flag(flags, "--file") !== undefined ? upRootDir(flags) : await resolveWorkspaceRoot(process.cwd())
     const lines = await doctor({ logPath, dbPath, upRoot })
-    console.log(json ? JSON.stringify({ checks: lines }) : formatDoctor(lines))
+    const identity = await doctorIdentity({ upRoot })
+    if (json) {
+      console.log(JSON.stringify({ checks: lines, identity }))
+    } else {
+      console.log(formatDoctor(lines))
+      for (const line of formatIdentity(identity)) console.log(line)
+    }
     return doctorFails(lines) ? 1 : 0
   }
 
   if (command === "sessions") {
+    const sinceRaw = flag(flags, "--since")
+    const sinceMs = parseSince(sinceRaw)
+    const window = sinceWindow(sinceRaw, sinceMs, Date.now())
+    if (window !== null) warn(windowNotice(window))
     const sessions = await listSessions({
       logPath,
       dbPath: flag(flags, "--db"),
-      sinceMs: parseSince(flag(flags, "--since")),
+      sinceMs,
       dir: flag(flags, "--dir"),
     })
     if (json) {
-      console.log(JSON.stringify(toSessionsJson(sessions)))
+      console.log(JSON.stringify(toSessionsJson(sessions, window)))
     } else {
       console.log(sessions.length > 0 ? formatSessions(sessions) : "no sessions")
     }
@@ -721,6 +781,21 @@ export const run = async (argv: string[]): Promise<number> => {
     const stateDir = upStateDir(rootDir)
     const searchStart = process.cwd()
     const { noStateNote } = await import("./up-state")
+    // State-root announce (writers only): the exact state dir on stderr,
+    // suppressed under --json so stdout stays parse-clean. `up --check`
+    // never writes and stays silent; scenario env only reads.
+    const announcesStateDir =
+      command === "restart" ||
+      command === "down" ||
+      command === "record" ||
+      command === "contract" ||
+      (command === "up" && flags["--check"] !== true) ||
+      (command === "scenario" && positional === "run")
+    if (announcesStateDir && !json) console.error(`state dir: ${stateDir}`)
+    if (announcesStateDir) {
+      const nested = await nestedStateWarning(rootDir)
+      if (nested !== null) warn(nested)
+    }
     // Config reads follow the same rule: explicit --file or bulk `up` read
     // the pointed/cwd file; single-service and reader commands without
     // --file read the walked root's file.
@@ -737,6 +812,7 @@ export const run = async (argv: string[]): Promise<number> => {
         traceId: positional,
         tail: tailFlag === undefined ? undefined : Number(tailFlag),
         sinceMs: parseSince(flag(flags, "--since")),
+        since: flag(flags, "--since"),
         service: serviceFlag,
         json,
         waitMs: waitFlag === undefined ? undefined : (parseWaitDuration(waitFlag) ?? undefined),
@@ -760,6 +836,7 @@ export const run = async (argv: string[]): Promise<number> => {
         traceId: traceFlag,
         tail: tailFlag === undefined ? undefined : Number(tailFlag),
         sinceMs: parseSince(flag(flags, "--since")),
+        since: flag(flags, "--since"),
         json,
       })
       if (result.stdout.length > 0) console.log(result.stdout)
@@ -944,12 +1021,15 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       if (command === "ps") {
         if (json) console.log(JSON.stringify({ services: [] }))
-        else console.log(`no state (${noStateNote(searchStart)})`)
+        else console.log(`no state ${storeWindow(stateDir, null)} (${noStateNote(searchStart)})`)
         return 0
       }
       const service = positional ?? null
       if (json) console.log(JSON.stringify({ service, lines: [] }))
-      else console.log(`no log (${noStateNote(searchStart)})`)
+      else {
+        const logsWindow = sinceWindow(flag(flags, "--since"), parseSince(flag(flags, "--since")), Date.now())
+        console.log(`no log ${storeWindow(stateDir, logsWindow)} (${noStateNote(searchStart)})`)
+      }
       return 0
     }
     if (command === "down") {
@@ -1270,6 +1350,8 @@ export const run = async (argv: string[]): Promise<number> => {
       const tail = Number(flag(flags, "--tail") ?? 200)
       const grep = flag(flags, "--grep")
       const sinceMs = parseSince(flag(flags, "--since"))
+      const logsWindow = sinceWindow(flag(flags, "--since"), sinceMs, Date.now())
+      if (logsWindow !== null) warn(windowNotice(logsWindow))
       const { classifySupervisorFile, upPaths } = await import("./up-state")
       const fileStatus = await classifySupervisorFile(upPaths(rootDir).supervisorFile)
       if (fileStatus === "corrupt" || fileStatus === "bad-version") {
@@ -1309,7 +1391,7 @@ export const run = async (argv: string[]): Promise<number> => {
         }
         if (omitBits.length > 0) console.log(`(omitted: ${omitBits.join("; ")})`)
       } else {
-        console.log(JSON.stringify({ service: positional ?? null, lines: rows, omittedRows: result.omittedRows, omittedFiles: result.omittedFiles }))
+        console.log(JSON.stringify({ service: positional ?? null, lines: rows, omittedRows: result.omittedRows, omittedFiles: result.omittedFiles, window: logsWindow }))
       }
       return 0
     }
@@ -1365,6 +1447,10 @@ export const run = async (argv: string[]): Promise<number> => {
 
   const treeMode = flags["--tree"] === true
   const windowMs = parseSince(flag(flags, "--since"))
+  // One per-verb cutoff notice for the joined readers (human only via
+  // warn; stuck/show/reads share this region).
+  const window = sinceWindow(flag(flags, "--since"), windowMs, Date.now())
+  if (window !== null) warn(windowNotice(window))
 
   if (command === "stuck") {
     let records: EnrichedRecord[]
@@ -1380,7 +1466,7 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     const windowed = filterSince(records, windowMs)
     const report = await stuckReport({ records: windowed, dbPath: flag(flags, "--db"), sessionID: sid })
-    console.log(json ? JSON.stringify(toStuckJson(sid, report)) : formatStuck(report))
+    console.log(json ? JSON.stringify(toStuckJson(sid, report, window)) : formatStuck(report))
     return 0
   }
 
@@ -1407,7 +1493,7 @@ export const run = async (argv: string[]): Promise<number> => {
   if (command === "reads") {
     const stats = readDigest(merged)
     if (json) {
-      console.log(JSON.stringify({ session: sid, reads: stats }))
+      console.log(JSON.stringify({ session: sid, reads: stats, window }))
     } else {
       const text = formatReads(stats)
       console.log(text.length > 0 ? text : "no read records")
@@ -1450,19 +1536,22 @@ export const run = async (argv: string[]): Promise<number> => {
   }
   if (treeMode) {
     if (json) {
-      console.log(JSON.stringify(toShowJson(sid, warnings, groups, treeIds(buildTree(sid, filtered)))))
+      console.log(JSON.stringify(toShowJson(sid, warnings, groups, treeIds(buildTree(sid, filtered)), window)))
     } else {
       const text = formatTree(buildTree(sid, filtered), filtered, { full, sectionBudget })
+      // Honest empty (grouped/tree only — --flat streams records, never a line).
       if (text.length > 0) console.log(text)
+      else console.log(`no records ${storeWindow(logPath, window)}`)
       if (full) warn(`(full text: ${text.length} chars)`)
     }
     return 0
   }
   const text = formatGrouped(groups, full, false, sectionBudget)
   if (json) {
-    console.log(JSON.stringify(toShowJson(sid, warnings, groups)))
+    console.log(JSON.stringify(toShowJson(sid, warnings, groups, undefined, window)))
   } else {
     if (text.length > 0) console.log(text)
+    else console.log(`no records ${storeWindow(logPath, window)}`)
     if (full) warn(`(full text: ${text.length} chars)`)
   }
   return 0

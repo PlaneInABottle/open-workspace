@@ -62,7 +62,7 @@ test('learn-from-mistake skill exists, stays small and is referenced', async () 
   const mcpSource = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
   assert.ok(mcpSource.includes('learn-from-mistake'), 'MCP instructions reference learn-from-mistake');
   assert.ok(mcpSource.includes('never runs automatically'));
-  assert.ok(mcpSource.includes('Mirror major milestones'), 'MCP instructions mirror major milestones');
+  assert.ok(!mcpSource.includes('Mirror major milestones'), 'pruned milestones-file clause stays out of MCP instructions');
   const base = mcpSource.match(/const baseInstructions = '((?:[^'\\]|\\.)*)'/)?.[1];
   assert.ok(base, 'base instructions literal found');
   const baseBytes = Buffer.byteLength(base, 'utf8');
@@ -88,8 +88,13 @@ test('reads record sanitized descriptors and failures never leak literals', asyn
   await fetch(`${origin}/api/workspaces/${f.workspace.name}`, { headers });
   await fetch(`${origin}/api/workspaces/${f.workspace.name}/onboarding`, { headers });
   await fetch(`${origin}/api/workspaces/${f.workspace.name}/services`, { method: 'POST', headers, body: '{}' });
-  const learnings = await fetch(`${origin}/api/learnings`, { headers });
-  assert.deepEqual(await learnings.json(), { milestones: [] }, 'the read API returns narrative notes only');
+  // The pruned read routes stay gone: dashboard-role GET /api/learnings
+  // finds no route (the write route /api/learnings/record below is
+  // untouched). MCP-role callers are refused even earlier at the role
+  // gate (fail-closed).
+  const pruned = await fetch(`${origin}/api/learnings`);
+  assert.equal(pruned.status, 404);
+  assert.equal((await fetch(`${origin}/api/learnings`, { headers })).status, 403);
   const denied = await fetch(`${origin}/api/workspaces/Missing%20project`, { headers });
   assert.equal(denied.status, 400);
   // Failed mutation attempts carrying secrets must not reach activity either.

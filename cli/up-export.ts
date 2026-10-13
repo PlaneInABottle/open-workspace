@@ -22,8 +22,9 @@
  * bundle refused) instead of embedding invalid text. */
 
 import { chmod, rename, unlink, writeFile } from "node:fs/promises"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { maskSecrets } from "./up-evidence"
 import { foldCwd } from "./up-replay"
@@ -32,6 +33,27 @@ import { ensureUpStateDir, upPaths } from "./up-state"
 
 export const EXPORT_TAIL = 50
 export const EXPORT_SINCE = "24h"
+/** Default composition deadline (generous: normal exports finish in well
+ * under a second on fixtures; the guard exists so export can never hang
+ * forever, not to race healthy runs). Tests inject milliseconds. */
+export const EXPORT_TIMEOUT_MS = 60_000
+/** Env flag selecting the in-process composer inside the guard child (the
+ * child is a plain `export` re-invocation — no hidden verb, no cli.ts
+ * change — that skips re-spawning). Never printed, only compared. */
+export const EXPORT_CHILD_ENV = "OW_EXPORT_COMPOSE_CHILD"
+/** Env-carried composition deadline (epoch ms), timeout (ms) and clock
+ * (ISO) from parent to child. Parsed fail-safe (absent/invalid = unset). */
+export const EXPORT_DEADLINE_ENV = "OW_EXPORT_DEADLINE"
+export const EXPORT_TIMEOUT_ENV = "OW_EXPORT_TIMEOUT_MS"
+export const EXPORT_NOW_ENV = "OW_EXPORT_NOW"
+
+/** Killable composition child (parent-owned deadline enforcement). */
+export type ExportChildResult = { code: number; stdout: string; stderr: string }
+export type ExportSpawnedChild = { result: Promise<ExportChildResult>; kill: () => void }
+export type ExportSpawnFn = (argv: string[], env: Record<string, string | undefined>) => ExportSpawnedChild
+
+/** Explicit guard failure line (single source for parent + composer). */
+export const exportTimeoutLine = (timeoutMs: number): string => `export: timed out after ${timeoutMs}ms (no bundle written)`
 
 export const BUNDLE_HEADER = "# ow export bundle"
 export const BUNDLE_REDACTION_LINE = "redaction: secrets-masked, paths-folded, revs-short-8, traces-excluded"
@@ -125,26 +147,23 @@ export const composePreflightFence = (
 
 type Captured = { code: number; out: string }
 
+/** Child base for re-driving the CLI (dev/test: source file when present,
+ * prod binary otherwise — no hidden verb, so cli.ts stays untouched). */
+const exportChildBase = (): string[] => {
+  const cliSource = join(dirname(fileURLToPath(import.meta.url)), "cli.ts")
+  return existsSync(cliSource) ? [process.execPath, cliSource] : [process.execPath]
+}
+
+/** Section capture in a killable child (never an in-process import of
+ * `./cli`: that runtime self-import edge back-edges into mid-evaluation
+ * cli.ts and spins forever inside the compiled binary — the OW-011 root
+ * cause, proven by marker bisection (zero markers before the composer
+ * body). Only captured stdout is embedded (stderr stays live). */
 const captureRun = async (argv: string[]): Promise<Captured> => {
-  const lines: string[] = []
-  const origLog = console.log
-  const origError = console.error
-  const errs: string[] = []
-  console.log = (...args: unknown[]): void => {
-    lines.push(args.map(String).join(" "))
-  }
-  console.error = (...args: unknown[]): void => {
-    errs.push(args.map(String).join(" "))
-  }
-  try {
-    const { run } = await import("./cli")
-    const code = await run(argv)
-    for (const line of errs) origError(line)
-    return { code, out: lines.join("\n") }
-  } finally {
-    console.log = origLog
-    console.error = origError
-  }
+  const child = spawnExportChild([...exportChildBase(), ...argv], { ...process.env })
+  const outcome = await child.result
+  if (outcome.stderr.replace(/\n$/, "").length > 0) console.error(outcome.stderr.replace(/\n$/, ""))
+  return { code: outcome.code, out: outcome.stdout.replace(/\n$/, "") }
 }
 
 const blank = (text: string): boolean => text.trim().length === 0
@@ -190,7 +209,7 @@ const logsSection = async (file: string, rootDir: string): Promise<Section> => {
 const failuresSection = async (file: string): Promise<Section> => {
   const title = `## failures (since ${EXPORT_SINCE})`
   const result = await captureRun(["failures", "--since", EXPORT_SINCE, "--file", file])
-  if (blank(result.out) || result.out.trim() === "no findings") return placeholder(title, "no findings")
+  if (blank(result.out) || result.out.trim().startsWith("no findings")) return placeholder(title, "no findings")
   return live(title, result.out)
 }
 
@@ -276,20 +295,165 @@ const atomicWriteText0600 = async (path: string, text: string): Promise<void> =>
   }
 }
 
-export const runExport = async (opts: {
+export type ExportOptions = {
   rootDir: string
   file: string
   run?: string
   out?: string
   now?: Date
-}): Promise<number> => {
+  /** Composition deadline (parent default EXPORT_TIMEOUT_MS; tests inject
+   * milliseconds). The in-process composer also honors `deadlineMs`. */
+  timeoutMs?: number
+  /** Injected child spawner (default: real killable Bun.spawn; tests pass
+   * a hanging fake for the RED-proof). Ignored inside the guard child. */
+  spawnFn?: ExportSpawnFn
+  /** Absolute composition deadline (epoch ms) for cooperative phase
+   * checks. The guard child reads it from the environment. */
+  deadlineMs?: number
+}
+
+/** Default killable spawner: stdio-piped child, SIGKILL on parent demand. */
+const spawnExportChild: ExportSpawnFn = (argv, env) => {
+  const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", env })
+  let stdout = ""
+  let stderr = ""
+  const pump = async (stream: "stdout" | "stderr"): Promise<void> => {
+    const pipe = stream === "stdout" ? proc.stdout : proc.stderr
+    if (!pipe || typeof pipe === "number") return
+    const reader = (pipe as ReadableStream<Uint8Array>).getReader()
+    const decoder = new TextDecoder()
+    for (;;) {
+      const next = await reader.read().catch(() => ({ done: true as const, value: undefined }))
+      if (next.done) break
+      stdout += stream === "stdout" ? decoder.decode(next.value as Uint8Array, { stream: true }) : ""
+      stderr += stream === "stderr" ? decoder.decode(next.value as Uint8Array, { stream: true }) : ""
+    }
+    const tail = decoder.decode()
+    if (stream === "stdout") stdout += tail
+    else stderr += tail
+  }
+  const result = (async (): Promise<ExportChildResult> => {
+    const [code] = await Promise.all([proc.exited.catch(() => null), pump("stdout"), pump("stderr")])
+    return { code: typeof code === "number" ? code : 1, stdout, stderr }
+  })()
+  return { result, kill: () => {
+    try {
+      proc.kill("SIGKILL")
+    } catch {
+      // already gone
+    }
+  } }
+}
+
+/** Child argv: the same public `export` invocation on the shared child
+ * base (no hidden verb, so cli.ts stays untouched). */
+const exportChildArgv = (opts: ExportOptions): string[] => [
+  ...exportChildBase(),
+  "export",
+  "--bundle",
+  ...(opts.run === undefined ? [] : [opts.run]),
+  "--file",
+  opts.file,
+  ...(opts.out === undefined ? [] : ["--out", opts.out]),
+]
+
+const readDeadlineEnv = (): number | null => {
+  const raw = process.env[EXPORT_DEADLINE_ENV]
+  if (raw === undefined) return null
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+const readTimeoutEnv = (): number | null => {
+  const raw = process.env[EXPORT_TIMEOUT_ENV]
+  if (raw === undefined) return null
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
+const readNowEnv = (): Date | null => {
+  const raw = process.env[EXPORT_NOW_ENV]
+  if (raw === undefined) return null
+  const time = Date.parse(raw)
+  return Number.isFinite(time) ? new Date(time) : null
+}
+
+/** Guard parent: the composition runs in a killable child under a
+ * deadline. A same-process timer alone is PROVEN unsound against
+ * synchronous in-process spin (it cannot interrupt a spinning regex) —
+ * SIGKILL on a child can. Timeout → explicit line, exit 1, no file
+ * (the child writes atomically tmp+rename only at the very end, so a
+ * kill before that leaves no bundle behind). Residual: killing the
+ * composer can orphan its in-flight section children; those are bounded
+ * reader computations that exit on their own and write nothing. */
+export const runExport = async (opts: ExportOptions): Promise<number> => {
+  if (process.env[EXPORT_CHILD_ENV] === "1") return runExportInProcess(opts)
+  const timeoutMs = opts.timeoutMs ?? EXPORT_TIMEOUT_MS
+  const deadline = Date.now() + timeoutMs
+  const argv = exportChildArgv(opts)
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    [EXPORT_CHILD_ENV]: "1",
+    [EXPORT_DEADLINE_ENV]: String(deadline),
+    [EXPORT_TIMEOUT_ENV]: String(timeoutMs),
+    ...(opts.now === undefined ? {} : { [EXPORT_NOW_ENV]: opts.now.toISOString() }),
+  }
+  let child: ExportSpawnedChild
+  try {
+    child = (opts.spawnFn ?? spawnExportChild)(argv, env)
+  } catch (error) {
+    console.error(`export: cannot start composition (${error instanceof Error ? error.message : String(error)}) (no bundle written)`)
+    return 1
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const outcome = await Promise.race([
+      child.result.then((result) => ({ ...result, timedOut: false as const })),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timer = setTimeout(() => {
+          try {
+            child.kill()
+          } catch {
+            // already gone
+          }
+          resolve({ timedOut: true })
+        }, timeoutMs)
+      }),
+    ])
+    if (outcome.timedOut) {
+      console.error(exportTimeoutLine(timeoutMs))
+      return 1
+    }
+    // Relay verbatim (single calls; trailing newline folded so captured
+    // shapes match the in-process composition byte for byte).
+    if (outcome.stdout.replace(/\n$/, "").length > 0) console.log(outcome.stdout.replace(/\n$/, ""))
+    if (outcome.stderr.replace(/\n$/, "").length > 0) console.error(outcome.stderr.replace(/\n$/, ""))
+    return outcome.code
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export const runExportInProcess = async (opts: ExportOptions): Promise<number> => {
+  // Cooperative phase checks (defense in depth beside the parent's
+  // SIGKILL: a slow-but-moving composition aborts at phase boundaries
+  // instead of burning the whole deadline; a true single-call spin is
+  // still only stoppable by the parent's kill — documented, not claimed).
+  const now = opts.now ?? readNowEnv() ?? new Date()
+  const timeoutMs = opts.timeoutMs ?? readTimeoutEnv() ?? EXPORT_TIMEOUT_MS
+  const deadlineMs = opts.deadlineMs ?? readDeadlineEnv()
+  const timedOut = (): boolean => deadlineMs !== null && deadlineMs !== undefined && Date.now() > deadlineMs
+  const abort = (): number => {
+    console.error(exportTimeoutLine(timeoutMs))
+    return 1
+  }
   if (opts.run !== undefined && !isValidRunName(opts.run)) {
     console.error(`ow: invalid run name: ${opts.run} (allowed: [A-Za-z0-9_.-], at most 64 characters)`)
     return 2
   }
   let target: string
   if (opts.out === undefined) {
-    target = join(upPaths(opts.rootDir).stateDir, bundleFileName(opts.now ?? new Date()))
+    target = join(upPaths(opts.rootDir).stateDir, bundleFileName(now))
   } else {
     try {
       target = await resolveOut(opts.rootDir, opts.out)
@@ -299,13 +463,19 @@ export const runExport = async (opts: {
       return code
     }
   }
-  const sections: Section[] = [
-    await explainSection(opts.file),
-    await logsSection(opts.file, opts.rootDir),
-    await failuresSection(opts.file),
-    ...(opts.run === undefined ? [] : [await checkpointsSection(opts.file, opts.run)]),
-    await preflightSection(opts.file),
-  ]
+  const sections: Section[] = []
+  sections.push(await explainSection(opts.file))
+  if (timedOut()) return abort()
+  sections.push(await logsSection(opts.file, opts.rootDir))
+  if (timedOut()) return abort()
+  sections.push(await failuresSection(opts.file))
+  if (timedOut()) return abort()
+  if (opts.run !== undefined) {
+    sections.push(await checkpointsSection(opts.file, opts.run))
+    if (timedOut()) return abort()
+  }
+  sections.push(await preflightSection(opts.file))
+  if (timedOut()) return abort()
   if (!sections.some((section) => section.present)) {
     console.error("export: nothing readable (no state, no checkpoints, no findings)")
     return 1
@@ -319,7 +489,7 @@ export const runExport = async (opts: {
   const fenceBody = composed.text
   const lines = [
     BUNDLE_HEADER,
-    `generated: ${(opts.now ?? new Date()).toISOString()}`,
+    `generated: ${now.toISOString()}`,
     "root: <root>",
     `run: ${opts.run ?? "none"}`,
     BUNDLE_REDACTION_LINE,
@@ -337,6 +507,7 @@ export const runExport = async (opts: {
     lines.push(fence.title, fenceBody, "")
   }
   const text = `${lines.join("\n")}`
+  if (timedOut()) return abort()
   try {
     if (opts.out === undefined) await ensureUpStateDir(upPaths(opts.rootDir).stateDir)
     await atomicWriteText0600(target, text)

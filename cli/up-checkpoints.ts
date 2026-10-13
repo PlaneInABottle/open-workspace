@@ -127,11 +127,12 @@ export const isAttemptedUnconfirmed = (envelopes: EvidenceEnvelope[], index: num
 export const needsRetryHint = (envelopes: EvidenceEnvelope[]): boolean =>
   envelopes.some((_, index) => isAttemptedUnconfirmed(envelopes, index))
 
-/** M-A (#3): run-name suffix parsing (`<scenario>-attempt<N>` /
- * `<scenario>-deneme<N>`, N 1..999). Explicit fields always win; the
- * parse is only a fallback. */
+/** M-A (#3): run-name suffix parsing (`<scenario>-attempt<N>`,
+ * N 1..999). Explicit fields always win; the parse is only a fallback.
+ * A removed non-English alias stays unattributed by decision
+ * (flat, ungrouped — covered by the ungrouped-negative test). */
 export const parseAttemptSuffix = (run: string): { scenario: string; attempt: number } | null => {
-  const match = /^(.*)-(?:attempt|deneme)(\d{1,3})$/.exec(run)
+  const match = /^(.*)-attempt(\d{1,3})$/.exec(run)
   if (!match) return null
   const scenario = match[1]
   const attempt = Number.parseInt(match[2], 10)
