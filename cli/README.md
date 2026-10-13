@@ -235,14 +235,16 @@ healthy services are never signaled.
   `git`/`lsof`/probes — only the spawn-time and reconcile paths may.
 - Secret values never reach state/output/logs: recorded `cmd`/`logsCmd` are
   masked shapes (deterministic, so expected-vs-running shape compare still
-  works); `envNames`/`dependsOn` in state carry names only, never values.
+  works); `envNames`/`dependsOn` in state carry manifest-declared names only, never values.
 
 ### Runtime provenance (M2, witness report — no mutation)
 
 The supervisor records one observation per spawn (best-effort, ≤2s per
 exec): resolved cwd, `git rev-parse HEAD` + `status --porcelain`
 (checkout rev/dirty), masked argv shape, interpreter inferred from argv
-(`python*|uv|bun|node|java|gradlew` — no version exec), java classpath
+through one `env`-style wrapper (`NAME=value`/`-i`/`-u`/`-C`/`--unset`/`--`
+skipped by position, unknown options fail closed to uninferred;
+`python*|uv|bun|node|java|gradlew` — no version exec), java classpath
 count/JAR names, `.env*` FILE NAMES in cwd (contents are never read),
 record time. Raw argv, secret values and env contents never enter state;
 `git`/`lsof` run ONLY at spawn time and on the explicit `reconcile --check`

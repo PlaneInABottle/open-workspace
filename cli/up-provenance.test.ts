@@ -51,6 +51,45 @@ describe("inferInterpreter (match = inferred, no version exec)", () => {
     expect(inferInterpreter("sleep 30")).toBeUndefined()
     expect(inferInterpreter("sh -c 'echo hi'")).toBeUndefined()
     expect(inferInterpreter(undefined)).toBeUndefined()
+    expect(inferInterpreter([])).toBeUndefined()
+  })
+
+  test("env-wrapper forms resolve by token position", () => {
+    expect(inferInterpreter(["env", "-i", "node", "app.js"])).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter(["env", "-u", "FOO", "python3", "x.py"])).toMatchObject({ name: "python3", source: "inferred" })
+    expect(inferInterpreter(["env", "--unset=FOO", "java", "-jar", "a.jar"])).toMatchObject({ name: "java", source: "inferred" })
+    expect(inferInterpreter(["env", "--unset", "FOO", "node", "app.js"])).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter(["env", "--", "node", "app.js"])).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter(["env", "FOO=bar", "BAZ=qux", "node", "app.js"])).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter(["env", "-C", "/work", "node", "app.js"])).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter(["/usr/bin/env", "-i", "node", "app.js"])).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter("env FOO=bar node app")).toMatchObject({ name: "node", source: "inferred" })
+    expect(inferInterpreter(["env", "node"])).toMatchObject({ name: "node", source: "inferred" })
+  })
+
+  test("quote guard is env-scoped: non-env strings keep HEAD behavior", () => {
+    expect(inferInterpreter('python3 -c "print(1)"')).toMatchObject({ name: "python3", source: "inferred" })
+    expect(inferInterpreter(`env -i GREETING="a b" node x`)).toBeUndefined()
+  })
+
+  test("wrapper negatives fail closed (unknown options, missing command, shells)", () => {
+    expect(inferInterpreter(["env", "-S", "node", "app.js"])).toBeUndefined()
+    expect(inferInterpreter(["env", "--version"])).toBeUndefined()
+    expect(inferInterpreter(["env", "-i"])).toBeUndefined()
+    expect(inferInterpreter(["env"])).toBeUndefined()
+    expect(inferInterpreter(["env", "-u"])).toBeUndefined()
+    expect(inferInterpreter(["zsh", "-c", "node app.js"])).toBeUndefined()
+    expect(inferInterpreter(`env -i "node"`)).toBeUndefined()
+  })
+
+  test("wrapper values never enter the result (secret-absence)", () => {
+    const out = inferInterpreter(["env", "TOKEN=hunter2", "-u", "hunter2", "-C", "/secret/dir", "node", "app.js"])
+    expect(out).toMatchObject({ name: "node", source: "inferred" })
+    expect(JSON.stringify(out)).not.toContain("hunter2")
+    expect(JSON.stringify(out)).not.toContain("/secret/dir")
+    // The same input on the shape path masks the NAME=value form (a bare
+    // shapeless value stays raw by B3 design — never inferred from it).
+    expect(argvShapeOf(["env", "TOKEN=hunter2", "node", "app.js"])!.join(" ")).not.toContain("hunter2")
   })
 })
 
@@ -69,6 +108,15 @@ describe("javaInfoOf (count/name, inferred)", () => {
     expect(javaInfoOf(["node", "x.js"], { name: "node", source: "inferred" })).toBeUndefined()
     expect(javaInfoOf(["java", "Main"], { name: "java", source: "inferred" })).toBeUndefined()
     expect(javaInfoOf(undefined, undefined)).toBeUndefined()
+  })
+
+  test("javaInfoOf sees through the wrapper (unchanged shape scan)", () => {
+    const interp = inferInterpreter(["env", "-i", "java", "-jar", "app.jar"])
+    expect(interp).toMatchObject({ name: "java", source: "inferred" })
+    expect(javaInfoOf(["env", "-i", "java", "-jar", "app.jar"], interp)).toMatchObject({
+      classpathCount: 1,
+      jarNames: ["app.jar"],
+    })
   })
 })
 

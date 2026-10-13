@@ -88,6 +88,63 @@ describe("explainServices (saf)", () => {
     expect(items[0].explanation.reason).toContain("ow restart a")
   })
 
+  test("declared-env label + wrapped interpreter render; fallback interpreter=- unchanged", () => {
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: ["env", "FOO=bar", "node", "app.js"], env: {} as never }],
+      views: [liveView("a", 11)],
+      records: [
+        recordOf({
+          name: "a",
+          pid: 11,
+          lstart: "l",
+          startedAt: "t",
+          cmd: ["env", "FOO=bar", "node", "app.js"],
+          envNames: [],
+          provenance: { recordedAt: "t", interpreter: { name: "node", source: "inferred" } },
+        }),
+      ],
+      snapshotOk: true,
+    })
+    const text = formatExplanation(items[0]).join("\n")
+    expect(text).toContain("env(declared)=[]")
+    expect(text).toContain("interpreter=node(inferred)")
+    expect(text).not.toContain("env=[")
+    const bare = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30" }],
+      views: [liveView("a", 11)],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30" })],
+      snapshotOk: true,
+    })
+    expect(formatExplanation(bare[0]).join("\n")).toContain("interpreter=-")
+  })
+
+  test("wrapper secrets never reach human or json render", () => {
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: ["env", "TOKEN=hunter2", "node", "app.js"], env: { TOKEN: "x" } as never }],
+      views: [liveView("a", 11)],
+      records: [
+        recordOf({
+          name: "a",
+          pid: 11,
+          lstart: "l",
+          startedAt: "t",
+          cmd: ["env", "TOKEN=***", "node", "app.js"],
+          envNames: ["TOKEN"],
+          provenance: { recordedAt: "t", interpreter: { name: "node", source: "inferred" } },
+        }),
+      ],
+      snapshotOk: true,
+    })
+    const human = formatExplanation(items[0]).join("\n")
+    expect(human).toContain("env(declared)=[TOKEN]")
+    expect(human).toContain("interpreter=node(inferred)")
+    expect(human).not.toContain("hunter2")
+    expect(JSON.stringify(items[0])).not.toContain("hunter2")
+  })
+
   test("dead/unrecorded/undefined + lstart verdicts", () => {
     const items = explainServices({
       rootDir: "/r",

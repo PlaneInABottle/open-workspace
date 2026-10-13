@@ -3,9 +3,11 @@
  * only masked-shape/count/name); NEVER env CONTENTS (file NAMES +
  * env:/required-env NAMES); secret values and the full command line never
  * enter state. NO version exec like `python -V` (inferred discipline).
- * Execution SITE (B4): the execs here are called ONLY from supervisor spawn
- * time + the explicit `reconcile --check` path; `ps`/`ps --explain`
- * never touch this module's execs (pure render). */
+ * Interpreter inference sees through one `/usr/bin/env`-style wrapper by
+ * token position (values never captured). Execution SITE (B4): the execs
+ * here are called ONLY from supervisor spawn time + the explicit
+ * `reconcile --check` path; `ps`/`ps --explain` never touch this
+ * module's execs (pure render). */
 
 import { readdir, realpath } from "node:fs/promises"
 import { basename, resolve } from "node:path"
@@ -109,15 +111,76 @@ export const argvShapeOf = (cmd: string | string[] | undefined): string[] | unde
 
 const INTERPRETER_PATTERN = /^(python(\d+(\.\d+)*)?|uv|bun|node(\d+)?|java|gradlew)([^a-zA-Z0-9]|$)/
 
+/** The single supported wrapper (basename-matched, so `/usr/bin/env`
+ * folds here; the set is intentionally NOT extended beyond it). */
+const ENV_WRAPPER = "env"
+
+/** `NAME=value` assignment shape (skipped; values never captured). */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+/** env options taking a separate argument (option + arg skipped, never echoed). */
+const ENV_ARG_OPTIONS = new Set(["-u", "-C", "--unset"])
+
+/** env bare flags (skipped). */
+const ENV_BARE_FLAGS = new Set(["-i"])
+
+/** argv index of the wrapped command: the first token that is neither a
+ * known env option (nor its argument) nor an assignment — by token
+ * POSITION only, so values can never leak into the result. -1 when no
+ * command token follows (env alone, options only, or a dangling option). */
+const envCommandIndex = (parts: string[]): number => {
+  let i = 1
+  while (i < parts.length) {
+    const token = parts[i]
+    if (token === "--") return i + 1 < parts.length ? i + 1 : -1
+    if (ENV_BARE_FLAGS.has(token)) {
+      i += 1
+      continue
+    }
+    if (ENV_ARG_OPTIONS.has(token)) {
+      i += 2
+      continue
+    }
+    if (token.startsWith("--unset=")) {
+      i += 1
+      continue
+    }
+    if (token.startsWith("-")) return -1
+    if (ENV_ASSIGNMENT.test(token)) {
+      i += 1
+      continue
+    }
+    return i
+  }
+  return -1
+}
+
 /** Interpreter match from the argv shape = inferred (`python -V` is NOT
- * run). The field is dropped when there is no match. */
+ * run). A single `env`-style wrapper is seen through by token position
+ * (assignments/known options skipped, values never captured); anything
+ * else is fail-closed — a quoted env-prefixed string, unknown dash
+ * options, a missing command token, or shell indirection yields no
+ * interpreter (the render falls back to `-`). Non-env first tokens take
+ * today's exact path. The field is dropped when there is no match. */
 export const inferInterpreter = (cmd: string | string[] | undefined): ProvenanceInterpreter | undefined => {
   if (cmd === undefined) return undefined
-  const first = (Array.isArray(cmd) ? cmd[0] : cmd.split(/\s+/)[0] ?? "").trim()
+  const parts = Array.isArray(cmd) ? [...cmd] : cmd.split(/\s+/)
+  const first = (parts[0] ?? "").trim()
   if (!first) return undefined
-  const base = basename(first).toLowerCase()
+  // Fail-closed on quoting applies to env-prefixed STRINGS only (a shell
+  // string cannot be tokenized by naive split); non-env strings keep
+  // today's exact path, and argv arrays are already exact tokens.
+  if (typeof cmd === "string" && basename(first).toLowerCase() === ENV_WRAPPER && /["']/.test(cmd)) return undefined
+  let command = first
+  if (basename(first).toLowerCase() === ENV_WRAPPER) {
+    const index = envCommandIndex(parts)
+    if (index < 0 || index >= parts.length) return undefined
+    command = parts[index].trim()
+    if (!command) return undefined
+  }
+  const base = basename(command).toLowerCase()
   if (!INTERPRETER_PATTERN.test(base)) return undefined
-  return { name: basename(first), source: "inferred" }
+  return { name: basename(command), source: "inferred" }
 }
 
 /** `-cp`/`-classpath` entries + the `-jar` name (count + JAR NAMES,

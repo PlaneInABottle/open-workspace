@@ -254,6 +254,8 @@ export type ExplainExpected = {
   cmdShape?: string
   cwd?: string
   port?: number
+  /** Manifest-declared env key names only (ow.yaml `env:`/`requiredEnv`);
+   * never the effective process environment — renders as `env(declared)`. */
   envNames?: string[]
 } | null
 
@@ -384,7 +386,7 @@ export const explainServices = (opts: {
       }
       const expEnv = expectedEnvNames(exp)
       if (expEnv !== undefined && rec.envNames !== undefined && JSON.stringify(expEnv) !== JSON.stringify([...rec.envNames].sort())) {
-        diffs.push(`env names changed (expected: [${expEnv.join(", ")}], running: [${rec.envNames.join(", ")}])`)
+        diffs.push(`env names changed (declared; expected: [${expEnv.join(", ")}], running: [${rec.envNames.join(", ")}])`)
       }
     }
     if (verdict === "mismatch") diffs.push("lstart mismatch — suspected pid reuse")
@@ -435,7 +437,7 @@ export const formatExplanation = (item: ServiceExplanation): string[] => {
       ...(explanation.expected.cmdShape === undefined ? [] : [`cmd=${explanation.expected.cmdShape}`]),
       ...(explanation.expected.cwd === undefined ? [] : [`cwd=${explanation.expected.cwd}`]),
       ...(explanation.expected.port === undefined ? [] : [`port=${explanation.expected.port}`]),
-      ...(explanation.expected.envNames === undefined ? [] : [`env=[${explanation.expected.envNames.join(", ")}]`]),
+      ...(explanation.expected.envNames === undefined ? [] : [`env(declared)=[${explanation.expected.envNames.join(", ")}]`]),
     ]
     lines.push(`  expected: ${parts.length > 0 ? parts.join(" ") : "-"}`)
   }
