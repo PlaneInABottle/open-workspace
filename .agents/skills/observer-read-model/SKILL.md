@@ -34,7 +34,10 @@ The observer joins two growing sources: the append-only shell log and the agent 
 - Briefing lookup is per-child bounded (newest-first), never one global ascending cap across children (seen: one voluminous child starving another's late prompts into `user`).
 - Regression tests use real observed shapes, not idealized one-liners.
 
-## 5. Prove it on the live database, read-only
+## 6. Raw text stays raw; mask at the emit boundary
+
+- `failReason`/`failReasons`/`variants` carry raw command text by loopback doctrine — the read model never redacts. Masking happens at CLI emit (`maskSecrets` in `cli/join.ts`); dashboard/API consumers receive raw probes. Accepted residual (FULL review): same surface class as pre-existing raw `variants`, additionally narrowed to failure/error rows.
+- A field that reaches a NEW surface needs its own masking proof; never weaken a masking assertion to make green.
 
 - Fixture tests cannot catch window/cap bugs — fixtures are small by construction. After any loader/grouping change, run the affected route against the real DB and assert zero degenerate groups (`(no task)` count, `cd`-prefixed or ` -`-prefixed signatures).
 - Open the DB with `readOnly: true` (or structural type-only casts) and prove no mutation (md5/stat before/after). Report the check; "fixtures pass" is not proof for this surface.
