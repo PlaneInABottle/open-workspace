@@ -602,3 +602,368 @@ describe("M-j checkpoint reader refuses non-regular files (no hang, no follow)",
     }
   })
 })
+
+describe("checkpoints show --resume (resume/first-gap view)", () => {
+  const T1 = "2026-10-09T08:00:00.000Z"
+  const T2 = "2026-10-09T09:00:00.000Z"
+  const T3 = "2026-10-09T10:00:00.000Z"
+  const SCENARIOS = "version: 1\nscenarios:\n  cart:\n    services: [api]\n    boundaries: [real-read-only]\n    probes: [{id: ready, argv: [./ready.sh], timeout: 10s}]\n    checkpoints: [approval]\n"
+
+  const envLine = (stage: string, status: string, at: string, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({ stage, status, proof: `proof-${stage}`, at, by: "runner", code: { runner: "r1" }, ...extra })
+
+  const resumeRoot = async (): Promise<{ root: string; file: string }> => {
+    const root = await tempRoot()
+    const file = join(root, "ow.yaml")
+    await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
+    return { root, file }
+  }
+
+  const recordCart = async (root: string): Promise<void> => {
+    const scenarios = join(root, "ow.scenarios.yaml")
+    await writeFile(scenarios, SCENARIOS, "utf8")
+    const { runRecord } = await import("./up-replay")
+    const io = capture()
+    try {
+      expect(
+        await runRecord({
+          rootDir: root,
+          file: scenarios,
+          runName: "cart",
+          probeFn: async () => ({ ok: true, note: "fake-ready", timedOut: false, code: 0 }),
+        }),
+      ).toBe(0)
+    } finally {
+      io.restore()
+    }
+  }
+
+  test("last-pass selection prefers newest gapless run, checkpoints-only labeled, existing lines first", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "old", `${envLine("build", "confirmed", T1)}\n${envLine("deploy", "confirmed", T1)}\n`)
+      await writeRun(root, "new", `${envLine("build", "confirmed", T2)}\n${envLine("deploy", "confirmed", T2)}\n`)
+      await writeRun(root, "now", `${envLine("build", "confirmed", T3)}\n${envLine("deploy", "not_observed", T3)}\n`)
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["checkpoints", "show", "now", "--resume", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const text = io.out.join("\n")
+      expect(text).toContain("last confirmed: build")
+      expect(text).toContain("first missing: deploy (not-observed)")
+      expect(text.indexOf("first missing:")).toBeLessThan(text.indexOf("resume: last-pass"))
+      expect(text).toContain(`resume: last-pass new (${T2}, checkpoints-only)`)
+      expect(text).toContain("resume: invalidated-by diff: deploy (confirmed -> not-observed), digest: dfda8621 -> ae875609")
+      expect(text).toContain("resume: first-gap deploy (not-observed)")
+      expect(text).toContain("resume: next-action external-side-effect (side_effect: absent)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("invalidation lines verbatim; identical target yields none", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "base", `${envLine("build", "confirmed", T1, { proof: "proof-X" })}\n`)
+      await writeRun(root, "tip", `${envLine("build", "confirmed", T2, { proof: "proof-Y" })}\n${envLine("deploy", "not_observed", T3)}\n`)
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "tip", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = io.out.join("\n")
+      expect(text).toContain(
+        "resume: invalidated-by diff: build (confirmed -> confirmed), proof: proof-X -> proof-Y, digest: 296c6b15 -> bd1a096a",
+      )
+      expect(text).toContain("resume: invalidated-by diff: deploy (missing -> not-observed)")
+      // Identical: the target itself is the newest pass — no invalidation lines.
+      await writeRun(root, "solo", `${envLine("build", "confirmed", T2)}\n`)
+      const io2 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "solo", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const solo = io2.out.join("\n")
+      expect(solo).toContain(`resume: last-pass solo (${T2}, checkpoints-only)`)
+      expect(solo).not.toContain("resume: invalidated-by")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("first-gap mirrors first-missing (stale variant)", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "pass", `${envLine("build", "confirmed", T1)}\n`)
+      await writeRun(
+        root,
+        "stale",
+        `${envLine("build", "confirmed", T2)}\n${JSON.stringify({ stage: "build", status: "stale", stale_reason: "script_hash", proof: "proof-build", at: T3, by: "runner", code: { runner: "r1" } })}\n`,
+      )
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "stale", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = io.out.join("\n")
+      expect(text).toContain("first missing: build (stale: script_hash)")
+      expect(text).toContain("resume: first-gap build (stale: script_hash)")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("next-action mapping table (unit)", async () => {
+    const { classifyNextAction } = await import("./up-checkpoints")
+    const cases: [string | undefined, string | undefined, boolean, boolean, string, string][] = [
+      ["none", "run ow restart api", false, false, "read-only", "side_effect: none"],
+      ["none", undefined, false, false, "read-only", "side_effect: none"],
+      ["attempted", "run ow reconcile --check", false, false, "read-only", "safe_next_action: run ow reconcile --check"],
+      ["attempted", "ow ps", false, false, "read-only", "safe_next_action: ow ps"],
+      ["attempted", "run ow restart api", false, false, "permitted-write", "side_effect: attempted, safe_next_action: run ow restart api"],
+      ["confirmed", "run ow restart api", true, false, "permitted-write", "side_effect: confirmed, safe_next_action: run ow restart api"],
+      ["confirmed", "run ow restart api", false, false, "external-side-effect", "side_effect: confirmed without restore evidence"],
+      ["confirmed", "ow scenario run nightly", true, false, "permitted-write", "side_effect: confirmed, safe_next_action: ow scenario run nightly"],
+      ["attempted", "ow scenario env nightly", false, false, "read-only", "safe_next_action: ow scenario env nightly"],
+      ["attempted", undefined, false, false, "external-side-effect", "side_effect: attempted, no action named"],
+      ["attempted", "pin the script and rerun", false, false, "external-side-effect", "side_effect: attempted, no classifiable action"],
+      ["attempted", "walk down the road slowly", false, false, "external-side-effect", "side_effect: attempted, no classifiable action"],
+      ["unknown", "run ow ps", false, false, "external-side-effect", "side_effect: unknown"],
+      [undefined, "run ow ps", false, false, "external-side-effect", "side_effect: absent"],
+      ["attempted", "run ow ps", false, true, "external-side-effect", "incomplete evidence (skipped or unreadable runs)"],
+      ["none", "run ow restart api", false, true, "external-side-effect", "incomplete evidence (skipped or unreadable runs)"],
+    ]
+    for (const [sideEffect, action, restore, incomplete, cls, basis] of cases) {
+      expect(classifyNextAction(sideEffect, action, restore, incomplete)).toEqual({ class: cls, basis })
+    }
+  })
+
+  test("corrupt sibling warns + forces external; fully-unreadable siblings exit 1", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "now", `${envLine("build", "confirmed", T1)}\n${envLine("deploy", "confirmed", T1)}\n`)
+      await writeRun(root, "messy", `${envLine("build", "confirmed", T1)}\n{{{corrupt\n`)
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["checkpoints", "show", "now", "--resume", "--file", file, "--json"])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(io.out.join("\n")) as {
+        resume: { evidenceIncomplete: boolean; nextAction: { class: string; basis: string } }
+      }
+      expect(payload.resume.evidenceIncomplete).toBe(true)
+      expect(payload.resume.nextAction).toEqual({
+        class: "external-side-effect",
+        basis: "incomplete evidence (skipped or unreadable runs)",
+      })
+      const io2 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "now", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      expect(io2.err.join("\n")).toContain("corrupt-line: messy: 1 (skipped)")
+      expect(io2.out.join("\n")).toContain("resume: next-action external-side-effect (incomplete evidence (skipped or unreadable runs))")
+      // Fully-unreadable sibling set: a directory shaped like a run file.
+      const { mkdir } = await import("node:fs/promises")
+      await rm(join(root, ".ow", "checkpoints", "messy.jsonl"), { force: true })
+      await mkdir(join(root, ".ow", "checkpoints", "bad.jsonl"), { recursive: true })
+      const io3 = capture()
+      try {
+        code = await run(["checkpoints", "show", "now", "--resume", "--file", file])
+      } finally {
+        io3.restore()
+      }
+      expect(code).toBe(1)
+      expect(io3.err.join("\n")).toContain("ow: unreadable checkpoint: bad")
+      expect(io3.out.join("\n")).toBe("")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("unreadable sibling names itself in warnings + forces external (exit stays 0)", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "now", `${envLine("build", "confirmed", T1)}\n${envLine("deploy", "confirmed", T1, { side_effect: "none" })}\n`)
+      await writeRun(root, "good", `${envLine("build", "confirmed", T1)}\n`)
+      const { mkdir } = await import("node:fs/promises")
+      await mkdir(join(root, ".ow", "checkpoints", "bad.jsonl"), { recursive: true })
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(["checkpoints", "show", "now", "--resume", "--file", file])
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      expect(io.err.join("\n")).toContain("unreadable: bad (skipped)")
+      expect(io.out.join("\n")).toContain("resume: next-action external-side-effect (incomplete evidence (skipped or unreadable runs))")
+      const io2 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "now", "--resume", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const payload = JSON.parse(io2.out.join("\n")) as {
+        resume: { evidenceIncomplete: boolean; nextAction: { class: string } }
+      }
+      expect(payload.resume.evidenceIncomplete).toBe(true)
+      expect(payload.resume.nextAction.class).toBe("external-side-effect")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--json single object with additive resume, existing keys unchanged", async () => {    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "now", `${envLine("build", "confirmed", T1)}\n${envLine("deploy", "not_observed", T2)}\n`)
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "now", "--resume", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const payload = JSON.parse(io.out.join("\n")) as Record<string, unknown>
+      expect(Object.keys(payload).sort()).toEqual(["envelopes", "first_gap", "last_verified", "resume", "run", "skipped", "summary"])
+      const resume = payload["resume"] as Record<string, unknown>
+      expect(Object.keys(resume).sort()).toEqual(["evidenceIncomplete", "firstGap", "invalidatedBy", "lastPass", "nextAction"])
+      expect(resume["lastPass"]).toBeNull()
+      expect(resume["evidenceIncomplete"]).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("hostile secret-absence (shaped proof/stage/action, folded paths)", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "pass", `${envLine("build", "confirmed", T1)}\n`)
+      await writeRun(
+        root,
+        "evil",
+        `${JSON.stringify({ stage: "build", status: "confirmed", proof: "/var/log/app/server.log token=hunter2", at: T1, by: "runner", code: { runner: "r1" } })}\n${JSON.stringify({ stage: "deploy api_key=hunter2", status: "not_observed", proof: "proof-deploy", at: T2, by: "runner", code: { runner: "r1" }, side_effect: "none", safe_next_action: "retry --token hunter2" })}\n`,
+      )
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "evil", "--resume", "--file", file, "--json"])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      // Existing show keys carry raw stage shapes by design (locked) — the
+      // resume subtree must not carry secret shapes. Non-root abs paths in
+      // proof cells follow the existing proofHead render (root-fold only,
+      // shared verbatim with `checkpoints diff` — pinned below).
+      const payload = JSON.parse(io.out.join("\n")) as { resume: Record<string, unknown> }
+      expect(JSON.stringify(payload["resume"])).not.toContain("hunter2")
+      const io2 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "evil", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      const lines = io2.out.join("\n").split("\n")
+      const resumeLines = lines.filter((line) => line.startsWith("resume:"))
+      expect(resumeLines.join("\n")).not.toContain("hunter2")
+      expect(resumeLines.join("\n")).toContain("resume: first-gap deploy api_key=*** (not-observed)")
+      // side_effect none wins before verb parsing (locked mapping order).
+      expect(resumeLines.join("\n")).toContain("resume: next-action read-only (side_effect: none)")
+      expect(io2.out.join("\n")).toContain("next: retry --token ***")
+      // Verbatim reuse: the diff verb renders the identical build row.
+      const ioDiff = capture()
+      try {
+        expect(await run(["checkpoints", "diff", "pass", "evil", "--file", file])).toBe(0)
+      } finally {
+        ioDiff.restore()
+      }
+      const diffBuild = ioDiff.out
+        .join("\n")
+        .split("\n")
+        .find((line) => line.startsWith("diff: build (confirmed -> confirmed)"))!
+      expect(diffBuild).toContain("proof: proof-build -> /var/log/app/server.log token=***")
+      expect(resumeLines.join("\n")).toContain(`resume: invalidated-by ${diffBuild}`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("contract-verified last-pass wins; mismatch/missing fall to none", async () => {
+    const { root, file } = await resumeRoot()
+    const scenarios = join(root, "ow.scenarios.yaml")
+    try {
+      await recordCart(root)
+      await writeRun(root, "gold", `${envLine("build", "confirmed", T1, { scenario: "cart" })}\n${envLine("deploy", "confirmed", T1, { scenario: "cart" })}\n`)
+      await writeRun(root, "cur", `${envLine("build", "confirmed", T2, { scenario: "cart" })}\n${envLine("deploy", "not_observed", T3, { scenario: "cart" })}\n`)
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "cur", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      const text = io.out.join("\n")
+      expect(text).toContain(`resume: last-pass gold (${T1})`)
+      expect(text).not.toContain("checkpoints-only")
+      // Break the recorded contract: the linked run no longer verifies.
+      await writeFile(scenarios, SCENARIOS.replace("./ready.sh", "./changed.sh"), "utf8")
+      const io2 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "cur", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io2.restore()
+      }
+      expect(io2.out.join("\n")).toContain("resume: last-pass none")
+      // Missing scenarios file: lineage present but unverifiable → none.
+      await rm(scenarios, { force: true })
+      const io3 = capture()
+      try {
+        expect(await run(["checkpoints", "show", "cur", "--resume", "--file", file])).toBe(0)
+      } finally {
+        io3.restore()
+      }
+      expect(io3.out.join("\n")).toContain("resume: last-pass none")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("--resume outside show refuses; show without --resume has no resume lines", async () => {
+    const { root, file } = await resumeRoot()
+    try {
+      await writeRun(root, "demo", `${envLine("build", "confirmed", T1)}\n`)
+      for (const args of [
+        ["checkpoints", "list", "--file", file, "--resume"],
+        ["checkpoints", "diff", "demo", "demo", "--file", file, "--resume"],
+        ["ps", "--file", file, "--resume"],
+      ]) {
+        const io = capture()
+        let code = -1
+        try {
+          code = await run(args)
+        } finally {
+          io.restore()
+        }
+        expect(`${args.join(" ")} → ${code}`).toBe(`${args.join(" ")} → 2`)
+        expect(io.err.join("\n")).toContain("ow: --resume works only with checkpoints show")
+      }
+      const io = capture()
+      try {
+        expect(await run(["checkpoints", "show", "demo", "--file", file])).toBe(0)
+      } finally {
+        io.restore()
+      }
+      expect(io.out.join("\n")).not.toContain("resume:")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

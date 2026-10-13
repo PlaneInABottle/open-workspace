@@ -366,6 +366,27 @@ exit 1, corrupt lines are skipped as `corrupt-line: N (skipped)`, an
 invalid run name is exit 2. Live exec (probe/health/git/lsof) is absent on
 these paths; ow never interprets the `proof` content.
 
+`ow checkpoints show <run> --resume [--json]` appends the resume view
+after the lines above (read-only, same caps, no new state): `resume:
+last-pass <run> (<at>)` (newest run by max envelope `at` with no first
+gap whose every lineage-linked scenario verifies `match`; a
+scenario-less winner reads `(<at>, checkpoints-only)`, otherwise
+`resume: last-pass none`), one `resume: invalidated-by diff: <stage>
+(<a> -> <b>)[, proof: …][, digest: …]` line per changed row versus the
+last-pass run (identical → no lines), `resume: first-gap <stage>
+(<why>)` mirroring `first missing:`, and `resume: next-action
+<read-only|permitted-write|external-side-effect> (<basis>)` from the
+runner-declared `side_effect` + `safe_next_action` only (`none` →
+read-only; mutating verbs with attempted/confirmed → permitted-write;
+confirmed without restore evidence, unknown/absent, or anything else →
+external-side-effect; skipped or unreadable evidence (target or
+siblings) forces external-side-effect). `--json` adds one `resume` key (`{lastPass:
+{run, at}|null, invalidatedBy: [{stage, statusA, statusB, changed}],
+firstGap: {stage, why}|null, nextAction: {class, basis},
+evidenceIncomplete}`) to the show envelope (single object). Exits mirror
+show (0 table, 1 missing/unreadable run or fully-unreadable sibling
+set, 2 usage or `--resume` outside `show`).
+
 `ow checkpoints diff <runA> <runB> [--json]` compares two runs in an
 envelope-by-stage table (read-only, no mutation/spawn): one
 `diff: <stage> (<statusA> -> <statusB>)` line per stage plus only the

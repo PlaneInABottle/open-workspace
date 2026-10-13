@@ -53,7 +53,7 @@ export const SINCE_READERS = ["sessions", "show", "stuck", "reads", "logs", "fai
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
 const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries", "--out"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local", "--bundle"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local", "--bundle", "--resume"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -94,7 +94,7 @@ export const helpText = (): string =>
     "  ps --explain [service] [--file] [--json]  expected/running witness view (read-only)",
     "  logs [service] [--file] [--tail] [--grep] [--since]  service logs",
     "  checkpoints list [--file] [--json]  recorded evidence runs (read-only)",
-    "  checkpoints show <run> [--file] [--json]  shows envelopes as confirmed/stale/not-observed",
+    "  checkpoints show <run> [--file] [--json] [--resume]  shows envelopes as confirmed/stale/not-observed (+ resume view)",
     "  checkpoints diff <runA> <runB> [--file] [--json]  envelope-by-stage status/proof/digest deltas (read-only)",
     "  failures [--since 30m|3h|1d|1w] [--file] [--json]  repeated findings (read-only, mechanical)",
     "  preflight [--file] [--json] [--probe]  read-only gate (no mutation; exit 1 when failing)",
@@ -825,6 +825,12 @@ export const run = async (argv: string[]): Promise<number> => {
     console.error("ow: --bundle/--out work only with export")
     return 2
   }
+  // `--resume` renders only in `checkpoints show` (same fail-loud
+  // precedent: a narrowed flag elsewhere is a usage error, never silent).
+  if (flags["--resume"] === true && !(command === "checkpoints" && positional === "show")) {
+    console.error("ow: --resume works only with checkpoints show")
+    return 2
+  }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
   const logPath = flag(flags, "--log") ?? DEFAULT_LOG_PATH
   const json = flags["--json"] === true
@@ -1272,7 +1278,7 @@ export const run = async (argv: string[]): Promise<number> => {
           )
           return 2
         }
-        return runCheckpointsShow({ rootDir, run: parsed.extra[0], json })
+        return runCheckpointsShow({ rootDir, run: parsed.extra[0], json, resume: flags["--resume"] === true })
       }
       if (parsed.extra.length !== 2) {
         console.error(

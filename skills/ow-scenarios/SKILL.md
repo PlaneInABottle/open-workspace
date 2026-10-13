@@ -88,6 +88,10 @@ keeping `--check` green, and a commented boundary matrix.
   confirmed/stale/not_observed + last-verified/first-gap +
   `safe_next_action` passthrough (never prunes, never judges proof
   content).
+- `ow checkpoints show <run> --resume [--file] [--json]` adds the
+  resume view (last-pass run with contract-verified lineage, invalidation
+  diffs vs that run, first gap, next-action class; `--json`
+  gains one `resume` key, exits mirror show).
 - `ow checkpoints diff <runA> <runB> [--file] [--json]` compares two
   runs envelope-by-stage (status/proof/digest deltas, one-sided stages
   render `missing`, identical runs print one `identical:` line).

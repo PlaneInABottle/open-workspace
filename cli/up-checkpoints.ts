@@ -9,6 +9,7 @@ import { join } from "node:path"
 
 import { applyFreshness, capText, maskSecrets, normalizeEnvelope, summarizeFresh, type EvidenceEnvelope, type FreshSummary } from "./up-evidence"
 import { upPaths } from "./up-state"
+import type { Scenario } from "./up-scenarios"
 
 export const CHECKPOINTS_DIR_NAME = "checkpoints"
 export const CHECKPOINT_MAX_LINES = 500
@@ -270,9 +271,254 @@ export const runCheckpointsList = async (opts: { rootDir: string; json: boolean 
   return 0
 }
 
-/** `ow checkpoints show <run> [--json]`: exit 1 if the file is missing, exit 2
- * for an invalid run name, corrupt lines are skipped (not a failure). */
-export const runCheckpointsShow = async (opts: { rootDir: string; run: string; json: boolean }): Promise<number> => {
+/** Locked first-gap reason (shared by `first missing:` and the resume
+ * view so the two can never word the same gap differently). */
+export const firstGapWhy = (gap: EvidenceEnvelope): string =>
+  gap.status === "not_observed" ? "not-observed" : `stale: ${STALE_EN[gap.stale_reason as string] ?? gap.stale_reason}`
+
+/** Distinct lineage-linked scenario names across a run's envelopes
+ * (explicit fields win per envelope; run-name suffix is the fallback). */
+export const linkedScenarios = (run: string, envelopes: EvidenceEnvelope[]): string[] => {
+  const out: string[] = []
+  for (const envelope of envelopes) {
+    const scenario = lineageOf(envelope, run).scenario
+    if (scenario !== null && !out.includes(scenario)) out.push(scenario)
+  }
+  return out
+}
+
+/** Max envelope `at` (ISO preserved; unparsable stamps sort oldest).
+ * Null when no envelope carries a parseable time. */
+export const maxEnvelopeAt = (envelopes: EvidenceEnvelope[]): { at: string; atMs: number } | null => {
+  let best: { at: string; atMs: number } | null = null
+  for (const envelope of envelopes) {
+    const ms = Date.parse(envelope.at)
+    if (!Number.isFinite(ms)) continue
+    if (best === null || ms >= best.atMs) best = { at: envelope.at, atMs: ms }
+  }
+  return best
+}
+
+/** Read-only vs mutating verbs named via `ow <verb>` (phrase-aware:
+ * `scenario run` ≠ `scenario env`; bare `scenario` fails closed to
+ * mutating, bare `contract` reads as the check verb). The `ow` prefix
+ * keeps prose ("down the road", "logs show") from classifying. */
+const RESUME_READONLY_VERBS = ["reconcile", "preflight", "readiness", "checkpoints", "ps", "logs"]
+const RESUME_MUTATING_VERBS = ["up", "restart", "down", "record"]
+
+const extractResumeVerbs = (action: string): { readonly: string[]; mutating: string[] } => {
+  const text = action.toLowerCase()
+  const has = (phrase: string): boolean => new RegExp(`\\bow\\s+${phrase}\\b`).test(text)
+  const readonly: string[] = []
+  const mutating: string[] = []
+  if (has("scenario run")) mutating.push("scenario run")
+  if (has("scenario env")) readonly.push("scenario env")
+  if (has("contract check")) readonly.push("contract check")
+  for (const verb of RESUME_READONLY_VERBS) {
+    if (has(verb) && !readonly.includes(verb)) readonly.push(verb)
+  }
+  if (/\bow\s+contract\b/.test(text) && !readonly.includes("contract check") && !readonly.includes("contract")) {
+    readonly.push("contract")
+  }
+  for (const verb of RESUME_MUTATING_VERBS) {
+    if (has(verb) && !mutating.includes(verb)) mutating.push(verb)
+  }
+  if (!readonly.includes("scenario env") && !mutating.includes("scenario run") && /\bow\s+scenario\b/.test(text)) {
+    mutating.push("scenario")
+  }
+  return { readonly, mutating }
+}
+
+export type ResumeActionClass = "read-only" | "permitted-write" | "external-side-effect"
+
+/** Next-action lexical mapping (order matters — first match wins):
+ * unknown/absent side_effect → external (fail-closed); none → read-only;
+ * confirmed without restore evidence → external; then verb rules on the
+ * masked action (read-only-only → read-only; mutating + attempted/
+ * confirmed → permitted-write); anything else → external. `basis` always
+ * names the deciding input. Runner-declared fields only — proof content
+ * is never interpreted. */
+export const classifyNextAction = (
+  sideEffect: string | undefined,
+  action: string | undefined,
+  hasRestoreEvidence: boolean,
+  evidenceIncomplete: boolean,
+): { class: ResumeActionClass; basis: string } => {
+  if (evidenceIncomplete) return { class: "external-side-effect", basis: "incomplete evidence (skipped or unreadable runs)" }
+  if (sideEffect === undefined) return { class: "external-side-effect", basis: "side_effect: absent" }
+  if (sideEffect === "unknown") return { class: "external-side-effect", basis: "side_effect: unknown" }
+  if (sideEffect === "none") return { class: "read-only", basis: "side_effect: none" }
+  if (sideEffect === "confirmed" && !hasRestoreEvidence) {
+    return { class: "external-side-effect", basis: "side_effect: confirmed without restore evidence" }
+  }
+  if (action === undefined) return { class: "external-side-effect", basis: `side_effect: ${sideEffect}, no action named` }
+  const { readonly, mutating } = extractResumeVerbs(action)
+  if (readonly.length === 0 && mutating.length === 0) {
+    return { class: "external-side-effect", basis: `side_effect: ${sideEffect}, no classifiable action` }
+  }
+  if (mutating.length === 0) return { class: "read-only", basis: `safe_next_action: ${action}` }
+  return { class: "permitted-write", basis: `side_effect: ${sideEffect}, safe_next_action: ${action}` }
+}
+
+export type ResumeLastPass = { run: string; at: string; envelopes: EvidenceEnvelope[] }
+
+/** Last-pass selection: newest run by max envelope `at` with no first gap
+ * whose every lineage-linked scenario verifies (`readContractVerdict`
+ * match). Scenario-less runs pass checkpoints-only (no contract to
+ * verify); envelope-less runs never qualify. Ties break to the later
+ * scan (deterministic file order). Dynamic contract import keeps this
+ * module free of the replay dependency chain. */
+export const selectResumeLastPass = async (
+  candidates: { name: string; view: CheckpointView }[],
+  scenarios: Scenario[] | null,
+  rootDir: string,
+): Promise<ResumeLastPass | null> => {
+  const { readContractVerdict } = await import("./up-contract")
+  let best: (ResumeLastPass & { atMs: number }) | null = null
+  for (const candidate of candidates) {
+    const { name, view } = candidate
+    if (view.envelopes.length === 0) continue
+    if (view.first_gap !== null) continue
+    const linked = linkedScenarios(name, view.envelopes)
+    if (linked.length > 0) {
+      if (scenarios === null) continue
+      let allMatch = true
+      for (const scenarioName of linked) {
+        const scenario = scenarios.find((entry) => entry.name === scenarioName)
+        if (scenario === undefined) {
+          allMatch = false
+          break
+        }
+        const verdict = await readContractVerdict(rootDir, scenario)
+        if (verdict.status !== "match") {
+          allMatch = false
+          break
+        }
+      }
+      if (!allMatch) continue
+    }
+    const maxAt = maxEnvelopeAt(view.envelopes)
+    if (maxAt === null) continue
+    if (best === null || maxAt.atMs >= best.atMs) {
+      best = { run: name, at: maxAt.at, atMs: maxAt.atMs, envelopes: view.envelopes }
+    }
+  }
+  return best === null ? null : { run: best.run, at: best.at, envelopes: best.envelopes }
+}
+
+export type ResumeJson = {
+  lastPass: { run: string; at: string } | null
+  invalidatedBy: { stage: string; statusA: string; statusB: string; changed: boolean }[]
+  firstGap: { stage: string; why: string } | null
+  nextAction: { class: ResumeActionClass; basis: string }
+  evidenceIncomplete: boolean
+}
+
+/** Sibling-run scan for the resume view (read-only, bounded per-file
+ * caps): readable siblings plus unreadable file names. Invalid names
+ * are skipped silently (existing precedent). */
+const readResumeSiblings = async (
+  rootDir: string,
+  targetRun: string,
+): Promise<{ siblings: { name: string; view: CheckpointView }[]; unreadable: string[] }> => {
+  const dir = join(upPaths(rootDir).stateDir, CHECKPOINTS_DIR_NAME)
+  let files: string[]
+  try {
+    files = (await readdir(dir)).filter((name) => name.endsWith(".jsonl")).sort()
+  } catch {
+    return { siblings: [], unreadable: [] }
+  }
+  const siblings: { name: string; view: CheckpointView }[] = []
+  const unreadable: string[] = []
+  for (const file of files) {
+    const name = file.slice(0, -".jsonl".length)
+    if (!isValidRunName(name) || name === targetRun) continue
+    try {
+      siblings.push({ name, view: viewOf(name, await readCheckpointFile(join(dir, file))) })
+    } catch {
+      unreadable.push(name)
+    }
+  }
+  return { siblings, unreadable }
+}
+
+/** Resume view builder (read-only): sibling scan → scenario parse →
+ * last-pass selection → invalidation diff vs last-pass → first-gap →
+ * next-action. Returns a fatal (exit 1, no table) only when sibling
+ * files exist but every one is unreadable — mirroring show's missing
+ * path. Everything else degrades to lines/flags, never throws. */
+export const buildResumeView = async (
+  rootDir: string,
+  targetRun: string,
+  target: CheckpointView,
+): Promise<{ fatal: string } | { lines: string[]; json: ResumeJson; warnings: string[] }> => {
+  const { siblings, unreadable } = await readResumeSiblings(rootDir, targetRun)
+  if (unreadable.length > 0 && siblings.length === 0) return { fatal: `ow: unreadable checkpoint: ${unreadable[0]}` }
+  let scenarios: Scenario[] | null = null
+  try {
+    const { parseScenarios, SCENARIOS_FILE_NAME } = await import("./up-scenarios")
+    const { readFileSync } = await import("node:fs")
+    const { decodeUtf8Fatal } = await import("./up-schema")
+    scenarios = parseScenarios(decodeUtf8Fatal(readFileSync(join(rootDir, SCENARIOS_FILE_NAME)))).scenarios
+  } catch {
+    scenarios = null
+  }
+  const candidates = [{ name: targetRun, view: target }, ...siblings]
+  const lastPass = await selectResumeLastPass(candidates, scenarios, rootDir)
+  const warnings: string[] = []
+  for (const sibling of siblings) {
+    if (sibling.view.skipped.corrupt > 0) warnings.push(`corrupt-line: ${sibling.name}: ${sibling.view.skipped.corrupt} (skipped)`)
+    if (sibling.view.skipped.overCap > 0) {
+      warnings.push(`skipped(${sibling.name}: ${sibling.view.skipped.overCap}): over cap (file read within 500-line/256KB limit)`)
+    }
+  }
+  for (const name of unreadable) warnings.push(`unreadable: ${name} (skipped)`)
+  const skippedIncomplete =
+    target.skipped.corrupt + target.skipped.overCap > 0 ||
+    siblings.some((sibling) => sibling.view.skipped.corrupt + sibling.view.skipped.overCap > 0) ||
+    unreadable.length > 0
+  const lines: string[] = []
+  if (lastPass === null) {
+    lines.push("resume: last-pass none")
+  } else {
+    const linked = linkedScenarios(lastPass.run, lastPass.envelopes)
+    lines.push(
+      linked.length === 0 ? `resume: last-pass ${lastPass.run} (${lastPass.at}, checkpoints-only)` : `resume: last-pass ${lastPass.run} (${lastPass.at})`,
+    )
+    for (const row of foldDiff(lastPass.envelopes, target.envelopes, rootDir)) {
+      if (row.changed) lines.push(`resume: invalidated-by ${formatDiffRow(row)}`)
+    }
+  }
+  const gap = target.first_gap
+  if (gap !== null) lines.push(`resume: first-gap ${diffStageOf(gap.stage, rootDir)} (${firstGapWhy(gap)})`)
+  const actionSource = target.first_gap ?? target.envelopes[target.envelopes.length - 1] ?? null
+  const hasRestoreEvidence = target.envelopes.some((envelope) => envelope.stage === "restore")
+  const classified = classifyNextAction(actionSource?.side_effect, actionSource?.safe_next_action, hasRestoreEvidence, skippedIncomplete)
+  lines.push(`resume: next-action ${classified.class} (${classified.basis})`)
+  return {
+    lines,
+    warnings,
+    json: {
+      lastPass: lastPass === null ? null : { run: lastPass.run, at: lastPass.at },
+      invalidatedBy:
+        lastPass === null
+          ? []
+          : foldDiff(lastPass.envelopes, target.envelopes, rootDir)
+              .filter((row) => row.changed)
+              .map((row) => ({ stage: row.stage, statusA: row.statusA, statusB: row.statusB, changed: row.changed })),
+      firstGap: gap === null ? null : { stage: diffStageOf(gap.stage, rootDir), why: firstGapWhy(gap) },
+      nextAction: classified,
+      evidenceIncomplete: skippedIncomplete,
+    },
+  }
+}
+
+/** `ow checkpoints show <run> [--json] [--resume]`: exit 1 if the file
+ * is missing, exit 2 for an invalid run name, corrupt lines are skipped
+ * (not a failure). `--resume` appends the resume/first-gap view (existing
+ * lines first, verbatim); the JSON envelope gains one additive `resume`
+ * key and stays a single object. */
+export const runCheckpointsShow = async (opts: { rootDir: string; run: string; json: boolean; resume?: boolean }): Promise<number> => {
   if (!isValidRunName(opts.run)) {
     console.error(`ow: invalid run name: ${opts.run} (allowed: [A-Za-z0-9_.-], at most 64 characters)`)
     return 2
@@ -293,30 +539,55 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
   // empty-but-valid runs. Skipped counts already warned above (or ride
   // in JSON below); the exit code is the machine signal.
   const nothingReadable = view.envelopes.length === 0 && (view.skipped.corrupt > 0 || view.skipped.overCap > 0)
+  // Resume view (additive; computed up front so a fully-unreadable
+  // sibling set fails before any table, mirroring show's missing path).
+  let resume: { lines: string[]; json: ResumeJson; warnings: string[] } | null = null
+  if (opts.resume === true) {
+    const built = await buildResumeView(opts.rootDir, opts.run, view)
+    if ("fatal" in built) {
+      console.error(built.fatal)
+      return 1
+    }
+    resume = built
+  }
   if (opts.json) {
     console.log(
-      JSON.stringify({
-        run: view.run,
-        envelopes: view.envelopes,
-        summary: view.summary,
-        last_verified: view.last_verified,
-        first_gap: view.first_gap,
-        skipped: view.skipped,
-      }),
+      JSON.stringify(
+        resume === null
+          ? {
+              run: view.run,
+              envelopes: view.envelopes,
+              summary: view.summary,
+              last_verified: view.last_verified,
+              first_gap: view.first_gap,
+              skipped: view.skipped,
+            }
+          : {
+              run: view.run,
+              envelopes: view.envelopes,
+              summary: view.summary,
+              last_verified: view.last_verified,
+              first_gap: view.first_gap,
+              skipped: view.skipped,
+              resume: resume.json,
+            },
+      ),
     )
     return nothingReadable ? 1 : 0
   }
   if (view.envelopes.length === 0) {
     console.log(`checkpoint empty: ${opts.run}`)
+    if (resume !== null) {
+      for (const line of resume.warnings) console.error(line)
+      for (const line of resume.lines) console.log(line)
+    }
     return nothingReadable ? 1 : 0
   }
   for (const envelope of view.envelopes) console.log(formatEnvelopeLine(envelope))
   for (const envelope of view.envelopes) console.log(formatSideEffectLine(envelope))
   console.log(view.last_verified ? `last confirmed: ${view.last_verified.stage} (${view.last_verified.at})` : "last confirmed: none")
   if (view.first_gap) {
-    const why =
-      view.first_gap.status === "not_observed" ? "not-observed" : `stale: ${STALE_EN[view.first_gap.stale_reason as string] ?? view.first_gap.stale_reason}`
-    console.log(`first missing: ${view.first_gap.stage} (${why})`)
+    console.log(`first missing: ${view.first_gap.stage} (${firstGapWhy(view.first_gap)})`)
   } else {
     console.log("first missing: none")
   }
@@ -324,6 +595,10 @@ export const runCheckpointsShow = async (opts: { rootDir: string; run: string; j
   if (actionSource.safe_next_action !== undefined) console.log(`next: ${singleLine(actionSource.safe_next_action)}`)
   if (needsRetryHint(view.envelopes)) console.log(RETRY_HINT)
   for (const line of formatAttemptTree(view.run, view.envelopes)) console.log(line)
+  if (resume !== null) {
+    for (const line of resume.warnings) console.error(line)
+    for (const line of resume.lines) console.log(line)
+  }
   return 0
 }
 
