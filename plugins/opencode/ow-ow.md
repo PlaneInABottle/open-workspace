@@ -1,6 +1,6 @@
 ---
 name: ow-ow
-description: "Operate the ow CLI: past session analysis plus dev-service supervision and trace lookup. Use for agent work, service state, or which trace a request produced."
+description: "Operate the ow CLI: past session analysis plus dev-service supervision. Use for agent work, service state, or session history."
 ---
 
 # ow — operator pointer
@@ -13,13 +13,7 @@ install, or `ow` on PATH).
 Detail skills (load the one matching the task by its skill name; they
 are installed beside this one and do not resolve as relative paths):
 - `ow-runtime` — service supervision and readiness:
-  `up/down/restart/ps/logs`, `reconcile`, provenance, `preflight`,
-  `readiness`, `init`/`provision`, `record`/`contract` replay recipes,
-  `trace` and tracing setup.
-- `ow-scenarios` — scenarios and evidence:
-  `ow.scenarios.yaml` schema and boundary enum, the local boundary
-  overlay, `scenario env`, `checkpoints`, `failures`, the preflight
-  runner recipe, `scenario run` and the read-only data-clock witness.
+  `up/down/restart/ps/logs`, `reconcile`, provenance, `init`.
 
 ## Sessions (quick reference)
 
@@ -30,9 +24,7 @@ observed ("not observed" means exactly that, never "nothing happened").
 ow doctor                             # health first
 ow sessions [--since 1d] [--dir /path]
 ow show <session> [--since 30m|3h|1d|1w] [--tree] [--full] [--show N] [--show-fails] [--kind ..] [--tool ..]
-ow stuck [session] [--since] [--tree]  # retries, overlap, slow commands
-ow meta/prompts/reads <session>       # cost/tokens · latest 50 instructions · read summary
-ow timeline [session] [--trace] [--since]  # agent rows + spans merged
+ow meta/reads <session>             # cost/tokens · read summary
 ow show <session> --json              # stable machine output (all commands, English keys)
 ```
 
@@ -41,8 +33,7 @@ No ID known: last sidecar line, or bare for latest. Exits: 0 ok,
 look wrong; sidecar rows land ~5s after session end, spans 5–15s late.
 Baseline first: run `ow doctor` and note the health lines before
 changing anything, re-run after. Report only what the output shows,
-never invent causes. Stuck claims
-need `--stuck` numbers, not impressions. Check counts first, keep
+never invent causes. Check counts first, keep
 `--since` narrow; open failures one by one, repeats first. Handoff
 between agents carries readings (`ow ps`, state dir, `up:` line),
 never pids/logs/env — detail: `ow-runtime`.
@@ -61,7 +52,7 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 
 | command | envelope |
 |---|---|
-| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?, dependsOn?}), warnings[], spawnOrder?}` (`spawnOrder` only when `depends_on` exists) |
+| `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?}), warnings[]}` |
 | `up -d --wait --json` | `{ready, services[] ({name, port?, status, waitedSec, exitCode?, healthPath?, readiness?}), noPort[], note?}` |
 | `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` only on failure) |
 | `down <svc> --json` (live supervisor) | `{service, action, diff, code?, confirmed? ({stopped, code})}` (row above + `confirmed`; `confirmed.stopped` is a state witness — read `code` for stopped/already-stopped/refused) |
@@ -70,9 +61,6 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 | `logs --json` | `{service, lines[]}` |
 | `reconcile --check --json` | `{reconcile: {inSync, drifts[] ({service, kind, expected?, running?, hint})}, revisions[], readiness[] (only with --probe)}` |
 | `ps --explain --json` | `{services[], explanations[] ({service, explanation: {expected, running, diffs[], provenance, reason, readiness}})}` |
-| `preflight --json` | `{pass, gates[] ({name: reconcile\|provenance\|readiness\|boundary, pass, detail}), missing[], envelopes[]}` |
-| `readiness --json` | `{ready, missing[], stale[], falseGreens[] ({kind, service, hint}), gates[]}` |
-| `scenarios --check --json` | `{file, scenarios[] ({name, services, boundaries, targets, probes[] ({id, argvShape, timeout}), checkpoints}), boundariesNormalized[], boundaryWarnings[], warnings[]}` |
-| `doctor --json` | `{checks[] ({name, ok, detail}), identity: {installed {sha8, dirty, time, binary8}\|null, supervisor {state, startedAt, sha8, time}, match}}` (`up`/`trace` are not part of the exit; digests compared internally, shorts only on the wire) |
+| `doctor --json` | `{checks[] ({name, ok, detail}), identity: {installed {sha8, dirty, time, binary8}\|null, supervisor {state, startedAt, sha8, time}, match}}` (`up` is not part of the exit; digests compared internally, shorts only on the wire) |
 
 Full schema, caps, and non-goals: product `cli/README.md`.

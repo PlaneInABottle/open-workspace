@@ -1,10 +1,11 @@
-/** `ow.yaml` supervisor schema: subset YAML parser + validator, no dependencies.
+/** `ow.yaml` supervisor schema: subset YAML parser + validator. Uses the
+ * shared secret masker for caller-controlled error text only.
  * Accepted subset: top-level `services:` map, 2-level service maps, scalar
  * values (plain/quoted), `[a, b]` flow lists, `#` comments. Block sequences
- * (`- item`) are rejected with a line-naming error. Unknown fields warn,
- * never fail. */
+ * (`- item`) are rejected with a line-naming error. Unknown top-level
+ * fields warn, never fail; unknown service options fail. */
 
-import { TRACE_DEFAULT_PORT } from "./trace-store"
+import { maskSecrets } from "./up-evidence"
 
 export type UpService = {
   name: string
@@ -19,11 +20,6 @@ export type UpService = {
    * against the merged env by `up`; non-enumerable so listings never carry
    * the field. Key names (never values) may appear in the missing-var error. */
   requiredEnv?: readonly string[]
-  /** Order-only startup sequencing (`depends_on: [a, b]`): this service
-   * spawns after the named services. No waiting, no health gating — a
-   * dependency only sorts earlier in spawn order. Plain enumerable: names
-   * are not secrets, so `up --check --json` shows them and errors name them. */
-  dependsOn?: readonly string[]
   /** Project-defined readiness probe (M3, additive): single-line inline
    * flow-map only (`readiness: {probe: [...], timeout: 10s}`). Non-enumerable
    * like `env`: the raw argv may carry secrets — listings render only the
@@ -57,17 +53,13 @@ export const isShellArgv0 = (argv0: string): boolean => {
   return SHELL_ARGV0.has(base.toLowerCase().replace(/\.exe$/, ""))
 }
 
-/** Flat `trace:` block (`enabled`, `port` only). Absent block → undefined
- * (tracing off, a no-op); `enabled: false` → parsed but no listener. */
-export type TraceConfig = { enabled: boolean; port: number }
+export type UpWarning = { line: number; message: string }
+
+export type UpFile = { services: UpService[]; warnings: UpWarning[] }
 
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
 const ENV_MAX_ENTRIES = 64
 const ENV_MAX_PAIR_BYTES = 4096
-
-export type UpWarning = { line: number; message: string }
-
-export type UpFile = { services: UpService[]; warnings: UpWarning[]; trace?: TraceConfig }
 
 export class UpSchemaError extends Error {
   readonly line: number
@@ -130,7 +122,7 @@ const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
 
 /** Minimal indented-subset YAML: `key:` maps (services → service → fields),
  * scalars, `[a, b]` flow lists, inline `{k: v}` flow maps, `#` comments. Exported
- * for sibling-file validation (scenarios); parsing behavior unchanged. */
+ * for shared validation use; parsing behavior unchanged. */
 export const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
   const root: Record<string, YamlNode> = {}
   const stack: { indent: number; map: Record<string, YamlNode> }[] = [{ indent: -1, map: root }]
@@ -223,7 +215,7 @@ const splitTopLevel = (inner: string): string[] => {
 }
 
 /** Parse errors never echo the raw entry: flow maps may carry secret values. Exported
- * for sibling-file validation (scenario probe maps); behavior unchanged. */
+ * for shared validation use; behavior unchanged. */
 export const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNode> => {
   const inner = raw.trim().slice(1, -1).trim()
   const out: Record<string, YamlNode> = Object.create(null)
@@ -324,77 +316,12 @@ const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: n
 const REQUIRED_ENV_MAX_NAMES = 32
 
 const SERVICE_NAME = /^[A-Za-z0-9_-]{1,64}$/
-const DEPENDS_ON_MAX_NAMES = 32
 
-/** `depends_on: [a, b]` flow list of service names (order-only spawn
- * sequencing). Same list discipline as `required-env`; unlike env keys,
- * entries name services, so errors echo them. A scalar or otherwise
- * non-list value is a schema error. */
-const parseDependsOn = (node: YamlNode | undefined, serviceName: string): readonly string[] | undefined => {
-  if (node === undefined) return undefined
-  if (!Array.isArray(node)) {
-    throw new UpSchemaError(0, `${serviceName}: depends_on must be a list (e.g. depends_on: [api])`)
-  }
-  if (node.length > DEPENDS_ON_MAX_NAMES) {
-    throw new UpSchemaError(0, `${serviceName}: depends_on may have at most ${DEPENDS_ON_MAX_NAMES} services`)
-  }
-  for (const dep of node) {
-    if (typeof dep !== "string" || !SERVICE_NAME.test(dep)) {
-      throw new UpSchemaError(0, `${serviceName}: invalid service name inside depends_on`)
-    }
-  }
-  return [...node]
-}
-
-/** Unknown/self dependencies fail with the service (and the unknown name)
- * named. Runs after the full service list is known, still inside
- * `parseUpFile` — every `up` path parses before spawning anything. */
-const validateDependsOn = (services: UpService[]): void => {
-  const known = new Set(services.map((svc) => svc.name))
-  for (const svc of services) {
-    for (const dep of svc.dependsOn ?? []) {
-      if (dep === svc.name) throw new UpSchemaError(0, `${svc.name}: depends_on cannot reference itself`)
-      if (!known.has(dep)) {
-        throw new UpSchemaError(0, `${svc.name}: unknown service inside depends_on: ${dep} (known: ${services.map((s) => s.name).join(", ")})`)
-      }
-    }
-  }
-}
-
-/** Stable topological order (Kahn's, lowest YAML index first): dependency
- * order where declared, plain YAML order everywhere else — dep-less files
- * spawn exactly as before. Duplicate edges count once. A leftover set means
- * a dependency cycle and names its members. */
-const orderServicesTopo = (services: UpService[]): UpService[] => {
-  const byName = new Map(services.map((svc) => [svc.name, svc]))
-  const remaining = new Map<string, number>()
-  const dependents = new Map<string, string[]>()
-  for (const svc of services) {
-    const unique = [...new Set(svc.dependsOn ?? [])]
-    remaining.set(svc.name, unique.length)
-    for (const dep of unique) {
-      const list = dependents.get(dep) ?? []
-      list.push(svc.name)
-      dependents.set(dep, list)
-    }
-  }
-  const done = new Set<string>()
-  const ordered: UpService[] = []
-  for (;;) {
-    const next = services.find((svc) => !done.has(svc.name) && (remaining.get(svc.name) ?? 0) === 0)
-    if (next === undefined) break
-    done.add(next.name)
-    ordered.push(byName.get(next.name)!)
-    for (const dependent of dependents.get(next.name) ?? []) {
-      remaining.set(dependent, (remaining.get(dependent) ?? 1) - 1)
-    }
-  }
-  if (ordered.length !== services.length) {
-    const leftover = services.filter((svc) => !done.has(svc.name)).map((svc) => svc.name)
-    throw new UpSchemaError(0, `depends_on is circular: ${leftover.join(", ")} (cannot be ordered)`)
-  }
-  return ordered
-}
+/** Accepted service-level keys. Anything else — including the retired
+ * `depends_on` — is a usage error (exit 2 at every caller), never a
+ * silent ignore. The refused key echoes masked (caller-controlled text
+ * must never leak raw secret shapes into the error). */
+const SERVICE_KEYS = ["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env", "required-env", "readiness"]
 
 /** `required-env: [A, B]` flow list of env key names. Same key rules as
  * `env:` keys; errors never echo entries (flow lists may name sensitive
@@ -413,43 +340,6 @@ const parseRequiredEnv = (node: YamlNode | undefined, serviceName: string): read
     }
   }
   return [...node]
-}
-
-/** Flat `trace:` block only (2nd level scalars). A non-map block, an unknown
- * key or a nested map warns and is ignored; only an invalid `port` reuses
- * the existing `invalid port:` hard error. */
-const parseTraceBlock = (node: YamlNode | undefined, warnings: UpWarning[]): TraceConfig | undefined => {
-  if (node === undefined) return undefined
-  if (typeof node !== "object" || Array.isArray(node)) {
-    warnings.push({ line: 0, message: "trace map expected, ignored" })
-    return undefined
-  }
-  let enabled = true
-  let port = TRACE_DEFAULT_PORT
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "enabled") {
-      if (value === "true") enabled = true
-      else if (value === "false") enabled = false
-      else warnings.push({ line: 0, message: "trace: enabled must be true/false, ignored" })
-    } else if (key === "port") {
-      if (typeof value === "object") {
-        warnings.push({ line: 0, message: `trace: nested field ignored: ${key}` })
-        continue
-      }
-      const parsed = parsePortValue(value, 0, warnings, "trace")
-      if (parsed !== undefined) {
-        if (parsed === 4318) {
-          throw new UpSchemaError(0, "trace: port 4318 is reserved for the dashboard (preview port)")
-        }
-        port = parsed
-      }
-    } else if (typeof value === "object") {
-      warnings.push({ line: 0, message: `trace: nested field ignored: ${key}` })
-    } else {
-      warnings.push({ line: 0, message: `trace: unknown field ignored: ${key}` })
-    }
-  }
-  return { enabled, port }
 }
 
 const parsePortValue = (value: YamlNode | undefined, line: number, warnings: UpWarning[], serviceName: string): number | undefined => {
@@ -481,7 +371,7 @@ export const parseUpFile = (text: string): UpFile => {
   for (const key of Object.keys(doc)) {
     if (key === "version") {
       warnings.push({ line: 0, message: "version ignored (v1)" })
-    } else if (key !== "services" && key !== "trace") {
+    } else if (key !== "services") {
       warnings.push({ line: 0, message: `unknown top-level field ignored: ${key}` })
     }
   }
@@ -528,28 +418,22 @@ export const parseUpFile = (text: string): UpFile => {
     }
     const env = parseEnvValue(fields["env"], name)
     const requiredEnv = parseRequiredEnv(fields["required-env"], name)
-    const dependsOn = parseDependsOn(fields["depends_on"], name)
     const readiness = parseReadiness(fields["readiness"], name, port, warnings)
     for (const key of Object.keys(fields)) {
-      if (!["cmd", "command", "cwd", "working_dir", "port", "ports", "logs", "env", "required-env", "depends_on", "readiness"].includes(key)) {
-        warnings.push({ line: 0, message: `${name}: unknown field ignored: ${key}` })
+      if (!SERVICE_KEYS.includes(key)) {
+        throw new UpSchemaError(0, `${name}: unknown service option: ${maskSecrets(key)}`)
       }
     }
     const service: UpService = { name, cmd, cwd, port, logs }
     if (env !== undefined) Object.defineProperty(service, "env", { value: env, enumerable: false })
     if (requiredEnv !== undefined) Object.defineProperty(service, "requiredEnv", { value: requiredEnv, enumerable: false })
-    if (dependsOn !== undefined) service.dependsOn = dependsOn
     if (readiness !== undefined) Object.defineProperty(service, "readiness", { value: readiness, enumerable: false })
     services.push(service)
   }
-  // Order-only sequencing resolves here (the single choke point: every `up`
-  // path — foreground, detached parent reporting, detached child spawning —
-  // parses before touching processes), so spawn order is topo order and
-  // dep-less files keep exact YAML order.
-  validateDependsOn(services)
-  const ordered = orderServicesTopo(services)
-  const trace = parseTraceBlock(doc["trace"], warnings)
-  return trace === undefined ? { services: ordered, warnings } : { services: ordered, warnings, trace }
+  // Services spawn in YAML declaration order. Parsing is the single choke
+  // point: every `up` path parses before touching processes, so an unknown
+  // service option fails before any child spawns.
+  return { services, warnings }
 };
 
 /** Declared-contract check: every `required-env` name must exist in the

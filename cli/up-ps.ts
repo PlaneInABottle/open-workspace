@@ -400,6 +400,10 @@ export const explainServices = (opts: {
     const rev = provenance?.checkout?.rev
     if (rev !== undefined && provenance?.checkout?.dirty === true) diffs.push(`started with dirty checkout (rev=${rev})`)
     const hasConfigDiff = diffs.some((line) => line.startsWith("command changed") || line.startsWith("cwd changed") || line.startsWith("port changed") || line.startsWith("env names changed"))
+    // Recorded probe state for the reason below (static strings only — the
+    // recorded note is never interpolated here; it stays in `readiness.last`).
+    const last = readRecordedReadiness(rec)
+    const probeDefined = exp?.readiness !== undefined
     let reason: string
     if (rec === undefined) reason = `no record → start with ow up ${name}`
     else if (exp === undefined) reason = `not in definition → stop with ow down ${name}`
@@ -407,19 +411,22 @@ export const explainServices = (opts: {
     else if (verdict === "dead") reason = `not running → inspect with ow logs ${name}, refresh with ow restart ${name}`
     else if (verdict === "unknown") reason = "pid unverifiable (lstart unknown) — no safe action"
     else if (hasConfigDiff) reason = `recorded command/cwd/port changed → refresh with ow restart ${name}`
-    else if (view?.status === "running" && rec.port !== undefined) reason = "UP but no /endpoint → readiness undefined, add an M3 probe"
+    else if (view?.status === "running" && rec.port !== undefined && !probeDefined) reason = "running (no project probe configured — port-only evidence)"
+    else if (view?.status === "running" && rec.port !== undefined && last === null) reason = "running (project probe configured, not yet measured)"
+    else if (view?.status === "running" && rec.port !== undefined && last?.ok) reason = "running (last recorded probe passed — recorded state, not fresh health)"
+    else if (view?.status === "running" && rec.port !== undefined) reason = `running (last recorded probe failed → inspect with ow logs ${name}, refresh with ow restart ${name})`
     else if (view?.status === "running") reason = "running (port undefined, no TCP expected)"
     else reason = "running, no known issues"
     const spec = exp?.readiness
     const readiness: ExplainReadiness =
       spec === undefined
-        ? { defined: false, last: readRecordedReadiness(rec) }
+        ? { defined: false, last }
         : {
             defined: true,
             probe: maskCmdShape([...spec.probe]) ?? "",
             timeout: spec.timeout,
             needsPort: spec.needsPort,
-            last: readRecordedReadiness(rec),
+            last,
           }
     return { service: name, explanation: { expected, running, diffs, provenance, reason, readiness, artifacts: reduceArtifactMap(rec?.artifactDigests) } }
   })

@@ -45,12 +45,11 @@ export type UpServiceState = {
   /** Spawn-time `readLstart` failure marker: the pid guard is blind for this
    * unit, so `down`/`ps` must treat it as unknown, never as stoppable/dead. */
   lstartUnknown?: boolean
-  /** Spawn-time recorded env KEY names (values never stored) + declared
-   * `depends_on`, for M1 `reconcile --check` config drift. Manifest-declared
+  /** Spawn-time recorded env KEY names (values never stored), for M1
+   * `reconcile --check` config drift. Manifest-declared
    * key names only — never the effective process environment. Absent on
    * older records: the compare skips rather than drifting. */
   envNames?: string[]
-  dependsOn?: string[]
   /** M2 spawn-time provenance (observed/inferred, no raw argv). Absent on
    * older records and on best-effort recording failure. */
   provenance?: Provenance

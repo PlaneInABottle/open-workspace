@@ -1,6 +1,6 @@
 ---
 name: ow-ow-debug
-description: Debug with ow in order (ps/logs/trace/timeline), join Langfuse by traceId, and diff DB snapshots with a copy-paste recipe.
+description: Debug with ow in order (ps/logs/doctor), join Langfuse by request ID, and diff DB snapshots with a copy-paste recipe.
 ---
 
 # ow-debug — debugging method + DB snapshot-diff recipe
@@ -15,30 +15,19 @@ this file never repeats its reference. No product-code change is implied.
 2. `ow logs <svc> --tail 200 --grep <id>` — what values and errors?
    Start narrow (`--service`/`--since`/`--tail`/`--grep` first, full dump
    never); widen only on demand. `--json` when piping into further analysis.
-3. `ow trace` — what crossed services, and when? List newest-first
-   (`--tail 20 --since 1d --service <svc>`), then `ow trace <traceId>`
-   for one span tree. Browser spans arrive 5–15s late in batches, so
-   `ow trace <traceId> --wait 15s` polls for late arrivals before
-   concluding absence (browser batch delay).
-4. `ow timeline [session] [--trace <id>] [--since 1d]` — which agent row
-   goes with which span? `exact` (exact-ID link) vs `estimated` (nearest row
-   within ±10s): cite the confidence shown, never upgrade an `estimated`
-   link into a causal claim.
-5. `ow doctor` when results look wrong (stale tail, missing session,
-   0 spans): it names liveness, `unknown` service, and listener hints.
+3. `ow doctor` when results look wrong (stale tail, missing session):
+   it names liveness and listener hints.
 
 Exits: 0 ok (quiet-empty listings included), 1 structural failure,
 2 usage error; always non-interactive.
 
 ## Langfuse join (only when the app also reports there)
 
-Local and Langfuse are separate exporters: local always targets the ow
-receiver, Langfuse gets its own endpoint/headers (pipeline split per
-product `cli/README.md`). Join by the same W3C `traceId` in both
-backends: `ow trace <traceId>` for local timing, Langfuse's own UI for
-the remote leg. `ow` never reads the Langfuse API — the join happens by
-ID in the agent's hands. When the app logs the ID, `ow logs --grep
-<traceId>` correlates values to the same trace instead.
+Local span collection is retired — `ow` no longer receives or stores
+spans. When the app reports to Langfuse, join there: the app's own UI
+for the remote leg, and `ow logs --grep <id>` to correlate values to
+the same request ID in local logs. `ow` never reads the Langfuse API —
+the join happens by ID in the agent's hands.
 
 ## DB snapshot-diff recipe (agent-run shell, not an ow command)
 
@@ -60,12 +49,7 @@ bodies into reports or issues; summarize row counts plus changed tables.
 
 ## Rules
 
-- Narrow first; `--json` for piping; trace output is semi-sensitive
-  (resource IDs) — review before pasting anywhere public.
-- Two lags: sidecar rows land ~5s after session end; browser spans 5–15s.
-- `unset` span status means the app never said; `unknown` service
-  means `OTEL_SERVICE_NAME` is missing.
-- Port fight: `lsof -i :PORT` plus `ow doctor` last-span age
-  (stale = spans go elsewhere; local stays 4319).
+- Narrow first; `--json` for piping.
+- One lag: sidecar rows land ~5s after session end.
 - Honesty (mirrors `skill/ow`): report only what the output shows;
   never invent causes.

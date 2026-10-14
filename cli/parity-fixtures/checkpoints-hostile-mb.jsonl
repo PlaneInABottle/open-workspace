@@ -1,6 +1,0 @@
-{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:00:00.000Z","by":"runner","code":{"script_hash":"s1","body":"s1"}}
-{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:01:00.000Z","by":"runner","code":{"checkout_rev":"r1","runner":"r1"}}
-{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:02:00.000Z","by":"runner","code":{"body":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
-{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:03:00.000Z","by":"runner","code":{"runner":""}}
-{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:04:00.000Z","by":"runner","code":{"fixture":42}}
-{"stage":"build","status":"confirmed","proof":"x","at":"2026-10-09T08:05:00.000Z","by":"runner","code":{"provider_contract":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}}

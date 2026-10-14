@@ -164,7 +164,6 @@ describe("mergePreservingSettled union (B1)", () => {
     expect(merged[0].logsLstart).toBeUndefined()
     expect(merged[0].portConflict).toBeUndefined()
     expect(merged[0].envNames).toBeUndefined()
-    expect(merged[0].dependsOn).toBeUndefined()
   })
 
   test("M-B: on the same identity process records are preserved (control)", () => {
@@ -177,10 +176,9 @@ describe("mergePreservingSettled union (B1)", () => {
       logsLstart: "tail",
       portConflict: true as const,
       envNames: ["A"],
-      dependsOn: ["db"],
     }
     const merged = mergePreservingSettled([prior], [{ name: "a", pid: 1, lstart: "x", startedAt: "stale" }])
-    expect(merged[0]).toMatchObject({ startedAt: "first", logsPid: 11, portConflict: true, envNames: ["A"], dependsOn: ["db"] })
+    expect(merged[0]).toMatchObject({ startedAt: "first", logsPid: 11, portConflict: true, envNames: ["A"] })
   })
 
   test("L-3: an inherited raw cmd/logsCmd is re-masked (no sentinel)", () => {
@@ -316,9 +314,9 @@ describe("reconcileOne (pure core)", () => {
     })
   })
 
-  test("config-mismatch: cmd-shape/cwd/port/env-names/depends_on", () => {
+  test("config-mismatch: cmd-shape/cwd/port/env-names", () => {
     const services = parseUpFile(
-      "services:\n  api:\n    cmd: sleep 60\n    cwd: .\n    port: 3001\n    env: {A: b}\n    depends_on: [db]\n  db:\n    cmd: sleep 30\n",
+      "services:\n  api:\n    cmd: sleep 60\n    cwd: .\n    port: 3001\n    env: {A: b}\n  db:\n    cmd: sleep 30\n",
     ).services
     const exp = services.find((svc) => svc.name === "api")!
     const run = {
@@ -330,7 +328,6 @@ describe("reconcileOne (pure core)", () => {
       cwd: ".",
       port: 3001,
       envNames: ["A"],
-      dependsOn: ["db"],
     }
     const drift = reconcileOne({ name: "api", expected: exp, running: run, ...base })
     expect(drift?.kind).toBe("config-mismatch")
@@ -468,7 +465,7 @@ describe("CLI usage exits (exit 2/1)", () => {
           io.restore()
         }
         expect(`${args.join(" ")} → ${code}`).toBe(`${args.join(" ")} → 2`)
-        expect(io.errors.join("\n")).toContain("--probe works only with reconcile, preflight, readiness, provision")
+        expect(io.errors.join("\n")).toContain("--probe works only with reconcile")
       }
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -1178,10 +1175,28 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
   const twoServiceYaml = (port: number, bPort?: number): string =>
     `services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n  b:\n    cmd: sleep 30\n${bPort === undefined ? "" : `    port: ${bPort}\n`}  c:\n    cmd: sleep 30\n`
 
+  // Truthful binding fixtures: the service under wait must answer its own
+  // port (the ownership gate refuses a foreign answer). The server file
+  // stages outside the live root; the recorded `sh -c` launcher owns its
+  // listener as a verified descendant.
+  const writeBindServer = async (dir: string, name: string, healthPath?: string): Promise<string> => {
+    const file = join(dir, name)
+    const body = healthPath === undefined
+      ? `const port = Number(process.argv[2]);\nBun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("ok") });\nsetInterval(() => {}, 1000000);\n`
+      : `const port = Number(process.argv[2]);\nBun.serve({ hostname: "127.0.0.1", port, fetch: (req) => new URL(req.url).pathname === ${JSON.stringify(healthPath)} ? new Response("up") : new Response("nope", { status: 404 }) });\nsetInterval(() => {}, 1000000);\n`
+    await writeFile(file, body, "utf8")
+    return file
+  }
+
+  // Single-quoted YAML scalar so the double quotes survive to `sh -c`.
+  const bindCmd = (srv: string, port: number): string => `'\"${process.execPath}\" \"${srv}\" ${port}'`
+
+
   test("restart --wait exits 0 with ready:, other service pid/lstart unchanged", async () => {
     const port = await freePort()
-    const live = await startPortLive(twoServiceYaml(port))
-    holdPort(port)
+    const stage = await tempRoot()
+    const srv = await writeBindServer(stage, "srv-bind.mjs")
+    const live = await startPortLive(`services:\n  a:\n    cmd: ${bindCmd(srv, port)}\n    port: ${port}\n  b:\n    cmd: sleep 30\n  c:\n    cmd: sleep 30\n`)
     try {
       const before = (await readSupervisorState(upPaths(live.root).supervisorFile))!
       const io = captureIo()
@@ -1202,21 +1217,22 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
       const aAfter = after.services.find((svc) => svc.name === "a")!
       expect(aAfter.pid).not.toBe(aBefore.pid)
     } finally {
-      stopHolders()
       live.stop()
       await live.done
+      await rm(stage, { recursive: true, force: true })
       await rm(live.root, { recursive: true, force: true })
     }
   }, 30000)
 
   test("up <svc> --wait works live (-d stays ignored, same shape)", async () => {
     const port = await freePort()
+    const stage = await tempRoot()
+    const srv = await writeBindServer(stage, "srv-fresh.mjs")
     const live = await startPortLive(`services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n`)
-    holdPort(port)
     try {
       // The supervisor re-reads the same ow.yaml per request: add the new
       // service to the live file (a separate file would read unknown).
-      await writeFile(live.file, `services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n  fresh:\n    cmd: sleep 30\n    port: ${port}\n`, "utf8")
+      await writeFile(live.file, `services:\n  a:\n    cmd: sleep 30\n    port: ${port}\n  fresh:\n    cmd: ${bindCmd(srv, port)}\n    port: ${port}\n`, "utf8")
       const io = captureIo()
       let code = -1
       try {
@@ -1227,9 +1243,9 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
       expect(code).toBe(0)
       expect(io.logs.join("\n")).toContain(`ready: fresh:${port}`)
     } finally {
-      stopHolders()
       live.stop()
       await live.done
+      await rm(stage, { recursive: true, force: true })
       await rm(live.root, { recursive: true, force: true })
     }
   }, 30000)
@@ -1417,8 +1433,9 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
 
   test("--json --wait emits a single object (two objects = channel violation)", async () => {
     const port = await freePort()
-    const live = await startPortLive(twoServiceYaml(port))
-    holdPort(port)
+    const stage = await tempRoot()
+    const srv = await writeBindServer(stage, "srv-chan.mjs")
+    const live = await startPortLive(`services:\n  a:\n    cmd: ${bindCmd(srv, port)}\n    port: ${port}\n  b:\n    cmd: sleep 30\n  c:\n    cmd: sleep 30\n`)
     try {
       const io = captureIo()
       let code = -1
@@ -1434,9 +1451,9 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
       expect(Object.keys(payload).sort()).toEqual(["action", "diff", "pid", "ready", "service", "services", "noPort"].sort())
       expect((payload["services"] as unknown[])).toHaveLength(1)
     } finally {
-      stopHolders()
       live.stop()
       await live.done
+      await rm(stage, { recursive: true, force: true })
       await rm(live.root, { recursive: true, force: true })
     }
   }, 30000)
@@ -1515,8 +1532,9 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
 
   test("--health success waits HTTP 2xx after TCP (ready: carries path)", async () => {
     const port = await freePort()
-    const live = await startPortLive(twoServiceYaml(port))
-    holdPort(port)
+    const stage = await tempRoot()
+    const srv = await writeBindServer(stage, "srv-health.mjs", "/health")
+    const live = await startPortLive(`services:\n  a:\n    cmd: ${bindCmd(srv, port)}\n    port: ${port}\n  b:\n    cmd: sleep 30\n  c:\n    cmd: sleep 30\n`)
     try {
       const io = captureIo()
       let code = -1
@@ -1528,9 +1546,9 @@ describe("single-service --wait readiness (OW-012, live harness + loopback holde
       expect(code).toBe(0)
       expect(io.logs.join("\n")).toContain(`ready: a:${port}/health`)
     } finally {
-      stopHolders()
       live.stop()
       await live.done
+      await rm(stage, { recursive: true, force: true })
       await rm(live.root, { recursive: true, force: true })
     }
   }, 30000)

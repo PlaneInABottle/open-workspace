@@ -5,6 +5,18 @@
  * otherwise fabricate with `sleep 90; curl`. */
 
 import { readSupervisorState, upPaths } from "./up-state"
+import { parseAmountUnit } from "./join"
+
+/** `--wait` ceiling: 5 minutes (moved from the retired trace verb —
+ * the runtime wait feature stays). */
+export const WAIT_MAX_MS = 300_000
+
+/** `--wait` durations: `<amount>s|m|h|d|w` within (0, 5m]. Null when unusable. */
+export const parseWaitDuration = (raw: string): number | null => {
+  const ms = parseAmountUnit(raw, /^(\d+)(s|m|h|d|w)$/, { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 })
+  if (ms === null || !Number.isSafeInteger(ms) || ms <= 0 || ms > WAIT_MAX_MS) return null
+  return ms
+}
 
 export type ReadyTarget = { name: string; port?: number; healthPath?: string }
 export type ReadyStatus = "ready" | "timeout" | "exited"

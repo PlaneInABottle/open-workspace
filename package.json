@@ -3,53 +3,15 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "bin": {
-    "openworkspace": "bin/openworkspace.mjs"
-  },
   "packageManager": "pnpm@11.24.0",
   "engines": {
-    "node": ">=22.20.0"
+    "bun": ">=1.0.0"
   },
   "scripts": {
-    "start": "tsx src/main.ts",
-    "mcp": "tsx src/mcp.ts",
-    "build": "vite build",
-    "typecheck:backend": "tsc --noEmit",
-    "typecheck:frontend": "tsc -p tsconfig.frontend.json --noEmit",
-    "test:ui": "vitest run",
     "build-skill-packs": "node scripts/build-skill-packs.mjs",
-    "test": "tsx --test test/*.test.ts && pnpm test:ui",
-    "typecheck": "pnpm typecheck:backend && pnpm typecheck:frontend",
     "ow:build": "scripts/build-ow.sh",
     "ow:test": "bun test cli/",
     "ow:fresh": "scripts/check-ow-fresh.sh",
     "ow:parity": "scripts/check-ow-parity.sh"
-  },
-  "dependencies": {
-    "@base-ui/react": "1.8.0",
-    "@modelcontextprotocol/sdk": "1.31.0",
-    "class-variance-authority": "0.7.1",
-    "cn": "0.4.0",
-    "lucide-react": "1.49.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "zod": "^3.25.76"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "4.1.18",
-    "@testing-library/dom": "10.4.1",
-    "@testing-library/jest-dom": "6.9.1",
-    "@testing-library/react": "16.3.3",
-    "@types/node": "^22.0.0",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "5.1.1",
-    "jsdom": "26.1.0",
-    "shadcn": "4.21.0",
-    "tailwindcss": "4.1.18",
-    "tsx": "^4.20.0",
-    "typescript": "5.9.3",
-    "vite": "7.3.6",
-    "vitest": "5.0.3"
   }
 }

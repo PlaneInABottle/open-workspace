@@ -234,21 +234,33 @@ describe("wait/reconcile/explain wiring (M3 integration)", () => {
     const { parseUpFile } = await import("./up-schema")
     const { waitForUpReady } = await import("./cli")
     const { readLstart } = await import("./up-state")
-    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const { tcpListening } = await import("./up-net")
+    // Owned listener: the recorded process itself answers TCP, so the
+    // ownership gate passes and the DOWN probe is what fails the wait
+    // (a foreign holder here would fail at the gate instead).
+    const probeServe = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const port = probeServe.port
+    probeServe.stop(true)
     const root = await tempRoot()
-    const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+    await writeFile(join(root, "srv.mjs"), `const port = Number(process.argv[2]);\nBun.serve({ port, fetch: () => new Response("ok") });\nsetInterval(() => {}, 1000000);\n`, "utf8")
+    const server = Bun.spawn([process.execPath, join(root, "srv.mjs"), String(port)], { stdout: "ignore", stderr: "ignore" })
     try {
-      const lstart = (await readLstart(sleeper.pid))!
+      const start = Date.now()
+      while (!(await tcpListening(port))) {
+        if (Date.now() - start > 8000) throw new Error("owned server never listened")
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, 50))
+      }
+      const lstart = (await readLstart(server.pid))!
       const { upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt: new Date().toISOString(),
-        services: [{ name: "api", pid: sleeper.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port: holder.port }],
+        services: [{ name: "api", pid: server.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port }],
       })
       const services = parseUpFile(
-        `services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], timeout: 10s}\n`,
+        `services:\n  api:\n    cmd: sleep 30\n    port: ${port}\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], timeout: 10s}\n`,
       ).services
       const io = capture()
       let code = -1
@@ -261,11 +273,10 @@ describe("wait/reconcile/explain wiring (M3 integration)", () => {
       expect(io.out.join("\n")).toContain("not ready: api (probe: closed)")
     } finally {
       try {
-        sleeper.kill("SIGKILL")
+        server.kill("SIGKILL")
       } catch {
         // gone
       }
-      holder.stop(true)
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -276,21 +287,32 @@ describe("wait/reconcile/explain wiring (M3 integration)", () => {
     const { parseUpFile } = await import("./up-schema")
     const { waitForUpReady } = await import("./cli")
     const { readLstart } = await import("./up-state")
-    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const { tcpListening } = await import("./up-net")
+    // Owned listener (see the human variant above): the DOWN probe — not
+    // the ownership gate — drives the not-ready verdict here.
+    const probeServe = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const port = probeServe.port
+    probeServe.stop(true)
     const root = await tempRoot()
-    const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+    await writeFile(join(root, "srv.mjs"), `const port = Number(process.argv[2]);\nBun.serve({ port, fetch: () => new Response("ok") });\nsetInterval(() => {}, 1000000);\n`, "utf8")
+    const server = Bun.spawn([process.execPath, join(root, "srv.mjs"), String(port)], { stdout: "ignore", stderr: "ignore" })
     try {
-      const lstart = (await readLstart(sleeper.pid))!
+      const start = Date.now()
+      while (!(await tcpListening(port))) {
+        if (Date.now() - start > 8000) throw new Error("owned server never listened")
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, 50))
+      }
+      const lstart = (await readLstart(server.pid))!
       const { upPaths, ensureUpStateDir, writeSupervisorState } = await import("./up-state")
       const paths = upPaths(root)
       await ensureUpStateDir(paths.stateDir)
       await writeSupervisorState(paths.supervisorFile, {
         version: 1,
         startedAt: new Date().toISOString(),
-        services: [{ name: "api", pid: sleeper.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port: holder.port }],
+        services: [{ name: "api", pid: server.pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port }],
       })
       const services = parseUpFile(
-        `services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], timeout: 10s}\n`,
+        `services:\n  api:\n    cmd: sleep 30\n    port: ${port}\n    readiness: {probe: [${join(FIXTURES, "ready-false.sh")}], timeout: 10s}\n`,
       ).services
       const io = capture()
       let code = -1
@@ -305,11 +327,10 @@ describe("wait/reconcile/explain wiring (M3 integration)", () => {
       expect(payload.services[0].readiness).toMatchObject({ kind: "probe", ok: false })
     } finally {
       try {
-        sleeper.kill("SIGKILL")
+        server.kill("SIGKILL")
       } catch {
         // gone
       }
-      holder.stop(true)
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -585,6 +606,408 @@ describe("wait/reconcile/explain wiring (M3 integration)", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+})
+
+describe("waitForUpReady listener-ownership gate (a foreign answer is not ready)", () => {
+  const tempOwnRoot = async (): Promise<string> => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    return mkdtemp(join(tmpdir(), "ow-wait-own-"))
+  }
+
+  const captureWait = (): { out: string[]; err: string[]; restore: () => void } => {
+    const out: string[] = []
+    const err: string[] = []
+    const origLog = console.log
+    const origError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    return { out, err, restore: () => {
+      console.log = origLog
+      console.error = origError
+    } }
+  }
+
+  const pickFreePort = async (): Promise<number> => {
+    const { tcpListening } = await import("./up-net")
+    for (let i = 0; i < 50; i += 1) {
+      const port = 41000 + Math.floor(Math.random() * 15000)
+      if (!(await tcpListening(port))) return port
+    }
+    throw new Error("no free port found")
+  }
+
+  const SERVER_SRC = `const port = Number(process.argv[2]);
+Bun.serve({ port, fetch: () => new Response("ok") });
+setInterval(() => {}, 1000000);
+`
+
+  const waitPortOwned = async (port: number, timeoutMs = 10000): Promise<void> => {
+    const { tcpListening } = await import("./up-net")
+    const { portOwners } = await import("./up-reconcile")
+    const start = Date.now()
+    for (;;) {
+      if ((await tcpListening(port)) && (((await portOwners(port).catch(() => null)) ?? []).length > 0)) return
+      if (Date.now() - start > timeoutMs) throw new Error("waitPortOwned timeout")
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, 100))
+    }
+  }
+
+  const recordService = async (root: string, name: string, pid: number, port: number, lstartOverride?: string): Promise<void> => {
+    const { ensureUpStateDir, readLstart, upPaths, writeSupervisorState } = await import("./up-state")
+    const paths = upPaths(root)
+    await ensureUpStateDir(paths.stateDir)
+    const lstart = lstartOverride ?? (await readLstart(pid))!
+    await writeSupervisorState(paths.supervisorFile, {
+      version: 1,
+      startedAt: new Date().toISOString(),
+      services: [{ name, pid, lstart, startedAt: new Date().toISOString(), cmd: "sleep 30", port }],
+    })
+  }
+
+  const ownedProcs: { kill: (signal?: string) => void }[] = []
+  const trackProc = <T extends { kill: (signal?: string) => void }>(proc: T): T => {
+    ownedProcs.push(proc)
+    return proc
+  }
+  const killOwned = (): void => {
+    for (const proc of ownedProcs.splice(0)) {
+      try {
+        proc.kill("SIGKILL")
+      } catch {
+        // already gone
+      }
+    }
+  }
+
+  test("foreign TCP holder + live recorded non-owner is not ready (exit 1, never ready:)", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempOwnRoot()
+    const sleeper = trackProc(Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" }))
+    try {
+      await recordService(root, "api", sleeper.pid, holder.port)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 2000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean; services: { name: string; status: string; readiness?: { kind: string; ok: boolean; note?: string } }[] }
+      expect(payload.ready).toBe(false)
+      expect(payload.services).toHaveLength(1)
+      expect(payload.services[0].status).not.toBe("ready")
+      expect(payload.services[0].readiness).toMatchObject({ kind: "tcp", ok: false })
+      expect(typeof payload.services[0].readiness?.note).toBe("string")
+      expect(Object.keys(payload.services[0].readiness ?? {}).sort()).toEqual(["kind", "note", "ok", "waitedSec"])
+      expect(JSON.stringify(payload)).not.toMatch(/\b\d{5}\b.*pid/i)
+    } finally {
+      killOwned()
+      holder.stop(true)
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("foreign TCP holder, human wait: timeout line carries the gate reason (prefix/exit unchanged)", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempOwnRoot()
+    const sleeper = trackProc(Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" }))
+    try {
+      await recordService(root, "api", sleeper.pid, holder.port)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 2000, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const lines = io.out.join("\n").split("\n")
+      const timeoutLine = lines.find((line) => line.startsWith(`timeout: api:${holder.port} `))
+      expect(timeoutLine).toBeDefined()
+      expect(timeoutLine).toMatch(/^timeout: api:\d+ \(\d+s\) — .+$/)
+      expect(timeoutLine).toContain("foreign listener (UNVERIFIED)")
+      expect(timeoutLine).not.toMatch(/pid=\d+/i)
+    } finally {
+      killOwned()
+      holder.stop(true)
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("owned listener, human wait: ready line has no suffix (success path unchanged)", async () => {
+    const { writeFile, rm } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const { readLstart } = await import("./up-state")
+    const { tcpListening } = await import("./up-net")
+    const probeServe = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const port = probeServe.port
+    probeServe.stop(true)
+    const root = await tempOwnRoot()
+    await writeFile(join(root, "srv.mjs"), `${SERVER_SRC}`, "utf8")
+    const server = trackProc(Bun.spawn([process.execPath, join(root, "srv.mjs"), String(port)], { stdout: "ignore", stderr: "ignore" }))
+    try {
+      const start = Date.now()
+      while (!(await tcpListening(port))) {
+        if (Date.now() - start > 8000) throw new Error("owned server never listened")
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, 50))
+      }
+      await recordService(root, "api", server.pid, port)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 8000, json: false })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const lines = io.out.join("\n").split("\n")
+      const readyLine = lines.find((line) => line.startsWith(`ready: api:${port} `))
+      expect(readyLine).toBeDefined()
+      expect(readyLine).toMatch(/^ready: api:\d+ \(\d+s\)$/)
+    } finally {
+      killOwned()
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("dead recorded child + foreign HTTP-200 holder is not ready (exit 1)", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const { isLivePid } = await import("./up-state")
+    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempOwnRoot()
+    const doomed = trackProc(Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" }))
+    try {
+      const { readLstart } = await import("./up-state")
+      const lstart = (await readLstart(doomed.pid))!
+      try {
+        doomed.kill("SIGKILL")
+      } catch {
+        // already gone
+      }
+      const start = Date.now()
+      while (await isLivePid(doomed.pid, lstart)) {
+        if (Date.now() - start > 8000) throw new Error("doomed sleeper survived")
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, 50))
+      }
+      await recordService(root, "api", doomed.pid, holder.port, lstart)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 2000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean }
+      expect(payload.ready).toBe(false)
+    } finally {
+      killOwned()
+      holder.stop(true)
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("dead recorded child + foreign holder + --health is not ready (E15 shape, exit 1)", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const { isLivePid, readLstart } = await import("./up-state")
+    const holder = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempOwnRoot()
+    const doomed = trackProc(Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" }))
+    try {
+      const lstart = (await readLstart(doomed.pid))!
+      try {
+        doomed.kill("SIGKILL")
+      } catch {
+        // already gone
+      }
+      const start = Date.now()
+      while (await isLivePid(doomed.pid, lstart)) {
+        if (Date.now() - start > 8000) throw new Error("doomed sleeper survived")
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, 50))
+      }
+      await recordService(root, "api", doomed.pid, holder.port, lstart)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${holder.port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 2000, json: true, health: { api: "/" } })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean }
+      expect(payload.ready).toBe(false)
+    } finally {
+      killOwned()
+      holder.stop(true)
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("recorded owner listener is ready (exit 0, exact pid match preserved)", async () => {
+    const { writeFile } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const root = await tempOwnRoot()
+    const port = await pickFreePort()
+    try {
+      const srv = join(root, "srv-own.mjs")
+      await writeFile(srv, SERVER_SRC, "utf8")
+      const server = trackProc(Bun.spawn([process.execPath, srv, String(port)], { stdout: "ignore", stderr: "ignore" }))
+      await waitPortOwned(port)
+      await recordService(root, "api", server.pid, port)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 8000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean }
+      expect(payload.ready).toBe(true)
+    } finally {
+      killOwned()
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("forked launcher child listener is ready (exit 0, benign fork ownership preserved)", async () => {
+    const { writeFile } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const root = await tempOwnRoot()
+    const port = await pickFreePort()
+    try {
+      const srv = join(root, "srv-fork.mjs")
+      await writeFile(srv, SERVER_SRC, "utf8")
+      const launcher = trackProc(Bun.spawn(["sh", "-c", `"${process.execPath}" "${srv}" ${port} & wait`], { stdout: "ignore", stderr: "ignore" }))
+      await waitPortOwned(port)
+      await recordService(root, "api", launcher.pid, port)
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 8000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(0)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean }
+      expect(payload.ready).toBe(true)
+    } finally {
+      killOwned()
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("lstart identity mismatch is not ready (exit 1, unknown — never ready:)", async () => {
+    const { writeFile } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const root = await tempOwnRoot()
+    const port = await pickFreePort()
+    try {
+      const srv = join(root, "srv-reuse.mjs")
+      await writeFile(srv, SERVER_SRC, "utf8")
+      const server = trackProc(Bun.spawn([process.execPath, srv, String(port)], { stdout: "ignore", stderr: "ignore" }))
+      await waitPortOwned(port)
+      await recordService(root, "api", server.pid, port, "Mon Oct  6 00:00:00 2026")
+      const services = parseUpFile(`services:\n  api:\n    cmd: sleep 30\n    port: ${port}\n`).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 2000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean }
+      expect(payload.ready).toBe(false)
+    } finally {
+      killOwned()
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("mixed services: owned ready + foreign not-ready → exit 1 with per-service readiness", async () => {
+    const { writeFile } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+    const { parseUpFile } = await import("./up-schema")
+    const { waitForUpReady } = await import("./cli")
+    const foreign = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+    const root = await tempOwnRoot()
+    const ownPort = await pickFreePort()
+    try {
+      const srv = join(root, "srv-mix.mjs")
+      await writeFile(srv, SERVER_SRC, "utf8")
+      const server = trackProc(Bun.spawn([process.execPath, srv, String(ownPort)], { stdout: "ignore", stderr: "ignore" }))
+      await waitPortOwned(ownPort)
+      const sleeper = trackProc(Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" }))
+      const { ensureUpStateDir, readLstart, upPaths, writeSupervisorState } = await import("./up-state")
+      const paths = upPaths(root)
+      await ensureUpStateDir(paths.stateDir)
+      await writeSupervisorState(paths.supervisorFile, {
+        version: 1,
+        startedAt: new Date().toISOString(),
+        services: [
+          { name: "own", pid: server.pid, lstart: (await readLstart(server.pid))!, startedAt: new Date().toISOString(), cmd: "sleep 30", port: ownPort },
+          { name: "other", pid: sleeper.pid, lstart: (await readLstart(sleeper.pid))!, startedAt: new Date().toISOString(), cmd: "sleep 30", port: foreign.port },
+        ],
+      })
+      const services = parseUpFile(
+        `services:\n  own:\n    cmd: sleep 30\n    port: ${ownPort}\n  other:\n    cmd: sleep 30\n    port: ${foreign.port}\n`,
+      ).services
+      const io = captureWait()
+      let code = -1
+      try {
+        code = await waitForUpReady({ rootDir: root, services, timeoutMs: 3000, json: true })
+      } finally {
+        io.restore()
+      }
+      expect(code).toBe(1)
+      const payload = JSON.parse(io.out.join("\n")) as { ready: boolean; services: { name: string; status: string }[] }
+      expect(payload.ready).toBe(false)
+      const byName = new Map(payload.services.map((entry) => [entry.name, entry.status]))
+      expect(byName.get("own")).toBe("ready")
+      expect(byName.get("other")).toBe("timeout")
+    } finally {
+      killOwned()
+      foreign.stop(true)
+      const { rm } = await import("node:fs/promises")
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
 })
 
 describe("M-f vacuous wait refuses (never silent pass)", () => {

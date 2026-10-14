@@ -7,7 +7,6 @@ import {
   formatMeta,
   formatReads,
   formatSessions,
-  formatStuck,
   groupByTask,
   joinSession,
   latestSession,
@@ -16,19 +15,17 @@ import {
   parseSince,
   readDigest,
   sessionMeta,
-  sessionPrompts,
   showLine,
   SINCE_TOKENS,
   sinceWindow,
   storeWindow,
-  stuckReport,
   windowNotice,
   type EnrichedRecord,
   type SinceWindow,
 } from "./join"
 import { doctor, formatDoctor, formatIdentity, doctorIdentity } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
-import { parseWaitDuration } from "./trace-cli"
+import { parseWaitDuration } from "./up-ready"
 import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, PROBE_TIMEOUT_MS, subsetNestingHint } from "./up-schema"
 import { isSecretFlagToken, maskCmdShape, maskSecretToken } from "./up-reconcile"
 import { maskSecrets } from "./up-evidence"
@@ -36,35 +33,25 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 
-export const COMMANDS = ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "trace", "timeline", "init", "checkpoints", "preflight", "readiness", "provision", "scenarios", "failures", "record", "contract", "scenario", "export"] as const
+export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "init"] as const
 export type Command = (typeof COMMANDS)[number]
 
-/** The overlay readers (single source for help + the fail-loud guard +
- * refusal below; the help-coverage test derives from this). `scenario`
- * covers both subverbs — see OVERLAY_READER_LABELS for the eight names. */
-export const OVERLAY_READERS = ["scenarios", "preflight", "readiness", "provision", "record", "contract", "scenario"] as const
-
-/** All eight reader names for help/refusal (`scenario` splits in two). */
-export const OVERLAY_READER_LABELS = ["scenarios", "preflight", "readiness", "provision", "record", "contract", "scenario run", "scenario env"] as const
-
-/** The eight `--since` readers (single source for help + the fail-loud
+/** The six `--since` readers (single source for help + the fail-loud
  * cross-verb guard below; the help-coverage test derives from this). */
-export const SINCE_READERS = ["sessions", "show", "stuck", "reads", "logs", "failures", "trace", "timeline"] as const
+export const SINCE_READERS = ["sessions", "show", "reads", "logs"] as const
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--trace", "--min-spans", "--run", "--boundaries", "--out", "--claim-entrypoint", "--claim-boundary"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--tracing", "--probe", "--explain", "--off-local", "--bundle", "--resume"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--probe", "--explain"])
 
 export type ParsedArgs = {
   command: Command | null
   sessionID: string | undefined
-  /** `--health` and `--claim-boundary` are repeatable and accumulate
+  /** `--health` is repeatable and accumulates
    * into a string array; every other value flag holds a single string. */
   flags: Record<string, string | boolean | string[]>
   error: string | null
-  /** Second and later positionals (`checkpoints show <run> /
-   * `checkpoints diff <runA> <runB>` / `scenario run <name>`). Any other
-   * command rejects them with the pre-existing usage error. */
+  /** No command takes a second positional: any extra is a usage error. */
   extra: string[]
 }
 
@@ -79,9 +66,7 @@ export const helpText = (): string =>
     "  sessions [--since] [--dir]    session list (id, count, range, dir)",
     "  show [session] [--since] [--full] [--bytes] [--tree] [--kind ..] [--tool ..] [--show N] [--show-fails]",
     "                                task summary; --tree shows the subtask tree",
-    "  stuck [session] [--since] [--tree]  stuck report (joined records)",
     "  meta [session]                cost/token/changes/turns",
-    "  prompts [session]             last 50 user prompts (oldest first)",
     "  reads [session] [--since]     read summary",
     "  up [service] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/path]  start services (ow.yaml); --check only validates;",
   "                                -d with --wait: wait until declared ports open (exit: 1 when not ready);",
@@ -93,28 +78,11 @@ export const helpText = (): string =>
     "  ps [--file]                   service status (pid, uptime, cpu, memory, port, listen)",
     "  ps --explain [service] [--file] [--json]  expected/running witness view (read-only)",
     "  logs [service] [--file] [--tail] [--grep] [--since]  service logs",
-    "  checkpoints list [--file] [--json]  recorded evidence runs (read-only)",
-    "  checkpoints show <run> [--file] [--json] [--resume]  shows envelopes as confirmed/stale/not-observed (+ resume view)",
-    "  checkpoints diff <runA> <runB> [--file] [--json]  envelope-by-stage status/proof/digest deltas (read-only)",
-    "  failures [--since 30m|3h|1d|1w] [--file] [--json]  repeated findings (read-only, mechanical)",
-    "  preflight [--file] [--json] [--probe]  read-only gate (no mutation; exit 1 when failing)",
-    "  readiness [--file] [--json] [--probe]  boundary-witnessed readiness (false-green hunt; exit 0 ready / 1 not)",
-  "  provision --check [--file] [--json] [--probe]  workspace checklist (.env symlink + .venv + HEAD + pre-gate; read-only, exit 0 pass / 1 missing)",
-    "  scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs; probe-only lanes: record + contract check)",
-    "  record <scenario> [--file] [--claim-entrypoint <text>] [--claim-boundary <name>=<kind>:<ref>]  declarative deterministic scenario capture (.ow/replay; no state-changing)",
-    "                                --claim-boundary <name>=<kind>:<ref> (repeatable, record-only; kind real|fake; opaque caller claims, stored + rendered verbatim)",
-    "  contract check [--file] [--json]  recorded contract summary (exit 0 match / 1 mismatch-unrecorded)",
-    "  scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory; probe-only lanes without restore: record + contract check)",
-    "  scenario env <name> [--file] [--json] [--boundaries <path>]  boundary matrix as OW_BOUNDARY_* lines (read-only render)",
-    "  export --bundle [<run>] [--file] [--out <path>]  one redacted snapshot file for tickets (read-only composition)",
-    "  trace [trace] [--file] [--tail] [--since] [--service] [--wait] [--min-spans]  traces; one tree per trace; --wait 15s waits for new spans",
-  "  timeline [session] [--trace] [--since] [--tail]  agent lines + trace spans as a joined timeline",
-  "  init [--force] [--tracing]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
-    `  --boundaries <path>  overlay file (root-relative; flag wins over .ow/boundaries.local.yaml; ${OVERLAY_READER_LABELS.map((label) => label.replace(" ", "-")).join("/")} only)`,
+  "  init [--force]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
     "",
     "general: --db <path> --log <path> --json --help",
     `  --since  window: ${SINCE_TOKENS} (${SINCE_READERS.join("/")})`,
-    "  --json  machine output (English keys): doctor/show/stuck/meta/sessions/reads/prompts/ps/logs/down/trace/timeline/reconcile/checkpoints/failures/preflight/readiness/provision/scenarios/contract/scenario (+ up --check)",
+    "  --json  machine output (English keys): doctor/show/meta/sessions/reads/ps/logs/down/reconcile (+ up --check)",
     "exit: 0 ok, 1 structural error, 2 usage error",
     "",
     "example: ow show <session> --tree --since 1d",
@@ -140,7 +108,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       if (VALUE_FLAGS.has(arg)) {
         const value = argv[i + 1]
         if (value === undefined || value.startsWith("--")) return fail(`value expected: ${arg}`)
-        if (arg === "--health" || arg === "--claim-boundary") {
+        if (arg === "--health") {
           const prior = flags[arg]
           flags[arg] = [...(Array.isArray(prior) ? prior : prior !== undefined ? [prior as string] : []), value]
         } else {
@@ -167,21 +135,12 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       sessionID = arg
       continue
     }
-    // P2-A: only `checkpoints` takes a second positional (`show <run>`);
-    // every other surface keeps the pre-existing usage error (same text).
-    // M5 note: `record <run-name>` and `contract check` ride the first
-    // positional (sessionID) slot with dispatch-side validation below, so
-    // this rule needs no change - a second positional stays a usage error.
-    // M6: `scenario run <name>` follows the `checkpoints show <run>` shape:
-    // subverb in the sessionID slot, target in extra.
-    if (command === "checkpoints" || command === "scenario") {
-      extra.push(arg)
-      continue
-    }
+    // No command takes a second positional: any extra is a usage error
+    // (same pre-existing text), never a silent no-op.
     return fail(`unexpected argument: ${arg}`)
   }
   if (flags["--help"]) return { command, sessionID, flags, error: null, extra }
-  if (!command) return fail("command expected: doctor|sessions|show|stuck|meta|prompts|reads|up|down|ps|logs|trace|timeline|init (--help)")
+  if (!command) return fail("command expected: doctor|sessions|show|meta|reads|up|down|ps|logs|init (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
   if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${flags["--since"]} (${SINCE_TOKENS})`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
@@ -192,10 +151,6 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   if (typeof flags["--tail"] === "string") {
     const tail = Number(flags["--tail"])
     if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`invalid --tail: ${flags["--tail"]} (1-5000 expected)`)
-  }
-  if (typeof flags["--min-spans"] === "string") {
-    const minSpans = Number(flags["--min-spans"])
-    if (!Number.isInteger(minSpans) || minSpans < 1 || minSpans > 5000) return fail(`invalid --min-spans: ${flags["--min-spans"]} (1-5000 expected)`)
   }
   if (typeof flags["--wait"] === "string" && parseWaitDuration(flags["--wait"]) === null) {
     return fail(`invalid --wait: ${flags["--wait"]} (e.g. 15s, at most 5m)`)
@@ -216,15 +171,10 @@ export const toShowJson = (
   tree?: ReturnType<typeof treeIds>,
   window: SinceWindow | null = null,
 ) => (tree ? { session: sessionID, warnings, groups, tree, window } : { session: sessionID, warnings, groups, window })
-export const toStuckJson = (sessionID: string, report: Awaited<ReturnType<typeof stuckReport>>, window: SinceWindow | null = null) => ({
-  session: sessionID,
-  report,
-  window,
-})
 
-/** `doctor` exit rule: `up` and `trace` lines are informational only. */
+/** `doctor` exit rule: the `up` line is informational only. */
 export const doctorFails = (lines: { name: string; ok: boolean }[]): boolean =>
-  lines.filter((l) => l.name !== "up" && l.name !== "trace").some((l) => !l.ok)
+  lines.filter((l) => l.name !== "up").some((l) => !l.ok)
 
 /** Supervisor root: the --file directory or cwd; state/logs live under <root>/.ow. */
 export const upRootDir = (flags: Record<string, string | boolean | string[]>): string => {
@@ -256,6 +206,64 @@ export type WaitReadiness = { kind: "tcp" | "http-health" | "probe"; ok: boolean
 /** Captured wait verdict (lets single-service verbs merge it into their
  * own single JSON object instead of printing a second one). */
 export type WaitVerdict = { ready: boolean; services: Array<Record<string, unknown>>; noPort: string[] }
+
+/** Listener-ownership gate for the wait path: a TCP accept (or HTTP 2xx)
+ * proves only that *something* answers on the port — not that the recorded
+ * service is up. A recorded target counts as gate-open only while its
+ * recorded process is still alive with a matching `lstart` identity AND the
+ * declared listener belongs to that process (exact pid match) or to a
+ * verified descendant (bounded ppid walk + `lstart` match, the same
+ * `descendantOwnersOf` predicate `reconcile --check` uses — no duplicate
+ * PID logic, no approximate matching). Unrecorded targets keep legacy TCP
+ * semantics (no ownership claim is possible without a record; production
+ * up/restart waits always record). Every refusal carries a masked,
+ * pid-free reason; pids never enter output. Read-only: supervisor-state
+ * read + `ps`/`lsof` observation, never a signal. */
+export const checkWaitOwnership = async (opts: {
+  rootDir: string
+  name: string
+  port: number
+}): Promise<{ ok: true } | { ok: false; note: string }> => {
+  const { readLstart, readProcessTable, readSupervisorState, upPaths } = await import("./up-state")
+  const { descendantOwnersOf, portOwners } = await import("./up-reconcile")
+  let state: Awaited<ReturnType<typeof readSupervisorState>> = null
+  try {
+    state = await readSupervisorState(upPaths(opts.rootDir).supervisorFile)
+  } catch {
+    state = null
+  }
+  const run = state?.services.find((svc) => svc.name === opts.name) ?? null
+  if (run === null) return { ok: true }
+  if (run.exitCode !== undefined) return { ok: false, note: "recorded process already exited" }
+  if (run.lstart === "") return { ok: false, note: "recorded process identity unknown" }
+  let current: string | null = null
+  try {
+    current = await readLstart(run.pid)
+  } catch {
+    current = null
+  }
+  if (current === null) return { ok: false, note: "recorded process not running (exit not yet recorded)" }
+  if (current !== run.lstart) return { ok: false, note: "recorded process identity changed (possible pid reuse)" }
+  let owners: number[] | null = null
+  try {
+    owners = await portOwners(opts.port)
+  } catch {
+    owners = null
+  }
+  if (owners === null) return { ok: false, note: "port ownership unverifiable" }
+  if (owners.length === 0) return { ok: false, note: "no port owner observed yet" }
+  if (owners.includes(run.pid)) return { ok: true }
+  let table: Awaited<ReturnType<typeof readProcessTable>> = null
+  try {
+    table = await readProcessTable()
+  } catch {
+    table = null
+  }
+  const proven = descendantOwnersOf({ pid: run.pid, lstart: run.lstart }, owners, table)
+  if (proven !== null && proven.length > 0) return { ok: true }
+  if (proven !== null) return { ok: false, note: `port ${opts.port} held by a foreign listener (UNVERIFIED) — no kill, verify the owner` }
+  return { ok: false, note: "port ownership unverifiable" }
+}
 
 export const waitForUpReady = async (opts: {
   rootDir: string
@@ -305,8 +313,8 @@ export const waitForUpReady = async (opts: {
   // up-ready.ts is untouched). Project probes fire at most once per 2s per
   // target (a 500ms spawn loop would drown the project script otherwise);
   // TCP/health keep their every-poll cadence.
-  const track = new Map<string, { tcpOk: boolean; probe?: { ran: boolean; ok: boolean; note: string; at: number } }>()
-  const tracked = (name: string): { tcpOk: boolean; probe?: { ran: boolean; ok: boolean; note: string; at: number } } => {
+  const track = new Map<string, { tcpOk: boolean; gateNote?: string; probe?: { ran: boolean; ok: boolean; note: string; at: number } }>()
+  const tracked = (name: string): { tcpOk: boolean; gateNote?: string; probe?: { ran: boolean; ok: boolean; note: string; at: number } } => {
     let entry = track.get(name)
     if (!entry) {
       entry = { tcpOk: false }
@@ -323,6 +331,18 @@ export const waitForUpReady = async (opts: {
       const needTcp = target.port !== undefined && (svc?.readiness === undefined || svc.readiness.needsPort)
       if (needTcp && !(await tcpListening(target.port as number))) return false
       st.tcpOk = true
+      // Listener-ownership gate: a TCP accept is not service identity. A
+      // recorded target whose listener is not its own (or its verified
+      // descendant's) stays pending — never ready — with the reason kept
+      // for the readiness envelope below.
+      if (target.port !== undefined) {
+        const gate = await checkWaitOwnership({ rootDir: opts.rootDir, name: target.name, port: target.port })
+        if (!gate.ok) {
+          st.gateNote = gate.note
+          return false
+        }
+      }
+      st.gateNote = undefined
       const path = health[target.name]
       if (path !== undefined) return httpHealthOk(target.port as number, path)
       const spec = svc?.readiness
@@ -342,15 +362,19 @@ export const waitForUpReady = async (opts: {
   const readinessOf = (result: { name: string; status: string; waitedSec: number }): WaitReadiness | undefined => {
     const svc = byName.get(result.name)
     const st = track.get(result.name)
+    // The ownership-gate reason rides the additive `note` (existing keys
+    // untouched); a ready verdict never carries one, so ready JSON stays
+    // byte-identical.
+    const gateNote = result.status === "ready" ? undefined : st?.gateNote
     if (health[result.name] !== undefined) {
-      return { kind: "http-health", ok: result.status === "ready", waitedSec: result.waitedSec }
+      return { kind: "http-health", ok: result.status === "ready", ...(gateNote === undefined ? {} : { note: gateNote }), waitedSec: result.waitedSec }
     }
     if (svc?.readiness === undefined) {
       if (result.status === "exited") return undefined
-      return { kind: "tcp", ok: result.status === "ready", waitedSec: result.waitedSec }
+      return { kind: "tcp", ok: result.status === "ready", ...(gateNote === undefined ? {} : { note: gateNote }), waitedSec: result.waitedSec }
     }
     if (st?.probe !== undefined) return { kind: "probe", ok: st.probe.ok && result.status === "ready", note: st.probe.note, waitedSec: result.waitedSec }
-    return { kind: "probe", ok: false, note: "unmeasured", waitedSec: result.waitedSec }
+    return { kind: "probe", ok: false, note: gateNote ?? "unmeasured", waitedSec: result.waitedSec }
   }
   const ready = results.every((result) => result.status === "ready")
   const where = (result: { port?: number; healthPath?: string }): string =>
@@ -369,7 +393,13 @@ export const waitForUpReady = async (opts: {
       if (result.status === "ready") console.log(`ready: ${result.name}${where(result)} (${result.waitedSec}s)`)
       else if (result.status === "exited") console.log(`exited: ${result.name} (exit code ${result.exitCode ?? "?"}) — ow logs ${result.name}`)
       else if (readiness?.kind === "probe") console.log(`not ready: ${result.name} (probe: ${readiness.note ?? "not ready"})`)
-      else console.log(`timeout: ${result.name}${where(result)} (${result.waitedSec}s)`)
+      else {
+        // The ownership-gate reason (same static pid-free string as the JSON
+        // `readiness.note`) is appended to the human timeout when present;
+        // prefix, exit code and JSON shape are untouched.
+        const gate = readiness?.note
+        console.log(`timeout: ${result.name}${where(result)} (${result.waitedSec}s)${gate === undefined ? "" : ` — ${gate}`}`)
+      }
     }
     if (noPort.length > 0) console.log(`port undefined (not waited): ${noPort.join(", ")}`)
   }
@@ -468,7 +498,6 @@ export const toCheckServicesJson = (services: UpService[]): Record<string, unkno
     ...(svc.cwd === undefined ? {} : { cwd: svc.cwd }),
     ...(svc.port === undefined ? {} : { port: svc.port }),
     ...(svc.logs === undefined ? {} : { logs: maskCmdShape(svc.logs) }),
-    ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
     ...(svc.readiness === undefined
       ? {}
       : {
@@ -780,42 +809,16 @@ export const run = async (argv: string[]): Promise<number> => {
     return 2
   }
   const { command, sessionID: positional, flags } = parsed
-  // P2-A: extra positionals belong to `checkpoints show <run>` and
-  // `checkpoints diff <runA> <runB>` (M12), plus `scenario run <name>`
-  // (M6, same subverb-plus-target shape).
-  // M9: `--boundaries <path>` rides the value-flag slot and is consumed
-  // only by the eight overlay readers below (scenarios, preflight,
-  // readiness, provision, record, contract, scenario run, scenario env);
-  // anywhere else it is a usage error (exit 2), never a silent no-op.
-  // Single source: OVERLAY_READERS drives this guard, OVERLAY_READER_LABELS
-  // the help line above and the refusal below.
-  const boundariesFlag = flag(flags, "--boundaries")
-  if (boundariesFlag !== undefined) {
-    if (!(OVERLAY_READERS as readonly string[]).includes(command)) {
-      console.error(`ow: --boundaries can only be used with ${OVERLAY_READER_LABELS.join(", ")}`)
-      return 2
-    }
-  }
-  // `--since` outside the eight readers refuses (exit 2), never a silent
+  // No command takes a second positional: any extra is a usage error
+  // (exit 2), never a silent no-op.
+  // `--since` outside the readers refuses (exit 2), never a silent
   // no-op on any command (single source: SINCE_READERS drives this guard
   // and the help line above).
   if (flags["--since"] !== undefined && !(SINCE_READERS as readonly string[]).includes(command)) {
     console.error(`ow: --since can only be used with ${SINCE_READERS.join(", ")}`)
     return 2
   }
-  // LOW-2: scenario-run flags outside `scenario run` refuse (exit 2), never
-  // a silent no-op on any command (`scenario env` rejects them per-verb below).
-  if ((flags["--run"] !== undefined || flags["--off-local"] === true) && command !== "scenario") {
-    console.error("ow: --run/--off-local work only with scenario run")
-    return 2
-  }
-  // Caller-claim flags belong to `record` only (same fail-loud
-  // precedent: a narrowed flag elsewhere is a usage error, never silent).
-  if ((flags["--claim-entrypoint"] !== undefined || flags["--claim-boundary"] !== undefined) && command !== "record") {
-    console.error("ow: --claim-entrypoint/--claim-boundary work only with record")
-    return 2
-  }
-  if (command !== "checkpoints" && command !== "scenario" && parsed.extra.length > 0) {
+  if (parsed.extra.length > 0) {
     console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
     console.error(helpText())
     return 2
@@ -824,18 +827,6 @@ export const run = async (argv: string[]): Promise<number> => {
   // loudly instead of silently doing nothing elsewhere).
   if (command !== "ps" && flags["--explain"] === true) {
     console.error("ow: --explain works only with ps")
-    return 2
-  }
-  // M13: `--bundle`/`--out` belong only to `export` (same fail-loud
-  // precedent: `ow down --bundle` must refuse, never stop services).
-  if (command !== "export" && (flags["--bundle"] === true || flags["--out"] !== undefined)) {
-    console.error("ow: --bundle/--out work only with export")
-    return 2
-  }
-  // `--resume` renders only in `checkpoints show` (same fail-loud
-  // precedent: a narrowed flag elsewhere is a usage error, never silent).
-  if (flags["--resume"] === true && !(command === "checkpoints" && positional === "show")) {
-    console.error("ow: --resume works only with checkpoints show")
     return 2
   }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
@@ -888,14 +879,13 @@ export const run = async (argv: string[]): Promise<number> => {
     const result = await runInit({
       rootDir: typeof flags["--file"] === "string" ? dirname(resolve(flags["--file"] as string)) : process.cwd(),
       force: flags["--force"] === true,
-      tracing: flags["--tracing"] === true,
     })
     if (result.stdout.length > 0) console.log(result.stdout)
     if (result.stderr.length > 0) console.error(result.stderr)
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "checkpoints" || command === "preflight" || command === "readiness" || command === "provision" || command === "scenarios" || command === "ps" || command === "logs" || command === "trace" || command === "timeline" || command === "failures" || command === "record" || command === "contract" || command === "scenario" || command === "export") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "ps" || command === "logs") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -913,14 +903,11 @@ export const run = async (argv: string[]): Promise<number> => {
     const { noStateNote } = await import("./up-state")
     // State-root announce (writers only): the exact state dir on stderr,
     // suppressed under --json so stdout stays parse-clean. `up --check`
-    // never writes and stays silent; scenario env only reads.
+    // never writes and stays silent.
     const announcesStateDir =
       command === "restart" ||
       command === "down" ||
-      command === "record" ||
-      command === "contract" ||
-      (command === "up" && flags["--check"] !== true) ||
-      (command === "scenario" && positional === "run")
+      (command === "up" && flags["--check"] !== true)
     if (announcesStateDir && !json) console.error(`state dir: ${stateDir}`)
     if (announcesStateDir) {
       const nested = await nestedStateWarning(rootDir)
@@ -930,49 +917,6 @@ export const run = async (argv: string[]): Promise<number> => {
     // the pointed/cwd file; single-service and reader commands without
     // --file read the walked root's file.
     const yamlForRead = explicitFile || bulkUp ? upFilePath(flags) : join(rootDir, "ow.yaml")
-    if (command === "trace") {
-      const { runTrace } = await import("./trace-cli")
-      const tailFlag = flag(flags, "--tail")
-      const serviceFlag = flag(flags, "--service")
-      const waitFlag = flag(flags, "--wait")
-      const minSpansFlag = flag(flags, "--min-spans")
-      const result = await runTrace({
-        rootDir,
-        owYamlPath: yamlForRead,
-        traceId: positional,
-        tail: tailFlag === undefined ? undefined : Number(tailFlag),
-        sinceMs: parseSince(flag(flags, "--since")),
-        since: flag(flags, "--since"),
-        service: serviceFlag,
-        json,
-        waitMs: waitFlag === undefined ? undefined : (parseWaitDuration(waitFlag) ?? undefined),
-        minSpans: minSpansFlag === undefined ? undefined : Number(minSpansFlag),
-        searchStart,
-      })
-      if (result.stdout.length > 0) console.log(result.stdout)
-      if (result.stderr.length > 0) console.error(result.stderr)
-      return result.code
-    }
-    if (command === "timeline") {
-      const { runTimeline } = await import("./trace-timeline")
-      const traceFlag = flag(flags, "--trace")
-      const tailFlag = flag(flags, "--tail")
-      const sid = await resolveSession(positional, logPath)
-      const result = await runTimeline({
-        rootDir,
-        logPath,
-        dbPath: flag(flags, "--db"),
-        sessionID: sid ?? undefined,
-        traceId: traceFlag,
-        tail: tailFlag === undefined ? undefined : Number(tailFlag),
-        sinceMs: parseSince(flag(flags, "--since")),
-        since: flag(flags, "--since"),
-        json,
-      })
-      if (result.stdout.length > 0) console.log(result.stdout)
-      if (result.stderr.length > 0) console.error(result.stderr)
-      return result.code
-    }
     if (command === "up") {
       const file = upFilePath(flags)
       let text: string
@@ -998,11 +942,11 @@ export const run = async (argv: string[]): Promise<number> => {
         if (flags["--check"] === true && isSubsetNestingError(error)) console.error(subsetNestingHint)
         return 2
       }
-      // `--probe` belongs to the witness verbs (reconcile, preflight,
-      // readiness, provision): anywhere else it is a usage error (exit 2),
+      // `--probe` belongs to `reconcile --check`: anywhere else it is a
+      // usage error (exit 2),
       // never a silent no-op. One guard covers bulk and single `up`.
       if (flags["--probe"] === true) {
-        console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
+        console.error("ow: --probe works only with reconcile")
         return 2
       }
       if (positional !== undefined) {
@@ -1077,20 +1021,11 @@ export const run = async (argv: string[]): Promise<number> => {
           }
           return 2
         }
-        // Polish (friction 5): `--check` prints the resolved spawn order
-        // (already topo-sorted by the parser) plus the order-only reminder.
-        // Dep-less files keep exact YAML order — and byte-identical output,
-        // since both lines print only when some service declares depends_on.
-        const hasDeps = parsed.services.some((svc) => (svc.dependsOn?.length ?? 0) > 0)
         const order = parsed.services.map((svc) => svc.name)
         if (!json) {
           console.log(`ow.yaml valid: ${parsed.services.length} services (${order.join(", ")})`)
-          if (hasDeps) {
-            console.log(`start order: ${order.join(", ")}`)
-            console.log(`depends_on does not gate (order-only)`)
-          }
         } else {
-          console.log(JSON.stringify({ file, services: toCheckServicesJson(parsed.services), warnings: parsed.warnings, ...(hasDeps ? { spawnOrder: order } : {}) }))
+          console.log(JSON.stringify({ file, services: toCheckServicesJson(parsed.services), warnings: parsed.warnings }))
         }
         return 0
       }
@@ -1141,11 +1076,11 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runSuperviseFile } = await import("./up-supervisor-cli")
       return runSuperviseFile(file)
     }
-    // `--probe` belongs to the witness verbs: `ps`/`logs` reject it before
+    // `--probe` belongs to `reconcile --check`: `ps`/`logs` reject it before
     // the honest-empty branch (exit 2 with or without state), matching the
-    // `up`/`down`/`checkpoints` guards below.
+    // `up`/`down` guards below.
     if ((command === "ps" || command === "logs") && flags["--probe"] === true) {
-      console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
+      console.error("ow: --probe works only with reconcile")
       return 2
     }
     // `restart`/`reconcile`/single-service `down` produce their own honest
@@ -1173,7 +1108,7 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     if (command === "down") {
       if (flags["--probe"] === true) {
-        console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
+        console.error("ow: --probe works only with reconcile")
         return 2
       }
       if (positional !== undefined && flags["--rm"] === true) {
@@ -1260,226 +1195,6 @@ export const run = async (argv: string[]): Promise<number> => {
       const { runReconcileCheck } = await import("./up-reconcile")
       return runReconcileCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true })
     }
-    if (command === "checkpoints") {
-      // P2-A: runner-writes/ow-reads; read-only, no mutation, no live exec.
-      if (flags["--probe"] === true) {
-        console.error("ow: --probe works only with reconcile, preflight, readiness, provision")
-        return 2
-      }
-      const { runCheckpointsDiff, runCheckpointsList, runCheckpointsShow } = await import("./up-checkpoints")
-      if (positional === undefined || (positional !== "list" && positional !== "show" && positional !== "diff")) {
-        console.error("ow: checkpoints list|show|diff expected (e.g. ow checkpoints show <run>)")
-        return 2
-      }
-      if (positional === "list") {
-        if (parsed.extra.length > 0) {
-          console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
-          return 2
-        }
-        return runCheckpointsList({ rootDir, json })
-      }
-      if (positional === "show") {
-        if (parsed.extra.length !== 1) {
-          console.error(
-            parsed.extra.length === 0 ? "ow: checkpoints show expects a run name (e.g. ow checkpoints show <run>)" : `ow: unexpected argument: ${parsed.extra[1]}`,
-          )
-          return 2
-        }
-        return runCheckpointsShow({ rootDir, run: parsed.extra[0], json, resume: flags["--resume"] === true })
-      }
-      if (parsed.extra.length !== 2) {
-        console.error(
-          parsed.extra.length < 2
-            ? "ow: checkpoints diff expects two run names (e.g. ow checkpoints diff <runA> <runB>)"
-            : `ow: unexpected argument: ${parsed.extra[2]}`,
-        )
-        return 2
-      }
-      return runCheckpointsDiff({ rootDir, runA: parsed.extra[0], runB: parsed.extra[1], json })
-    }
-    if (command === "failures") {
-      // M-D: read-only mechanical finding list — no exec/prune, exit 0
-      // except corrupt-only evidence (exit 1); usage errors exit 2.
-      // --since outside the locked set is 2.
-      if (positional !== undefined) {
-        console.error("ow: failures takes no positional arguments")
-        return 2
-      }
-      const { runFailures } = await import("./up-failures")
-      return runFailures({ rootDir, since: flags["--since"], json })
-    }
-    if (command === "preflight") {
-      // P2-B: read-only gate — spawn/stop/restart/probe/health/git/lsof are
-      // not called (unflagged); `--probe` only adds one-shot loopback TCP for
-      // declared ports (budgeted). Here `--probe` is not the M3 flag, it is the
-      // gate's own live-confirmation path.
-      if (positional !== undefined) {
-        console.error("ow: preflight takes no positional arguments")
-        return 2
-      }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with preflight`)
-          return 2
-        }
-      }
-      const { runPreflight } = await import("./up-preflight")
-      return runPreflight({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
-    }
-    if (command === "readiness") {
-      // M2: boundary-witnessed readiness - full preflight composition
-      // (4 gates) + digest/migration report. Read-only; `--probe` is
-      // one-shot loopback TCP on declared ports only (M1 N3 budget).
-      if (positional !== undefined) {
-        console.error("ow: readiness takes no positional arguments")
-        return 2
-      }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with readiness`)
-          return 2
-        }
-      }
-      const { runReadiness } = await import("./up-preflight")
-      return runReadiness({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
-    }
-    if (command === "provision") {
-      // Worktree checklist: witness-only, never gates up/ps/reconcile/
-      // preflight (those paths are untouched). `--check` required, bare
-      // `provision` is a usage error (exit 2).
-      if (positional !== undefined) {
-        console.error("ow: provision takes no positional arguments (ow provision --check [--file])")
-        return 2
-      }
-      if (flags["--check"] !== true) {
-        console.error("ow: provision --check is required (read-only checklist, no mutation)")
-        return 2
-      }
-      for (const unsupported of ["--rm", "--wait", "--health", "--detach"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with provision`)
-          return 2
-        }
-      }
-      const { runProvisionCheck } = await import("./up-provision")
-      return runProvisionCheck({ rootDir, file: yamlForRead, json, probe: flags["--probe"] === true, boundariesFlag })
-    }
-    if (command === "scenarios") {
-      // Scenario validator: read-only (runs no probe, no exec). `--file`
-      // points at the scenario file (default <root>/ow.scenarios.yaml);
-      // service references resolve against the same root's ow.yaml.
-      if (positional !== undefined) {
-        console.error("ow: scenarios takes no positional arguments")
-        return 2
-      }
-      if (flags["--check"] !== true) {
-        console.error("ow: use scenarios with --check (read-only validation, no runs)")
-        return 2
-      }
-      for (const unsupported of ["--probe", "--wait", "--health", "--detach", "--rm"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with scenarios`)
-          return 2
-        }
-      }
-      const { runScenariosCheck, SCENARIOS_FILE_NAME } = await import("./up-scenarios")
-      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runScenariosCheck({ file: scenariosFile, rootDir, json, boundariesFlag })
-    }
-    if (command === "record") {
-      // M5: run-name-singular capture - the positional names the scenario.
-      // Human-only output (no `--json` on this verb); probes run bounded
-      // one-shot, nothing else executes. (Second positionals never reach
-      // here: rejected globally above.)
-      if (positional === undefined) {
-        console.error("ow: use as record <scenario-name> [--file] (single positional)")
-        return 2
-      }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--json"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with record`)
-          return 2
-        }
-      }
-      const { runRecord } = await import("./up-replay")
-      const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
-      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runRecord({
-        rootDir,
-        file: scenariosFile,
-        runName: positional,
-        boundariesFlag,
-        claimEntrypoint: flag(flags, "--claim-entrypoint"),
-        claimBoundary: flags["--claim-boundary"] as string | string[] | undefined,
-      })
-    }
-    if (command === "contract") {
-      // M5: digest-compare + ship-order gate. `check` is the only second
-      // word (first-positional slot); pure witness, no exec on this verb.
-      if (positional !== "check") {
-        console.error("ow: use as contract check [--file] [--json]")
-        return 2
-      }
-      for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe"]) {
-        if (flags[unsupported] !== undefined) {
-          console.error(`ow: ${unsupported} cannot be used with contract`)
-          return 2
-        }
-      }
-      const { runContractCheck } = await import("./up-contract")
-      const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
-      const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-      return runContractCheck({ rootDir, file: scenariosFile, json, boundariesFlag })
-    }
-    if (command === "scenario") {
-      // M6: narrowed deterministic run — `run` subverb in the sessionID
-      // slot, scenario name in extra (checkpoints-shape precedent). Runner
-      // owns restore exec; `ow` spawns declared probes only.
-      // M10: `env` subverb renders the decided boundary matrix as
-      // eval-clean `OW_BOUNDARY_*` lines (read-only, never spawns).
-      if (positional === "run" && parsed.extra.length === 1) {
-        for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--tracing", "--force"]) {
-          if (flags[unsupported] !== undefined) {
-            console.error(`ow: ${unsupported} cannot be used with scenario run`)
-            return 2
-          }
-        }
-        const runId = flag(flags, "--run")
-        if (runId !== undefined) {
-          const { isValidRunName } = await import("./up-checkpoints")
-          if (!isValidRunName(runId)) {
-            console.error(`ow: invalid run id: ${runId}`)
-            return 2
-          }
-        }
-        const { runScenarioRun } = await import("./up-scenario-run")
-        const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
-        const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-        return runScenarioRun({
-          rootDir,
-          file: scenariosFile,
-          name: parsed.extra[0],
-          runId,
-          offLocal: flags["--off-local"] === true,
-          json,
-          boundariesFlag,
-        })
-      }
-      if (positional === "env" && parsed.extra.length === 1) {
-        for (const unsupported of ["--rm", "--check", "--wait", "--health", "--detach", "--probe", "--tracing", "--force", "--run", "--off-local"]) {
-          if (flags[unsupported] !== undefined) {
-            console.error(`ow: ${unsupported} cannot be used with scenario env`)
-            return 2
-          }
-        }
-        const { runScenarioEnv } = await import("./up-scenario-env")
-        const { SCENARIOS_FILE_NAME } = await import("./up-scenarios")
-        const scenariosFile = explicitFile ? upFilePath(flags) : join(rootDir, SCENARIOS_FILE_NAME)
-        return runScenarioEnv({ rootDir, file: scenariosFile, name: parsed.extra[0], json, boundariesFlag })
-      }
-      console.error("ow: use as scenario run <name> [--file] [--json] [--run <id>] [--off-local]")
-      return 2
-    }
     if (command === "ps") {
       if (flags["--explain"] === true) {
         const { runPsExplain } = await import("./up-ps")
@@ -1549,28 +1264,6 @@ export const run = async (argv: string[]): Promise<number> => {
       }
       return 0
     }
-    if (command === "export") {
-      // M13: read-only bundle composition of existing readers. Only
-      // --file/--out/--bundle (+ global --db/--log/--help) belong here;
-      // anything else is a usage error, never a silent no-op.
-      if (flags["--bundle"] !== true) {
-        console.error("ow: export needs --bundle (e.g. ow export --bundle [<run>] [--out <path>])")
-        return 2
-      }
-      for (const key of Object.keys(flags)) {
-        if (!["--file", "--out", "--bundle", "--help", "--db", "--log"].includes(key)) {
-          console.error(`ow: ${key} cannot be used with export`)
-          return 2
-        }
-      }
-      const { runExport } = await import("./up-export")
-      return runExport({
-        rootDir,
-        file: yamlForRead,
-        ...(positional === undefined ? {} : { run: positional }),
-        ...(flag(flags, "--out") === undefined ? {} : { out: flag(flags, "--out") as string }),
-      })
-    }
   }
 
   const sid = await resolveSession(positional, logPath)
@@ -1587,42 +1280,12 @@ export const run = async (argv: string[]): Promise<number> => {
     return 0
   }
 
-  if (command === "prompts") {
-    const prompts = await sessionPrompts({ dbPath, sessionID: sid })
-    if (json) {
-      console.log(JSON.stringify({ session: sid, prompts }))
-    } else if (prompts.length > 0) {
-      prompts.forEach((p, i) => console.log(`[${i + 1}] ${p}`))
-    } else {
-      console.log("no prompts")
-    }
-    return 0
-  }
-
   const treeMode = flags["--tree"] === true
   const windowMs = parseSince(flag(flags, "--since"))
   // One per-verb cutoff notice for the joined readers (human only via
-  // warn; stuck/show/reads share this region).
+  // warn; show/reads share this region).
   const window = sinceWindow(flag(flags, "--since"), windowMs, Date.now())
   if (window !== null) warn(windowNotice(window))
-
-  if (command === "stuck") {
-    let records: EnrichedRecord[]
-    if (treeMode) {
-      const { by, warnings, childCount } = await loadTreeRecords({ dbPath: flag(flags, "--db"), logPath, sessionID: sid, sinceMs: windowMs })
-      if (childCount > 0) warn(`tree: ${childCount + 1} sessions (${childCount} children)`)
-      for (const w of warnings) warn(`warn: ${w}`)
-      records = [...by.values()].flat()
-    } else {
-      const r = await joinSession({ sessionID: sid, dbPath: flag(flags, "--db"), logPath, sinceMs: windowMs })
-      for (const w of r.warnings) warn(`warn: ${w}`)
-      records = r.records
-    }
-    const windowed = filterSince(records, windowMs)
-    const report = await stuckReport({ records: windowed, dbPath: flag(flags, "--db"), sessionID: sid })
-    console.log(json ? JSON.stringify(toStuckJson(sid, report, window)) : formatStuck(report))
-    return 0
-  }
 
   // show + reads share the joined records
   let by: Map<string, EnrichedRecord[]>

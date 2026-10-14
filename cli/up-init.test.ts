@@ -12,22 +12,6 @@ import { parseArgs, run } from "./cli"
 import { parseUpFile } from "./up-schema"
 import { runInit } from "./up-init"
 
-const capture = (): { out: string[]; err: string[]; restore: () => void } => {
-  const out: string[] = []
-  const err: string[] = []
-  const origLog = console.log
-  const origError = console.error
-  console.log = (...args: unknown[]): void => {
-    out.push(args.map(String).join(" "))
-  }
-  console.error = (...args: unknown[]): void => {
-    err.push(args.map(String).join(" "))
-  }
-  return { out, err, restore: () => {
-    console.log = origLog
-    console.error = origError
-  } }
-}
 
 const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-init-"))
 
@@ -64,13 +48,10 @@ const makeGradle = async (root: string, portLine = "server.port=8081"): Promise<
   )
 }
 
-const EXPECTED_GRADLE_TRACING = `trace:
-  port: 4319
-services:
+const EXPECTED_GRADLE = `services:
   api:
     cmd: ./gradlew bootRun
     port: 8081
-    env: {JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar", OTEL_SERVICE_NAME: api, OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none}
     required-env: [DB_USER, DB_PASSWORD]
 `
 
@@ -81,11 +62,10 @@ describe("ow init gradle+spring", () => {
       await makeGradle(root)
       await withEnv("DB_USER", undefined, async () => {
         await withEnv("DB_PASSWORD", undefined, async () => {
-          const result = await runInit({ rootDir: root, tracing: true })
+          const result = await runInit({ rootDir: root })
           expect(result.code).toBe(0)
-          expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(EXPECTED_GRADLE_TRACING)
+          expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(EXPECTED_GRADLE)
           expect(result.stdout).toContain("2 missing required vars: DB_USER, DB_PASSWORD")
-          expect(result.stdout).toContain("opentelemetry-javaagent.jar")
           expect(result.stdout).toContain("DB_USER, DB_PASSWORD")
         })
       })
@@ -216,7 +196,7 @@ describe("ow init maven/python/node", () => {
     }
   })
 
-  test("python-uv distinguishes environ subscripts from getenv; traced cmd prefixed", async () => {
+  test("python-uv distinguishes environ subscripts from getenv", async () => {
     const root = await tempRoot()
     try {
       await writeFile(join(root, "pyproject.toml"), '[project]\nname = "svc"\n')
@@ -231,32 +211,23 @@ describe("ow init maven/python/node", () => {
         expect(plainText).toContain("required-env: [DB_PASSWORD]")
         expect(plainText).not.toContain("OPTIONAL_X")
         expect(plainText).not.toContain("trace:")
-        await rm(join(root, "ow.yaml"), { force: true })
-        const traced = await runInit({ rootDir: root, tracing: true, force: true })
-        expect(traced.code).toBe(0)
-        const tracedText = await readFile(join(root, "ow.yaml"), "utf8")
-        expect(tracedText).toContain("cmd: uv run opentelemetry-instrument python main.py")
-        expect(tracedText).toContain('env: {OTEL_SERVICE_NAME: worker, OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4319"')
-        expect(traced.code).toBe(0)
-        expect(() => parseUpFile(tracedText)).not.toThrow()
       })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("node-vite port picked up; no OTel env even with --tracing, frontend note printed", async () => {
+  test("node-vite port picked up with plain env", async () => {
     const root = await tempRoot()
     try {
       await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { dev: "vite", test: "vitest" } }))
       await writeFile(join(root, "vite.config.ts"), "export default {\n  server: { port: 5173 },\n}\n")
-      const result = await runInit({ rootDir: root, tracing: true })
+      const result = await runInit({ rootDir: root })
       expect(result.code).toBe(0)
       const text = await readFile(join(root, "ow.yaml"), "utf8")
       expect(text).toContain("cmd: npm run dev")
       expect(text).toContain("port: 5173")
       expect(text).not.toContain("env:")
-      expect(result.stdout).toContain("tracing.ts")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -356,17 +327,11 @@ describe("ow init boundaries", () => {
     const root = await tempRoot()
     try {
       await makeGradle(root)
-      for (const tracing of [false, true]) {
-        const forced = tracing ? { force: true } : {}
-        const result = await runInit({ rootDir: root, tracing, ...forced })
-        expect(result.code).toBe(0)
-        const text = await readFile(join(root, "ow.yaml"), "utf8")
-        const parsed = parseUpFile(text)
-        expect(parsed.services.map((s) => s.name)).toEqual(["api"])
-        expect("trace" in parsed).toBe(tracing)
-        if (tracing) expect(text).toMatch(/env: \{[^}]*\}/)
-        await rm(join(root, "ow.yaml"), { force: true })
-      }
+      const result = await runInit({ rootDir: root })
+      expect(result.code).toBe(0)
+      const text = await readFile(join(root, "ow.yaml"), "utf8")
+      const parsed = parseUpFile(text)
+      expect(parsed.services.map((s) => s.name)).toEqual(["api"])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -397,22 +362,22 @@ describe("ow init boundaries", () => {
 
 describe("ow init cli wiring", () => {
   test("parseArgs accepts flags; help names init; positional is usage error", async () => {
-    const parsed = parseArgs(["init", "--force", "--tracing"])
+    const parsed = parseArgs(["init", "--force"])
     expect(parsed.error).toBeNull()
     expect(parsed.command).toBe("init")
     const { helpText } = await import("./cli")
-    expect(helpText()).toContain("init [--force] [--tracing]")
+    expect(helpText()).toContain("init [--force]")
     expect(await run(["init", "extra"])).toBe(2)
   })
 
-  test("run init --tracing end-to-end in an empty fixture via cwd", async () => {
+  test("run init end-to-end in an empty fixture via cwd", async () => {
     const root = await tempRoot()
     try {
       await makeGradle(root)
       await withEnv("DB_USER", undefined, async () => {
         await withEnv("DB_PASSWORD", undefined, async () => {
-          expect(await withCwd(root, () => run(["init", "--tracing"]))).toBe(0)
-          expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(EXPECTED_GRADLE_TRACING)
+          expect(await withCwd(root, () => run(["init"]))).toBe(0)
+          expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(EXPECTED_GRADLE)
         })
       })
     } finally {
@@ -428,8 +393,8 @@ describe("ow init cli wiring", () => {
       await makeGradle(target)
       await withEnv("DB_USER", undefined, async () => {
         await withEnv("DB_PASSWORD", undefined, async () => {
-          expect(await withCwd(root, () => run(["init", "--tracing", "--file", join(target, "ow.yaml")]))).toBe(0)
-          expect(await readFile(join(target, "ow.yaml"), "utf8")).toBe(EXPECTED_GRADLE_TRACING)
+          expect(await withCwd(root, () => run(["init", "--file", join(target, "ow.yaml")]))).toBe(0)
+          expect(await readFile(join(target, "ow.yaml"), "utf8")).toBe(EXPECTED_GRADLE)
           let cwdClean = false
           try {
             await readFile(join(root, "ow.yaml"), "utf8")
@@ -445,42 +410,18 @@ describe("ow init cli wiring", () => {
   })
 })
 
-describe("ow init v2 inert scaffolds (M3)", () => {
-  // Frozen scaffold golden: INERT marker + new-taxonomy default + commented
-  // real probes + placeholder probe (keeps --check green) + quoted blocked
-  // example in the commented boundary matrix.
-  const EXPECTED_SCENARIOS = `# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented
-version: 1
-scenarios:
-  first-scenario:
-    services: [api]
-    boundaries: [real-read-only]
-    targets: [http://127.0.0.1:8081/]
-    # probes: [{id: ready, argv: [./scripts/ready-api.sh], timeout: 10s}]
-    probes: [{id: inert, argv: [true]}]
-    checkpoints: [api-ready]
-# Boundary matrix (M1 new taxonomy — uncomment one per scenario):
-#   real-read-only | real-state-changing | network-deny | subscribed | blocked:"<reason>" | unverified
-#   (legacy real/local/fake/captured-response/test dual-read with a warning)
-`
-
+describe("ow init runtime scaffold", () => {
   const EXPECTED_QUESTIONS = [
     "question: is the working directory (cwd) correct for api? If not, fix it in ow.yaml.",
     "question: is port 8081 correct for api? If not, fix it in ow.yaml.",
     "question: are the required variables (DB_USER, DB_PASSWORD) defined in the environment?",
-    "question: is the boundary default real-read-only suitable? If not, change it in ow.scenarios.yaml.",
-    "question: is the scenario name first-scenario suitable? If not, change it in ow.scenarios.yaml.",
-    "question: enable tracing? If so, re-run with --tracing.",
   ]
 
-  // Every printed question must match the bounded <=6-kind catalog.
+  // Every printed question must match the bounded <=3-kind catalog.
   const QUESTION_PATTERNS = [
     /^question: is the working directory \(cwd\) correct for \S+\?/,
     /^question: is port \d+ correct for \S+\?/,
     /^question: are the required variables \(.+\) defined in the environment\?$/,
-    /^question: is the boundary default real-read-only suitable\?/,
-    /^question: is the scenario name first-scenario suitable\?/,
-    /^question: enable tracing\?/,
   ]
 
   const questionKindsOk = (stdout: string): boolean =>
@@ -512,7 +453,7 @@ scenarios:
     return out.sort()
   }
 
-  test("Spring dir scaffolds 3 files (INERT scenarios + gitkeep + questions)", async () => {
+  test("Spring dir scaffolds ow.yaml (+ questions)", async () => {
     const root = await tempRoot()
     try {
       await makeGradle(root)
@@ -520,10 +461,7 @@ scenarios:
         await withEnv("DB_PASSWORD", undefined, async () => {
           const result = await runInit({ rootDir: root })
           expect(result.code).toBe(0)
-          expect(await readFile(join(root, "ow.scenarios.yaml"), "utf8")).toBe(EXPECTED_SCENARIOS)
-          expect(await readFile(join(root, ".ow", "replay", ".gitkeep"), "utf8")).toBe("")
-          expect(result.stdout).toContain(`wrote: ${join(root, "ow.scenarios.yaml")}`)
-          expect(result.stdout).toContain(`wrote: ${join(root, ".ow", "replay", ".gitkeep")}`)
+          expect(result.stdout).toContain(`wrote: ${join(root, "ow.yaml")}`)
           for (const question of EXPECTED_QUESTIONS) expect(result.stdout).toContain(question)
           expect(questionKindsOk(result.stdout)).toBe(true)
         })
@@ -533,48 +471,7 @@ scenarios:
     }
   })
 
-  test("scaffolded scenarios file refuses scenario run with the INERT contract (landed M6)", async () => {
-    const root = await tempRoot()
-    try {
-      await makeGradle(root)
-      const result = await runInit({ rootDir: root })
-      expect(result.code).toBe(0)
-      const file = join(root, "ow.scenarios.yaml")
-      const text = await readFile(file, "utf8")
-      expect(text.split("\n")[0]).toMatch(/^# INERT — ow scenarios --check passes/)
-      const { runScenariosCheck } = await import("./up-scenarios")
-      expect(await runScenariosCheck({ file, rootDir: root, json: false })).toBe(0)
-      // Landed M6: the singular runner refuses the INERT scaffold with the
-      // contract line (exit 2 naming the file), not a usage-routing error.
-      const io = capture()
-      let code = -1
-      try {
-        code = await run(["scenario", "run", "first-scenario", "--file", file])
-      } finally {
-        io.restore()
-      }
-      expect(code).toBe(2)
-      expect(io.err.join("\n")).toContain(`INERT: ${file}`)
-      // Positive control: the same file without the marker reaches the
-      // runner — an unknown scenario names the missing entry instead.
-      const live = join(root, "live.scenarios.yaml")
-      await writeFile(live, text.split("\n").slice(1).join("\n"), "utf8")
-      const io2 = capture()
-      let code2 = -1
-      try {
-        code2 = await run(["scenario", "run", "no-such-scenario", "--file", live])
-      } finally {
-        io2.restore()
-      }
-      expect(code2).toBe(2)
-      expect(io2.err.join("\n")).toContain("ow: scenario not found: no-such-scenario")
-      expect(io2.err.join("\n")).not.toContain("INERT:")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("empty dir writes nothing (no scenarios, no .ow), honest message", async () => {
+  test("empty dir writes nothing (no .ow), honest message", async () => {
     const root = await tempRoot()
     try {
       const before = await listAll(root)
@@ -587,26 +484,24 @@ scenarios:
     }
   })
 
-  test("rerun without --force exits 2 leaving all files byte-identical", async () => {
+  test("rerun without --force exits 2 leaving the file byte-identical", async () => {
     const root = await tempRoot()
     try {
       await makeGradle(root)
       expect((await runInit({ rootDir: root })).code).toBe(0)
       const yamlBefore = await readFile(join(root, "ow.yaml"), "utf8")
-      const scenariosBefore = await readFile(join(root, "ow.scenarios.yaml"), "utf8")
       const filesBefore = await listAll(root)
       const refused = await runInit({ rootDir: root })
       expect(refused.code).toBe(2)
       expect(refused.stderr).toContain("--force")
       expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(yamlBefore)
-      expect(await readFile(join(root, "ow.scenarios.yaml"), "utf8")).toBe(scenariosBefore)
       expect(await listAll(root)).toEqual(filesBefore)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("--force twice keeps exactly one .bak per yaml (overwritten)", async () => {
+  test("--force twice keeps exactly one .bak (overwritten)", async () => {
     const root = await tempRoot()
     try {
       await makeGradle(root)
@@ -615,43 +510,14 @@ scenarios:
       expect((await runInit({ rootDir: root, force: true })).code).toBe(0)
       const files = await listAll(root)
       expect(files.filter((name) => name === "ow.yaml.bak")).toHaveLength(1)
-      expect(files.filter((name) => name === "ow.scenarios.yaml.bak")).toHaveLength(1)
       expect(files.some((name) => name.endsWith(".bak.bak"))).toBe(false)
       expect(await readFile(join(root, "ow.yaml.bak"), "utf8")).toBe(await readFile(join(root, "ow.yaml"), "utf8"))
-      expect(await readFile(join(root, "ow.scenarios.yaml.bak"), "utf8")).toBe(
-        await readFile(join(root, "ow.scenarios.yaml"), "utf8"),
-      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("L4-scenarios: faulty scenarios render leaves both files and .baks untouched", async () => {
-    const root = await tempRoot()
-    try {
-      await makeGradle(root)
-      const original = "services:\n  old:\n    cmd: old-cmd\n"
-      await writeFile(join(root, "ow.yaml"), original)
-      const result = await runInit({ rootDir: root, force: true }, { renderScenarios: () => "version: 1\nscenarios:\n  - block list forbidden\n" })
-      expect(result.code).toBe(2)
-      expect(result.stderr).toContain("invalid scenarios skeleton")
-      expect(await readFile(join(root, "ow.yaml"), "utf8")).toBe(original)
-      for (const name of ["ow.yaml.bak", "ow.scenarios.yaml", "ow.scenarios.yaml.bak"]) {
-        let missing = true
-        try {
-          await readFile(join(root, name), "utf8")
-          missing = false
-        } catch {
-          missing = true
-        }
-        expect(missing).toBe(true)
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("never-activate: package.json byte-identical, file set bounded, argv inert", async () => {
+  test("never-activate: package.json byte-identical, file set bounded", async () => {
     const root = await tempRoot()
     try {
       const pkg = JSON.stringify({ scripts: { dev: "echo hi" } })
@@ -661,12 +527,7 @@ scenarios:
       expect(result.code).toBe(0)
       expect(await readFile(join(root, "package.json"), "utf8")).toBe(pkg)
       const added = (await listAll(root)).filter((name) => !before.includes(name))
-      expect(added.sort()).toEqual([".ow/replay/.gitkeep", "ow.scenarios.yaml", "ow.yaml"])
-      const text = await readFile(join(root, "ow.scenarios.yaml"), "utf8")
-      const liveArgv = text.split("\n").filter((line) => !line.trimStart().startsWith("#") && line.includes("argv:"))
-      expect(liveArgv).toHaveLength(1)
-      expect(liveArgv[0]).toContain("{id: inert, argv: [true]}")
-      expect(text).toContain('blocked:"<reason>"')
+      expect(added.sort()).toEqual(["ow.yaml"])
       expect(questionKindsOk(result.stdout)).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })

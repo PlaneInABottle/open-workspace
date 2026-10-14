@@ -43,11 +43,11 @@ describe("up-schema", () => {
     expect(String((error as Error).message)).toContain("line 5")
   })
 
-  test("unknown fields warn, never fail", () => {
-    const file = parseUpFile("services:\n  web:\n    cmd: pnpm dev\n    replicas: 3\nmystery: 1\n")
+  test("unknown top-level fields warn, never fail; unknown service options fail", () => {
+    const file = parseUpFile("services:\n  web:\n    cmd: pnpm dev\nmystery: 1\n")
     expect(file.services.length).toBe(1)
-    expect(file.warnings.map((w) => w.message)).toContain("web: unknown field ignored: replicas")
     expect(file.warnings.map((w) => w.message)).toContain("unknown top-level field ignored: mystery")
+    expect(() => parseUpFile("services:\n  web:\n    cmd: pnpm dev\n    replicas: 3\n")).toThrow(/web: unknown service option: replicas/)
   })
 
   test("conflicting aliases and missing cmd+logs error", () => {
@@ -215,24 +215,18 @@ describe("up-schema per-service env", () => {
     expect(padded.services[0].cmd).toEqual(["echo", "  spaced  "])
   })
 
-  test("unknown sibling fields still warn-and-ignore", () => {
-    const file = parseUpFile("services:\n  a:\n    cmd: x\n    replicas: 3\n    env: {A: b}\n")
-    expect(file.warnings.map((w) => w.message)).toEqual(["a: unknown field ignored: replicas"])
+  test("unknown sibling fields are refused (fail-loud, masked key echo)", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    replicas: 3\n    env: {A: b}\n")).toThrow(/a: unknown service option: replicas/)
   })
 })
 
-describe("trace reserved port", () => {
-  const withTracePort = (port: string): string => `trace:\n  port: ${port}\nservices:\n  a:\n    cmd: x\n`
-
-  test("4318 is rejected naming the dashboard port", () => {
-    expect(() => parseUpFile(withTracePort("4318"))).toThrow(/4318/)
-    expect(() => parseUpFile(withTracePort("4318"))).toThrow(/dashboard/)
-  })
-
-  test("4319 and other ports are unaffected", () => {
-    expect(parseUpFile(withTracePort("4319")).trace).toEqual({ enabled: true, port: 4319 })
-    expect(parseUpFile(withTracePort("4320")).trace?.port).toBe(4320)
-    expect(parseUpFile("services:\n  a:\n    cmd: x\n").trace).toBeUndefined()
+describe("legacy trace block", () => {
+  test("a trace: block warns as unknown and is ignored (no listener, no compat)", () => {
+    const file = parseUpFile("trace:\n  port: 4319\nservices:\n  a:\n    cmd: x\n")
+    expect("trace" in file).toBe(false)
+    expect(file.services).toHaveLength(1)
+    expect(file.warnings.map((w) => w.message)).toContain("unknown top-level field ignored: trace")
+    expect(parseUpFile("services:\n  a:\n    cmd: x\n").warnings).toEqual([])
   })
 })
 
@@ -260,59 +254,39 @@ describe("required-env declaration", () => {
   })
 })
 
-describe("depends_on ordering", () => {
-  test("dep-less files keep exact YAML order", () => {
+describe("retired depends_on + unknown service options fail loud", () => {
+  test("depends_on is rejected as an unknown service option (no ordering, no compat)", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [b]\n  b:\n    cmd: x\n")).toThrow(
+      /a: unknown service option: depends_on/,
+    )
+  })
+
+  test("any other unknown service key is rejected the same way", () => {
+    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    zzz: 1\n")).toThrow(/a: unknown service option: zzz/)
+  })
+
+  test("hostile key text is masked in the refusal (fake canary, never raw)", () => {
+    let message = ""
+    try {
+      parseUpFile("services:\n  a:\n    cmd: x\n    token=hunter2: 1\n")
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain("unknown service option")
+    expect(message).not.toContain("hunter2")
+    expect(message).toContain("token=***")
+  })
+
+  test("valid manifests keep exact YAML order with no warnings", () => {
     const file = parseUpFile("services:\n  b:\n    cmd: x\n  a:\n    cmd: x\n")
     expect(file.services.map((svc) => svc.name)).toEqual(["b", "a"])
-    expect(file.services[0].dependsOn).toBeUndefined()
     expect(file.warnings).toEqual([])
   })
 
-  test("scrambled declarations spawn dependencies first, stable otherwise", () => {
-    const file = parseUpFile(
-      "services:\n  c:\n    cmd: x\n    depends_on: [a]\n  b:\n    cmd: x\n  a:\n    cmd: x\n",
-    )
-    expect(file.services.map((svc) => svc.name)).toEqual(["b", "a", "c"])
-    expect([...(file.services[2].dependsOn ?? [])]).toEqual(["a"])
-  })
-
-  test("docs example: web-live waits its turn after configuration", () => {
-    const file = parseUpFile(
-      "services:\n  web-live:\n    cmd: x\n    depends_on: [configuration]\n  configuration:\n    cmd: x\n",
-    )
-    expect(file.services.map((svc) => svc.name)).toEqual(["configuration", "web-live"])
-  })
-
-  test("diamond resolves with YAML stability among siblings", () => {
-    const file = parseUpFile(
-      "services:\n  d:\n    cmd: x\n    depends_on: [b, c]\n  c:\n    cmd: x\n    depends_on: [a]\n  b:\n    cmd: x\n    depends_on: [a]\n  a:\n    cmd: x\n",
-    )
-    expect(file.services.map((svc) => svc.name)).toEqual(["a", "c", "b", "d"])
-  })
-
-  test("unknown dep names the service and the missing name", () => {
-    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [missing]\n")).toThrow(/a: unknown service inside depends_on: missing/)
-  })
-
-  test("self-dep fails", () => {
-    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [a]\n")).toThrow(/a: depends_on cannot reference itself/)
-  })
-
-  test("two-cycle names its members", () => {
-    const text = "services:\n  a:\n    cmd: x\n    depends_on: [b]\n  b:\n    cmd: x\n    depends_on: [a]\n"
-    expect(() => parseUpFile(text)).toThrow(/depends_on is circular: a, b/)
-  })
-
-  test("non-list, bad names and oversize lists are schema errors", () => {
-    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: api\n")).toThrow(/depends_on must be a list/)
-    expect(() => parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [ok!]\n")).toThrow(/invalid service name/)
-    const many = Array.from({ length: 33 }, (_, i) => `s${i}`).join(", ")
-    expect(() => parseUpFile(`services:\n  a:\n    cmd: x\n    depends_on: [${many}]\n`)).toThrow(/at most 32/)
-  })
-
-  test("depends_on is enumerable: names are not secrets and listings show them", () => {
-    const file = parseUpFile("services:\n  a:\n    cmd: x\n    depends_on: [b]\n  b:\n    cmd: x\n")
-    expect(JSON.parse(JSON.stringify(file.services[1]))).toMatchObject({ name: "a", dependsOn: ["b"] })
+  test("accepted alias spellings still parse (command/working_dir/ports)", () => {
+    const file = parseUpFile("services:\n  a:\n    command: x\n    working_dir: .\n    ports: [3000]\n")
+    expect(file.services).toHaveLength(1)
+    expect(file.warnings).toEqual([])
   })
 })
 

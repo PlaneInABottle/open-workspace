@@ -6,7 +6,7 @@
 import { lstat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import type { TraceConfig, UpService } from "./up-schema"
+import type { UpService } from "./up-schema"
 import { decodeUtf8Fatal, parseUpFile } from "./up-schema"
 import { maskCmdShape } from "./up-reconcile"
 import { maskSecrets } from "./up-evidence"
@@ -14,8 +14,6 @@ import type { ExecFn, Provenance } from "./up-provenance"
 import { recordProvenance } from "./up-provenance"
 import { completeRequest, scanRequests, sweepStaleResults, type ServiceRequest, type ServiceResult } from "./up-requests"
 import { appendLogLine, flushUpLogs } from "./up-logs"
-import { startTraceReceiver } from "./trace-receiver"
-import { tracePaths } from "./trace-store"
 import { clearLock, classifySupervisorFile, ensureUpStateDir, isLivePid, readLock, readLstart, readOwnBuildSidecar, readSupervisorState, upPaths, warnWriteFailed, writeSupervisorState, ARTIFACT_DIGESTS_MAX } from "./up-state"
 import type { UpBuildInfo, UpServiceState } from "./up-state"
 import { pickArtifactEntries } from "./up-probe"
@@ -201,10 +199,6 @@ export type UpRunOptions = {
    * runner captures boot itself — never absent). Per-service `startedAt`
    * stays per-process; only the top level is the boot clock. */
   supervisorStartedAt?: string
-  /** When present and enabled, an OTLP/HTTP receiver runs for the
-   * supervisor's lifetime. Absent → tracing is a no-op (no listener,
-   * no `.ow/traces/`, no warnings). Failures are warn-only (D7). */
-  trace?: TraceConfig
 };
 
 /** Validate all cwds first (zero spawns on failure), probe ports (warn-only),
@@ -226,13 +220,6 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
   const cwds = new Map<string, string | undefined>()
   for (const svc of services) {
     cwds.set(svc.name, await resolveServiceCwd(options.rootDir, svc.cwd))
-  }
-  // Trace receiver: embedded in the supervisor (D1), started before children
-  // so early spans are not missed. Any failure refuses warn-only (D7).
-  let traceReceiver: Awaited<ReturnType<typeof startTraceReceiver>> = null
-  if (options.trace?.enabled === true) {
-    const paths = tracePaths(options.rootDir)
-    traceReceiver = await startTraceReceiver({ tracesDir: paths.tracesDir, spansFile: paths.spansFile, port: options.trace.port })
   }
   // Build identity for supervisor state: explicit option wins, otherwise
   // the running binary's sidecar (absent under dev/test runners → nothing
@@ -449,10 +436,6 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
     process.off("SIGTERM", onSignal)
   }
   await stop()
-  // The receiver's lifetime equals the supervisor's: shut down with the
-  // children, before the log flush.
-  await traceReceiver?.stop().catch(() => undefined)
-  traceReceiver = null
   if (logsDir) await flushUpLogs()
   await persist()
   const spontaneous = children.filter(
@@ -467,7 +450,7 @@ export const runSupervised = async (services: UpService[], options: UpRunOptions
  * `logsEnded`). Name-keyed union: on-disk-only services are kept (never
  * dropped), defined-wins per field, and process-bound facts (`exitCode`/
  * `exitedAt`, `logsEnded`, `lstartUnknown`, `logsPid`/`logsLstart`,
- * `portConflict`, `envNames`/`dependsOn`) are only inherited when the
+ * `portConflict`, `envNames`) are only inherited when the
  * process identity (pid+lstart) matches — a respawned service never
  * inherits its predecessor's settlement, stale liveness flags, recycled
  * handles, or phantom config (the latter would fake a `config-mismatch`
@@ -488,7 +471,7 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
     // service starts clean, or stale flags/handles/config would haunt the
     // new process (resurrected settlement, phantom `lstartUnknown`, a
     // recycled `logsPid`, a `portConflict` that predates the new bind, or
-    // `envNames`/`dependsOn` faking a `config-mismatch` drift in reconcile,
+    // `envNames` faking a `config-mismatch` drift in reconcile,
     // `provenance` haunting a new pid with the old process's checkout, or
     // `lastReadiness` certifying a process that never passed a probe).
     const staleOnRespawn: ReadonlySet<keyof UpServiceState> = new Set([
@@ -500,7 +483,6 @@ export const mergePreservingSettled = (onDisk: UpServiceState[], fresh: UpServic
       "logsLstart",
       "portConflict",
       "envNames",
-      "dependsOn",
       "provenance",
       "lastReadiness",
       "artifactDigests",
@@ -574,7 +556,6 @@ const toUnitState = (svc: UpService, main: SpawnedChild | undefined, tail: LogTa
     ...(main?.exit ? { exitCode: main.exit.code ?? -1, exitedAt: new Date().toISOString() } : {}),
     ...(primary.lstart === "" ? { lstartUnknown: true as const } : {}),
     ...(envNames === undefined ? {} : { envNames }),
-    ...(svc.dependsOn === undefined ? {} : { dependsOn: [...svc.dependsOn] }),
     ...(provenance === undefined ? {} : { provenance }),
     ...(lastReadiness === undefined ? {} : { lastReadiness: { ...lastReadiness } }),
     ...(artifactDigests === undefined ? {} : { artifactDigests: { ...artifactDigests } }),

@@ -8,16 +8,10 @@
  * `parseUpFile` + `missingRequiredEnv` and reported (reuse, don't
  * reimplement validation). */
 
-import { lstat, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { lstat, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import { formatUpWarnings, missingRequiredEnv, parseUpFile } from "./up-schema"
-import { OTEL_ENDPOINT, TRACE_DEFAULT_PORT } from "./trace-store"
-import { parseScenarios, SCENARIOS_FILE_NAME } from "./up-scenarios"
-
-/** Shared OTLP env body; java/python differ by one leading fragment only. */
-const OTEL_BASE_ENV = (service: string): string =>
-  `OTEL_SERVICE_NAME: ${service}, OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_ENDPOINT}", OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf, OTEL_METRICS_EXPORTER: none, OTEL_LOGS_EXPORTER: none`
 
 const FILE_CAP = 64 * 1024
 const MAX_PY_FILES = 200
@@ -66,7 +60,7 @@ export type InitDetection = {
   compose: string[]
 }
 
-export type InitOptions = { rootDir: string; force?: boolean; tracing?: boolean }
+export type InitOptions = { rootDir: string; force?: boolean }
 export type InitResult = { code: number; stdout: string; stderr: string }
 
 const readCapped = async (path: string, cap = FILE_CAP): Promise<string | null> => {
@@ -410,34 +404,17 @@ export const detectRepo = async (rootDir: string): Promise<InitDetection> => {
   return { services, skipped, compose: await detectCompose(rootDir, entries) }
 }
 
-const JAVA_OTEL_ENV = (service: string): string =>
-  `{JAVA_TOOL_OPTIONS: "-javaagent:.ow/otel/opentelemetry-javaagent.jar", ${OTEL_BASE_ENV(service)}}`
-
-const PYTHON_OTEL_ENV = (service: string): string => `{${OTEL_BASE_ENV(service)}}`
-
-const tracedCmd = (service: InitService): string => {
-  if (service.kind === "python") {
-    // uv resolves the instrument binary inside its own env; pip/venv setups
-    // carry it next to python. Checklist names the install when missing.
-    return service.cmd.startsWith("uv run ") ? service.cmd.replace(/^uv run /, "uv run opentelemetry-instrument ") : `opentelemetry-instrument ${service.cmd}`
-  }
-  return service.cmd
-}
-
-export const renderInitYaml = (detection: InitDetection, opts: { tracing: boolean }): string => {
+export const renderInitYaml = (detection: InitDetection): string => {
   const lines: string[] = []
   if (detection.skipped.length > 0) {
     lines.push("# ow init notes (weak signals, not written to the file):")
     for (const note of detection.skipped) lines.push(`# - ${note}`)
   }
-  if (opts.tracing) lines.push(`trace:\n  port: ${TRACE_DEFAULT_PORT}`)
   lines.push("services:")
   for (const service of detection.services) {
     lines.push(`  ${service.name}:`)
-    lines.push(`    cmd: ${service.kind === "python" && opts.tracing ? tracedCmd(service) : service.cmd}`)
+    lines.push(`    cmd: ${service.cmd}`)
     if (service.port !== undefined) lines.push(`    port: ${service.port}`)
-    if (opts.tracing && service.kind === "java") lines.push(`    env: ${JAVA_OTEL_ENV(service.name)}`)
-    if (opts.tracing && service.kind === "python") lines.push(`    env: ${PYTHON_OTEL_ENV(service.name)}`)
     if (service.requiredEnv.length > 0) lines.push(`    required-env: [${service.requiredEnv.join(", ")}]`)
   }
   return `${lines.join("\n")}\n`
@@ -447,69 +424,15 @@ export const renderInitYaml = (detection: InitDetection, opts: { tracing: boolea
  * nothing and gets `renderInitYaml`; tests may inject a faulty renderer to
  * force a validation failure and assert the disk was untouched. */
 export type InitRenderInject = {
-  renderYaml?: (detection: InitDetection, opts: { tracing: boolean }) => string
-  renderScenarios?: (detection: InitDetection) => string
+  renderYaml?: (detection: InitDetection) => string
 }
 
-/** First-scenario default name (the scenario-name question's default answer). */
-export const INIT_DEFAULT_SCENARIO = "first-scenario"
-
-/** INERT marker (exact): `ow scenarios --check` passes the file while the
- * M6 singular runner refuses it until real probes are uncommented. */
-export const INIT_INERT_MARKER = "# INERT — ow scenarios --check passes, ow scenario run refuses until uncommented"
-
-/** INERT marker scan (M-d): exact marker on any line before the `scenarios:`
- * key (header block). First-line-only missed markers pushed below by user
- * comments; whole-file scan risks matching probe-embedded text. All four
- * refusing verbs (run/record/contract/env) share this helper. */
-export const hasInertMarker = (text: string): boolean => {
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim()
-    if (trimmed === INIT_INERT_MARKER) return true
-    if (/^scenarios\s*:/.test(trimmed)) return false
-  }
-  return false
-}
-
-/** Inert placeholder probe: keeps `--check` green without executable
- * meaning. `true` prints no JSON, so even an unmarked run would fail
- * closed (never false-green) - but the marker refuses first. */
-const INIT_INERT_PROBE = "{id: inert, argv: [true]}"
-
-/** Scaffold `ow.scenarios.yaml`: version + one INERT scenario over the
- * detected services (new-taxonomy default boundary, commented real probes,
- * quoted blocked example in the commented matrix). Pure render; the caller
- * validates with the real `parseScenarios` before touching disk. */
-export const renderScenariosYaml = (detection: InitDetection): string => {
-  const names = detection.services.map((service) => service.name)
-  const first = detection.services[0]
-  const ported = detection.services.find((service) => service.port !== undefined)
-  const lines: string[] = [
-    INIT_INERT_MARKER,
-    "version: 1",
-    "scenarios:",
-    `  ${INIT_DEFAULT_SCENARIO}:`,
-    `    services: [${names.join(", ")}]`,
-    "    boundaries: [real-read-only]",
-  ]
-  if (ported?.port !== undefined) lines.push(`    targets: [http://127.0.0.1:${ported.port}/]`)
-  if (first !== undefined) {
-    lines.push(`    # probes: [{id: ready, argv: [./scripts/ready-${first.name}.sh], timeout: 10s}]`)
-  }
-  lines.push(`    probes: [${INIT_INERT_PROBE}]`)
-  lines.push(`    checkpoints: [${names.map((name) => `${name}-ready`).join(", ")}]`)
-  lines.push("# Boundary matrix (M1 new taxonomy — uncomment one per scenario):")
-  lines.push("#   real-read-only | real-state-changing | network-deny | subscribed | blocked:\"<reason>\" | unverified")
-  lines.push("#   (legacy real/local/fake/captured-response/test dual-read with a warning)")
-  return `${lines.join("\n")}\n`
-}
-
-/** Bounded question catalog (<=6 fixed kinds, `question:`-prefixed checklist, never
- * interactive): cwd/port confirms per service, required-env names once,
- * boundary default + scenario name once, tracing opt-in when off. Free-text
- * answers may only ever fill names/ports, never commands (no answer
- * mechanism exists in this milestone - the catalog freezes the surface). */
-const initQuestions = (detection: InitDetection, opts: { tracing: boolean }): string[] => {
+/** Bounded question catalog (<=3 fixed kinds, `question:`-prefixed checklist, never
+ * interactive): cwd/port confirms per service, required-env names once.
+ * Free-text answers may only ever fill names/ports,
+ * never commands (no answer mechanism exists in this milestone - the catalog
+ * freezes the surface). */
+const initQuestions = (detection: InitDetection): string[] => {
   const out: string[] = []
   for (const service of detection.services) {
     out.push(`question: is the working directory (cwd) correct for ${service.name}? If not, fix it in ow.yaml.`)
@@ -523,19 +446,12 @@ const initQuestions = (detection: InitDetection, opts: { tracing: boolean }): st
   if (requiredNames.length > 0) {
     out.push(`question: are the required variables (${requiredNames.join(", ")}) defined in the environment?`)
   }
-  out.push("question: is the boundary default real-read-only suitable? If not, change it in ow.scenarios.yaml.")
-  out.push(`question: is the scenario name ${INIT_DEFAULT_SCENARIO} suitable? If not, change it in ow.scenarios.yaml.`)
-  if (opts.tracing !== true) {
-    out.push("question: enable tracing? If so, re-run with --tracing.")
-  }
   return out
 }
 
 export const runInit = async (options: InitOptions, inject?: InitRenderInject): Promise<InitResult> => {
   const rootDir = options.rootDir
   const yamlPath = join(rootDir, "ow.yaml")
-  const scenariosPath = join(rootDir, SCENARIOS_FILE_NAME)
-  const replayKeepPath = join(rootDir, ".ow", "replay", ".gitkeep")
   let rootOk = false
   try {
     const info = await lstat(rootDir)
@@ -565,67 +481,29 @@ export const runInit = async (options: InitOptions, inject?: InitRenderInject): 
   } catch {
     yamlExisted = false
   }
-  let scenariosExisted = false
-  try {
-    await readFile(scenariosPath, "utf8")
-    scenariosExisted = true
-  } catch {
-    scenariosExisted = false
+  if (yamlExisted && options.force !== true) {
+    return { code: 2, stdout: "", stderr: "ow: ow.yaml already exists — use --force to overwrite" }
   }
-  if ((yamlExisted || scenariosExisted) && options.force !== true) {
-    const existing = [
-      ...(yamlExisted ? ["ow.yaml"] : []),
-      ...(scenariosExisted ? [SCENARIOS_FILE_NAME] : []),
-    ].join(", ")
-    return { code: 2, stdout: "", stderr: `ow: ${existing} already exists — use --force to overwrite` }
-  }
-  // Validate BEFORE touching disk (L4, both files): render -> parse -> only
-  // then backups + writes. A validation failure leaves both originals and
-  // creates no .bak and no .gitkeep.
+  // Validate BEFORE touching disk (L4): render -> parse -> only
+  // then backup + write. A validation failure leaves the original and
+  // creates no .bak.
   const renderYaml = inject?.renderYaml ?? renderInitYaml
-  const text = renderYaml(detection, { tracing: options.tracing === true })
+  const text = renderYaml(detection)
   let parsed: ReturnType<typeof parseUpFile>
   try {
     parsed = parseUpFile(text)
   } catch (error) {
     return { code: 2, stdout: "", stderr: `ow: invalid skeleton: ${error instanceof Error ? error.message : String(error)}` }
   }
-  const renderScenarios = inject?.renderScenarios ?? renderScenariosYaml
-  const scenariosText = renderScenarios(detection)
-  try {
-    parseScenarios(scenariosText)
-  } catch (error) {
-    return { code: 2, stdout: "", stderr: `ow: invalid scenarios skeleton: ${error instanceof Error ? error.message : String(error)}` }
-  }
-  try {
-    await mkdir(join(rootDir, ".ow", "replay"), { recursive: true, mode: 0o700 })
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: `ow: cannot open .ow/replay: ${error instanceof Error ? error.message : String(error)}` }
-  }
   if (yamlExisted) {
     const backup = join(rootDir, "ow.yaml.bak")
     await unlink(backup).catch(() => undefined)
     await rename(yamlPath, backup)
   }
-  if (scenariosExisted) {
-    const backup = `${scenariosPath}.bak`
-    await unlink(backup).catch(() => undefined)
-    await rename(scenariosPath, backup)
-  }
   try {
     await writeFile(yamlPath, text, { encoding: "utf8" })
   } catch (error) {
     return { code: 1, stdout: "", stderr: `ow: cannot write ow.yaml: ${error instanceof Error ? error.message : String(error)}` }
-  }
-  try {
-    await writeFile(scenariosPath, scenariosText, { encoding: "utf8" })
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: `ow: cannot write ${SCENARIOS_FILE_NAME}: ${error instanceof Error ? error.message : String(error)}` }
-  }
-  try {
-    await writeFile(replayKeepPath, "", { encoding: "utf8" })
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: `ow: cannot write .ow/replay/.gitkeep: ${error instanceof Error ? error.message : String(error)}` }
   }
   const missing = missingRequiredEnv(parsed.services)
   const missingNames = [...new Set(missing.flatMap((entry) => entry.vars))]
@@ -640,14 +518,7 @@ export const runInit = async (options: InitOptions, inject?: InitRenderInject): 
   }
   const requiredNames = [...new Set(detection.services.flatMap((service) => service.requiredEnv))]
   if (requiredNames.length > 0) checklist.push(`up will not run until required vars are set: ${requiredNames.join(", ")}`)
-  const hasJava = detection.services.some((service) => service.kind === "java")
-  if (options.tracing === true && hasJava) {
-    checklist.push("mkdir -p .ow/otel && curl -L -o .ow/otel/opentelemetry-javaagent.jar https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar")
-  }
   for (const line of detection.compose) checklist.push(line)
-  if (detection.services.some((service) => service.kind === "node")) {
-    checklist.push("web tracing needs code — env is not enough; see the tracing.ts recipe (cli/README.md)")
-  }
   const stderrLines = formatUpWarnings(parsed.warnings)
   return {
     code: 0,
@@ -655,9 +526,7 @@ export const runInit = async (options: InitOptions, inject?: InitRenderInject): 
       `wrote: ${yamlPath} (${parsed.services.length} services: ${parsed.services.map((s) => s.name).join(", ")})`,
       validity,
       ...checklist,
-      `wrote: ${scenariosPath} (1 scenario: ${INIT_DEFAULT_SCENARIO} — INERT)`,
-      `wrote: ${replayKeepPath}`,
-      ...initQuestions(detection, { tracing: options.tracing === true }),
+      ...initQuestions(detection),
     ].join("\n"),
     stderr: stderrLines.join("\n"),
   }

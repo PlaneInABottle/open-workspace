@@ -88,15 +88,27 @@ describe("up gitignore integration", () => {
     }
   })
 
-  test("up --check still exits 0 and trace port 4318 exits 2 naming the dashboard port", async () => {
+  test("up --check still exits 0; a legacy trace: block warns as unknown and is ignored", async () => {
     const root = await tempRoot()
     try {
       const plain = join(root, "plain.yaml")
       await writeFile(plain, "services:\n  a:\n    cmd: x\n")
       expect(await run(["up", "--check", "--file", plain])).toBe(0)
-      const reserved = join(root, "reserved.yaml")
-      await writeFile(reserved, "trace:\n  port: 4318\nservices:\n  a:\n    cmd: x\n")
-      expect(await run(["up", "--check", "--file", reserved])).toBe(2)
+      const legacy = join(root, "legacy.yaml")
+      await writeFile(legacy, "trace:\n  port: 4319\nservices:\n  a:\n    cmd: x\n")
+      const err: string[] = []
+      const savedError = console.error
+      console.error = (...args: unknown[]): void => {
+        err.push(args.map(String).join(" "))
+      }
+      let code = -1
+      try {
+        code = await run(["up", "--check", "--file", legacy])
+      } finally {
+        console.error = savedError
+      }
+      expect(code).toBe(0)
+      expect(err.join("\n")).toContain("unknown top-level field ignored: trace")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -187,10 +199,6 @@ describe("resolveWorkspaceRoot", () => {
 })
 
 describe("subdir reads resolve upward", () => {
-  const TRACE_YAML = "trace:\n  port: 4319\nservices:\n  a:\n    cmd: x\n"
-  const spanRow = (name: string): string =>
-    JSON.stringify({ t: "2026-10-08T00:00:00.000Z", traceId: "a1b2c3d4e5f60718293a4b5c6d7e8f90", spanId: "1111111111111111", parentSpanId: null, service: "api", name, kind: "server", startNano: "1000000000", endNano: "1012000000", durMs: 12, status: "ok", attrs: {} })
-
   const captureLog = async (fn: () => Promise<number>): Promise<{ code: number; out: string }> => {
     const seen: string[] = []
     const savedLog = console.log
@@ -205,71 +213,14 @@ describe("subdir reads resolve upward", () => {
     }
   }
 
-  test("trace from a subdirectory lists the enclosing workspace spans", async () => {
-    const root = await tempRoot()
-    try {
-      const sub = join(root, "sub")
-      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
-      await mkdir(sub, { recursive: true })
-      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
-      await writeFile(join(root, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /orders")}\n`, { mode: 0o600 })
-      const { code, out } = await captureLog(() => withCwd(sub, () => run(["trace", "--min-spans", "1"])))
-      expect(code).toBe(0)
-      expect(out).toContain("GET /orders")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("doctor trace line resolves upward to the enclosing ow.yaml", async () => {
-    const root = await tempRoot()
-    try {
-      const sub = join(root, "sub")
-      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
-      await mkdir(sub, { recursive: true })
-      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
-      await writeFile(join(root, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /orders")}\n`, { mode: 0o600 })
-      const { out } = await captureLog(() => withCwd(sub, () => run(["doctor", "--json"])))
-      const checks = (JSON.parse(out) as { checks: { name: string; detail: string }[] }).checks
-      const trace = checks.find((line) => line.name === "trace")
-      expect(trace?.detail).toContain("open")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("explicit --file beats an enclosing .ow", async () => {
-    const root = await tempRoot()
-    try {
-      const sub = join(root, "sub")
-      const other = join(root, "other")
-      await mkdir(join(root, ".ow", "traces"), { recursive: true, mode: 0o700 })
-      await mkdir(join(other, ".ow", "traces"), { recursive: true, mode: 0o700 })
-      await mkdir(sub, { recursive: true })
-      await writeFile(join(root, "ow.yaml"), TRACE_YAML)
-      await writeFile(join(other, "ow.yaml"), TRACE_YAML)
-      await writeFile(join(root, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /from-root")}\n`, { mode: 0o600 })
-      await writeFile(join(other, ".ow", "traces", "spans.jsonl"), `${spanRow("GET /from-other")}\n`, { mode: 0o600 })
-      const { out } = await captureLog(() => withCwd(sub, () => run(["trace", "--min-spans", "1", "--file", join(other, "ow.yaml")])))
-      expect(out).toContain("GET /from-other")
-      expect(out).not.toContain("GET /from-root")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   test("absent-everywhere names cwd plus directive, exits unchanged", async () => {
     const root = await tempRoot()
     try {
       expect(await resolveWorkspaceRoot(root)).toBe(root)
-      const trace = await captureLog(() => withCwd(root, () => run(["trace"])))
       const ps = await captureLog(() => withCwd(root, () => run(["ps"])))
-      expect(trace.code).toBe(0)
       expect(ps.code).toBe(0)
-      for (const out of [trace.out, ps.out]) {
-        expect(out).toContain(root)
-        expect(out).toContain("run from the workspace root")
-      }
+      expect(ps.out).toContain(root)
+      expect(ps.out).toContain("run from the workspace root")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

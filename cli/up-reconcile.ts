@@ -219,11 +219,6 @@ export const reconcileOne = (input: ReconcileInput): ReconcileDrift | null => {
   if (running.envNames !== undefined && JSON.stringify(expectedEnv) !== JSON.stringify(runningEnv)) {
     diffs["env"] = { expected: expectedEnv, running: runningEnv }
   }
-  const expectedDeps = [...(expected.dependsOn ?? [])].sort()
-  const runningDeps = [...(running.dependsOn ?? [])].sort()
-  if (running.dependsOn !== undefined && JSON.stringify(expectedDeps) !== JSON.stringify(runningDeps)) {
-    diffs["depends_on"] = { expected: expectedDeps, running: runningDeps }
-  }
   if (Object.keys(diffs).length > 0) {
     return { service: name, kind: "config-mismatch", expected: diffs, running: { pid: running.pid }, hint: `ow restart ${name}` }
   }

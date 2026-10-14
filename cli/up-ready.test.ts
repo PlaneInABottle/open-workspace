@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import { waitForReady } from "./up-ready"
+import { parseWaitDuration, waitForReady } from "./up-ready"
 
 /** Deterministic clock: `sleep` advances it, so timeout math is exact. */
 const fakeClock = (): { now: () => number; sleep: (ms: number) => Promise<void> } => {
@@ -153,5 +153,18 @@ describe("waitForReady", () => {
       exited: async () => new Map(),
     })
     expect(results).toEqual([{ name: "api", port: 1001, status: "ready", waitedSec: 0 }])
+  })
+})
+
+describe("parseWaitDuration (moved from the retired trace verb; the runtime wait stays)", () => {
+  test("maps units with a 5m cap", () => {
+    expect(parseWaitDuration("15s")).toBe(15_000)
+    expect(parseWaitDuration("1m")).toBe(60_000)
+    expect(parseWaitDuration("5m")).toBe(300_000)
+    expect(parseWaitDuration("0s")).toBeNull()
+    expect(parseWaitDuration("6m")).toBeNull()
+    expect(parseWaitDuration("1h")).toBeNull()
+    expect(parseWaitDuration("bogus")).toBeNull()
+    expect(parseWaitDuration("15")).toBeNull()
   })
 })

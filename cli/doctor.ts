@@ -3,7 +3,6 @@ import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
 import { classifyLock, classifySupervisorFile, readOwnBuildSidecar, readSupervisorState, upPaths, type UpBuildInfo } from "./up-state"
-import { checkTraceDoctor } from "./trace-cli"
 import { DEFAULT_DB_PATH, DEFAULT_LOG_PATH } from "./join"
 
 export { DEFAULT_DB_PATH, DEFAULT_LOG_PATH }
@@ -79,7 +78,7 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
     lines.push({ name: "db", ok: false, detail: `cannot open: ${String(error).slice(0, 120)}` })
   }
   // Informational only: never feeds the `ow doctor` exit rule (cli.ts filters
-  // `up` and `trace` out). ok:true solely for a lock-verified live supervisor.
+  // `up` out). ok:true solely for a lock-verified live supervisor.
   // A build mismatch appends a bounded refresh hint; any compare failure
   // stays silent (missing sidecars must not fail or reword doctor).
   // Polish (friction 9): every non-live `up` detail ends with the
@@ -109,12 +108,6 @@ export const doctor = async (options: { logPath?: string; dbPath?: string; upRoo
     }
   } catch (error) {
     lines.push({ name: "up", ok: false, detail: `unreadable: ${String(error).slice(0, 80)}${reconcileHint}` })
-  }
-  try {
-    const check = await checkTraceDoctor(options.upRoot ?? process.cwd())
-    lines.push({ name: "trace", ok: check.ok, detail: check.detail })
-  } catch (error) {
-    lines.push({ name: "trace", ok: false, detail: `unreadable: ${String(error).slice(0, 80)}` })
   }
   return lines
 }
@@ -178,5 +171,5 @@ export const formatIdentity = (identity: DoctorIdentity): string[] => {
 if (import.meta.main) {
   const results = await doctor()
   console.log(formatDoctor(results))
-  if (results.filter((l) => l.name !== "up" && l.name !== "trace").some((l) => !l.ok)) process.exit(1)
+  if (results.filter((l) => l.name !== "up").some((l) => !l.ok)) process.exit(1)
 }

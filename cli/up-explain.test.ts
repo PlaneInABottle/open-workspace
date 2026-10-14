@@ -57,7 +57,7 @@ const liveView = (name: string, pid: number, overrides: Partial<PsServiceView> =
 const recordOf = (entry: Record<string, unknown>): UpServiceState => entry as unknown as UpServiceState
 
 describe("explainServices (saf)", () => {
-  test("matching service: no diff, M3 reason (ported + UP)", () => {
+  test("matching service, no probe defined: port-only reason (no probe configured)", () => {
     const items = explainServices({
       rootDir: "/r",
       expected: [{ name: "a", cmd: "sleep 30", cwd: ".", port: 3000 }],
@@ -68,7 +68,56 @@ describe("explainServices (saf)", () => {
     expect(items).toHaveLength(1)
     expect(items[0].explanation.diffs).toEqual([])
     expect(items[0].explanation.running).toMatchObject({ lstart: "matched" })
-    expect(items[0].explanation.reason).toContain("add an M3 probe")
+    expect(items[0].explanation.reason).toBe("running (no project probe configured — port-only evidence)")
+  })
+
+  test("probe defined but unmeasured: configured-not-measured reason", () => {
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30", cwd: ".", port: 3000, readiness: { probe: ["./ready.sh"], timeout: "10s", needsPort: true } }],
+      views: [liveView("a", 11, { port: 3000, listening: true })],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", cwd: ".", port: 3000 })],
+      snapshotOk: true,
+    })
+    expect(items[0].explanation.reason).toBe("running (project probe configured, not yet measured)")
+  })
+
+  test("probe defined, last recorded pass: recorded-pass reason (not fresh health)", () => {
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30", cwd: ".", port: 3000, readiness: { probe: ["./ready.sh"], timeout: "10s", needsPort: true } }],
+      views: [liveView("a", 11, { port: 3000, listening: true })],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", cwd: ".", port: 3000, lastReadiness: { ok: true, at: "2026-10-14T00:00:00Z" } })],
+      snapshotOk: true,
+    })
+    expect(items[0].explanation.reason).toBe("running (last recorded probe passed — recorded state, not fresh health)")
+  })
+
+  test("probe defined, last recorded fail: recorded-fail reason with safe actions", () => {
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30", cwd: ".", port: 3000, readiness: { probe: ["./ready.sh"], timeout: "10s", needsPort: true } }],
+      views: [liveView("a", 11, { port: 3000, listening: true })],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", cwd: ".", port: 3000, lastReadiness: { ok: false, note: "closed", at: "2026-10-14T00:00:00Z" } })],
+      snapshotOk: true,
+    })
+    expect(items[0].explanation.reason).toBe("running (last recorded probe failed → inspect with ow logs a, refresh with ow restart a)")
+  })
+
+  test("hostile recorded note never reaches the reason (static strings only)", () => {
+    const secret = "hunter2-secret-note"
+    const items = explainServices({
+      rootDir: "/r",
+      expected: [{ name: "a", cmd: "sleep 30", cwd: ".", port: 3000, readiness: { probe: ["./ready.sh"], timeout: "10s", needsPort: true } }],
+      views: [liveView("a", 11, { port: 3000, listening: true })],
+      records: [recordOf({ name: "a", pid: 11, lstart: "l", startedAt: "t", cmd: "sleep 30", cwd: ".", port: 3000, lastReadiness: { ok: false, note: secret, at: "2026-10-14T00:00:00Z" } })],
+      snapshotOk: true,
+    })
+    expect(items[0].explanation.reason).toBe("running (last recorded probe failed → inspect with ow logs a, refresh with ow restart a)")
+    expect(items[0].explanation.reason).not.toContain(secret)
+    // The recorded note stays in its existing readiness field (unchanged);
+    // only the reason must be static.
+    expect(items[0].explanation.readiness.last).toMatchObject({ ok: false, note: secret })
   })
 
   test("config diffs + reason priority", () => {

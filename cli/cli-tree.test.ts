@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { COMMANDS, helpText, OVERLAY_READER_LABELS, OVERLAY_READERS, parseArgs, run, SINCE_READERS, toSessionsJson, toShowJson, toStuckJson } from "./cli"
+import { COMMANDS, helpText, parseArgs, run, SINCE_READERS, toSessionsJson, toShowJson } from "./cli"
 import { buildTree, formatTree, parseSpawnLinks, treeIds } from "./tree"
 import { groupByTask, sinceWindow, windowNotice, type EnrichedRecord } from "./join"
 
@@ -22,16 +22,14 @@ const subagentRow = (child: string, agent: string, description: string, ts: stri
 describe("cli routing", () => {
   test("help lists every subcommand, --json and exit codes", () => {
     const text = helpText()
-    for (const word of ["doctor", "sessions", "show", "stuck", "meta", "prompts", "reads", "up", "down", "ps", "logs", "--json", "--help", "--rm", "--check", "--detach"]) {
+    for (const word of ["doctor", "sessions", "show", "meta", "reads", "up", "down", "ps", "logs", "--json", "--help", "--rm", "--check", "--detach"]) {
       expect(text).toContain(word)
     }
     expect(text).toContain("0 ok, 1 structural error, 2 usage error")
     expect(text).toContain("30m|3h|1d|1w")
-    expect(text).toContain("show/stuck/meta/sessions/reads/prompts")
+    expect(text).toContain("show/meta/sessions/reads")
     expect(text).toContain("up <name> [--wait 120s] [--health <name>=<path>]")
     expect(text).toContain("restart <service> [--file] [--wait 120s] [--health <name>=<path>]")
-    expect(text).toContain("probe-only lanes: record + contract check")
-    expect(text).toContain("probe-only lanes without restore: record + contract check")
   })
 
   test("parseArgs routes subcommand, session and flags", () => {
@@ -44,14 +42,11 @@ describe("cli routing", () => {
     expect(parsed.flags["--since"]).toBe("1d")
   })
 
-  test("parseArgs accepts the list alias and stuck flags", () => {
+  test("parseArgs accepts the list alias; retired stuck verb is rejected", () => {
     const listed = parseArgs(["list", "--since", "3h"])
     expect(listed.error).toBeNull()
     expect(listed.command).toBe("sessions")
-    const stuck = parseArgs(["stuck", "ses_x", "--tree"])
-    expect(stuck.error).toBeNull()
-    expect(stuck.command).toBe("stuck")
-    expect(stuck.sessionID).toBe("ses_x")
+    expect(parseArgs(["stuck", "ses_x", "--tree"]).error).not.toBeNull()
   })
 
   test("parseArgs rejects unknown commands, flags and bad windows", () => {
@@ -91,13 +86,11 @@ describe("--since readers guard + window envelope", () => {
     } }
   }
 
-  test("non-reader verbs refuse --since fail-loud with all eight readers (exit 2)", async () => {
+  test("non-reader verbs refuse --since fail-loud (exit 2)", async () => {
     for (const argv of [
       ["ps", "--since", "1d"],
       ["doctor", "--since", "1d"],
       ["meta", "ses_x", "--since", "1d"],
-      ["checkpoints", "list", "--since", "1d"],
-      ["export", "--bundle", "--since", "1d"],
     ]) {
       const io = capture()
       let code = -1
@@ -107,12 +100,12 @@ describe("--since readers guard + window envelope", () => {
         io.restore()
       }
       expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
-      expect(io.err.join("\n")).toContain("ow: --since can only be used with sessions, show, stuck, reads, logs, failures, trace, timeline")
+      expect(io.err.join("\n")).toContain("ow: --since can only be used with sessions, show, reads, logs")
     }
   })
 
-  test("the guard + help derive from SINCE_READERS (eight readers, shared tokens)", () => {
-    expect([...SINCE_READERS]).toEqual(["sessions", "show", "stuck", "reads", "logs", "failures", "trace", "timeline"])
+  test("the guard + help derive from SINCE_READERS (four readers, shared tokens)", () => {
+    expect([...SINCE_READERS]).toEqual(["sessions", "show", "reads", "logs"])
     expect(helpText()).toContain(`window: 30m|3h|1d|1w (${SINCE_READERS.join("/")})`)
   })
 
@@ -136,12 +129,9 @@ describe("--since readers guard + window envelope", () => {
     const groups = groupByTask([rec({ command: "echo hi", outcome: "success", taskRef: "t" })])
     expect(toShowJson("s", [], groups).window).toBeNull()
     expect(toShowJson("s", [], groups, undefined, w)).toMatchObject({ window: w })
-    const report = { retries: [], rereads: [], slow: [], interruptions: 0, compactions: 0, afterInterrupt: [] }
-    expect(toStuckJson("s", report).window).toBeNull()
-    expect(toStuckJson("s", report, w)).toMatchObject({ window: w })
-    // run()-level over the committed sidecar fixture (failures/trace/
-    // timeline pin theirs in their own suites; logs pins its main path
-    // below — the no-state early-empty envelope carries no window).
+    // run()-level over the committed sidecar fixture (failures/trace pin
+    // theirs in their own suites; logs pins its main path below — the
+    // no-state early-empty envelope carries no window).
     const runJson = async (argv: string[]): Promise<{ code: number; payload: Record<string, unknown> }> => {
       const out: string[] = []
       const saved = console.log
@@ -159,7 +149,6 @@ describe("--since readers guard + window envelope", () => {
     for (const argv of [
       ["sessions", "--json", "--log", log],
       ["show", "ses_fix", "--json", "--log", log],
-      ["stuck", "ses_fix", "--json", "--log", log],
       ["reads", "ses_fix", "--json", "--log", log],
     ]) {
       const { code, payload } = await runJson(argv)
@@ -186,20 +175,42 @@ describe("--since readers guard + window envelope", () => {
     }
   })
 
-  test("overlay readers stay covered: commands + help + refusal name all eight", async () => {
-    expect([...OVERLAY_READERS].every((reader) => (COMMANDS as readonly string[]).includes(reader))).toBe(true)
-    expect(OVERLAY_READER_LABELS).toHaveLength(8)
-    const help = helpText()
-    for (const label of OVERLAY_READER_LABELS) expect(help).toContain(label.replace(" ", "-"))
-    const io = capture()
-    let code = -1
-    try {
-      code = await run(["ps", "--boundaries", "x.yaml"])
-    } finally {
-      io.restore()
+  test("removed overlay/scenario flags fail loud as unknown options (exit 2, never silent)", async () => {
+    for (const argv of [
+      ["ps", "--boundaries", "x.yaml"],
+      ["up", "--check", "--boundaries", "x.yaml"],
+      ["ps", "--run", "x"],
+      ["up", "--check", "--off-local"],
+      ["ps", "--resume"],
+      ["ps", "--claim-entrypoint", "x"],
+      ["ps", "--trace", "abc123"],
+      ["logs", "--trace", "abc123"],
+      ["ps", "--min-spans", "2"],
+      ["init", "--tracing"],
+    ]) {
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(argv)
+      } finally {
+        io.restore()
+      }
+      expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
+      expect(io.err.join("\n")).toContain("unknown option")
     }
-    expect(code).toBe(2)
-    for (const label of OVERLAY_READER_LABELS) expect(io.err.join("\n")).toContain(label)
+  })
+
+  test("removed verbs are unknown commands (exit 2 with the usage list, never silent)", async () => {
+    for (const argv of [["trace"], ["trace", "abc123"], ["checkpoints"], ["failures"], ["scenarios", "--check"], ["preflight"], ["readiness"], ["provision", "--check"], ["prompts"], ["prompts", "ses_x"], ["stuck"], ["stuck", "ses_x"], ["timeline"], ["timeline", "ses_x"], ["export"], ["export", "--bundle"]]) {
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(argv)
+      } finally {
+        io.restore()
+      }
+      expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
+    }
   })
 })
 
@@ -317,15 +328,6 @@ describe("cli --json shapes", () => {
     expect(payload.session).toBe("ses_p")
     expect(payload.window).toBeNull()
   })
-
-  test("stuck envelope carries session and report", () => {
-    const payload = toStuckJson("ses_p", { retries: [], rereads: [], slow: [], interruptions: 0, compactions: 0, afterInterrupt: [] })
-    expect(Object.keys(payload).sort()).toEqual(["report", "session", "window"].sort())
-    expect(payload.window).toBeNull()
-    expect(Object.keys(payload.report).sort()).toEqual(
-      ["afterInterrupt", "compactions", "interruptions", "rereads", "retries", "slow"].sort(),
-    )
-  })
 })
 
 describe("tree builder", () => {
@@ -421,7 +423,7 @@ describe("tree builder", () => {
   })
 })
 
-describe("LOW-2 scenario-run flags outside scenario run refuse", () => {
+describe("removed scenario-run flags fail loud as unknown options", () => {
   test("--run on ps exits 2 (never silent)", async () => {
     expect(await run(["ps", "--run", "x"])).toBe(2)
   })
@@ -434,5 +436,29 @@ describe("LOW-2 scenario-run flags outside scenario run refuse", () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe("retired session verbs refuse loud (exit 2 with the usage list, never silent)", () => {
+  test("stuck/timeline/export print usage and write nothing", async () => {
+    const out: string[] = []
+    const err: string[] = []
+    const savedLog = console.log
+    const savedError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    try {
+      for (const argv of [["stuck"], ["timeline"], ["export", "--bundle"]]) {
+        expect(await run(argv)).toBe(2)
+      }
+    } finally {
+      console.log = savedLog
+      console.error = savedError
+    }
+    expect(`${out.join("\n")}\n${err.join("\n")}`).toContain("usage: ow <command>")
   })
 })

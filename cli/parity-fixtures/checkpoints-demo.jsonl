@@ -1,3 +1,0 @@
-{"stage":"build","status":"confirmed","proof":{"unit_tests":"ok 42/42"},"at":"2026-10-09T08:00:00.000Z","by":"runner","code":{"script_hash":"abc123","checkout_rev":"rev1"},"runtime":{"port":8080,"cwd":"/repo/svc","provenance_rev":"rev1"}}
-{"stage":"build","status":"confirmed","safe_next_action":"pin the script and rerun","proof":{"unit_tests":"ok 42/42"},"at":"2026-10-09T09:00:00.000Z","by":"runner","code":{"script_hash":"def456","checkout_rev":"rev1"},"runtime":{"port":8080,"cwd":"/repo/svc","provenance_rev":"rev1"}}
-{"stage":"deploy","status":"not_observed","proof":"unmeasured","at":"2026-10-09T09:05:00.000Z","by":"runner"}

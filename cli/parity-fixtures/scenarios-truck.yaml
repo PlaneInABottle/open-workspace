@@ -1,8 +1,0 @@
-version: 1
-scenarios:
-  truck-approval:
-    services: [api]
-    boundaries: [local]
-    targets: [http://127.0.0.1:8901/approval]
-    probes: [{id: ready, argv: [./scripts/ready-approval.sh, --local], timeout: 10s}]
-    checkpoints: [approval-ready]

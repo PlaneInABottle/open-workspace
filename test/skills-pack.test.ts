@@ -183,6 +183,49 @@ test('shipped skills and packs never reference removed views', async () => {
   }
 });
 
+test('skills and packs never teach the retired session verbs', async () => {
+  // prompts/stuck/timeline/export were removed from the CLI: any remaining
+  // `ow <verb>` recipe would teach a refusal. Generic English words and
+  // skill-file senses of "prompts" live outside this pattern, so a match
+  // here is always a stale command recipe, never legitimate prose.
+  const staleVerbPattern = /\bow (stuck|timeline|export|prompts)\b|--bundle\b|session-timeline|up-export|stuckReport|sessionPrompts|PROMPTS_DEFAULT|formatStuck|maxOverlap/;
+  const collect = async (root: string): Promise<string[]> => {
+    const out: string[] = [];
+    const walk = async (dir: string) => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full);
+      }
+    };
+    await walk(root);
+    return out.sort();
+  };
+  for (const file of [...(await collect(skillsDir)), ...(await collect(pluginsDir))]) {
+    const text = await readFile(file, 'utf8');
+    assert.doesNotMatch(text, staleVerbPattern, `${file}: no retired-verb recipe`);
+  }
+});
+
+test('learn-from-mistake packs never reference removed learning producers', async () => {
+  // The receipt/runId/dashboard-activity learning backend is gone: the skill
+  // teaches transcript + completed-session ow output instead. A match here is
+  // always a stale instruction, never a denial statement (this skill carries
+  // no "there is no receipt" prose). The ow-runtime "no dashboard" non-goal
+  // lives in a different skill, so this scan stays scoped to learn-from-mistake.
+  const staleProducerPattern = /environment_verify|runId|receipt|dashboard|failure signature/i;
+  const canonical = join(skillsDir, 'learn-from-mistake', 'SKILL.md');
+  const canonicalText = await readFile(canonical, 'utf8');
+  assert.doesNotMatch(canonicalText, staleProducerPattern, `${canonical}: no removed learning-producer reference`);
+  assert.ok(canonicalText.startsWith('---\nname: learn-from-mistake\n'), `${canonical}: intact canonical frontmatter`);
+  for (const client of clients) {
+    const file = packPath(pluginsDir, client, 'learn-from-mistake');
+    const text = await readFile(file, 'utf8');
+    assert.doesNotMatch(text, staleProducerPattern, `${file}: no removed learning-producer reference`);
+    assert.ok(text.startsWith('---\nname: ow-learn-from-mistake\n'), `${file}: intact ow- command frontmatter`);
+  }
+});
+
 test('fixture copy walkthrough: verbatim pinned files, preserved settings, same-path updates', async t => {
   const tmp = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-skill-install-')));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -290,16 +333,9 @@ test('stale→refresh walkthrough: byte-compare reports per-skill current/update
   assert.equal(await readFile(personalFile, 'utf8'), personalBefore, 'personal files stay byte-identical');
 });
 
-test('skill size cap is one number in consumer runtime and pack builder', async t => {
-  const capOf = async (file: string): Promise<number> => {
-    const text = await readFile(join(repoRoot, file), 'utf8');
-    const match = /maxSkillBytes\s*=\s*(\d+)\s*\*\s*1024/.exec(text);
-    assert.ok(match, `${file} declares maxSkillBytes as N * 1024`);
-    return Number(match[1]) * 1024;
-  };
-  assert.equal(
-    await capOf('src/consumer-skills.ts'),
-    await capOf('scripts/build-skill-packs.mjs'),
-    'consumer cap equals builder cap (single source of truth by test)',
-  );
+test('skill size cap is declared by the pack builder', async t => {
+  const text = await readFile(join(repoRoot, 'scripts/build-skill-packs.mjs'), 'utf8');
+  const match = /maxSkillBytes\s*=\s*(\d+)\s*\*\s*1024/.exec(text);
+  assert.ok(match, 'scripts/build-skill-packs.mjs declares maxSkillBytes as N * 1024');
+  assert.equal(Number(match[1]) * 1024, 12 * 1024, 'pack size cap stays 12 KiB');
 });

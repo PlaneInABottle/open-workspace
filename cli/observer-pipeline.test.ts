@@ -106,20 +106,6 @@ describe("join", () => {
     expect(rows?.[rows.length - 1]?.id).toBe(`m${MAX_MESSAGE_ROWS + 1}`)
     ro.close()
   })
-
-  test("sessionPrompts returns the latest N chronological", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "join-test-"))
-    const dbPath = join(directory, "opencode.db")
-    const db = new Database(dbPath)
-    db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
-    const insert = db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    insert.run("p1", "ses_p", "user", 1, 0, 0, JSON.stringify({ text: "first days ago" }))
-    insert.run("p2", "ses_p", "user", 2, 0, 0, JSON.stringify({ text: "second" }))
-    insert.run("p3", "ses_p", "user", 3, 0, 0, JSON.stringify({ text: "third latest" }))
-    db.close()
-    const { sessionPrompts } = await import("./join")
-    expect(await sessionPrompts({ dbPath, sessionID: "ses_p", limit: 2 })).toEqual(["second", "third latest"])
-  })
 })
 
 describe("signature", () => {
@@ -300,17 +286,6 @@ describe("grouped units (records + durationMs scope)", () => {
     expect(lineRuns).toBe(4)
     expect(formatGrouped(groups)).toContain("(4 records, 1 failed)")
   })
-
-  test("durationMs scope: slow signals come from command records only", async () => {
-    const { stuckReport } = await import("./join")
-    const report = await stuckReport({
-      records: [
-        { kind: "file-edit", tool: "edit", path: "src/a.ts", outcome: "completed", durationMs: 61000, timestamp: "2026-10-05T10:03:00.000Z" },
-      ] as never,
-      sessionID: "nope-session",
-    })
-    expect(report.slow).toEqual([])
-  })
 })
 
 describe("joinSession sidecar prefilter (parse-cost only, completeness identical)", () => {
@@ -408,33 +383,6 @@ describe("joinSession sidecar prefilter (parse-cost only, completeness identical
 })
 
 describe("since filter and agent tags", () => {
-  test("prompts default limit golden: 55 user rows → latest 50, oldest-first, 300-char cap", async () => {
-    const { mkdtemp, rm } = await import("node:fs/promises")
-    const { tmpdir } = await import("node:os")
-    const { join: joinPath } = await import("node:path")
-    const { Database } = await import("bun:sqlite")
-    const { PROMPTS_DEFAULT_LIMIT, sessionPrompts } = await import("./join")
-    expect(PROMPTS_DEFAULT_LIMIT).toBe(50)
-    const dir = await mkdtemp(joinPath(tmpdir(), "prompts-golden-"))
-    try {
-      const dbPath = joinPath(dir, "opencode.db")
-      const db = new Database(dbPath)
-      db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
-      const insert = db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, 'user', ?, 0, 0, ?)")
-      for (let i = 1; i <= 55; i += 1) {
-        const body = i === 55 ? "x".repeat(400) : `prompt number ${i}`
-        insert.run(`m${i}`, "ses_g", i, JSON.stringify({ text: body }))
-      }
-      db.close()
-      const prompts = await sessionPrompts({ dbPath, sessionID: "ses_g" })
-      expect(prompts).toHaveLength(50)
-      expect(prompts[0]).toBe("prompt number 6")
-      expect(prompts[48]).toBe("prompt number 54")
-      expect(prompts[49]).toBe("x".repeat(300))
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
   test("parseSince accepts m/h/d windows", () => {
     expect(parseSince("30m")).toBe(30 * 60_000)
     expect(parseSince("3h")).toBe(3 * 3_600_000)
@@ -600,7 +548,7 @@ describe("sessionMeta", () => {
     const { tmpdir } = await import("node:os")
     const { join: joinPath } = await import("node:path")
     const { Database } = await import("bun:sqlite")
-    const { sessionMeta, formatMeta, sessionPrompts } = await import("./join")
+    const { sessionMeta, formatMeta } = await import("./join")
     const dir = await mkdtemp(joinPath(tmpdir(), "meta-test-"))
     const dbPath = joinPath(dir, "opencode.db")
     const db = new Database(dbPath)
@@ -615,8 +563,6 @@ describe("sessionMeta", () => {
     expect(meta).toMatchObject({ title: "Test job", cost: 0.0123, additions: 45, deletions: 12, files: 3, userTurns: 1, assistantTurns: 1 })
     expect(meta?.tokens).toMatchObject({ input: 1000, output: 200 })
     expect(formatMeta(meta!)).toContain("+45 -12 (3 files)")
-    const prompts = await sessionPrompts({ dbPath, sessionID: "s1" })
-    expect(prompts).toEqual(["do the thing"])
     const missing = await sessionMeta({ dbPath, sessionID: "nope" })
     expect(missing.meta).toBeNull()
   })
@@ -675,39 +621,6 @@ describe("models", () => {
     db.close()
     const { meta } = await sessionMeta({ dbPath, sessionID: "s1" })
     expect(meta?.models).toEqual(["m-x"])
-  })
-})
-
-describe("stuckReport", () => {
-  test("surfaces retries, rereads and slow runs", async () => {
-    const { stuckReport, formatStuck } = await import("./join")
-    const records = [
-      { command: "uv run pytest a", outcome: "failure", timestamp: "2026-10-05T10:00:00.000Z" },
-      { command: "uv run pytest b", outcome: "failure", timestamp: "2026-10-05T10:01:00.000Z" },
-      { command: "uv run pytest c", outcome: "success", timestamp: "2026-10-05T10:02:00.000Z" },
-      { command: "sleep 60", outcome: "success", durationMs: 61000, timestamp: "2026-10-05T10:03:00.000Z" },
-      { kind: "tool-call", tool: "read", args: JSON.stringify({ path: "x.ts" }), outcome: "completed", timestamp: "2026-10-05T10:04:00.000Z" },
-      { kind: "tool-call", tool: "read", args: JSON.stringify({ path: "x.ts" }), outcome: "completed", timestamp: "2026-10-05T10:05:00.000Z" },
-      { kind: "tool-call", tool: "read", args: JSON.stringify({ path: "x.ts" }), outcome: "completed", timestamp: "2026-10-05T10:06:00.000Z" },
-    ]
-    const report = await stuckReport({ records: records as any, sessionID: "nope-session" })
-    expect(report.retries.length).toBe(1)
-    expect(report.retries[0]).toMatchObject({ runs: 3, fails: 2 })
-    expect(report.rereads).toEqual([{ path: "x.ts", agent: "?", reads: 3, depth: 3 }])
-    expect(report.slow.length).toBe(1)
-    const text = formatStuck(report)
-    expect(text).toContain("retries:")
-    expect(text).toContain("revisited files (same agent, overlapping lines):")
-    expect(text).toContain("slow:")
-  })
-})
-
-describe("maxOverlap", () => {
-  test("counts windows sharing a line, whole-file reads overlap all", async () => {
-    const { maxOverlap } = await import("./join")
-    expect(maxOverlap([[1, 51], [40, 90], [45, 60]])).toBe(3)
-    expect(maxOverlap([[1, 51], [200, 250], [400, 450]])).toBe(1)
-    expect(maxOverlap([[-1, -1], [-1, -1]])).toBe(2)
   })
 })
 
@@ -870,10 +783,10 @@ describe("doctor build identity", () => {
   })
 })
 
-describe("prompts empty branch (English, sibling-shaped)", () => {
-  test("ow prompts with no rows prints no prompts (exit 0)", async () => {
+describe("prompts verb retired (refusal, English, sibling-shaped)", () => {
+  test("ow prompts is an unknown command (exit 2 with the usage list, never silent)", async () => {
     const { run } = await import("./cli")
-    const dir = await mkdtemp(join(tmpdir(), "ow-prompts-empty-"))
+    const dir = await mkdtemp(join(tmpdir(), "ow-prompts-retired-"))
     const out: string[] = []
     const err: string[] = []
     const origLog = console.log
@@ -891,7 +804,7 @@ describe("prompts empty branch (English, sibling-shaped)", () => {
       console.log = origLog
       console.error = origError
     }
-    expect(code).toBe(0)
-    expect(out.join("\n")).toContain("no prompts")
+    expect(code).toBe(2)
+    expect(`${out.join("\n")}\n${err.join("\n")}`).toContain("usage")
   })
 })

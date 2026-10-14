@@ -1,47 +1,51 @@
 # OpenWorkspace — direction
 
-Status: active source preview. This is the single product doc — decisions and forward scope only, no milestone history, no incident diary. Update the affected section; do not add parallel plans.
+Make existing development work easier, without requiring a second test framework
+or evidence system. Strengthen useful capabilities and simplify or remove those
+whose maintenance and usage cost outweigh their demonstrated benefit.
 
-## Promise and audience
+## Working loop
 
-Keep your own coding agent. Give it an observer that shows what it actually did, a supervisor for the dev services around it, and a small memory that learns from mistakes — so setup repeats less and the next task starts warm. Everything runs locally; the harness keeps its own shell.
+Realistic trial → identify concrete benefit and friction → fix or simplify →
+build and identify the new artifact → repeat the original check.
 
-Start with a developer who already uses a coding assistant but leaves value on the table: they lift frontend + backend + db to develop one feature, never fully test with the agent, or need a place to see what the agent is doing instead of waiting on a chat reply. OpenWorkspace hands them that workflow as a workspace and a coordination surface.
+Passing tests prove correctness, not usefulness. Do not invent time savings or
+add a feature merely to make another feature testable. Development and safety
+constraints remain in [AGENTS.md](AGENTS.md).
 
-## Product
+## Next decisions
 
-Three surfaces, one local service:
+The previous speculative backlog is cleared. Add only selected, evidence-backed
+simplification steps here, with the observed problem, intended reduction in work
+and the real-world check that will establish the result. Keep incident details
+and test output in their existing findings and task artifacts.
 
-- **`ow` CLI — the primary interface.** Read-only session observer (`sessions`, `show`, `stuck`, `meta`, `prompts`, `reads`, `tree`, `timeline`), dev-service supervision (`up`/`down`/`ps`/`logs`, plus single-service `up/restart/down <svc>` and read-only `reconcile --check`) from a repo `ow.yaml`, spawn-time runtime provenance rendered read-only (`ps --explain`, never executes), project-defined readiness probes run client-side one-shot (`readiness:`, no gating), runner-written evidence checkpoints rendered read-only (`checkpoints list|show`, ow never judges proof content), a read-only preflight gate for runner `prepare` (`preflight`, reports only), a read-only scenario schema validator (`scenarios --check`, never executes probes), a read-only worktree checklist (`provision --check`: `.env` symlink + `.venv` + HEAD + preflight composition, witnesses only, never gates), and opt-in OpenTelemetry tracing through an embedded loopback receiver. Observed via the OpenCode shell-observer plugin.
-- **Dashboard.** Observer-first, read-only React/TypeScript view: recorded agent activity plus environment status (incl. a per-worktree ownership ledger with advisory collision warnings, pilot-gated), AI setup and privacy/access removal. A coordination surface, not an operate console.
-- **MCP bridge + skills.** Project registration, owned-environment orchestration and a compact learning loop for the user's existing assistant. 13 MCP tools, 9 MCP-served consumer skills, project-local client snapshots. The dashboard does not create projects.
+## Evidence-backed decisions
 
-## Fixed direction
-
-- **Harness-first (no-fight).** MCP covers environment orchestration plus memory only. Anything the harness already does via shell — commands, log tails, process control, database queries — is not re-served. No workstream/lease/checkpoint ceremony; the harness tracks tasks natively.
-- **Host-native local service and web dashboard.** No new agent runtime, IDE or mandatory chat interface. Persist only platform-owned state outside application repos.
-- **Repos are the stable center.** Surrounding tools are replaceable connections (PM2 vs Compose, Jira vs another tracker, Postgres vs Mongo) and must not change core workspace identity. Adapters are ordinary modules; no plugin marketplace or generic workflow DSL.
-- **Observer-first dashboard.** Read-only visibility first (timeline, environment status). Registration and orchestration stay project-based over MCP.
-- **One strict state schema.** Explicit `roots` arrays, no versioned upgrades; unknown shapes fail closed and stay byte-identical.
-- **No document treadmill.** One authoritative home per definition; reusable learning becomes a small correction or a regression test; transient state stays machine-readable. No `memory.md`, `evidence.md`, vector DB or automatic transcript mining.
-- **Jira is optional.** A workspace and a verification run work without a ticket or integration. Issue providers attach references, not core identities.
-
-## Non-goals / excluded
-
-New agent/chat/IDE, generic visual workflow builder, MCP marketplace, Kubernetes management, every connector, automatic production fixes, model-routing, vector memory, universal session importer, per-service shell/log MCP tools, and workstream/lease surfaces. Docker is presence-only inventory (no control operations). Platform scope is macOS + Linux (POSIX); Windows is deferred. Dirty-state surfacing in the dashboard stays shelved unless explicitly requested.
-
-## Open / next (no commitment until pilot evidence)
-
-- **Package the CLI.** Remove the manual Node/bun + `pnpm ow:build` + symlink ritual so the platform's own toolchain is not a prerequisite for operating it; validate on a fresh machine, including a Java-only project with no system Node/pnpm.
-- **Verify external-client setup on real clients** (Claude Code, Codex, VS Code/Copilot, OpenCode). All per-client surfacing rows are UNVERIFIED until a live run proves them.
-- **Second pilot + measurement.** Twelve pilot fields, recorded per pilot before/after: F1 time to first useful verification, F2 human actions to green, F3 repeated prerequisite failures, F4 setup wall-clock, F5 verification runs to pass, F6 caught false-greens, F7 lesson recurrences (suspect flips), F8 stuck signals (retries/rereads/slows), F9 user corrections, F10 environment up/down cycles, F11 receipt-bound verifications, F12 collision-matrix hits cited. Baseline rules: same harness and pilot both sides, `ow doctor` + counts baselined first, no toolchain alteration to obtain PASS, evidence recorded here or it didn't happen.
-- **Worktree collision-matrix verdict (pending ≥2-week farm pilot).** The advisory port/service matrix ships active alongside the ownership ledger; keep iff the pilot cites ≥1 avoided incident or an explicit keep, else drop to ledger-only (fallback is one doc paragraph — no code change). Verdict + verbatim evidence to be recorded here. Collision deadline: the verdict falls due two weeks after the farm pilot starts; until then the matrix stays active.
-- **Workspace-central management (decided).** Operation + observation state lives at the workspace root (`ow.yaml`, `ow.scenarios.yaml`, `.ow/`); repos/checkouts hold code + runtime facts only. Agent instructions live at the session root; repo-level files hold repo-only facts, never duplicate the shared rules.
-- **Per-context boundary overlay (landed M9).** Base matrix at the workspace root + conventional `.ow/boundaries.local.yaml` + explicit `--boundaries <path>` (flag > local > base, source-tagged merge). Arbitrated over named-per-context files (pointer contention) — see plan.
-- **Optional additions, only on demand:** browser tracing recipe pack, further datastore/issue adapters, environment profiles, hybrid/remote targets.
-
-## Pilots and safety gates
-
-ResAI is the first pilot (read-only topology discovery, no existing runtime/data changes). A second open-source pilot is selected from adjacent personal projects; confirm its prerequisites before touching it.
-
-Security release gates: loopback-only HTTP with strict Host/Origin checks; dedicated private state that fails closed on unsafe permissions/symlinks; explicit directory registration separate from read/execute/write permissions; no secrets in prompts, output, arguments or transferable definitions; idempotency and reconciliation at mutation boundaries; report failed/unverified boundaries honestly. Never weaken an assertion, bypass confirmation, alter a pilot's toolchain or add global installs just to obtain PASS.
+- **Keep the runtime and log core.** Real local trials demonstrated checkout and
+  drift visibility, owned lifecycle control, and useful log filtering. Validate
+  each fix on a newly built artifact against the original real-world failure.
+- **Remove the checkpoint/scenario evidence-wrapper layer.** Reader correctness
+  passed synthetic tests, but no native producer or real recovery benefit was
+  demonstrated, and the 880 pilot required an adapter plus separate checkout
+  proof without net benefit. The `checkpoints`, `failures`, `scenarios`,
+  `record`, `contract` and `scenario` verbs, their file readers, the overlay
+  convention and the data-clock witness are removed (breaking change); legacy
+  `.ow/checkpoints/`, `.ow/replay/`, `ow.scenarios.yaml` and overlay files
+  already on disk are left byte-identical in place — removals cover commands
+  and APIs, never user data. No replacement evidence framework.
+- **Remove embedded tracing.** The OTLP collector/listener/decoder/span store,
+  the `trace` verb, `timeline --trace` merging, the `trace:` config block,
+  `init --tracing` and the tracing skills/recipes are removed (breaking
+  change); legacy `.ow/traces/spans.jsonl` files already on disk are left
+  byte-identical in place and never read. The session-only `timeline`
+  (agent rows), text redaction of trace-shaped values, and all runtime,
+  readiness and ownership behavior stay.
+- **Go CLI-only.** The Node dashboard/MCP service, its HTTP routes, the
+  source companion, the frontend, and their configs/dependencies are
+  removed (breaking change); the `ow` CLI and the consumer skills are the
+  product. Legacy user state (registrations, connection data, recorded
+  runs, stored spans) outside the source tree is left byte-identical in
+  place — removals cover code and docs, never user data.
+- **Do not make scenarios a mandatory test wrapper.** Select a simplification
+  only if it removes real work; no replacement evidence framework.
