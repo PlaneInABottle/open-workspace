@@ -12,7 +12,7 @@ Run only when the user invokes `/ow-update` or re-pastes the setup prompt. Never
 1. Re-read every `skills/<name>/SKILL.md` in the product checkout — all seven (`learn-from-mistake`, `onboarding`, `ow`, `ow-debug`, `ow-runtime`, `setup-ow`, `update`), this skill included. The source text is authoritative.
 2. Byte-compare each source text against the installed `ow-*` copies at this project's client paths (Claude Code project `.claude/commands/ow-<name>.md`; OpenCode project `.opencode/commands/ow-<name>.md`; Codex project `.agents/skills/ow-<name>/SKILL.md`; VS Code/Copilot project `.github/skills/ow-<name>/SKILL.md`), normalizing the `ow-` frontmatter name prefix. Report each skill as `current` (bytes match) or `stale` (bytes differ or copy missing).
 3. Byte-identical → skip silently (leave the file alone). Tool-owned and locally unmodified but stale → overwrite verbatim at the same project-local paths and report the diff. A personal edit inside a snapshot file → show the diff and let the user decide before writing; never overwrite it silently. Every other file stays byte-identical.
-4. Verify with `ow doctor` (a free read), then hand off in 120 words or fewer: per-skill current/updated list, files written, verification result, next human action. Refresh runs no service, verify, or install operations — the free read is the whole verification.
+4. Verify with `ow --version` (a free read), then hand off in 120 words or fewer: per-skill current/updated list, files written, verification result, next human action. Refresh runs no service, verify, or install operations — the free read is the whole verification.
 
 ## Safety
 

@@ -33,7 +33,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 
-export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "init"] as const
+export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "init", "where", "version"] as const
 export type Command = (typeof COMMANDS)[number]
 
 /** The six `--since` readers (single source for help + the fail-loud
@@ -42,7 +42,7 @@ export const SINCE_READERS = ["sessions", "show", "reads", "logs"] as const
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
 const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--check", "--detach", "--rm", "--force", "--probe", "--explain"])
+const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--version", "--check", "--detach", "--rm", "--force", "--probe", "--explain"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -79,14 +79,142 @@ export const helpText = (): string =>
     "  ps --explain [service] [--file] [--json]  expected/running witness view (read-only)",
     "  logs [service] [--file] [--tail] [--grep] [--since]  service logs",
   "  init [--force]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
+  "  where [--file] [--json]  resolved root + the files ow would read (read-only, always exit 0)",
+  "  version [--json]  installed build identity: version + sidecar sha/time (read-only)",
     "",
-    "general: --db <path> --log <path> --json --help",
+    "general: --db <path> --log <path> --json --help --version",
     `  --since  window: ${SINCE_TOKENS} (${SINCE_READERS.join("/")})`,
-    "  --json  machine output (English keys): doctor/show/meta/sessions/reads/ps/logs/down/reconcile (+ up --check)",
+    "  --json  machine output (English keys): doctor/show/meta/sessions/reads/ps/logs/down/reconcile/where/version (+ up --check)",
     "exit: 0 ok, 1 structural error, 2 usage error",
     "",
     "example: ow show <session> --tree --since 1d",
   ].join("\n")
+
+/** Per-verb help bodies for `ow <command> --help` / `ow help <command>`.
+ * Usage lines are NOT duplicated here: `verbHelpText` derives them from
+ * `helpText()` (single source). Each entry adds only flags, exits and one
+ * example. Keys cover every COMMANDS entry;
+ * the help-coverage test derives from COMMANDS. */
+export const VERB_HELP: Record<string, string[]> = {
+  doctor: [
+    "checks: shell log growth, hook firing, ring buffer, intent DB, up state",
+    "flags: --db <path>  intent DB (default OpenCode store)",
+    "       --log <path>  shell log (default opencode-shell-log)",
+    "       --file <path>  anchor the up-state report at another ow.yaml",
+    "exits: 0 ok, 1 failing check (up/trace lines are informational), 2 usage",
+    "example: ow doctor --json",
+  ],
+  sessions: [
+    "flags: --since 30m|3h|1d|1w, --dir <path>, --json; alias: ow list",
+    "exits: 0 ok, 1 unreadable store, 2 usage",
+    "example: ow sessions --since 1d --json",
+  ],
+  show: [
+    "flags: --since, --full, --bytes 512|1k|4k|1m, --tree (subagent tree), --flat, --kind/--tool <v>,",
+    "       --show <line>, --show-fails, --json",
+    "exits: 0 ok, 1 structural, 2 usage",
+    "example: ow show <session> --tree --since 1d",
+  ],
+  meta: ["flags: --json", "exits: 0 ok, 1 no account for the session, 2 usage"],
+  reads: ["flags: --since, --json", "exits: 0 ok, 1 structural, 2 usage"],
+  up: [
+    "flags: --file <path>, --check (validate only), -d/--detach, --wait <dur> (max 5m, needs -d),",
+    "       --health <name>=<path> (repeatable, needs --wait; refuses with --check)",
+    "single service: ow up <name> [--wait <dur>] [--health <name>=<path>] adds one service via the live supervisor",
+    "exits: 0 ok/ready, 1 not ready (with --wait), 2 usage or a refused port/env",
+    "example: ow up -d --wait 150s --health configuration=/actuator/health",
+  ],
+  restart: [
+    "flags: --file <path>, --wait <dur>, --health <name>=<path> (target-only)",
+    "live supervisor only: exit 2 without a running lock (never a blind spawn)",
+    "exits: 0 ok/ready, 1 timeout or early exit, 2 usage/refusal",
+  ],
+  down: [
+    "flags: --file <path>, --rm (bulk only: clears supervisor.json)",
+    "single: ow down <name> stops only that service and confirms the post-stop state",
+    "exits: 0 ok, 1 structural, 2 usage (--rm with a single service refuses)",
+  ],
+  reconcile: [
+    "flags: --check (mandatory read-only mode), --probe (one-shot project probes), --file, --json",
+    "never mutates: reports drift kinds (missing/extra/stopped/config-mismatch/lstart-mismatch/foreign-port/stale-build)",
+    "exits: 0 in sync, 1 drift (or stale build), 2 usage",
+  ],
+  ps: [
+    "flags: [svc] (with --explain), --explain (expected-vs-running witness; never executes), --file, --json",
+    "exits: 0 ok, 1 corrupt supervisor state, 2 unknown service or usage",
+  ],
+  logs: [
+    "flags: [svc], --file, --tail <1-5000>, --grep <text>, --since, --json",
+    "exits: 0 ok, 1 corrupt/unreadable log store, 2 unknown service or usage",
+  ],
+  init: [
+    "flags: --force (keeps one .bak per yaml)",
+    "writes at most ow.yaml; never edits package.json/CI",
+    "exits: 0 written (or honest no-signal message), 2 refusal (existing file without --force)",
+  ],
+  where: [
+    "flags: --file <path>, --json",
+    "prints the resolved root, how it was resolved, and the ow.yaml/state/observer files ow would read",
+    "a missing file is honest data: exit stays 0",
+  ],
+  version: [
+    "flags: --json",
+    "prints the sidecar identity of the running binary (version + sha8/time/dirty); no sidecar -> rebuild hint",
+  ],
+}
+
+/** Usage lines derived from `helpText()` for one key (continuation lines are
+ * the 32-space-indented follow-ups of the global list). */
+export const usageLinesFor = (key: string): string[] => {
+  const lines = helpText().split("\n")
+  const out: string[] = []
+  let collecting = false
+  for (const line of lines) {
+    if (line.startsWith(" ".repeat(32))) {
+      if (collecting) out.push(line.trim())
+      continue
+    }
+    collecting = line.trim() === key || line.trim().startsWith(`${key} `)
+    if (collecting) out.push(line.trim())
+  }
+  return out
+}
+
+/** `ow <command> [subverb] --help`: verb-scoped usage + flags + exits (the
+ * global 37-line list stays reachable via `ow --help`). */
+export const verbHelpText = (command: string, sub?: string): string => {
+  const key = sub !== undefined && VERB_HELP[`${command} ${sub}`] !== undefined ? `${command} ${sub}` : command
+  const usage = usageLinesFor(key)
+  const detail = VERB_HELP[key] ?? ["no per-verb help yet — run `ow --help` for the full command list"]
+  const head = usage.length > 0 ? [`usage: ow ${usage[0]}`, ...usage.slice(1).map((line) => `       ${line}`)] : []
+  return [`ow ${key}`, ...head, "", ...detail, "", "run `ow --help` for the full command list (all verbs, global flags, exits)"].join("\n")
+}
+
+/** `ow version` / `ow --version`: installed build identity. The version
+ * string comes from the build sidecar (written by `pnpm ow:build` from
+ * package.json), never hardcoded here; a missing sidecar reads as an honest
+ * rebuild hint instead of a guessed number. */
+export const versionIdentity = async (): Promise<{ line: string; payload: Record<string, unknown> }> => {
+  const { readOwnBuildSidecar } = await import("./up-state")
+  const sidecar = await readOwnBuildSidecar()
+  if (sidecar === null) {
+    return {
+      line: "ow (no build sidecar — rebuild with pnpm ow:build)",
+      payload: { version: null, sha: null, time: null, dirty: null, sidecar: false },
+    }
+  }
+  const version = sidecar.version ?? "unknown"
+  return {
+    line: `ow ${version} (build ${sidecar.sha.slice(0, 8)}, ${sidecar.time}${sidecar.dirty === true ? ", dirty" : ""})`,
+    payload: {
+      version: sidecar.version ?? null,
+      sha: sidecar.sha.slice(0, 8),
+      time: sidecar.time,
+      dirty: sidecar.dirty ?? null,
+      sidecar: true,
+    },
+  }
+}
 
 export const parseArgs = (argv: string[]): ParsedArgs => {
   const flags: Record<string, string | boolean | string[]> = {}
@@ -788,6 +916,8 @@ const nestedStateWarning = async (rootDir: string): Promise<string | null> => {
 }
 
 export const run = async (argv: string[]): Promise<number> => {
+  // `ow help [command]` is the same request as `ow [command] --help`.
+  if (argv[0] === "help") argv = [...argv.slice(1), "--help"]
   if (argv[0] === "__supervise") {
     const fileIndex = argv.indexOf("--file")
     const file = fileIndex >= 0 ? argv[fileIndex + 1] : undefined
@@ -799,9 +929,19 @@ export const run = async (argv: string[]): Promise<number> => {
     return runSuperviseFile(file, { quiet: true })
   }
   const parsed = parseArgs(argv)
+  if (parsed.flags["--version"] === true) {
+    const identity = await versionIdentity()
+    if (parsed.flags["--json"] === true) console.log(JSON.stringify(identity.payload))
+    else console.log(identity.line)
+    return 0
+  }
   if (parsed.flags["--help"] || parsed.command === null) {
+    if (parsed.command !== null) {
+      console.log(verbHelpText(parsed.command, parsed.sessionID))
+      return 0
+    }
     console.log(helpText())
-    return parsed.command === null && !parsed.flags["--help"] ? 2 : 0
+    return parsed.flags["--help"] ? 0 : 2
   }
   if (parsed.error) {
     console.error(`ow: ${parsed.error}`)
@@ -851,6 +991,19 @@ export const run = async (argv: string[]): Promise<number> => {
     return doctorFails(lines) ? 1 : 0
   }
 
+  if (command === "version") {
+    for (const key of Object.keys(flags)) {
+      if (!["--json", "--help"].includes(key)) {
+        console.error(`ow: ${key} cannot be used with version`)
+        return 2
+      }
+    }
+    const identity = await versionIdentity()
+    if (json) console.log(JSON.stringify(identity.payload))
+    else console.log(identity.line)
+    return 0
+  }
+
   if (command === "sessions") {
     const sinceRaw = flag(flags, "--since")
     const sinceMs = parseSince(sinceRaw)
@@ -885,7 +1038,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return result.code
   }
 
-  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "ps" || command === "logs") {
+  if (command === "up" || command === "restart" || command === "down" || command === "reconcile" || command === "ps" || command === "logs" || command === "where") {
     // Readers walk upward to the enclosing workspace; bulk `up` (which
     // CREATES state, no positional) and any explicit --file stay exactly
     // where pointed. `--check` rides the `up` (creation-anchored) path: it
@@ -1212,6 +1365,48 @@ export const run = async (argv: string[]): Promise<number> => {
         console.log(services.length > 0 ? services.map(formatPsLine).join("\n") : "no state")
       } else {
         console.log(JSON.stringify({ services: services.map(toPsServiceJson) }))
+      }
+      return 0
+    }
+    if (command === "where") {
+      // Read-only resolution report: which root/files ow would actually read.
+      // A missing file is honest data — the exit stays 0.
+      for (const key of Object.keys(flags)) {
+        if (!["--file", "--json", "--db", "--log"].includes(key)) {
+          console.error(`ow: ${key} cannot be used with where`)
+          return 2
+        }
+      }
+      const stateDirPath = upStateDir(rootDir)
+      const check = (path: string): { path: string; present: boolean } => ({ path, present: existsSync(path) })
+      const statePresent = existsSync(stateDirPath)
+      const source = explicitFile
+        ? `--file ${resolve(flag(flags, "--file") as string)}`
+        : rootDir !== resolve(searchStart)
+          ? `walked up from ${searchStart}`
+          : statePresent
+            ? `cwd ${rootDir}`
+            : `cwd ${rootDir} (no .ow found)`
+      const node = {
+        root: rootDir,
+        source,
+        owYaml: check(yamlForRead),
+        state: check(stateDirPath),
+        supervisor: check(join(stateDirPath, "supervisor.json")),
+        observer: { log: check(logPath), db: check(dbPath) },
+      }
+      if (json) {
+        console.log(JSON.stringify(node))
+      } else {
+        const show = (label: string, entry: { path: string; present: boolean }): void =>
+          console.log(`${label}: ${entry.path} (${entry.present ? "present" : "missing"})`)
+        console.log(`root: ${node.root}`)
+        console.log(`source: ${node.source}`)
+        show("ow.yaml", node.owYaml)
+        show("state", node.state)
+        show("supervisor", node.supervisor)
+        show("log", node.observer.log)
+        show("db", node.observer.db)
       }
       return 0
     }

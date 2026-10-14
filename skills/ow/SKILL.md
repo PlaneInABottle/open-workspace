@@ -38,6 +38,19 @@ never invent causes. Check counts first, keep
 between agents carries readings (`ow ps`, state dir, `up:` line),
 never pids/logs/env — detail: `ow-runtime`.
 
+Self-documentation and resolution (all read-only):
+
+```sh
+ow --version | ow version [--json]   # installed build identity (sha8/time/dirty from the sidecar)
+ow <command> --help | ow help <cmd>  # verb-scoped usage/flags/exits (subverb-scoped where it applies)
+ow where [--file] [--json]           # resolved root + which files ow would read (present/missing); always exit 0
+```
+
+`ow <command> --help` never dumps the full list — the global list stays on
+`ow --help`. When output looks like it came from the wrong root, run `ow where`
+first: it names the resolved root, how it was resolved and the ow.yaml /
+state / supervisor / log / DB paths.
+
 Output labels (English, quoted verbatim): `task:` task header
 (`N records, M failed` — every joined row counts, not just commands),
 `record:` real command, `intent:` agent sentence, `(reason:)` /

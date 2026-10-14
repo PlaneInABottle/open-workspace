@@ -2,7 +2,7 @@
 
 Keep your own coding agent. OpenWorkspace shows what it actually did and runs the dev services around it — locally, without replacing your harness.
 
-- **`ow` CLI** — read-only session observer (`sessions`, `show`, `meta`, `reads`) plus dev-service supervision (`up`/`down`/`ps`/`logs`).
+- **`ow` CLI** — read-only session observer (`sessions`, `show`, `meta`, `reads`, `where`, `version`) plus dev-service supervision (`up`/`down`/`ps`/`logs`).
 
 **Source preview — no packaged release yet.** `ow` is bun-only and built manually. This is not a Node-free installer.
 

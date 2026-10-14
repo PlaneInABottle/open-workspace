@@ -9,7 +9,7 @@ Keep the user's existing assistant and IDE workflow. This skill uses the `ow` CL
 
 ## Preflight
 
-Install the `ow` binary project-locally (`pnpm ow:build`, then link `cli/ow` on PATH) and verify with `ow doctor`. No password, terminal key or pairing step is required. Never claim success before a successful command call.
+Install the `ow` binary project-locally (`pnpm ow:build`, then link `cli/ow` on PATH) and verify with `ow --version` and `ow doctor`. No password, terminal key or pairing step is required. Never claim success before a successful command call.
 
 ## Connection diagnostics (secret-free)
 

@@ -21,6 +21,7 @@ ow ps [--json]                 # running/exited/stopped/unknown + pid, uptime, c
 ow ps --explain [svc] [--file] [--json]  # expected-vs-running, never executes
 ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
+ow where [--file] [--json]     # resolved root + the files ow would read (read-only, always exit 0)
 ```
 
 - After `ow up -d`, prefer `ow up -d --wait 15s` (max 5m) over manual

@@ -25,7 +25,7 @@ distributed separately from the platform's development skills.
    every write: byte-identical → skip silently; tool-owned unmodified but
    stale → overwrite verbatim and report the diff; personally-edited snapshot
    → show the diff and let the user decide, never overwrite silently.
-4. **Verify and report.** Run `ow doctor`; success means
+4. **Verify and report.** Run `ow --version` and `ow doctor`; success means
    the install is healthy. Report: client
    + scope files, snapshots written, verification result, next human action,
    in 120 words or fewer.

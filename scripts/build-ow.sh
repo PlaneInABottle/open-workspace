@@ -6,10 +6,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 bun build --compile ./cli/cli.ts --outfile cli/ow
 SHA="$(git rev-parse HEAD)"
+VERSION="$(bun -e 'console.log(JSON.parse(require("node:fs").readFileSync("package.json","utf8")).version)')"
 DIGEST="$(find cli scripts/build-ow.sh -type f \( -name '*.ts' -o -name 'build-ow.sh' \) | sort | xargs git hash-object 2>/dev/null | paste -sd'|' -)"
 DIRTY=false
 if [ -n "$(git status --porcelain -- cli/ scripts/build-ow.sh)" ]; then
   DIRTY=true
 fi
-printf '{"sha":"%s","dirty":%s,"digest":"%s","time":"%s"}\n' "$SHA" "$DIRTY" "$DIGEST" "$(date -u +%FT%TZ)" > cli/ow.build.json
+printf '{"sha":"%s","version":"%s","dirty":%s,"digest":"%s","time":"%s"}\n' "$SHA" "$VERSION" "$DIRTY" "$DIGEST" "$(date -u +%FT%TZ)" > cli/ow.build.json
 echo "built cli/ow ($SHA, dirty=$DIRTY)"

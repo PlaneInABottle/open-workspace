@@ -41,6 +41,24 @@ pnpm ow:parity           # scripts/check-ow-parity.sh <old> <new> (migration gat
   (byte-compared), and `doctor --json` by envelope keys + exit code only
   (wall-clock fields vary by construction). Fixtures: `cli/parity-fixtures/`.
 
+## Self-documentation and resolution (`version`, `--help`, `where`)
+
+- `ow --version` / `ow version [--json]` prints the installed build
+  identity from the running binary's sidecar (`ow <version> (build
+  <sha8>, <time>[, dirty])`; `--json` mirrors `{version,sha,time,dirty,sidecar}`).
+  A missing sidecar reads `ow (no build sidecar — rebuild with pnpm ow:build)`
+  — never a guessed version. Unrelated flags refuse (exit 2).
+- Per-verb help: `ow <command> --help` (and `ow help <command>`) renders
+  that verb's usage line, flags, exits and one example. The full
+  command list stays on `ow --help`; the global list is the single usage
+  source the verb help derives from (help-coverage test).
+- `ow where [--file] [--json]` answers "which files did you read?": the
+  resolved root, how it was resolved (`--file`, walked up from cwd, or cwd
+  with no `.ow` found), and the `ow.yaml` / state dir / `supervisor.json` /
+  observer log / intent DB paths ow would use, each with `present|missing`.
+  Read-only, always exit 0 (a missing file is data, not a failure);
+  unsupported flags refuse exit 2.
+
 ## Intent join (session-end pipeline)
 
 The sidecar record carries `messageID` (null for old rows), which keys into OpenCode's local `opencode.db` (`session_message` table, row id == hook messageID). The join script attaches the agent's sentence to each command:
@@ -267,8 +285,7 @@ drift, exit unchanged).
 
 A service defines an arbitrary local command via
 `readiness: {probe: [...], timeout: 10s, needsPort: true}`
-(single-line inline; argv-only, no shell; timeout `<N>s`, 1..300, default 10s;
-values above 30s parse with an advisory warning; `needsPort`
+(single-line inline; argv-only, no shell; timeout 5s|10s|30s; `needsPort`
 without a port is a schema error). The probe runs ONLY on the client
 (`up -d --wait`, single `up`/`restart --wait`, `reconcile --check --probe`) — the supervisor never
 runs it, no gating/daemon. Contract: the first JSON object on stdout
