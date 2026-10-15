@@ -29,7 +29,10 @@ first. Reuse its declared lifecycle; do not start a second supervisor beside it.
 2. **Check prerequisites, fail fast.** Selected toolchain/interpreter
    resolves (project's own version manager first), sources are the expected
    checkouts at expected revisions, and the project's native commands exist
-    (package/test/start, migration runner). Missing toolchain, unknown
+    (package/test/start, migration runner). Include required gitignored generated
+    startup assets: run the project's native setup/init commands before starting,
+    and verify the app actually renders/responds, not merely that its port opens.
+    Missing toolchain, unknown
    external dependency, or anything needing approval beyond this task:
     BLOCKED with the exact gap — never an hours-long install campaign.
     If recurring steps lack an entrypoint, add a small project-local sequencer
