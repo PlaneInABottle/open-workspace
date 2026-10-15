@@ -28,14 +28,46 @@ export type UpService = {
 }
 
 /** M3 readiness definition: mandatory argv probe (≤16 parts, ≤512B each,
- * no shell), optional timeout pin, order-only TCP gate flag. */
+ * no shell), optional timeout pin (`<N>s`, 1..300, default 10s), order-only
+ * TCP gate flag. */
 export type UpReadiness = {
   probe: readonly string[]
-  timeout: "5s" | "10s" | "30s"
+  timeout: string
   needsPort: boolean
 }
 
-export const PROBE_TIMEOUT_MS: Record<UpReadiness["timeout"], number> = { "5s": 5000, "10s": 10000, "30s": 30000 }
+/** Probe timeout pin, one parser shared by `ow.yaml` readiness and scenario
+ * probes/restore: `<N>s`, 1..300 (default 10s). Values above 30s parse with
+ * an advisory warning, never a failure — a long probe bound is legitimate,
+ * but it also bounds how long a hung probe holds the wait/readiness path. */
+export const PROBE_TIMEOUT_MIN_SECONDS = 1
+export const PROBE_TIMEOUT_MAX_SECONDS = 300
+export const PROBE_TIMEOUT_WARN_SECONDS = 30
+export const PROBE_TIMEOUT_DEFAULT_SECONDS = 10
+const PROBE_TIMEOUT_SHAPE = /^([0-9]{1,3})s$/
+
+/** Parse a timeout pin into seconds; null on bad shape or out-of-range. */
+export const parseProbeTimeout = (raw: string): number | null => {
+  const match = PROBE_TIMEOUT_SHAPE.exec(raw)
+  if (match === null) return null
+  const seconds = Number(match[1])
+  if (seconds < PROBE_TIMEOUT_MIN_SECONDS || seconds > PROBE_TIMEOUT_MAX_SECONDS) return null
+  return seconds
+}
+
+/** Milliseconds for a parsed pin (unparsable input falls back to the default,
+ * mirroring the pre-parse default; callers validate before running). */
+export const probeTimeoutMs = (raw: string): number => (parseProbeTimeout(raw) ?? PROBE_TIMEOUT_DEFAULT_SECONDS) * 1000
+
+/** Single refusal/warning wording for every probe surface. */
+export const probeTimeoutShape = (): string => `<N>s (${PROBE_TIMEOUT_MIN_SECONDS}-${PROBE_TIMEOUT_MAX_SECONDS}s)`
+
+/** Advisory (never a failure) when a pin exceeds the warn threshold. */
+export const probeTimeoutWarning = (where: string, raw: string): string | null => {
+  const seconds = parseProbeTimeout(raw)
+  if (seconds === null || seconds <= PROBE_TIMEOUT_WARN_SECONDS) return null
+  return `${where}: timeout ${raw} exceeds ${PROBE_TIMEOUT_WARN_SECONDS}s (long probe bound; ow kills the probe at that limit)`
+}
 
 const PROBE_MAX_PARTS = 16
 const PROBE_MAX_PART_BYTES = 512
@@ -260,7 +292,8 @@ const asString = (value: YamlNode | undefined): string | null =>
 /** `readiness: {probe: [...], timeout: 10s, needsPort: true}` — M3, ONLY a
  * single-line inline flow-map (N1: block-map form trips the subset-YAML level-3
  * ban — parse error, exit 2). `probe` is a mandatory argv list
- * (no shell); `timeout` 5s|10s|30s (default 10s); `needsPort` defaults to true
+ * (no shell); `timeout` is `<N>s`, 1..300 (default 10s; >30s warns);
+ * `needsPort` defaults to true
  * and is a schema error on a portless service. Raw argv goes only to the
  * runner, never to state (listings show the masked shape). */
 const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: number | undefined, warnings: UpWarning[]): UpReadiness | undefined => {
@@ -291,12 +324,14 @@ const parseReadiness = (node: YamlNode | undefined, serviceName: string, port: n
   if (isShellArgv0(probe[0])) {
     throw new UpSchemaError(0, `${serviceName}: readiness probe must not start with a shell (pass an argv list, no sh -c)`)
   }
-  let timeout: UpReadiness["timeout"] = "10s"
+  let timeout = `${PROBE_TIMEOUT_DEFAULT_SECONDS}s`
   if (fields["timeout"] !== undefined) {
     const raw = fields["timeout"]
-    if (raw !== "5s" && raw !== "10s" && raw !== "30s") {
-      throw new UpSchemaError(0, `${serviceName}: readiness timeout must be 5s|10s|30s`)
+    if (typeof raw !== "string" || parseProbeTimeout(raw) === null) {
+      throw new UpSchemaError(0, `${serviceName}: readiness timeout must be ${probeTimeoutShape()}`)
     }
+    const warning = probeTimeoutWarning(`${serviceName}: readiness`, raw)
+    if (warning !== null) warnings.push({ line: 0, message: warning })
     timeout = raw
   }
   let needsPort = true

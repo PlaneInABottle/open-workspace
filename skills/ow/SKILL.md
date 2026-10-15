@@ -56,8 +56,24 @@ Output labels (English, quoted verbatim): `task:` task header
 `record:` real command, `intent:` agent sentence, `(reason:)` /
 `(output:)` on failures (several distinct reasons collapse to
 `(reason: <first>; +N more)`, drilled down as
-`--- reasons (from command text) ---` under `--show N`). Budgets: success excerpts 2KB stored and
+`--- reasons (from command text) ---` under `--show N`, beside
+`--- task context (not failure cause) ---` for the agent sentence —
+`(reason:)` prints only for an actual command-text reason, never for
+intent). Repeated lines carry a wall range (`[wall <first>→<last>]`,
+multi-run only); `--show N` drills each stored record with labeled
+clocks (`wall: <ISO> · process-monotonic: <1.0s>` — monotonic spans
+pause under OS suspend and are never derived from wall stamps). Every
+`show`/`meta` view opens with the latest-observed session outcome
+(`session-status:<outcome>(<at>)[latest-observed]`, or
+`session-status:unknown(<reason>)` — the last idle write, never a live
+claim; `--since` filters groups, never the status). Budgets: success excerpts 2KB stored and
 300 chars shown, failures up to 16KB; 3h of history runs about 150KB.
+
+SECURITY: every caller-controlled text these views emit redacts secret
+shapes at render/serialize (shared `maskSecrets`, mask-before-cap,
+compact JSON structurally) — stored sources and the raw `--flat` stream
+stay verbatim. JSON keys unchanged; secret-shaped values intentionally
+redacted (benign content byte-identical).
 
 ## `--json` keys (single table, additive)
 
@@ -66,6 +82,9 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 | command | envelope |
 |---|---|
 | `up --check --json` | `{file, services[] ({name, cmd?, cwd?, port?, logs?}), warnings[]}` |
+| `show --json` | `{session, warnings[], groups[] ({taskRef, runs, fails, lines[] ({ref, signature, outcome, runs, agents[], sessions[], models[], failReason?, failReasons[], failReasonCount, failReasonSource?, variants[], firstSeen?, lastSeen?, runTimes[], runDurations[], excerpts[], results[], intents[], messageIDs[]})}), tree?, window?, status ({outcome, at, scope: 'latest-observed', source})}` (`status` unwindowed; `--show N`/`--show-fails` use `{session, detail, status}`) |
+| `meta --json` | `{meta ({sessionID, title?, directory?, cost?, tokens?, additions?, deletions?, files?, userTurns, assistantTurns, compactions, lastWord?, models[]}), warning?, status}` |
+| `sessions --json` | `{sessions[] ({sessionID, commands, fileEdits, fails, first, last, workdir}), window?}` (rows unchanged: windowed historical aggregates, no per-row status) |
 | `up -d --wait --json` | `{ready, services[] ({name, port?, status, waitedSec, exitCode?, healthPath?, readiness?}), noPort[], note?}` |
 | `up <svc>`, `restart --json` | `{service, action, pid?, diff, code?}` (`code` only on failure) |
 | `down <svc> --json` (live supervisor) | `{service, action, diff, code?, confirmed? ({stopped, code})}` (row above + `confirmed`; `confirmed.stopped` is a state witness — read `code` for stopped/already-stopped/refused) |

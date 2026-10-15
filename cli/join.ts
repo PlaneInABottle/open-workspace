@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
 import { signature } from "./signature"
-import { maskSecrets } from "./up-evidence"
+import { capText, maskSecrets } from "./up-evidence"
 
 export const DEFAULT_LOG_PATH = join(homedir(), ".local", "share", "opencode-shell-log", "shell-events.jsonl")
 export const DEFAULT_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db")
@@ -202,7 +202,7 @@ export const joinSession = async (options: {
         }
       })
   } catch (error) {
-    warnings.push(`sidecar unreadable: ${String(error).slice(0, 160)}`)
+    warnings.push(`sidecar unreadable: ${maskSecrets(String(error)).slice(0, 160)}`)
   }
   let rows: MessageRow[] | null = null
   try {
@@ -222,7 +222,7 @@ export const joinSession = async (options: {
       db.close()
     }
   } catch (error) {
-    warnings.push(`opencode.db unreadable: ${String(error).slice(0, 160)}`)
+    warnings.push(`opencode.db unreadable: ${maskSecrets(String(error)).slice(0, 160)}`)
   }
   if (!rows) {
     warnings.push("message table unavailable — records emitted without intent")
@@ -232,6 +232,9 @@ export const joinSession = async (options: {
 }
 
 export type GroupedLine = {
+  /** Drill ref: unique positive integer across all groups of one
+   * groupByTask result (display order), shared by human and wire output.
+   * Ephemeral per query — never a persisted cross-query id. */
   ref: number
   signature: string
   outcome: string
@@ -247,6 +250,18 @@ export type GroupedLine = {
   /** Provenance of the reasons; null when no reason was observed. */
   failReasonSource: string | null
   variants: string[]
+  /** Wall-clock range across observed runs (sidecar `timestamp`, raw
+   * strings); null per side when unparseable/absent. Multi-run human lines
+   * render first→last, never one timestamp as all. */
+  firstSeen: string | null
+  lastSeen: string | null
+  /** Per-run wall timestamps, parallel to stored `variants` (same
+   * order/length/cap); null per unparseable run. */
+  runTimes: (string | null)[]
+  /** Per-run process-monotonic durations (sidecar `durationMs`, ms),
+   * parallel to stored `variants`; null when the run recorded none. Wall
+   * vs monotonic domains are labeled wherever both render. */
+  runDurations: (number | null)[]
   excerpts: string[]
   results: string[]
   intents: string[]
@@ -325,6 +340,33 @@ export const windowNotice = (window: SinceWindow): string => `window: --since ${
 export const storeWindow = (store: string, window: SinceWindow | null): string =>
   `(store: ${store}; window: ${window?.since ?? "all"})`
 
+/** Shared chip normalizer for human filter echoes (session/kind/tool):
+ * strip ANSI sequences, fold controls/newlines to single-line text, then
+ * the existing masker, then cap. Whitespace folding runs before masking so
+ * a newline-split secret (`password\nhunter2`) still masks as one value;
+ * only separators fold — `= : " '` structure the masker reads is kept, so
+ * secret context is never altered. Mask always precedes cap. */
+export const chipText = (value: string): string => {
+  const noAnsi = value.replace(/\[[0-9;]*[A-Za-z]/g, "")
+  const singleLine = noAnsi.replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, " ").replace(/\s+/g, " ").trim()
+  return capText(maskSecrets(singleLine), 80)
+}
+
+/** Honest empty-filter chip for the human `no records` line: names the
+ * actually applied session/kind/tool filters (every piece through the
+ * shared chipText normalizer — masked-then-capped, single line; the
+ * session id is caller text too, matched exactly, never prefix-resolved,
+ * so a partial id stays visibly unmatched). Null when no kind/tool
+ * filter was provided, so pure-empty and valid-empty-window
+ * lines stay byte-identical; JSON is untouched (no new field). */
+export const filterChip = (sessionID: string, kind?: string | null, tool?: string | null): string | null => {
+  const bits = [`session=${chipText(sessionID)}`]
+  if (typeof kind === "string" && kind.length > 0) bits.push(`kind=${chipText(kind)}`)
+  if (typeof tool === "string" && tool.length > 0) bits.push(`tool=${chipText(tool)}`)
+  if (bits.length < 2) return null
+  return `[filters: ${bits.join(", ")}]`
+}
+
 export const filterSince = (records: EnrichedRecord[], windowMs: number | null, now = Date.now()): EnrichedRecord[] => {
   if (!windowMs) return [...records].sort((a, b) => timeOf(a) - timeOf(b))
   const cutoff = now - windowMs
@@ -350,6 +392,19 @@ const timeOf = (record: EnrichedRecord): number => {
   const parsed = Date.parse(typeof record.timestamp === "string" ? record.timestamp : "")
   return Number.isFinite(parsed) ? parsed : 0
 }
+
+/** Wall-clock instant of one record (sidecar `timestamp`, raw string) or
+ * null when absent/unparseable. Raw strings stay byte-faithful; range math
+ * parses but never rewrites them. */
+const runTimeOf = (record: EnrichedRecord): string | null => {
+  if (typeof record.timestamp !== "string") return null
+  return Number.isFinite(Date.parse(record.timestamp)) ? record.timestamp : null
+}
+
+/** Process-monotonic duration of one run (sidecar `durationMs`, ms) or null.
+ * Monotonic spans pause under OS suspend; never derived from wall stamps. */
+const runDurationOf = (record: EnrichedRecord): number | null =>
+  typeof record.durationMs === "number" && Number.isFinite(record.durationMs) ? record.durationMs : null
 
 const agentOf = (record: EnrichedRecord): string | null =>
   typeof record.agent === "string" && record.agent.length > 0 ? record.agent : null
@@ -613,14 +668,32 @@ export const sessionMeta = async (options: { dbPath?: string; sessionID: string 
       } catch {
         // models are best-effort
       }
-      return { meta, warning: null }
+      return { meta: maskMetaText(meta), warning: null }
     } finally {
       db.close()
     }
   } catch (error) {
-    return { meta: null, warning: `meta unreadable: ${String(error).slice(0, 120)}` }
+    return { meta: null, warning: `meta unreadable: ${maskSecrets(String(error)).slice(0, 120)}` }
   }
 }
+
+/** Join co-present warnings into the single meta `warning` string (schema
+ * unchanged: still string|null). Nulls drop out; null when all absent. */
+export const joinWarnings = (...parts: (string | null)[]): string | null => {
+  const kept = parts.filter((p): p is string => typeof p === "string" && p.length > 0)
+  return kept.length > 0 ? kept.join("; ") : null
+}
+
+/** Masked copy of session meta for output: free-text fields (title,
+ * directory, last word, model ids) redact secret shapes; the DB row is
+ * untouched. Counts and numeric fields pass through. */
+export const maskMetaText = (meta: SessionMeta): SessionMeta => ({
+  ...meta,
+  title: meta.title === null ? null : maskSecrets(meta.title),
+  directory: meta.directory === null ? null : maskSecrets(meta.directory),
+  lastWord: meta.lastWord === null ? null : maskSecrets(meta.lastWord),
+  models: meta.models.map((m) => maskSecrets(m)),
+})
 
 export const formatMeta = (meta: SessionMeta): string => {
   const out = [`session: ${meta.sessionID}`]
@@ -634,6 +707,63 @@ export const formatMeta = (meta: SessionMeta): string => {
   if (meta.models.length > 0) out.push(`models: ${meta.models.join(", ")}`)
   return out.join("\n")
 }
+
+/** Latest-observed session outcome from `session_v2` (`idle_outcome` +
+ * `time_idle`). Queried against the current read-only DB, never windowed:
+ * a `--since` window filters record groups, not this status. Null
+ * outcome/at on any unknown (absent/unreadable DB, old schema, missing
+ * column/row, null or unexpected outcome) with a sanitized named reason —
+ * never a false running/stale claim. `latest-observed` marks the field as
+ * the last idle write, not a live claim about right now. */
+export type SessionStatus = {
+  outcome: "interrupted" | "succeeded" | "failed" | null
+  at: string | null
+  scope: "latest-observed"
+  source: "session_v2.idle_outcome+time_idle"
+}
+
+export const SESSION_STATUS_SCOPE = "latest-observed" as const
+export const SESSION_STATUS_SOURCE = "session_v2.idle_outcome+time_idle" as const
+
+const blankStatus = (): SessionStatus => ({ outcome: null, at: null, scope: SESSION_STATUS_SCOPE, source: SESSION_STATUS_SOURCE })
+
+export const sessionStatus = async (options: { dbPath?: string; sessionID: string }): Promise<{ status: SessionStatus; warning: string | null }> => {
+  try {
+    const { Database } = await import("bun:sqlite")
+    const db = new Database(options.dbPath ?? DEFAULT_DB_PATH, { readonly: true })
+    try {
+      let row: Dict | null
+      try {
+        row = db.query("SELECT idle_outcome, time_idle FROM session_v2 WHERE id = ?").get(options.sessionID) as Dict | null
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes("no such table")) return { status: blankStatus(), warning: "session_v2 table missing" }
+        if (message.includes("no such column")) return { status: blankStatus(), warning: "old schema: session_v2 lacks idle_outcome/time_idle" }
+        return { status: blankStatus(), warning: `status query failed: ${maskSecrets(message).slice(0, 120)}` }
+      }
+      if (!row) return { status: blankStatus(), warning: "session not in db" }
+      const outcome = row.idle_outcome
+      if (outcome !== "interrupted" && outcome !== "succeeded" && outcome !== "failed") {
+        return { status: blankStatus(), warning: outcome === null || outcome === undefined ? "no idle outcome recorded" : "unexpected idle outcome value" }
+      }
+      const idle = row.time_idle
+      const at = typeof idle === "number" && Number.isFinite(idle) ? new Date(idle).toISOString() : null
+      return { status: { ...blankStatus(), outcome, at }, warning: null }
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { status: blankStatus(), warning: `db unreadable: ${maskSecrets(message).slice(0, 120)}` }
+  }
+}
+
+/** Human status line: `session-status:<outcome>(<at>)[latest-observed]` or
+ * `session-status:unknown(<reason>)`. */
+export const formatSessionStatus = (status: SessionStatus, warning: string | null): string =>
+  status.outcome !== null
+    ? `session-status:${status.outcome}(${status.at ?? "time unknown"})[latest-observed]`
+    : `session-status:unknown(${warning ?? "no reason recorded"})`
 
 export const formatReads = (stats: ReadStat[]): string =>
   stats
@@ -693,7 +823,7 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
     list.push(record)
     groups.set(key, list)
   }
-  return [...groups.entries()].reverse().map(([taskRef, list]) => {
+  const grouped = [...groups.entries()].reverse().map(([taskRef, list]) => {
     const seen = new Map<string, GroupedLine>()
     const lines: GroupedLine[] = []
     for (const record of list) {
@@ -719,12 +849,25 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
       const model = record.model && typeof record.model.id === "string" ? record.model.id : null
       const excerpt = typeof record.excerpt === "string" && record.excerpt.length > 0 ? record.excerpt : null
       const result = typeof record.result === "string" && record.result.length > 0 ? record.result : null
+      const runTime = runTimeOf(record)
+      const runDuration = runDurationOf(record)
       if (existing) {
         existing.runs += 1
+        if (runTime !== null) {
+          const parsed = Date.parse(runTime)
+          if (existing.firstSeen === null || parsed < Date.parse(existing.firstSeen)) existing.firstSeen = runTime
+          if (existing.lastSeen === null || parsed > Date.parse(existing.lastSeen)) existing.lastSeen = runTime
+        }
         if (agent && !existing.agents.includes(agent) && existing.agents.length < 3) existing.agents.push(agent)
         if (sess && !existing.sessions.includes(sess) && existing.sessions.length < 5) existing.sessions.push(sess)
         if (model && !existing.models.includes(model) && existing.models.length < 3) existing.models.push(model)
-        if (!existing.variants.includes(full) && existing.variants.length < MAX_STORED_VARIANTS) existing.variants.push(full)
+        // runTimes/runDurations stay exactly parallel to stored variants:
+        // same push, same order, same MAX_STORED_VARIANTS cap.
+        if (!existing.variants.includes(full) && existing.variants.length < MAX_STORED_VARIANTS) {
+          existing.variants.push(full)
+          existing.runTimes.push(runTime)
+          existing.runDurations.push(runDuration)
+        }
         if (excerpt && !existing.excerpts.includes(excerpt) && existing.excerpts.length < 2) existing.excerpts.push(excerpt)
         if (result && !existing.results.includes(result) && existing.results.length < 2) existing.results.push(result)
         if (intent && !existing.intents.includes(intent) && existing.intents.length < 2) existing.intents.push(intent)
@@ -754,6 +897,10 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
         failReasonCount: reason === null ? 0 : 1,
         failReasonSource: reason === null ? null : FAIL_REASON_SOURCE,
         variants: [full],
+        firstSeen: runTime,
+        lastSeen: runTime,
+        runTimes: [runTime],
+        runDurations: [runDuration],
         excerpts: excerpt ? [excerpt] : [],
         results: result ? [result] : [],
         intents: intent ? [intent] : [],
@@ -769,6 +916,16 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
       lines: lines.reverse(),
     }
   })
+  // Drill refs are unique positive integers across ALL groups of this
+  // result, assigned in display order (group order, then line order as
+  // shown). Every displayed [N] selects exactly one line via showLine, on
+  // human and wire alike. Refs are ephemeral per query (never persisted);
+  // a later query over changed records may number differently.
+  let ref = 0
+  for (const group of grouped) {
+    for (const line of group.lines) line.ref = ++ref
+  }
+  return grouped
 }
 
 export const formatGrouped = (groups: TaskGroup[], full = false, withSession = false, sectionBudget?: number): string => {
@@ -777,9 +934,13 @@ export const formatGrouped = (groups: TaskGroup[], full = false, withSession = f
     const cap = sectionBudget ?? limit
     return stripped.length > cap ? stripped.slice(0, cap) : stripped
   }
+  /** Display-text pipeline: mask secret shapes FIRST, then the existing
+   * strip+cap. Mask-before-cap so a cut can never split a shaped secret
+   * into an unrecognizable (leaking) half. Stored sources keep raw strings. */
+  const clipMasked = (text: string, limit: number): string => clipText(maskSecrets(text), limit)
   const out: string[] = []
   for (const group of groups) {
-    out.push(`task: ${group.taskRef} (${group.runs} records${group.fails > 0 ? `, ${group.fails} failed` : ""})`)
+    out.push(`task: ${maskSecrets(group.taskRef)} (${group.runs} records${group.fails > 0 ? `, ${group.fails} failed` : ""})`)
     for (const line of group.lines) {
       const repeat = line.runs > 1 ? ` x${line.runs}` : ""
       const who = line.agents.length > 0 ? ` (${line.agents.join("+")})` : ""
@@ -790,28 +951,60 @@ export const formatGrouped = (groups: TaskGroup[], full = false, withSession = f
             : ` (reason: ${line.failReason})`
           : ""
       const where = withSession && line.sessions.length > 0 ? ` [${line.sessions.join(",")}]` : ""
-      out.push(`  [${line.ref}]${who} ${line.signature} — ${line.outcome}${repeat}${reason}${where}`)
+      // Multi-run wall range (sidecar timestamps are wall-clock): first→last,
+      // never one timestamp as all. Domain-labeled so a wide wall range is
+      // never read as a process duration.
+      const span = line.runs > 1 && line.firstSeen !== null && line.lastSeen !== null
+        ? ` [wall ${line.firstSeen}→${line.lastSeen}]`
+        : ""
+      out.push(`  [${line.ref}]${who} ${line.signature} — ${line.outcome}${repeat}${reason}${where}${span}`)
       const rawMode = full && !sectionBudget
       for (const variant of line.variants.slice(0, full ? line.variants.length : MAX_SHOWN_VARIANTS)) {
-        out.push(`      record: ${rawMode ? variant : clipText(variant, 130)}`)
+        out.push(`      record: ${rawMode ? maskSecrets(variant) : clipMasked(variant, 130)}`)
       }
       if (!full && line.variants.length > MAX_SHOWN_VARIANTS) out.push(`      (+${line.variants.length - MAX_SHOWN_VARIANTS} more records --show ${line.ref})`)
-      for (const intent of line.intents) out.push(`      intent: ${rawMode ? intent : clipText(intent, 160)}`)
+      for (const intent of line.intents) out.push(`      intent: ${rawMode ? maskSecrets(intent) : clipMasked(intent, 160)}`)
       if ((line.outcome === "failure" || line.outcome === "error") && line.excerpts.length > 0) {
         const clip = line.excerpts[0].replace(/\s+/g, " ").trim()
-        out.push(`      output: ${rawMode ? clip : clipText(clip, 300)}`)
+        out.push(`      output: ${rawMode ? maskSecrets(clip) : clipMasked(clip, 300)}`)
       } else if (line.excerpts.length > 0) {
         const verdict = verdictLine(line.signature, line.excerpts[0])
-        if (verdict) out.push(`      result: ${verdict}`)
+        if (verdict) out.push(`      result: ${maskSecrets(verdict)}`)
       }
     }
   }
   return out.join("\n")
 }
 
+/** Masked copy of task groups for JSON wire output: caller-controlled text
+ * (variants, intents, excerpts, results, taskRef) redacts secret shapes;
+ * stored sources keep raw strings for analysis. Keys, counts, times and
+ * reasons pass through untouched (reasons are masked at extraction). */
+export const maskGroupVariants = (groups: TaskGroup[]): TaskGroup[] =>
+  groups.map((group) => ({
+    ...group,
+    taskRef: maskSecrets(group.taskRef),
+    lines: group.lines.map((line) => ({
+      ...line,
+      variants: line.variants.map((v) => maskSecrets(v)),
+      intents: line.intents.map((v) => maskSecrets(v)),
+      excerpts: line.excerpts.map((v) => maskSecrets(v)),
+      results: line.results.map((v) => maskSecrets(v)),
+    })),
+  }))
+
 /** Parse byte budgets like 512, 1k, 4k, 1m. */
 export const parseBytes = (value: string | undefined): number | null =>
   parseAmountUnit(value, /^(\d+)\s*([km]?)$/i, { "": 1, k: 1024, m: 1024 * 1024 })
+
+/** Per-run clock line for the drill-down: wall instant vs process-monotonic
+ * duration, domains labeled. A wide wall gap with short process durations
+ * (suspend, queueing) renders as exactly that — never a duration claim. */
+export const runClockLine = (at: string | null, durationMs: number | null): string => {
+  const wall = at ?? "unknown"
+  const process = durationMs === null ? "unknown" : durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
+  return `wall: ${wall} · process-monotonic: ${process}`
+}
 
 /** Full drill-down for one collapsed line: every stored variant, unclipped unless budgeted. */
 export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: number): string => {
@@ -825,11 +1018,12 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
     const line = group.lines.find((l) => l.ref === ref)
     if (!line) continue
     const out: string[] = [
-      `[${line.ref}] ${line.signature} — ${line.outcome} x${line.runs} (${group.taskRef})`,
+      `[${line.ref}] ${line.signature} — ${line.outcome} x${line.runs} (${maskSecrets(group.taskRef)})`,
     ]
     line.variants.forEach((variant, i) => {
       out.push(`--- record ${i + 1}/${line.variants.length} ---`)
-      out.push(showBody(variant))
+      out.push(runClockLine(line.runTimes[i] ?? null, line.runDurations[i] ?? null))
+      out.push(showBody(maskSecrets(variant)))
     })
     if ((line.outcome === "failure" || line.outcome === "error") && line.failReasons.length > 0) {
       out.push(`--- reasons (from command text) ---`)
@@ -837,19 +1031,19 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
       if (line.failReasonCount > line.failReasons.length) out.push(`(+${line.failReasonCount - line.failReasons.length} more)`)
     }
     if (line.intents.length > 0) {
-      out.push(`--- intents ---`)
-      for (const intent of line.intents) out.push(`- ${intent}`)
+      out.push(`--- task context (not failure cause) ---`)
+      for (const intent of line.intents) out.push(`- ${maskSecrets(intent)}`)
     }
     if (line.excerpts.length > 0) {
       line.excerpts.forEach((excerpt, i) => {
         out.push(`--- output ${i + 1}/${line.excerpts.length} ---`)
-        out.push(showBody(excerpt))
+        out.push(showBody(maskSecrets(excerpt)))
       })
     }
     if (line.results.length > 0) {
       line.results.forEach((res, i) => {
         out.push(`--- result ${i + 1}/${line.results.length} ---`)
-        out.push(showBody(res))
+        out.push(showBody(maskSecrets(res)))
       })
     }
     if (line.messageIDs.length > 0) out.push(`messageIDs: ${line.messageIDs.join(",")}`)

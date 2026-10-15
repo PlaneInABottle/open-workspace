@@ -11,22 +11,28 @@ import {
   joinSession,
   latestSession,
   listSessions,
+  joinWarnings,
+  maskGroupVariants,
   parseBytes,
   parseSince,
   readDigest,
   sessionMeta,
+  sessionStatus,
+  formatSessionStatus,
   showLine,
   SINCE_TOKENS,
   sinceWindow,
+  filterChip,
   storeWindow,
   windowNotice,
   type EnrichedRecord,
+  type SessionStatus,
   type SinceWindow,
 } from "./join"
 import { doctor, formatDoctor, formatIdentity, doctorIdentity } from "./doctor"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 import { parseWaitDuration } from "./up-ready"
-import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, PROBE_TIMEOUT_MS, subsetNestingHint } from "./up-schema"
+import { decodeUtf8Fatal, formatUpWarnings, isSubsetNestingError, missingRequiredEnv, parseUpFile, probeTimeoutMs, subsetNestingHint } from "./up-schema"
 import { isSecretFlagToken, maskCmdShape, maskSecretToken } from "./up-reconcile"
 import { maskSecrets } from "./up-evidence"
 import type { UpService } from "./up-schema"
@@ -71,7 +77,7 @@ export const helpText = (): string =>
     "  up [service] [--file] [--check] [-d|--detach] [--wait 120s] [--health svc=/path]  start services (ow.yaml); --check only validates;",
   "                                -d with --wait: wait until declared ports open (exit: 1 when not ready);",
   "                                --health <name>=<path> (repeatable, only with --wait): that service waits for HTTP 2xx after TCP",
-  "                                single service (up <name> [--wait 120s] [--health <name>=<path>]): added to the live supervisor by request, healthy ones unaffected; --wait waits one-shot (live only, -d ignored)",
+  "                                single service (up <name> [--wait 120s] [--health <name>=<path>]): live → added by request, healthy ones unaffected (-d ignored); no live lock → only that service starts (foreground, or detached with -d)",
     "  restart <service> [--file] [--wait 120s] [--health <name>=<path>]   restart one service on the live supervisor + waited (live only; exit 2 without lock)",
     "  down [service] [--file] [--rm]  stop services (--rm only with bulk down; exit 2 for a single service)",
     "  reconcile --check [--json] [--probe] [--file]  read-only drift report (no mutation; exit 1 on drift, 0 in sync)",
@@ -112,15 +118,23 @@ export const VERB_HELP: Record<string, string[]> = {
   show: [
     "flags: --since, --full, --bytes 512|1k|4k|1m, --tree (subagent tree), --flat, --kind/--tool <v>,",
     "       --show <line>, --show-fails, --json",
+    "status: latest-observed session outcome header (JSON `status` object); --since filters groups only",
+    "lines: repeats collapse with a wall first→last range; --show drills per-run wall vs process-monotonic clocks",
+    "refs: [N] is unique per response and temporary (ephemeral, never a stored id); --show N selects that line",
+    "empty: no-match filters print `no records ... [filters: session=…, kind/tool=…]` (session ids match exactly, no prefix search)",
     "exits: 0 ok, 1 structural, 2 usage",
     "example: ow show <session> --tree --since 1d",
   ],
-  meta: ["flags: --json", "exits: 0 ok, 1 no account for the session, 2 usage"],
+  meta: [
+    "flags: --json",
+    "status: latest-observed session outcome rides along (JSON `status` object, header line otherwise)",
+    "exits: 0 ok, 1 no account for the session, 2 usage",
+  ],
   reads: ["flags: --since, --json", "exits: 0 ok, 1 structural, 2 usage"],
   up: [
     "flags: --file <path>, --check (validate only), -d/--detach, --wait <dur> (max 5m, needs -d),",
     "       --health <name>=<path> (repeatable, needs --wait; refuses with --check)",
-    "single service: ow up <name> [--wait <dur>] [--health <name>=<path>] adds one service via the live supervisor",
+    "single service: ow up <name> [-d] [--wait <dur>] [--health <name>=<path>] starts only that service (live → by request, healthy ones unaffected; no live lock → foreground, or detached with -d)",
     "exits: 0 ok/ready, 1 not ready (with --wait), 2 usage or a refused port/env",
     "example: ow up -d --wait 150s --health configuration=/actuator/health",
   ],
@@ -265,23 +279,23 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     }
     // No command takes a second positional: any extra is a usage error
     // (same pre-existing text), never a silent no-op.
-    return fail(`unexpected argument: ${arg}`)
+    return fail(`unexpected argument: ${maskSecrets(arg)}`)
   }
   if (flags["--help"]) return { command, sessionID, flags, error: null, extra }
   if (!command) return fail("command expected: doctor|sessions|show|meta|reads|up|down|ps|logs|init (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
-  if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${flags["--since"]} (${SINCE_TOKENS})`)
+  if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${maskSecrets(String(flags["--since"]))} (${SINCE_TOKENS})`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
-  if (typeof flags["--bytes"] === "string" && bytes === null) return fail(`invalid --bytes: ${flags["--bytes"]} (512|1k|4k|1m)`)
+  if (typeof flags["--bytes"] === "string" && bytes === null) return fail(`invalid --bytes: ${maskSecrets(String(flags["--bytes"]))} (512|1k|4k|1m)`)
   if (typeof flags["--show"] === "string" && !Number.isFinite(Number(flags["--show"]))) {
-    return fail(`invalid --show: ${flags["--show"]} (line number expected)`)
+    return fail(`invalid --show: ${maskSecrets(String(flags["--show"]))} (line number expected)`)
   }
   if (typeof flags["--tail"] === "string") {
     const tail = Number(flags["--tail"])
-    if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`invalid --tail: ${flags["--tail"]} (1-5000 expected)`)
+    if (!Number.isInteger(tail) || tail < 1 || tail > 5000) return fail(`invalid --tail: ${maskSecrets(String(flags["--tail"]))} (1-5000 expected)`)
   }
   if (typeof flags["--wait"] === "string" && parseWaitDuration(flags["--wait"]) === null) {
-    return fail(`invalid --wait: ${flags["--wait"]} (e.g. 15s, at most 5m)`)
+    return fail(`invalid --wait: ${maskSecrets(String(flags["--wait"]))} (e.g. 15s, at most 5m)`)
   }
   if (typeof flags["--grep"] === "string" && flags["--grep"].length > 256) {
     return fail("invalid --grep: at most 256 characters")
@@ -291,6 +305,13 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
 
 // --json envelopes: stable English keys; human views keep plain English labels.
 // `window` is the additive `--since` envelope ({since, cutoff} or null).
+/** Human empty-line filter suffix: blank unless a kind/tool filter was
+ * applied, then ` [filters: session=…, kind/tool=…]` (masked-then-capped). */
+const formatEmptyChip = (sessionID: string, kind?: string | null, tool?: string | null): string => {
+  const chip = filterChip(sessionID, kind, tool)
+  return chip === null ? "" : ` ${chip}`
+}
+
 export const toSessionsJson = (sessions: Awaited<ReturnType<typeof listSessions>>, window: SinceWindow | null = null) => ({ sessions, window })
 export const toShowJson = (
   sessionID: string,
@@ -298,7 +319,10 @@ export const toShowJson = (
   groups: ReturnType<typeof groupByTask>,
   tree?: ReturnType<typeof treeIds>,
   window: SinceWindow | null = null,
-) => (tree ? { session: sessionID, warnings, groups, tree, window } : { session: sessionID, warnings, groups, window })
+  status: SessionStatus | null = null,
+) => (tree
+  ? { session: sessionID, warnings, groups, tree, window, status }
+  : { session: sessionID, warnings, groups, window, status })
 
 /** `doctor` exit rule: the `up` line is informational only. */
 export const doctorFails = (lines: { name: string; ok: boolean }[]): boolean =>
@@ -478,7 +502,7 @@ export const waitForUpReady = async (opts: {
       if (st.probe !== undefined && Date.now() - st.probe.at < 2000) return st.probe.ok
       const outcome = await runProbeFn({
         probe: spec.probe,
-        timeoutMs: PROBE_TIMEOUT_MS[spec.timeout],
+        timeoutMs: probeTimeoutMs(spec.timeout),
         cwd: svc?.cwd === undefined ? opts.rootDir : resolvePath(opts.rootDir, svc.cwd),
         env: { ...process.env, ...svc?.env, OW_SERVICE: target.name },
       }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "could-not-run", timedOut: false, code: null }))
@@ -641,7 +665,8 @@ export const toCheckServicesJson = (services: UpService[]): Record<string, unkno
 /** M1 single-service client flow over the B1 request channel. Live lock →
  * diff + atomic request + one-shot (10s) result wait; the client never
  * spawns, acquires, or persists. Returns null only for `up` with no live
- * supervisor (caller falls back to classic bulk `up`); `restart` refuses
+ * supervisor (the caller starts only the named service from initial
+ * startup — never a bulk fallback); `restart` refuses
  * (exit 2) and `down` stops directly without touching the lock file (B5). */
 export const runSingleServiceRequest = async (opts: {
   rootDir: string
@@ -886,6 +911,146 @@ export const runDirectSingleDown = async (rootDir: string, service: string, json
   return outcome.stopped ? 0 : 1
 }
 
+/** Lockless `up <svc>`: no live supervisor, so the selection applies from
+ * initial startup — only the named service supervises (foreground), or
+ * detaches selected with `detach` (+ a target-only `--wait`/`--health`
+ * readiness wait through the shared loop). Bulk bare `up` is untouched.
+ * Unknown names and required-env gaps already failed inside
+ * `runSingleServiceRequest` (exit 2, nothing spawned); the target is
+ * re-checked here against the walked manifest, and a lock that turned live
+ * in between refuses exactly like bulk (`already running`, exit 2 — never a
+ * second supervisor). A failed initial `--wait` stops exactly what this
+ * command started (shared `downAll`, lock cleared, settled record and logs
+ * kept) and still reports the wait verdict. State-root discipline is the
+ * existing `--file` contract: writers stay in `rootDir`, announced on
+ * stderr via the existing `state dir:` line (suppressed under `--json`, so
+ * stdout holds at most one JSON object and no new keys are added). */
+export const runLocklessSingleUp = async (opts: {
+  rootDir: string
+  file: string
+  service: string
+  json: boolean
+  detach: boolean
+  wait?: string
+  health?: string | string[]
+}): Promise<number> => {
+  const warn = (message: string): void => {
+    if (!opts.json) console.error(message)
+  }
+  let services: UpService[]
+  try {
+    services = parseUpFile(decodeUtf8Fatal(readFileSync(opts.file))).services
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`ow: ow.yaml not found: ${opts.file}`)
+    } else {
+      console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return 2
+  }
+  const selected = services.find((entry) => entry.name === opts.service)
+  if (!selected) {
+    const known = services.map((entry) => entry.name).join(", ")
+    console.error(`ow: unknown service: ${opts.service}${known.length > 0 ? ` (known: ${known})` : ""}`)
+    return 2
+  }
+  // Target-only `--wait`/`--health` guards (same rules as the live single
+  // path): the wait runs only detached — foreground supervision already
+  // blocks and streams, so `--wait` there is a usage error like bulk.
+  let waitMs: number | undefined
+  let waitHealth: Record<string, string> = {}
+  if (opts.wait !== undefined || opts.health !== undefined) {
+    if (opts.health !== undefined && opts.wait === undefined) {
+      console.error("ow: --health works only with --wait (--wait <duration> required)")
+      return 2
+    }
+    if (!opts.detach) {
+      console.error("ow: --wait works only with -d/--detach (preview)")
+      return 2
+    }
+    const parsedWait = parseWaitDuration(opts.wait as string)
+    if (parsedWait === null) {
+      console.error(`ow: invalid --wait: ${opts.wait} (e.g. 15s, at most 5m)`)
+      return 2
+    }
+    waitMs = parsedWait
+    if (opts.health !== undefined) {
+      try {
+        waitHealth = parseHealthFlags(opts.health, services)
+      } catch (error) {
+        console.error(`ow: ${error instanceof Error ? error.message : String(error)}`)
+        return 2
+      }
+      for (const name of Object.keys(waitHealth)) {
+        if (name !== opts.service) {
+          console.error(`ow: --health must name the target service: ${opts.service} (got: ${name})`)
+          return 2
+        }
+      }
+      if (waitHealth[opts.service] !== undefined && selected.readiness !== undefined) {
+        console.error(`ow: --health conflicts with readiness: ${selected.name} (pick one)`)
+        return 2
+      }
+    }
+    if (selected.port === undefined && selected.readiness === undefined) {
+      console.error(`ow: nothing to wait for: ${selected.name} (no port or probe declared)`)
+      return 2
+    }
+  }
+  const { classifyLock, ensureUpStateDir, upPaths } = await import("./up-state")
+  const paths = upPaths(opts.rootDir)
+  try {
+    await ensureUpStateDir(paths.stateDir)
+  } catch (error) {
+    console.error(`ow: .ow unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
+  }
+  const status = await classifyLock(paths.lockFile)
+  if (status.kind === "live") {
+    console.error("ow: already running (ow ps)")
+    return 2
+  }
+  if (status.kind === "unknown") {
+    console.error(`ow: lock unverifiable (${status.reason}) — treated as running`)
+    return 2
+  }
+  if (status.kind === "stale") warn(`warning: stale lock will be adopted (${status.reason})`)
+  if (status.kind === "corrupt") warn(`warning: corrupt lock will be adopted (${status.reason})`)
+  // Orphan probe (H6): lock says free but recorded children may still be
+  // live from a crashed supervisor — refuse instead of duplicating them.
+  try {
+    const { assertNoLiveOrphans } = await import("./up-supervisor")
+    await assertNoLiveOrphans(opts.rootDir)
+  } catch (error) {
+    console.error(`ow: ${maskSecrets(error instanceof Error ? error.message : String(error)).slice(0, 160)}`)
+    return 2
+  }
+  if (opts.detach) {
+    const { detachSupervised } = await import("./up-supervisor-cli")
+    const code = await detachSupervised(opts.file, opts.rootDir, { only: opts.service })
+    if (code !== 0) return code
+    if (waitMs === undefined) return 0
+    const waitCode = await waitForUpReady({ rootDir: opts.rootDir, services: [selected], timeoutMs: waitMs, json: opts.json, health: waitHealth })
+    if (waitCode !== 0) {
+      const { downAll } = await import("./up-supervisor")
+      try {
+        const outcome = await downAll(opts.rootDir, false)
+        for (const line of outcome.warnings) warn(line)
+        if (!opts.json) {
+          for (const result of outcome.results) {
+            console.log(`${result.stopped ? "stopped" : "will not stop"}: ${result.name} (${result.note})`)
+          }
+        }
+      } catch {
+        // The wait verdict rules: cleanup is best-effort, never a new shape.
+      }
+    }
+    return waitCode
+  }
+  const { runSuperviseFile } = await import("./up-supervisor-cli")
+  return runSuperviseFile(opts.file, { only: opts.service })
+}
+
 const resolveSession = async (
   positional: string | undefined,
   logPath: string,
@@ -925,8 +1090,17 @@ export const run = async (argv: string[]): Promise<number> => {
       console.error("ow: __supervise is for internal use (--file required)")
       return 2
     }
+    const onlyIndex = argv.indexOf("--only")
+    let only: string | undefined
+    if (onlyIndex >= 0) {
+      only = argv[onlyIndex + 1]
+      if (!only || only.startsWith("--")) {
+        console.error("ow: __supervise is for internal use (--only needs a value)")
+        return 2
+      }
+    }
     const { runSuperviseFile } = await import("./up-supervisor-cli")
-    return runSuperviseFile(file, { quiet: true })
+    return runSuperviseFile(file, { quiet: true, ...(only === undefined ? {} : { only }) })
   }
   const parsed = parseArgs(argv)
   if (parsed.flags["--version"] === true) {
@@ -959,7 +1133,7 @@ export const run = async (argv: string[]): Promise<number> => {
     return 2
   }
   if (parsed.extra.length > 0) {
-    console.error(`ow: unexpected argument: ${parsed.extra[0]}`)
+    console.error(`ow: unexpected argument: ${maskSecrets(parsed.extra[0])}`)
     console.error(helpText())
     return 2
   }
@@ -1105,9 +1279,11 @@ export const run = async (argv: string[]): Promise<number> => {
       if (positional !== undefined) {
         // M1 single-service `up`: live supervisor → request channel, then an
         // optional one-shot `--wait`/`--health` readiness wait for the target
-        // alone (OW-012; same loop as bulk). `-d` stays ignored (no detach
-        // on the request path). No live lock → classic bulk behavior
-        // (plan M1), anchored at this root.
+        // alone (OW-012; same loop as bulk). `-d` stays ignored on the live
+        // request path (never detached). No live lock → the selection applies
+        // from initial startup (only the named service supervises,
+        // foreground — or detached selected with `-d`), anchored at this
+        // root's walked file.
         if (flags["--check"] === true) {
           console.error("ow: --check cannot be used with a single service (validates the whole file)")
           return 2
@@ -1126,7 +1302,15 @@ export const run = async (argv: string[]): Promise<number> => {
           health: flags["--health"] as string | string[] | undefined,
         })
         if (single !== null) return single
-        warn(`no live supervisor — bulk starting (requested: ${positional})`)
+        return runLocklessSingleUp({
+          rootDir,
+          file: yamlForRead,
+          service: positional,
+          json,
+          detach: flags["--detach"] === true,
+          wait: flag(flags, "--wait"),
+          health: flags["--health"] as string | string[] | undefined,
+        })
       }
       if (flags["--check"] === true && flags["--wait"] !== undefined) {
         console.error("ow: --wait cannot be used with --check (validation does not wait)")
@@ -1468,15 +1652,32 @@ export const run = async (argv: string[]): Promise<number> => {
   }
 
   if (command === "meta") {
+    // Latest-observed status is unwindowed by construction (meta refuses
+    // --since): same current read-only DB, no window applied.
+    const { status, warning: statusWarning } = await sessionStatus({ dbPath, sessionID: sid })
     const result = await sessionMeta({ dbPath, sessionID: sid })
     if (result.warning) warn(`warn: ${result.warning}`)
     if (!result.meta) return 1
-    console.log(json ? JSON.stringify({ meta: result.meta, warning: result.warning }) : formatMeta(result.meta))
+    if (json) {
+      console.log(JSON.stringify({
+        meta: result.meta,
+        warning: joinWarnings(result.warning, statusWarning ? `session status unknown: ${statusWarning}` : null),
+        status,
+      }))
+    } else {
+      console.log(formatSessionStatus(status, statusWarning))
+      console.log(formatMeta(result.meta))
+    }
     return 0
   }
 
   const treeMode = flags["--tree"] === true
   const windowMs = parseSince(flag(flags, "--since"))
+  // Latest-observed session status: current read-only DB, never windowed
+  // (--since filters record groups below, never this status).
+  const { status: showStatus, warning: showStatusWarning } = await sessionStatus({ dbPath, sessionID: sid })
+  const statusLine = formatSessionStatus(showStatus, showStatusWarning)
+  const statusJsonWarning = showStatusWarning ? `session status unknown: ${showStatusWarning}` : null
   // One per-verb cutoff notice for the joined readers (human only via
   // warn; show/reads share this region).
   const window = sinceWindow(flag(flags, "--since"), windowMs, Date.now())
@@ -1496,6 +1697,7 @@ export const run = async (argv: string[]): Promise<number> => {
     warnings = r.warnings
   }
   for (const w of warnings) warn(`warn: ${w}`)
+  if (statusJsonWarning) warnings.push(statusJsonWarning)
   const kind = flag(flags, "--kind")
   const tool = flag(flags, "--tool")
   const filtered = new Map<string, EnrichedRecord[]>()
@@ -1523,7 +1725,12 @@ export const run = async (argv: string[]): Promise<number> => {
 
   if (showRef) {
     const text = showLine(groups, Number(showRef), sectionBudget)
-    console.log(json ? JSON.stringify({ session: sid, detail: text }) : text)
+    if (json) {
+      console.log(JSON.stringify({ session: sid, detail: text, status: showStatus }))
+    } else {
+      console.log(statusLine)
+      console.log(text)
+    }
     return 0
   }
   if (showFails) {
@@ -1536,7 +1743,12 @@ export const run = async (argv: string[]): Promise<number> => {
     }
     if (out.length > 0) {
       const text = out.join("\n")
-      console.log(json ? JSON.stringify({ session: sid, detail: text }) : text)
+      if (json) {
+        console.log(JSON.stringify({ session: sid, detail: text, status: showStatus }))
+      } else {
+        console.log(statusLine)
+        console.log(text)
+      }
     } else {
       warn("no failed lines")
     }
@@ -1548,22 +1760,24 @@ export const run = async (argv: string[]): Promise<number> => {
   }
   if (treeMode) {
     if (json) {
-      console.log(JSON.stringify(toShowJson(sid, warnings, groups, treeIds(buildTree(sid, filtered)), window)))
+      console.log(JSON.stringify(toShowJson(sid, warnings, maskGroupVariants(groups), treeIds(buildTree(sid, filtered)), window, showStatus)))
     } else {
+      console.log(statusLine)
       const text = formatTree(buildTree(sid, filtered), filtered, { full, sectionBudget })
       // Honest empty (grouped/tree only — --flat streams records, never a line).
       if (text.length > 0) console.log(text)
-      else console.log(`no records ${storeWindow(logPath, window)}`)
+      else console.log(`no records ${storeWindow(logPath, window)}${formatEmptyChip(sid, kind, tool)}`)
       if (full) warn(`(full text: ${text.length} chars)`)
     }
     return 0
   }
   const text = formatGrouped(groups, full, false, sectionBudget)
   if (json) {
-    console.log(JSON.stringify(toShowJson(sid, warnings, groups, undefined, window)))
+    console.log(JSON.stringify(toShowJson(sid, warnings, maskGroupVariants(groups), undefined, window, showStatus)))
   } else {
+    console.log(statusLine)
     if (text.length > 0) console.log(text)
-    else console.log(`no records ${storeWindow(logPath, window)}`)
+    else console.log(`no records ${storeWindow(logPath, window)}${formatEmptyChip(sid, kind, tool)}`)
     if (full) warn(`(full text: ${text.length} chars)`)
   }
   return 0

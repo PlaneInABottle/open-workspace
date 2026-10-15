@@ -7,7 +7,7 @@
 import { basename } from "node:path"
 
 import { maskSecrets } from "./up-evidence"
-import { PROBE_TIMEOUT_MS, type UpReadiness } from "./up-schema"
+import { probeTimeoutMs, type UpReadiness } from "./up-schema"
 
 export const PROBE_STDOUT_MAX_BYTES = 64 * 1024
 export const PROBE_STDERR_MAX_BYTES = 16 * 1024
@@ -221,7 +221,7 @@ export const runProbe = async (opts: {
   env: Record<string, string | undefined>
   timeoutMs?: number
 }): Promise<ProbeOutcome> => {
-  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS[opts.spec.timeout]
+  const timeoutMs = opts.timeoutMs ?? probeTimeoutMs(opts.spec.timeout)
   const fail = (note: string, extra?: Partial<ProbeOutcome>): ProbeOutcome => ({
     ok: false,
     note: maskSecrets(note).slice(0, PROBE_RESULT_NOTE_MAX_CHARS),

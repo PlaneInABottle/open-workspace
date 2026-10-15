@@ -105,6 +105,44 @@ human only) and ride `--json` as the additive `window: {since, cutoff}`
 window applies); empty renders stay honest (`no X (store: …; window: …)`
 naming the searched store, never a silent blank or a false empty).
 
+`show`/`meta` also report the latest-observed session outcome from
+`session_v2` (`idle_outcome` + `time_idle`): human header
+`session-status:<outcome>(<at>)[latest-observed]` (or
+`session-status:unknown(<reason>)`), `--json` additive `status:
+{outcome: interrupted|succeeded|failed|null, at, scope:
+'latest-observed', source: 'session_v2.idle_outcome+time_idle'}`. The
+status is read from the current DB, never windowed (`--since` filters
+groups only); any unknown (absent/unreadable DB, old schema, missing
+row/column, null outcome) yields null outcome/at plus a sanitized named
+warning — never a false running/stale claim. Repeated lines carry an
+evidence-accurate wall range (`[wall <first>→<last>]`, multi-run only)
+with per-run clocks in the drill-down (`--show N`: `wall: <ISO> ·
+process-monotonic: <1.0s>` per stored record, parallel to stored
+variants); durations are process-monotonic spans from the sidecar, never
+derived from wall stamps. Drill-down sections keep exact labels
+(`--- task context (not failure cause) ---` vs
+`--- reasons (from command text) ---`); `(reason:)` prints only for an
+actual command-text reason, never for intent. `sessions` rows are
+unchanged (windowed historical aggregates, no per-row status).
+Drill `[N]` refs are unique across all groups of one response and
+temporary (ephemeral per query, never stored ids): human and `--json`
+share the same numbers, and every displayed N selects exactly its line
+via `--show N`. An unmatched kind/tool filter renders the honest
+`no records (store: …; window: …) [filters: session=…, kind/tool=…]`
+(caller filter text masked-then-capped; session ids match exactly —
+no prefix search, so a partial id stays visibly unmatched); pure-empty
+and valid-empty-window lines are unchanged, as is `--json` (no new
+field).
+
+SECURITY exception to the byte-identical history above: every
+caller-controlled text the analysis views emit (record/variant/intent/
+excerpt/task/meta free text, tree descriptions, refusal echoes) redacts
+secret shapes via the shared `maskSecrets` (mask-before-cap; compact
+JSON structurally) at render/serialize time — stored sidecar/DB sources
+stay verbatim, as does the raw `--flat` record stream. JSON keys are
+unchanged; secret-shaped VALUES are intentionally redacted, so benign
+commands/fields stay byte-identical while sensitive content must change.
+
 ## Service supervision (`ow up/down/ps/logs`)
 
 A user-agent-written `ow.yaml` at a repo root declares dev services; `ow`
@@ -165,7 +203,7 @@ services:
 ```sh
 ow up --check --file ow.yaml   # validate only (exit 0/2)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir
-ow up <name> [--wait 120s] [--health <name>=<path>] [--file ow.yaml]  # live: add one service via the supervisor + waited (no live lock → bulk up; -d ignored)
+ow up <name> [-d] [--wait 120s] [--health <name>=<path>] [--file ow.yaml]  # live: add one service via the supervisor + waited (-d ignored); no live lock: start only that service (foreground, or detached with -d)
 ow restart <name> [--wait 120s] [--health <name>=<path>] [--file ow.yaml]  # live: lstart-verified stop + respawn in place + waited (no lock → exit 2)
 ow down [name] [--file ow.yaml]  # single: stop only the target (lock/state files kept; --rm is bulk-only → exit 2)
 ow reconcile --check [--json] [--file ow.yaml]  # read-only drift report (never mutates)
@@ -196,7 +234,7 @@ exit 2 (`ow: nothing to wait for`), never a silent pass. `--wait` without `-d/--
 spawns, no `.ow` created), as is any `--wait` combined with `--check`
 (`--check` only validates, never waits). `--json` mirrors the human lines with stable
 English keys (`{ready, services: [{name, port, status, waitedSec, exitCode?, healthPath?}], noPort}`).
-Single-service `--wait` (`up`/`restart <name>`, live supervisor only) reuses the same loop target-only;
+Single-service `--wait` (`up`/`restart <name>`, plus lockless `up <name> -d`) reuses the same loop target-only;
 see the single-service section below (bulk rules above do not apply there).
 `ps` probes the same way per declared port: human `listen=yes/no`,
 JSON additive `listening` key (present only with `port`).
@@ -223,15 +261,18 @@ healthy services are never signaled.
   never an assumed half-spawn). The supervisor is the sole writer; requests
   run FIFO. An already-running target reports `already running:` (exit 2,
   no spawn). A blind target (unverifiable `lstart`) reports `may already be running:` (exit 2, no spawn — the slot is never treated as free). Live
-  single-`up`/`restart` accept `--wait <duration>` (live supervisor only): the action runs first,
+  single-`up`/`restart` accept `--wait <duration>`: the action runs first,
   then readiness waits one-shot for the target alone through the same TCP→HTTP/probe loop as bulk
   (exit 0 ready, 1 timeout or early exit; `--health <name>=<path>` is target-only and needs `--wait`).
   With `--json --wait` the action merges one object only on success
   (`{service,action,pid?,diff,ready,services,noPort}` — failed actions keep the plain shape).
-  `-d` stays ignored on the single-service path (documented, never detached). A `--wait` on a target
+  `-d` stays ignored on the live single-service path (documented, never detached). A `--wait` on a target
   with no port and no probe refuses exit 2 before any request is written (`ow: nothing to wait for`),
-  never a silent pass. With no live lock, `up <name>` falls
-  back to classic bulk `up`, `restart` refuses (exit 2, `no running supervisor for restart`), and
+  never a silent pass. With no live lock, `up <name>` starts only that
+  service — foreground without `-d`, or detached with `-d` plus the same
+  target-only `--wait`/`--health` (a failed initial `--wait` stops exactly
+  what the command started, then reports the wait verdict);
+  `restart` refuses (exit 2, `no running supervisor for restart`), and
   `down <name>` stops the target directly without touching the lock file. Single `down` confirms
   post-stop (`confirmed: {stopped, code}` in `--json`, `follow-up: ow ps <name>` on human output) —
   the pre-shape `diff` goes stale once the process is gone, so re-verify with `ps`.
@@ -285,7 +326,8 @@ drift, exit unchanged).
 
 A service defines an arbitrary local command via
 `readiness: {probe: [...], timeout: 10s, needsPort: true}`
-(single-line inline; argv-only, no shell; timeout 5s|10s|30s; `needsPort`
+(single-line inline; argv-only, no shell; timeout `<N>s`, 1..300, default 10s;
+values above 30s parse with an advisory warning; `needsPort`
 without a port is a schema error). The probe runs ONLY on the client
 (`up -d --wait`, single `up`/`restart --wait`, `reconcile --check --probe`) — the supervisor never
 runs it, no gating/daemon. Contract: the first JSON object on stdout

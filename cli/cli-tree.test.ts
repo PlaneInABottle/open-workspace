@@ -321,12 +321,20 @@ describe("cli --json shapes", () => {
     expect(() => JSON.stringify(payload)).not.toThrow()
   })
 
-  test("show envelope carries session, warnings and groups", () => {
+  test("show envelope carries session, warnings, groups and status", () => {
     const groups = groupByTask([rec({ command: "echo hi", outcome: "success", taskRef: "t" })])
     const payload = toShowJson("ses_p", ["w1"], groups)
-    expect(Object.keys(payload).sort()).toEqual(["groups", "session", "warnings", "window"].sort())
+    expect(Object.keys(payload).sort()).toEqual(["groups", "session", "status", "warnings", "window"].sort())
     expect(payload.session).toBe("ses_p")
     expect(payload.window).toBeNull()
+    expect(payload.status).toBeNull()
+    const withStatus = toShowJson("ses_p", [], groups, undefined, null, {
+      outcome: "failed",
+      at: "2026-10-01T11:00:00.000Z",
+      scope: "latest-observed",
+      source: "session_v2.idle_outcome+time_idle",
+    })
+    expect(withStatus.status).toMatchObject({ outcome: "failed", scope: "latest-observed" })
   })
 })
 
@@ -460,5 +468,15 @@ describe("retired session verbs refuse loud (exit 2 with the usage list, never s
       console.error = savedError
     }
     expect(`${out.join("\n")}\n${err.join("\n")}`).toContain("usage: ow <command>")
+  })
+})
+
+describe("refusal echoes mask secret shapes (mask-before-cap)", () => {
+  test("invalid flag values echo masked, benign values verbatim", async () => {
+    const { parseArgs } = await import("./cli")
+    expect(parseArgs(["show", "--show", "token=hunter2"]).error ?? "").not.toContain("hunter2")
+    expect(parseArgs(["show", "--show", "token=hunter2"]).error ?? "").toContain("token=***")
+    expect(parseArgs(["show", "--show", "bogus"]).error).toContain("invalid --show: bogus")
+    expect(parseArgs(["show", "--bogus", "token=hunter2"]).error ?? "").not.toContain("hunter2")
   })
 })

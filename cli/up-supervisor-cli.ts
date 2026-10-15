@@ -18,8 +18,11 @@ const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTi
 /** Foreground supervision of one file. Returns the process exit code.
  * `quiet` (detached `__supervise`) suppresses per-line stdout streaming —
  * lines already persist to per-service JSONL via capture — while startup
- * warnings/errors still land in supervisor.out (bounded, a handful). */
-export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean }): Promise<number> => {
+ * warnings/errors still land in supervisor.out (bounded, a handful).
+ * `only` starts a single named service from initial startup (unknown names
+ * fail exit 2 before any lock/state/spawn); the full file stays the
+ * request channel's manifest, so a later live `up <other>` joins in. */
+export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean; only?: string }): Promise<number> => {
   const abs = resolve(file)
   let text: string
   try {
@@ -40,6 +43,16 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   } catch (error) {
     console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
     return 2
+  }
+  let services = parsed.services
+  if (opts?.only !== undefined) {
+    const target = parsed.services.find((svc) => svc.name === opts.only)
+    if (!target) {
+      const known = parsed.services.map((svc) => svc.name).join(", ")
+      console.error(`ow: unknown service: ${opts.only}${known.length > 0 ? ` (known: ${known})` : ""}`)
+      return 2
+    }
+    services = [target]
   }
   const rootDir = dirname(abs)
   const paths = upPaths(rootDir)
@@ -71,7 +84,7 @@ export const runSuperviseFile = async (file: string, opts?: { quiet?: boolean })
   }
   let code = 0
   try {
-    code = await runSupervised(parsed.services, {
+    code = await runSupervised(services, {
       rootDir,
       stateFile: paths.supervisorFile,
       logsDir: paths.logsDir,
@@ -110,12 +123,15 @@ const tailFile = async (path: string, maxLines: number): Promise<string[]> => {
 }
 
 /** The exact `sh -c` body detach uses (exported for quoting tests). Only
- * intentional shell syntax stays unquoted: `nohup`, `>`, `2>&1`, `&`, `$!`. */
-export const superviseShell = (execPath: string, cliPath: string | null, file: string, outFile: string): string => {
+ * intentional shell syntax stays unquoted: `nohup`, `>`, `2>&1`, `&`, `$!`.
+ * `only` (a selected service) rides a hidden internal `--only` on
+ * `__supervise` — never a public flag. */
+export const superviseShell = (execPath: string, cliPath: string | null, file: string, outFile: string, only?: string): string => {
+  const onlyFlag = only !== undefined ? ` --only ${shQuote(only)}` : ""
   const inner =
     cliPath !== null
-      ? `${shQuote(execPath)} run ${shQuote(cliPath)} __supervise --file ${shQuote(file)}`
-      : `${shQuote(execPath)} __supervise --file ${shQuote(file)}`
+      ? `${shQuote(execPath)} run ${shQuote(cliPath)} __supervise --file ${shQuote(file)}${onlyFlag}`
+      : `${shQuote(execPath)} __supervise --file ${shQuote(file)}${onlyFlag}`
   return `nohup ${inner} > ${shQuote(outFile)} 2>&1 & echo $!`
 }
 
@@ -139,9 +155,25 @@ export const isFreshSupervisorFile = (path: string, spawnWall: number): boolean 
  * spawn handshake — the child performs the real exclusive acquire before
  * spawning any service. The handoff window is one synchronous unlink;
  * a child that still sees the parent lock refuses loudly (exit 2 in
- * supervisor.out), never duplicating services. */
-export const detachSupervised = async (file: string, rootDir: string): Promise<number> => {
+ * supervisor.out), never duplicating services. `only` detaches a single
+ * named service (unknown names fail exit 2 before any spawn); the full
+ * file stays the request channel's manifest, so a later live `up <other>`
+ * joins in. */
+export const detachSupervised = async (file: string, rootDir: string, opts?: { only?: string }): Promise<number> => {
   const abs = resolve(file)
+  if (opts?.only !== undefined) {
+    let names: string[]
+    try {
+      names = parseUpFile(decodeUtf8Fatal(readFileSync(abs))).services.map((svc) => svc.name)
+    } catch (error) {
+      console.error(`ow: invalid ow.yaml: ${error instanceof Error ? error.message : String(error)}`)
+      return 2
+    }
+    if (!names.includes(opts.only)) {
+      console.error(`ow: unknown service: ${opts.only}${names.length > 0 ? ` (known: ${names.join(", ")})` : ""}`)
+      return 2
+    }
+  }
   const paths = upPaths(rootDir)
   await ensureUpStateDir(paths.stateDir)
   const preWarnings: string[] = []
@@ -168,6 +200,7 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
     underBun ? fileURLToPath(import.meta.url).replace(/up-supervisor-cli\.(ts|js)$/, "cli.ts") : null,
     abs,
     outFile,
+    opts?.only,
   )
   // H-b freshness gate: capture the wall-clock BEFORE spawning; the poll
   // below requires a strictly newer supervisor.json (mtime) via
@@ -202,7 +235,8 @@ export const detachSupervised = async (file: string, rootDir: string): Promise<n
   }
   let names: string[] = []
   try {
-    names = parseUpFile(decodeUtf8Fatal(readFileSync(abs))).services.map((svc) => svc.name)
+    const services = parseUpFile(decodeUtf8Fatal(readFileSync(abs))).services
+    names = (opts?.only !== undefined ? services.filter((svc) => svc.name === opts.only) : services).map((svc) => svc.name)
   } catch {
     names = []
   }

@@ -1,4 +1,5 @@
 import { childSessions, formatGrouped, groupByTask, joinSession, type EnrichedRecord } from "./join"
+import { maskSecrets } from "./up-evidence"
 
 type Dict = Record<string, unknown>
 
@@ -172,7 +173,7 @@ export const formatTree = (
       lines.push(`${pad}session ${short}`)
     } else {
       const who = node.link?.agent ? ` [${node.link.agent}]` : ""
-      const what = node.link?.description ? ` ${node.link.description.slice(0, 80)}` : ""
+      const what = node.link?.description ? ` ${maskSecrets(node.link.description.slice(0, 80))}` : ""
       const orphan = node.link ? "" : " (unlinked)"
       lines.push(`${pad}↳ child${who}${what} — ${short}${orphan}`)
     }

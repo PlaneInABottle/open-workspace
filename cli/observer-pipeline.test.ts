@@ -580,11 +580,13 @@ describe("byte budget", () => {
 
   test("showLine clips sections to budget with remainder note", async () => {
     const { groupByTask, showLine } = await import("./join")
+    // "Z"-run filler: a hex run (e.g. "E".repeat) is secret-shaped by policy
+    // and masks to *** — clipping needs unshaped content.
     const groups = groupByTask([
-      { command: "uv run pytest a", outcome: "failure", intent: null, messageID: "m1", taskRef: "t", excerpt: "E".repeat(3000) },
+      { command: "uv run pytest a", outcome: "failure", intent: null, messageID: "m1", taskRef: "t", excerpt: "Z".repeat(3000) },
     ])
     const full = showLine(groups, 1)
-    expect(full).toContain("E".repeat(100))
+    expect(full).toContain("Z".repeat(100))
     const clipped = showLine(groups, 1, 100)
     expect(clipped).toContain("more chars")
     expect(clipped.length).toBeLessThan(full.length)
@@ -806,5 +808,504 @@ describe("prompts verb retired (refusal, English, sibling-shaped)", () => {
     }
     expect(code).toBe(2)
     expect(`${out.join("\n")}\n${err.join("\n")}`).toContain("usage")
+  })
+})
+
+describe("session status (latest-observed, unwindowed)", () => {
+  const statusDb = async (dir: string, name: string, setup: (db: Database) => void): Promise<string> => {
+    const { Database } = await import("bun:sqlite")
+    const dbPath = join(dir, name)
+    const db = new Database(dbPath)
+    try {
+      setup(db)
+    } finally {
+      db.close()
+    }
+    return dbPath
+  }
+  const fullSchema = (idle: string, outcome: string | null): ((db: Database) => void) => (db) => {
+    db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, directory TEXT NOT NULL, version TEXT NOT NULL, idle_outcome TEXT, time_idle INTEGER)")
+    db.run(`INSERT INTO session_v2 (id, project_id, slug, directory, version, idle_outcome, time_idle) VALUES ('ses_st','p','s','/w','v',${outcome === null ? "NULL" : `'${outcome}'`},${idle})`)
+  }
+
+  test("B1: reports outcome/at with scope+source from the current read-only DB", async () => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { sessionStatus, formatSessionStatus } = await import("./join")
+    const dir = await mkdtemp(joinPath(tmpdir(), "status-test-"))
+    const dbPath = await statusDb(dir, "s.db", fullSchema("1789200788559", "failed"))
+    const { status, warning } = await sessionStatus({ dbPath, sessionID: "ses_st" })
+    expect(warning).toBeNull()
+    expect(status).toEqual({
+      outcome: "failed",
+      at: new Date(1789200788559).toISOString(),
+      scope: "latest-observed",
+      source: "session_v2.idle_outcome+time_idle",
+    })
+    expect(formatSessionStatus(status, warning)).toBe(
+      `session-status:failed(${new Date(1789200788559).toISOString()})[latest-observed]`,
+    )
+  })
+
+  test("B1: status ignores the record window (groups filter, status does not)", async () => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { filterSince, groupByTask, joinSession, parseSince, sessionStatus } = await import("./join")
+    const dir = await mkdtemp(joinPath(tmpdir(), "status-win-"))
+    const dbPath = await statusDb(dir, "s.db", (db) => {
+      fullSchema("1789200788559", "succeeded")(db)
+      db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
+    })
+    const logPath = joinPath(dir, "events.jsonl")
+    await writeFile(logPath, `${JSON.stringify({ sessionID: "ses_st", messageID: "m1", command: "echo old", outcome: "success", timestamp: "2026-10-01T10:00:00.000Z" })}\n`)
+    const now = Date.parse("2026-10-14T12:00:00.000Z")
+    const { records } = await joinSession({ dbPath, logPath, sessionID: "ses_st", sinceMs: parseSince("30m"), now })
+    // narrow window drops the old record from groups ...
+    expect(filterSince(records, parseSince("30m"), now)).toEqual([])
+    expect(groupByTask(filterSince(records, parseSince("30m"), now))).toEqual([])
+    // ... while the status still reports the latest-observed outcome
+    const { status, warning } = await sessionStatus({ dbPath, sessionID: "ses_st" })
+    expect(warning).toBeNull()
+    expect(status.outcome).toBe("succeeded")
+  })
+
+  test("B3/B5: unknown states yield null/null with a sanitized named reason", async () => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { formatSessionStatus, sessionStatus } = await import("./join")
+    const dir = await mkdtemp(joinPath(tmpdir(), "status-miss-"))
+    // missing table
+    const emptyPath = await statusDb(dir, "empty.db", () => undefined)
+    for (
+      const [dbPath, sessionID, reason] of [
+        [emptyPath, "ses_st", "session_v2 table missing"],
+        [join(dir, "nope.db"), "ses_st", "db unreadable:"],
+      ] as [string, string, string][]
+    ) {
+      const { status, warning } = await sessionStatus({ dbPath, sessionID })
+      expect(status.outcome).toBeNull()
+      expect(status.at).toBeNull()
+      expect(status.scope).toBe("latest-observed")
+      expect(warning ?? "").toContain(reason)
+      expect(formatSessionStatus(status, warning)).toBe(`session-status:unknown(${warning})`)
+      expect(formatSessionStatus(status, warning)).not.toMatch(/running|stale/)
+    }
+    // old schema (status columns absent)
+    const oldPath = await statusDb(dir, "old.db", (db) => {
+      db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY)")
+      db.run("INSERT INTO session_v2 (id) VALUES ('ses_st')")
+    })
+    const old = await sessionStatus({ dbPath: oldPath, sessionID: "ses_st" })
+    expect(old.status.outcome).toBeNull()
+    expect(old.warning ?? "").toContain("old schema")
+    // session not in db
+    const fullPath = await statusDb(dir, "full.db", fullSchema("1789200788559", "failed"))
+    const missing = await sessionStatus({ dbPath: fullPath, sessionID: "ses_nope" })
+    expect(missing.status).toMatchObject({ outcome: null, at: null })
+    expect(missing.warning).toBe("session not in db")
+    // null outcome recorded
+    const nullPath = await statusDb(dir, "null.db", fullSchema("NULL", null))
+    const nullOut = await sessionStatus({ dbPath: nullPath, sessionID: "ses_st" })
+    expect(nullOut.status).toMatchObject({ outcome: null, at: null })
+    expect(nullOut.warning).toBe("no idle outcome recorded")
+    // unexpected outcome value stays unknown (fail-closed, value never echoed)
+    const weirdPath = await statusDb(dir, "weird.db", fullSchema("1789200788559", "completed"))
+    const weird = await sessionStatus({ dbPath: weirdPath, sessionID: "ses_st" })
+    expect(weird.status.outcome).toBeNull()
+    expect(weird.warning).toBe("unexpected idle outcome value")
+    expect(JSON.stringify(weird)).not.toContain("completed")
+    // unparseable time keeps the outcome, drops the instant
+    const badTimePath = await statusDb(dir, "badtime.db", (db) => {
+      db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, idle_outcome TEXT, time_idle TEXT)")
+      db.run("INSERT INTO session_v2 (id, idle_outcome, time_idle) VALUES ('ses_st','failed','soon')")
+    })
+    const badTime = await sessionStatus({ dbPath: badTimePath, sessionID: "ses_st" })
+    expect(badTime.status).toMatchObject({ outcome: "failed", at: null })
+    expect(badTime.warning).toBeNull()
+  })
+})
+
+describe("grouped time range (firstSeen/lastSeen/runTimes)", () => {
+  test("B2: repeated signature collapses with min/max range and parallel per-run arrays", async () => {
+    const { groupByTask } = await import("./join")
+    const groups = groupByTask([
+      { command: "uv run pytest a", outcome: "success", timestamp: "2026-10-01T11:00:00.000Z", durationMs: 2000, taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", timestamp: "2026-10-01T10:00:00.000Z", durationMs: 1000, taskRef: "t" },
+    ])
+    expect(groups[0].lines.length).toBe(1)
+    const line = groups[0].lines[0]
+    expect(line.runs).toBe(2)
+    expect(line.firstSeen).toBe("2026-10-01T10:00:00.000Z")
+    expect(line.lastSeen).toBe("2026-10-01T11:00:00.000Z")
+    // runTimes parallel stored variants in exact record order
+    expect(line.variants).toEqual(["uv run pytest a", "uv run pytest b"])
+    expect(line.runTimes).toEqual(["2026-10-01T11:00:00.000Z", "2026-10-01T10:00:00.000Z"])
+    expect(line.runDurations).toEqual([2000, 1000])
+  })
+
+  test("B2: stored arrays honor the variant cap exactly (order/length parallel)", async () => {
+    const { groupByTask } = await import("./join")
+    const records = Array.from({ length: 60 }, (_, i) => ({
+      command: `uv run pytest job${i}`,
+      outcome: "success",
+      timestamp: `2026-10-01T10:${String(i).padStart(2, "0")}:00.000Z`,
+      durationMs: i,
+      taskRef: "t",
+    }))
+    const groups = groupByTask(records as never)
+    const line = groups[0].lines[0]
+    expect(line.runs).toBe(60)
+    expect(line.variants.length).toBeLessThanOrEqual(50)
+    expect(line.runTimes.length).toBe(line.variants.length)
+    expect(line.runDurations.length).toBe(line.variants.length)
+    // exact parallelism: variant i carries run i's clock
+    for (let i = 0; i < line.variants.length; i += 1) {
+      expect(line.variants[i]).toContain(`job${i}`)
+      expect(line.runTimes[i]).toBe(`2026-10-01T10:${String(i).padStart(2, "0")}:00.000Z`)
+      expect(line.runDurations[i]).toBe(i)
+    }
+    // the range still spans ALL observed runs, not just stored variants
+    expect(line.firstSeen).toBe("2026-10-01T10:00:00.000Z")
+  })
+
+  test("B4: invalid timestamps stay null-safe, multi-run human shows first→last", async () => {
+    const { formatGrouped, groupByTask, showLine } = await import("./join")
+    const groups = groupByTask([
+      { command: "uv run pytest a", outcome: "success", timestamp: "not-a-time", taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", taskRef: "t" },
+    ])
+    const line = groups[0].lines[0]
+    expect(line.runTimes).toEqual([null, null])
+    expect(line.firstSeen).toBeNull()
+    expect(line.lastSeen).toBeNull()
+    expect(() => formatGrouped(groups)).not.toThrow()
+    expect(formatGrouped(groups)).not.toContain("[wall")
+    const ranged = groupByTask([
+      { command: "uv run pytest a", outcome: "success", timestamp: "2026-10-01T10:00:00.000Z", taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", timestamp: "2026-10-01T11:00:00.000Z", taskRef: "t" },
+    ])
+    const text = formatGrouped(ranged)
+    expect(text).toContain("[wall 2026-10-01T10:00:00.000Z→2026-10-01T11:00:00.000Z]")
+    const single = groupByTask([{ command: "uv run pytest a", outcome: "success", timestamp: "2026-10-01T10:00:00.000Z", taskRef: "t" }])
+    expect(formatGrouped(single)).not.toContain("[wall")
+    expect(() => JSON.parse(JSON.stringify(ranged))).not.toThrow()
+  })
+})
+
+describe("drill-down labels + dual clocks", () => {
+  test("B7: wall gap with short process durations renders both domains labeled", async () => {
+    const { formatGrouped, groupByTask, showLine } = await import("./join")
+    const groups = groupByTask([
+      { command: "uv run pytest a", outcome: "success", timestamp: "2026-10-01T10:00:00.000Z", durationMs: 1000, taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", timestamp: "2026-10-01T11:00:00.000Z", durationMs: 1000, taskRef: "t" },
+    ])
+    const drill = showLine(groups, 1)
+    // presentation: +1h wall gap beside +1s monotonic spans, domains named
+    expect(drill).toContain("wall: 2026-10-01T10:00:00.000Z · process-monotonic: 1.0s")
+    expect(drill).toContain("wall: 2026-10-01T11:00:00.000Z · process-monotonic: 1.0s")
+    // the summary never converts the wall range into a duration claim
+    const summary = formatGrouped(groups)
+    expect(summary).toContain("[wall 2026-10-01T10:00:00.000Z→2026-10-01T11:00:00.000Z]")
+    expect(summary).not.toContain("process-monotonic")
+    expect(summary).not.toContain("duration")
+  })
+
+  test("task context label never reads as failure cause; (reason:) needs a real reason", async () => {
+    const { formatGrouped, groupByTask, showLine } = await import("./join")
+    const groups = groupByTask([
+      { command: "uv run pytest a", outcome: "failure", intent: "make the tests pass", messageID: "m1", taskRef: "t" },
+    ])
+    const drill = showLine(groups, 1)
+    expect(drill).toContain("--- task context (not failure cause) ---")
+    expect(drill).toContain("- make the tests pass")
+    expect(drill).not.toContain("--- intents ---")
+    // no command-text reason: no reasons section, no (reason:) parenthetical anywhere
+    expect(drill).not.toContain("--- reasons (from command text) ---")
+    expect(drill).not.toContain("(reason:")
+    expect(formatGrouped(groups)).not.toContain("(reason:")
+    // with a real reason both surfaces agree, intent stays out of (reason:)
+    const reasoned = groupByTask([
+      { command: `python -c "raise RuntimeError('db down')"`, outcome: "failure", intent: "make the tests pass", messageID: "m1", taskRef: "t" },
+    ])
+    expect(formatGrouped(reasoned)).toContain("(reason: db down)")
+    expect(formatGrouped(reasoned)).not.toContain("(reason: make the tests pass)")
+  })
+
+  test("B6: every variant channel masks hostile shapes (human record, drill, JSON wire, tree), mask-before-cap", async () => {
+    const { formatGrouped, groupByTask, maskGroupVariants, showLine } = await import("./join")
+    const { formatTree, buildTree } = await import("./tree")
+    const { capText, maskSecrets } = await import("./up-evidence")
+    // reason surfaces stay masked (extraction-point policy, unchanged)
+    const cases: [string, string][] = [
+      [`python -c "raise ValueError('token=hunter2')"`, "token=***"],
+      [`python -c "raise ValueError('api_key: hunter2')"`, "api_key: ***"],
+      [`python -c "raise RuntimeError('--password hunter2 denied')"`, "--password *** denied"],
+    ]
+    for (const [command, expected] of cases) {
+      const groups = groupByTask([{ command, outcome: "failure", taskRef: "t" }])
+      const line = groups[0].lines[0]
+      expect(line.failReason).toBe(expected)
+      expect(JSON.stringify([line.failReason, line.failReasons])).not.toContain("hunter2")
+      const drill = showLine(groups, 1)
+      expect(drill).toContain(`- ${expected}`)
+      const tail = drill.slice(drill.indexOf("--- reasons (from command text) ---"))
+      expect(tail).not.toContain("hunter2")
+    }
+    // JSON-secret commands truncate at the quote boundary instead of leaking
+    const truncated = groupByTask([{ command: `python -c "raise ValueError('{"token": "hunter2"}')"`, outcome: "failure", taskRef: "t" }])
+    expect(JSON.stringify([truncated[0].lines[0].failReason, truncated[0].lines[0].failReasons])).not.toContain("hunter2")
+    // mask-before-cap order: capping masked text keeps the mark, leaks nothing
+    const long = `python -c "raise ValueError('token=hunter2 ${"x".repeat(2000)}')"`
+    const capped = capText(maskSecrets(long), 512)
+    expect(capped.length).toBeLessThanOrEqual(512)
+    expect(capped).toContain("…[truncated]")
+    expect(capped).not.toContain("hunter2")
+    // ALL variant channels: the HIGH probe exposes nothing outside reasons
+    const hostile = [
+      `python -c "raise ValueError('token=hunter2')"`,
+      `deploy --password hunter2`,
+      `run tests GH_TOKEN=hunter2`,
+      `export API_KEY="hunter2"`,
+      `mcp {"token":"hunter2","a":"b"}`,
+    ]
+    const records = hostile.map((command, i) => ({
+      command, outcome: "failure", taskRef: "rotate the thing",
+      timestamp: `2026-10-01T10:0${i}:00.000Z`, messageID: `m${i}`,
+    }))
+    const groups = groupByTask(records as never)
+    // stored sources keep raw caller strings (mask-on-output only)
+    const stored = groups.flatMap((g) => g.lines).flatMap((l) => l.variants).join("\n")
+    expect(stored).toContain("hunter2")
+    // human summary record lines
+    expect(formatGrouped(groups)).not.toContain("hunter2")
+    expect(formatGrouped(groups, true)).not.toContain("hunter2")
+    // drill-down variants
+    for (const line of groups.flatMap((g) => g.lines)) {
+      expect(showLine(groups, line.ref)).not.toContain("hunter2")
+    }
+    // JSON wire copy (keys/counts/times/reasons intact, values redacted)
+    const wire = maskGroupVariants(groups)
+    const wireText = JSON.stringify(wire)
+    expect(wireText).not.toContain("hunter2")
+    expect(wire[0].lines[0].variants[0]).toContain("***")
+    expect(Object.keys(wire[0].lines[0]).sort()).toEqual(Object.keys(groups[0].lines[0]).sort())
+    // compact JSON variant stays parseable structure with masked value
+    const compact = wire.flatMap((g) => g.lines).flatMap((l) => l.variants).find((v) => v.startsWith("mcp {"))
+    expect(compact).toBe('mcp {"token":"***","a":"b"}')
+    // tree reuses the grouped formatter: no variant leak through tree flow
+    const by = new Map([["ses_t", records as never]])
+    expect(formatTree(buildTree("ses_t", by as never), by as never)).not.toContain("hunter2")
+  })
+})
+
+describe("output redaction boundaries", () => {
+  test("leading secret env assignment strips like any env prefix, never leaks", async () => {
+    const { formatGrouped, groupByTask, showLine } = await import("./join")
+    const groups = groupByTask([
+      { command: "GH_TOKEN=hunter2 run tests", outcome: "success", taskRef: "t", timestamp: "2026-10-01T10:00:00.000Z" },
+    ])
+    const text = formatGrouped(groups)
+    expect(text).not.toContain("hunter2")
+    expect(text).toContain("run tests")
+    expect(showLine(groups, 1)).not.toContain("hunter2")
+    // stored source keeps the caller string (mask-on-output only)
+    expect(groups[0].lines[0].variants).toEqual(["GH_TOKEN=hunter2 run tests"])
+  })
+
+  test("benign commands/intents/timestamps render byte-identical (no blind rewrite)", async () => {
+    const { formatGrouped, groupByTask, showLine } = await import("./join")
+    const benign = [
+      { command: "uv run pytest a", outcome: "success", intent: "make the tests pass", taskRef: "ship it", timestamp: "2026-10-01T10:00:00.000Z", durationMs: 1500, messageID: "m1" },
+    ]
+    const groups = groupByTask(benign as never)
+    const text = formatGrouped(groups)
+    expect(text).toContain("record: uv run pytest a")
+    expect(text).toContain("intent: make the tests pass")
+    expect(text).toContain("task: ship it (1 records)")
+    const drill = showLine(groups, 1)
+    expect(drill).toContain("uv run pytest a")
+    expect(drill).toContain("wall: 2026-10-01T10:00:00.000Z · process-monotonic: 1.5s")
+  })
+
+  test("joinWarnings preserves every warning without schema change", async () => {
+    const { joinWarnings } = await import("./join")
+    expect(joinWarnings(null, null)).toBeNull()
+    expect(joinWarnings("a", null)).toBe("a")
+    expect(joinWarnings(null, "b")).toBe("b")
+    expect(joinWarnings("meta hiccup", "session status unknown: gone")).toBe("meta hiccup; session status unknown: gone")
+  })
+
+  test("meta free-text fields mask shaped secrets, benign meta unchanged", async () => {
+    const { mkdtemp } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join: joinPath } = await import("node:path")
+    const { Database } = await import("bun:sqlite")
+    const { formatMeta, sessionMeta } = await import("./join")
+    const dir = await mkdtemp(joinPath(tmpdir(), "meta-mask-"))
+    const dbPath = joinPath(dir, "m.db")
+    const db = new Database(dbPath)
+    db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL, directory TEXT NOT NULL, version TEXT NOT NULL, title TEXT, cost REAL DEFAULT 0 NOT NULL, tokens_input INTEGER DEFAULT 0 NOT NULL, tokens_output INTEGER DEFAULT 0 NOT NULL, tokens_reasoning INTEGER DEFAULT 0 NOT NULL, tokens_cache_read INTEGER DEFAULT 0 NOT NULL, tokens_cache_write INTEGER DEFAULT 0 NOT NULL, summary_additions INTEGER, summary_deletions INTEGER, summary_files INTEGER, idle_outcome TEXT, time_idle INTEGER)")
+    db.run("INSERT INTO session_v2 (id, project_id, slug, directory, version, title) VALUES ('s1','p','s','/w','v','deploy token=hunter2 now')")
+    db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
+    db.close()
+    const { meta, warning } = await sessionMeta({ dbPath, sessionID: "s1" })
+    expect(warning).toBeNull()
+    expect(meta?.title).toBe("deploy token=*** now")
+    expect(formatMeta(meta!)).not.toContain("hunter2")
+    expect(JSON.stringify(meta)).not.toContain("hunter2")
+  })
+})
+
+describe("flag/key JSON context predicates at grouped and wire level", () => {
+  test("P1/P2 sink binding: human, drill and JSON wire agree, containers valid", async () => {
+    const { formatGrouped, groupByTask, maskGroupVariants, showLine } = await import("./join")
+    const V = "fixtureValue42"
+    const groups = groupByTask([
+      { command: `run --token {"token":"${V}","value":"${V}"}`, outcome: "success", taskRef: "t", timestamp: "2026-10-01T10:00:00.000Z" },
+      { command: `run {"token":{"value":"${V}"}}`, outcome: "success", taskRef: "t", timestamp: "2026-10-01T10:01:00.000Z" },
+    ])
+    // stored sources keep caller strings; every emitted copy redacts
+    expect(groups.flatMap((g) => g.lines).flatMap((l) => l.variants).join("\n")).toContain(V)
+    const wire = maskGroupVariants(groups)
+    expect(JSON.stringify(wire)).not.toContain(V)
+    // key-context container stays structured-valid on the wire
+    const keyed = wire.flatMap((g) => g.lines).flatMap((l) => l.variants).find((v) => v.startsWith('run {"token":{'))
+    expect(keyed).toBe(`run {"token":{"value":"***"}}`)
+    expect(() => JSON.parse(keyed!.slice(4))).not.toThrow()
+    // flag-context value is intentionally opaque on the wire
+    const flagged = wire.flatMap((g) => g.lines).flatMap((l) => l.variants).find((v) => v.startsWith("run --token"))
+    expect(flagged).toBe("run --token ***")
+    expect(formatGrouped(groups)).not.toContain(V)
+    for (const line of groups.flatMap((g) => g.lines)) {
+      expect(showLine(groups, line.ref)).not.toContain(V)
+    }
+  })
+})
+
+describe("024 global drill refs", () => {
+  test("refs are unique across groups in display order; every N selects its line", async () => {
+    const { formatGrouped, groupByTask, showLine } = await import("./join")
+    const recs = [
+      { command: "echo alpha-one", outcome: "success", taskRef: "beta", timestamp: "2026-10-01T10:00:00.000Z" },
+      { command: "sleep 1", outcome: "success", taskRef: "beta", timestamp: "2026-10-01T10:01:00.000Z" },
+      { command: "echo alpha-two", outcome: "success", taskRef: "alpha", timestamp: "2026-10-01T10:02:00.000Z" },
+    ]
+    const groups = groupByTask(recs as never)
+    expect(groups.length).toBe(2)
+    const refs = groups.flatMap((g) => g.lines.map((l) => l.ref))
+    expect(refs).toEqual([1, 2, 3])
+    const text = formatGrouped(groups)
+    expect(text.match(/\[\d+\]/g)).toEqual(["[1]", "[2]", "[3]"])
+    // every displayed N closes on its exact line/task/variants
+    // (display order: alpha group first — reverse of first-seen)
+    expect(showLine(groups, 1)).toContain("echo alpha-two")
+    expect(showLine(groups, 1)).toContain("(alpha)")
+    expect(showLine(groups, 2)).toContain("sleep 1")
+    expect(showLine(groups, 3)).toContain("echo alpha-one")
+    expect(showLine(groups, 4)).toContain("line not found: 4")
+  })
+
+  test("dedup and no-task groups keep global numbering; single group starts at 1", async () => {
+    const { groupByTask, showLine } = await import("./join")
+    const single = groupByTask([
+      { command: "uv run pytest a", outcome: "success", taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", taskRef: "t" },
+    ])
+    expect(single.length).toBe(1)
+    expect(single[0].lines.map((l) => l.ref)).toEqual([1])
+    const mixed = groupByTask([
+      { command: "uv run pytest a", outcome: "success", taskRef: "t" },
+      { command: "uv run pytest b", outcome: "success", taskRef: "t" },
+      { command: "echo hi", outcome: "success", taskRef: null },
+    ])
+    expect(mixed.flatMap((g) => g.lines.map((l) => l.ref))).toEqual([1, 2])
+    expect(showLine(mixed, 2)).toContain("uv run pytest")
+  })
+
+  test("wire carries the same refs as human output", async () => {
+    const { groupByTask, maskGroupVariants } = await import("./join")
+    const { toShowJson } = await import("./cli")
+    const groups = groupByTask([
+      { command: "echo one", outcome: "success", taskRef: "b" },
+      { command: "echo two", outcome: "success", taskRef: "a" },
+    ])
+    const payload = toShowJson("s", [], maskGroupVariants(groups), undefined, null, null)
+    const wireRefs = payload.groups.flatMap((g: { lines: { ref: number }[] }) => g.lines.map((l) => l.ref))
+    expect(wireRefs).toEqual([1, 2])
+    expect(new Set(wireRefs).size).toBe(wireRefs.length)
+  })
+})
+
+describe("026 honest empty filters", () => {
+  test("filterChip echoes applied filters masked-then-capped; null without kind/tool", async () => {
+    const { filterChip } = await import("./join")
+    expect(filterChip("ses_r1", undefined, undefined)).toBeNull()
+    expect(filterChip("ses_r1", "", "")).toBeNull()
+    expect(filterChip("ses_r1", undefined, "nonexistentzzz")).toBe("[filters: session=ses_r1, tool=nonexistentzzz]")
+    expect(filterChip("ses_r1", "bogus-kind", undefined)).toBe("[filters: session=ses_r1, kind=bogus-kind]")
+    // hostile caller filter echoes masked (fake sentinel only)
+    expect(filterChip("ses_r1", undefined, "token=hunter2")).toBe("[filters: session=ses_r1, tool=token=***]")
+    // benign values verbatim
+    expect(filterChip("ses_r1", "shell", "alpha")).toBe("[filters: session=ses_r1, kind=shell, tool=alpha]")
+  })
+
+  test("valid empty window and pure empty stay free of filter claims", async () => {
+    const { filterSince, groupByTask, parseSince } = await import("./join")
+    const records = [{ command: "echo hi", outcome: "success", taskRef: "t", timestamp: "2026-10-01T10:00:00.000Z" }]
+    const now = Date.parse("2026-10-14T12:00:00.000Z")
+    // valid narrow window over old records: empty groups, no filter involved
+    expect(groupByTask(filterSince(records as never, parseSince("30m"), now))).toEqual([])
+    // unmatched tool filter: same empty groups — the human chip (not JSON) tells them apart
+    const { filterTools } = await import("./join")
+    expect(groupByTask(filterTools(records as never, undefined, "nonexistentzzz"))).toEqual([])
+    expect(groupByTask(filterTools(records as never, undefined, "ECHO"))).not.toEqual([])
+  })
+})
+
+describe("filter chip caller-text hardening (D1/D2)", () => {
+  test("D1: hostile session echoes masked like tool/kind (fake sentinel only)", async () => {
+    const { filterChip } = await import("./join")
+    expect(filterChip("token=hunter2", undefined, "zzznomatch")).toBe("[filters: session=token=***, tool=zzznomatch]")
+    expect(filterChip("ses_ok", "k", "token=hunter2")).toBe("[filters: session=ses_ok, kind=k, tool=token=***]")
+    expect(JSON.stringify(filterChip("token=hunter2", "x", "y"))).not.toContain("hunter2")
+  })
+
+  test("D2: newline/control/ANSI fold to single-line text in every field", async () => {
+    const { chipText, filterChip } = await import("./join")
+    expect(chipText("aaa\nbbb")).toBe("aaa bbb")
+    expect(chipText("a\x01b")).toBe("a b")
+    expect(chipText("a\x1b[31mb")).toBe("ab")
+    expect(chipText("a[1m")).toBe("a[1m")
+    const chip = filterChip("s\ns", "k\x01k", "t\x1b[32mt")!
+    expect(chip).not.toMatch(/[\x00-\x1F\x7F]/)
+    expect(chip.split("\n").length).toBe(1)
+  })
+
+  test("fold-before-mask joins newline-split secrets; mask stays before cap", async () => {
+    const { chipText } = await import("./join")
+    expect(chipText("password\nhunter2")).toBe("password ***")
+    // hostile long value masks away entirely (nothing left to cap, no leak)
+    expect(chipText(`token=${"q".repeat(200)}`)).toBe("token=***")
+    // benign long value caps with the truncation mark
+    const benign = chipText("z".repeat(200))
+    expect(benign.length).toBeLessThanOrEqual(80)
+    expect(benign).toContain("…[truncated]")
+  })
+
+  test("compact JSON hostile shapes mask structurally; benign JSON passes", async () => {
+    const { chipText } = await import("./join")
+    expect(chipText('{"token":"abc123"}')).toBe('{"token":"***"}')
+    expect(chipText('{"a":"b","n":1}')).toBe('{"a":"b","n":1}')
+  })
+
+  test("benign ids and filters render verbatim", async () => {
+    const { chipText, filterChip } = await import("./join")
+    expect(chipText("ses_abc123")).toBe("ses_abc123")
+    expect(chipText("shell")).toBe("shell")
+    expect(filterChip("ses_r1", "shell", "read")).toBe("[filters: session=ses_r1, kind=shell, tool=read]")
+    expect(filterChip("ses_r1", undefined, undefined)).toBeNull()
   })
 })

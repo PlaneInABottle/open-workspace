@@ -199,6 +199,8 @@ describe("resolveWorkspaceRoot", () => {
 })
 
 describe("subdir reads resolve upward", () => {
+  const MINIMAL_YAML = "services:\n  a:\n    cmd: x\n"
+
   const captureLog = async (fn: () => Promise<number>): Promise<{ code: number; out: string }> => {
     const seen: string[] = []
     const savedLog = console.log
@@ -213,12 +215,36 @@ describe("subdir reads resolve upward", () => {
     }
   }
 
+  test("explicit --file beats an enclosing .ow", async () => {
+    const root = await tempRoot()
+    try {
+      const sub = join(root, "sub")
+      const other = join(root, "other")
+      await mkdir(join(root, ".ow"), { recursive: true, mode: 0o700 })
+      await mkdir(join(other, ".ow"), { recursive: true, mode: 0o700 })
+      await mkdir(sub, { recursive: true })
+      await writeFile(join(root, "ow.yaml"), MINIMAL_YAML)
+      await writeFile(join(other, "ow.yaml"), MINIMAL_YAML)
+      const { out } = await captureLog(() => withCwd(sub, () => run(["where"])))
+      expect(out).toContain(root)
+      expect(out).not.toContain(other)
+      const { out: outOther } = await captureLog(() => withCwd(sub, () => run(["where", "--file", join(other, "ow.yaml")])))
+      expect(outOther).toContain(other)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("absent-everywhere names cwd plus directive, exits unchanged", async () => {
     const root = await tempRoot()
     try {
       expect(await resolveWorkspaceRoot(root)).toBe(root)
+      const where = await captureLog(() => withCwd(root, () => run(["where"])))
       const ps = await captureLog(() => withCwd(root, () => run(["ps"])))
+      expect(where.code).toBe(0)
       expect(ps.code).toBe(0)
+      expect(where.out).toContain(root)
+      expect(where.out).toContain("(no .ow found)")
       expect(ps.out).toContain(root)
       expect(ps.out).toContain("run from the workspace root")
     } finally {

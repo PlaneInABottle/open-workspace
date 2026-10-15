@@ -304,6 +304,14 @@ describe("readiness definition (M3)", () => {
     expect(file.services[0].readiness).toEqual({ probe: ["./ready.sh"], timeout: "30s", needsPort: false })
   })
 
+  test("free timeout range: 45s parses; >30s warns (advisory, never a failure)", () => {
+    const file = parseUpFile("services:\n  api:\n    cmd: x\n    port: 1\n    readiness: {probe: [./x.sh], timeout: 45s}\n")
+    expect(file.services[0].readiness?.timeout).toBe("45s")
+    expect(file.warnings.map((w) => w.message)).toContain("api: readiness: timeout 45s exceeds 30s (long probe bound; ow kills the probe at that limit)")
+    const quiet = parseUpFile("services:\n  api:\n    cmd: x\n    port: 1\n    readiness: {probe: [./x.sh], timeout: 30s}\n")
+    expect(quiet.warnings).toEqual([])
+  })
+
   test("raw argv hidden from listings (non-enumerable, B3)", () => {
     const file = parseUpFile(base("    readiness: {probe: [./x.sh, --token, hunter2]}"))
     expect(JSON.parse(JSON.stringify(file.services[0]))).not.toHaveProperty("readiness")
@@ -325,7 +333,9 @@ describe("readiness definition (M3)", () => {
     expect(() => parseUpFile(base(`    readiness: {probe: [${many}]}`))).toThrow(/at most 16 parts/)
     expect(() => parseUpFile(base(`    readiness: {probe: [${"x".repeat(513)}]}`))).toThrow(/512/)
     expect(() => parseUpFile(base("    readiness: {probe: [sh, -c, echo hi]}"))).toThrow(/shell/)
-    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], timeout: 60s}"))).toThrow(/must be 5s|10s|30s/)
+    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], timeout: 400s}"))).toThrow(/must be <N>s \(1-300s\)/)
+    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], timeout: 0s}"))).toThrow(/must be <N>s \(1-300s\)/)
+    expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], timeout: 5m}"))).toThrow(/must be <N>s \(1-300s\)/)
     expect(() => parseUpFile(base("    readiness: {probe: [./x.sh], needsPort: yes}"))).toThrow(/must be true\/false/)
     expect(() => parseUpFile("services:\n  api:\n    cmd: x\n    readiness: {probe: [./x.sh]}\n")).toThrow(/no port is defined/)
   })

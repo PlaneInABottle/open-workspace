@@ -13,7 +13,7 @@ tools. Full schema, caps, and non-goals: product `cli/README.md`.
 ```sh
 ow up --check --file ow.yaml   # validate only (unknown fields warn, never fail)
 ow up -d [--wait 120s]         # detach: one supervisor per ow.yaml dir; second up → exit 2
-ow up <svc>                    # live: add one service via the supervisor (healthy ones untouched)
+ow up <svc>                    # live: add one service via the supervisor (healthy ones untouched); no live lock: start only that service (foreground, or detached with -d)
 ow restart <svc>               # live: lstart-verified stop + respawn in place (no lock → exit 2)
 ow down [svc]                  # single: stop only the target (lock/state files kept; --rm is bulk-only)
 ow reconcile --check [--json]  # read-only drift report (never mutates; exit 1 on drift)
@@ -35,7 +35,8 @@ ow where [--file] [--json]     # resolved root + the files ow would read (read-o
 - Readiness = TCP-accept (HTTP/app health only via `--health`);
   `readiness: {probe: [...], timeout: 10s}` runs project probes in
   `up -d --wait`/`reconcile --probe` (argv-only, masked, budgeted;
-  `--health` conflicts exit 2).
+  timeout is `<N>s`, 1..300, default 10s; above 30s warns — the flag
+  refuses a defined probe on the same service, exit 2).
 - Spring notes: `/` 404 is NORMAL — wait on `/actuator/health`.
   Never `pkill`: a stale `already running` clears via `ow down`
   (`ow down --rm` for dead residue). `down` during a wait reports

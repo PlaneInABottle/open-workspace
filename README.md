@@ -21,12 +21,20 @@ Run package scripts **from this source directory**, never from an application ch
 
 ```sh
 pnpm ow:build                         # build once (gitignored binary)
-ln -sf "$PWD/cli/ow" ~/.local/bin/ow  # put it on PATH
+./cli/ow version --json                # inspect the source build before installing
 ow doctor                             # health: log growing, hooks firing, db readable
 ow sessions                           # what ran, where, how much
 ow show <session> [--tree]            # grouped task view, incl. subagent sessions
 ow show <session> --json              # stable machine output (English keys)
 ```
+
+For a persistent PATH installation, copy the verified binary **and** its adjacent
+`cli/ow.build.json` sidecar into a user-owned directory outside the source checkout
+(for example `~/.local/lib/ow/builds/<binary-sha256>/`), then point
+`~/.local/bin/ow` at that copy. Verify its hash, `ow version --json` and a task-owned
+service start/stop from an unrelated directory. A direct link to `cli/ow` is a
+development convenience, not a durable installation: never leave global `ow`
+dependent on a disposable worktree. Preserve the previous artifact for rollback.
 
 `ow` observes **OpenCode sessions** through the shell-observer plugin (`~/.config/opencode/opencode-plugins/shell-observer/`); other harnesses are not observed — an empty result means "not observed", never "nothing happened". Session analysis is read-only. Service supervision, the `ow.yaml` schema and caps live in [cli/README.md](cli/README.md); the consumer skills in `skills/` are the operator guidance.
 
@@ -38,7 +46,7 @@ The `ow` CLI keeps its own repo-local state in `<root>/.ow/` (0700/0600).
 
 - **`ow` observer:** session inventory, grouped task view with subagent trees, file reads, cost/tokens and JSON output — read-only over OpenCode's session store.
 - **`ow` supervision:** start/stop/list/log declared dev services from a repo `ow.yaml` as plain child processes; `lstart`-guarded pids, repo-local state, port-conflict warnings (never reassignment).
-- **Consumer skills (7):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `ow-runtime`, `setup-ow`, snapshotted per client.
+- **Consumer skills (8):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `ow-runtime`, `setup-ow`, `prepare-local-runtime`, snapshotted per client.
 
 ## Consumer skill distribution
 

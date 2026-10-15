@@ -5,7 +5,7 @@
  * (live+recorded services, total ≤60s soft budget); results are added as
  * `readiness:` lines, they do not change exit (which follows drift). */
 
-import { parseUpFile, PROBE_TIMEOUT_MS, type UpService } from "./up-schema"
+import { parseUpFile, probeTimeoutMs, type UpService } from "./up-schema"
 import { decodeUtf8Fatal } from "./up-schema"
 import { readLstart, readProcessTable, readSupervisorState, upPaths, warnWriteFailed, type ProcessTable, type UpServiceState } from "./up-state"
 import { tcpListening } from "./up-net"
@@ -502,7 +502,7 @@ export const runReconcileCheck = async (opts: {
       }
       const outcome = await runProbeFn({
         probe: exp.readiness.probe,
-        timeoutMs: PROBE_TIMEOUT_MS[exp.readiness.timeout],
+        timeoutMs: probeTimeoutMs(exp.readiness.timeout),
         cwd: exp.cwd === undefined ? opts.rootDir : resolvePath(opts.rootDir, exp.cwd),
         env: { ...process.env, ...exp.env, OW_SERVICE: name },
       }).catch((): import("./up-probe").ProbeOutcome => ({ ok: false, note: "could-not-run", timedOut: false, code: null }))
