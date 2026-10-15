@@ -1,6 +1,6 @@
 ---
 name: ow-ow-debug
-description: Debug with ow doctor first, join Langfuse by request ID, and diff DB snapshots with a copy-paste recipe.
+description: Debug agent sessions with ow doctor/show, and diff DB snapshots with a copy-paste recipe.
 ---
 
 # ow-debug — debugging method + DB snapshot-diff recipe
@@ -21,14 +21,6 @@ Exits: 0 ok, 1 structural failure, 2 usage error; always non-interactive.
 For service runtime (compose owns it now): `docker compose ps` for
 liveness, `docker compose logs <svc> --tail 200` for values and errors.
 `ow` never reads service state or logs.
-
-## Langfuse join (only when the app also reports there)
-
-`ow` never receives or stores spans. When the app reports to Langfuse, join there: the app's own UI
-for the remote leg, and the service logs (`docker compose logs
---grep <id>` or equivalent) to correlate values to the same request ID
-in local logs. `ow` never reads the Langfuse API —
-the join happens by ID in the agent's hands.
 
 ## DB snapshot-diff recipe (agent-run shell, not an ow command)
 
