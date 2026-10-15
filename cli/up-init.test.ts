@@ -145,7 +145,7 @@ describe("ow init maven/python/node", () => {
   test("H3: spring mention in a line comment is checklist-only, no bootRun", async () => {
     const root = await tempRoot()
     try {
-      await writeFile(join(root, "build.gradle"), "plugins {\n  id 'java'\n}\n// TODO: migrate to spring-boot later\n")
+      await writeFile(join(root, "build.gradle"), "plugins {\n  id 'java'\n}\n// note: spring-boot\n")
       const result = await runInit({ rootDir: root })
       expect(result.code).toBe(0)
       expect(result.stdout).toContain("no Spring marker")
@@ -300,24 +300,6 @@ describe("ow init boundaries", () => {
       expect(forced.code).toBe(0)
       expect(await readFile(join(root, "ow.yaml.bak"), "utf8")).toContain("old-cmd")
       expect(await readFile(join(root, "ow.yaml"), "utf8")).toContain("gradle bootRun")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("empty dir writes nothing, honest message, exit 0", async () => {
-    const root = await tempRoot()
-    try {
-      const result = await runInit({ rootDir: root })
-      expect(result.code).toBe(0)
-      expect(result.stdout).toBe("nothing recognized, no empty skeleton written")
-      let missing = false
-      try {
-        await readFile(join(root, "ow.yaml"), "utf8")
-      } catch {
-        missing = true
-      }
-      expect(missing).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -2,7 +2,7 @@
 
 Keep your own coding agent. OpenWorkspace shows what it actually did and runs the dev services around it — locally, without replacing your harness.
 
-- **`ow` CLI** — read-only session observer (`sessions`, `show`, `meta`, `reads`, `where`, `version`) plus dev-service supervision (`up`/`down`/`ps`/`logs`).
+- **`ow` CLI** — read-only session observer (`sessions`, `show`, `meta`, `reads`, `where`) plus dev-service supervision (`up`/`down`/`ps`/`logs`, `init` scaffolding, `render` task manifests).
 
 **Source preview — no packaged release yet.** `ow` is bun-only and built manually. This is not a Node-free installer.
 
@@ -38,7 +38,7 @@ The `ow` CLI keeps its own repo-local state in `<root>/.ow/` (0700/0600).
 
 - **`ow` observer:** session inventory, grouped task view with subagent trees, file reads, cost/tokens and JSON output — read-only over OpenCode's session store.
 - **`ow` supervision:** start/stop/list/log declared dev services from a repo `ow.yaml` as plain child processes; `lstart`-guarded pids, repo-local state, port-conflict warnings (never reassignment).
-- **Consumer skills (7):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `ow-runtime`, `setup-ow`, snapshotted per client.
+- **Consumer skills (6):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`, snapshotted per client.
 
 ## Consumer skill distribution
 

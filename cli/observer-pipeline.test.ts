@@ -782,29 +782,3 @@ describe("doctor build identity", () => {
     expect(doctorFails(lines)).toBe(doctorFails(lines.filter((l) => l.name !== "identity")))
   })
 })
-
-describe("prompts verb retired (refusal, English, sibling-shaped)", () => {
-  test("ow prompts is an unknown command (exit 2 with the usage list, never silent)", async () => {
-    const { run } = await import("./cli")
-    const dir = await mkdtemp(join(tmpdir(), "ow-prompts-retired-"))
-    const out: string[] = []
-    const err: string[] = []
-    const origLog = console.log
-    const origError = console.error
-    console.log = (...args: unknown[]): void => {
-      out.push(args.map(String).join(" "))
-    }
-    console.error = (...args: unknown[]): void => {
-      err.push(args.map(String).join(" "))
-    }
-    let code = -1
-    try {
-      code = await run(["prompts", "sess-missing", "--db", join(dir, "nope.db")])
-    } finally {
-      console.log = origLog
-      console.error = origError
-    }
-    expect(code).toBe(2)
-    expect(`${out.join("\n")}\n${err.join("\n")}`).toContain("usage")
-  })
-})

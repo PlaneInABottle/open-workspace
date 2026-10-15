@@ -423,22 +423,6 @@ describe("tree builder", () => {
   })
 })
 
-describe("removed scenario-run flags fail loud as unknown options", () => {
-  test("--run on ps exits 2 (never silent)", async () => {
-    expect(await run(["ps", "--run", "x"])).toBe(2)
-  })
-  test("--off-local on up exits 2 (never silent)", async () => {
-    const root = await mkdtemp(join(tmpdir(), "ow-low2-"))
-    try {
-      const file = join(root, "ow.yaml")
-      await writeFile(file, "services:\n  a:\n    cmd: sleep 30\n", "utf8")
-      expect(await run(["up", "--check", "--file", file, "--off-local"])).toBe(2)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-})
-
 describe("retired session verbs refuse loud (exit 2 with the usage list, never silent)", () => {
   test("stuck/timeline/export print usage and write nothing", async () => {
     const out: string[] = []

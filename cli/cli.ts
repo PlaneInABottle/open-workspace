@@ -33,7 +33,7 @@ import type { UpService } from "./up-schema"
 import { existsSync, readFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 
-export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "init", "where", "version"] as const
+export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "up", "restart", "down", "reconcile", "ps", "logs", "init", "render", "where", "version"] as const
 export type Command = (typeof COMMANDS)[number]
 
 /** The six `--since` readers (single source for help + the fail-loud
@@ -41,7 +41,7 @@ export type Command = (typeof COMMANDS)[number]
 export const SINCE_READERS = ["sessions", "show", "reads", "logs"] as const
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "--file", "--tail", "--grep", "--service", "--wait", "--health", "--only", "--set-port", "--set-cwd", "--out"])
 const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--version", "--check", "--detach", "--rm", "--force", "--probe", "--explain"])
 
 export type ParsedArgs = {
@@ -79,6 +79,8 @@ export const helpText = (): string =>
     "  ps --explain [service] [--file] [--json]  expected/running witness view (read-only)",
     "  logs [service] [--file] [--tail] [--grep] [--since]  service logs",
   "  init [--force]  starter ow.yaml skeleton from a repo scan (--force keeps a single ow.yaml.bak)",
+  "  render --file <base> --only <a,b> --set-port <svc=port> [--set-cwd <svc=path>] --out <path> [--force] [--json]",
+  "                                filtered task manifest from the base ow.yaml (validate-before-write; existing --out refuses without --force)",
   "  where [--file] [--json]  resolved root + the files ow would read (read-only, always exit 0)",
   "  version [--json]  installed build identity: version + sidecar sha/time (read-only)",
     "",
@@ -151,6 +153,13 @@ export const VERB_HELP: Record<string, string[]> = {
     "flags: --force (keeps one .bak per yaml)",
     "writes at most ow.yaml; never edits package.json/CI",
     "exits: 0 written (or honest no-signal message), 2 refusal (existing file without --force)",
+  ],
+  render: [
+    "flags: --file <base>, --only <a,b> (subset, base order), --set-port <svc=port> (repeatable via commas),",
+    "       --set-cwd <svc=path>, --out <path> (required), --force (keeps one .bak), --json",
+    "writes a filtered copy of the base (env: values never copied); re-parsed before writing",
+    "exits: 0 written, 2 usage/unknown service/refusal (existing --out without --force)",
+    "example: ow render --file ow.yaml --only api --set-port api=8901 --out .local-runtime/task/ow.yaml",
   ],
   where: [
     "flags: --file <path>, --json",
@@ -969,6 +978,16 @@ export const run = async (argv: string[]): Promise<number> => {
     console.error("ow: --explain works only with ps")
     return 2
   }
+  // Render-only flags refuse everywhere else (exit 2), never a silent
+  // no-op that still performs the action.
+  if (command !== "render") {
+    for (const key of ["--only", "--set-port", "--set-cwd", "--out"]) {
+      if (flags[key] !== undefined) {
+        console.error(`ow: ${key} works only with render`)
+        return 2
+      }
+    }
+  }
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
   const logPath = flag(flags, "--log") ?? DEFAULT_LOG_PATH
   const json = flags["--json"] === true
@@ -1032,6 +1051,32 @@ export const run = async (argv: string[]): Promise<number> => {
     const result = await runInit({
       rootDir: typeof flags["--file"] === "string" ? dirname(resolve(flags["--file"] as string)) : process.cwd(),
       force: flags["--force"] === true,
+    })
+    if (result.stdout.length > 0) console.log(result.stdout)
+    if (result.stderr.length > 0) console.error(result.stderr)
+    return result.code
+  }
+
+  if (command === "render") {
+    if (positional !== undefined) {
+      console.error("ow: render takes no positional arguments")
+      return 2
+    }
+    for (const key of Object.keys(flags)) {
+      if (!["--file", "--only", "--set-port", "--set-cwd", "--out", "--force", "--json", "--db", "--log"].includes(key)) {
+        console.error(`ow: ${key} cannot be used with render`)
+        return 2
+      }
+    }
+    const { runRender } = await import("./up-render")
+    const result = await runRender({
+      baseFile: upFilePath(flags),
+      ...(typeof flags["--only"] === "string" ? { only: flags["--only"] as string } : {}),
+      ...(typeof flags["--set-port"] === "string" ? { setPort: flags["--set-port"] as string } : {}),
+      ...(typeof flags["--set-cwd"] === "string" ? { setCwd: flags["--set-cwd"] as string } : {}),
+      ...(typeof flags["--out"] === "string" ? { out: flags["--out"] as string } : {}),
+      force: flags["--force"] === true,
+      json: json,
     })
     if (result.stdout.length > 0) console.log(result.stdout)
     if (result.stderr.length > 0) console.error(result.stderr)

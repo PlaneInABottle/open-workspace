@@ -5,7 +5,7 @@ description: Develop and verify the ow CLI itself across its verbs, wait/ownersh
 
 # OpenWorkspace development
 
-Follow [the development guide](../../../AGENTS.md) for canonical commands, safety and knowledge ownership. Read [the roadmap](../../../ROADMAP.md) only for the affected decision or scope. Do not replay the whole roadmap or pull in later scope implicitly.
+Follow [the development guide](../../../AGENTS.md) for canonical commands, safety and knowledge ownership. Do not replay decisions or pull in later scope implicitly.
 
 ## Preflight
 

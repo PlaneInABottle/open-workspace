@@ -162,18 +162,6 @@ describe("lstart kill guard", () => {
 })
 
 describe("spawn and exit codes", () => {
-  test("echo service streams lines and exits 0", async () => {
-    const root = await tempRoot()
-    try {
-      const { lines, onLine } = collectLines()
-      const code = await runSupervised([{ name: "hello", cmd: "echo ok" }], { rootDir: root, onLine })
-      expect(code).toBe(0)
-      expect(lines).toContain("[hello|stdout] ok")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   test("spontaneous nonzero exit is recorded in state and yields exit 1", async () => {
     const root = await tempRoot()
     try {

@@ -14,7 +14,7 @@ distributed separately from the platform's development skills.
 
 1. **Detect client from project files (shared marker table — install-dir hit wins; a config-file hit is only a fallback signal).** Check for client markers in this project only: Claude Code — install dir `.claude/`, fallback `~/.claude.json`; OpenCode — install dir `.opencode/`, fallback `opencode.jsonc`; Codex — detect `.agents/skills/` or fallback `.codex/config.toml`, install to `.agents/skills/`; VS Code/Copilot — install dir `.github/`, fallback `.mcp.json`. Use the markers found; when several clients genuinely coexist, ask which one before writing.
 2. **Fetch authoritative texts from the product checkout.** Re-read every `skills/<name>/SKILL.md`
-   (`learn-from-mistake`, `onboarding`, `ow`, `ow-debug`, `ow-runtime`,
+   (`learn-from-mistake`, `onboarding`, `ow`, `ow-debug`,
    `setup-ow`, `update`). The source text
    is authoritative — never invent skill content by hand.
 3. **Write project-local `ow-*` snapshots.** Snapshot paths per client, all

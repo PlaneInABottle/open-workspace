@@ -7,9 +7,8 @@ The observer hooks that feed it live in the opencode plugin directory
 (`~/.config/opencode/opencode-plugins/shell-observer/` — `index.ts` +
 `shell-observer-core.ts` only); every other CLI source lives here.
 
-Agent skill entry points: `skills/ow/SKILL.md` (pointer) →
-`skills/ow-runtime/SKILL.md` (supervision/readiness); generated client
-packs live under `plugins/`.
+Agent skill entry point: `skills/ow/SKILL.md` (sessions plus
+supervision/readiness); generated client packs live under `plugins/`.
 
 ## Bun-only
 
@@ -174,6 +173,8 @@ ow logs [svc] [--tail 200] [--grep foo] [--since 30m] [--json]
 ow down [--rm]                 # SIGTERM→5s→SIGKILL; --rm also drops supervisor.json
 ow doctor                      # observer health plus an informational up: line
 ow init [--force]  # scaffold ow.yaml from repo detection (never overwrites without --force)
+ow render --file ow.yaml --only api,web --set-port api=8901 --out .local-runtime/task/ow.yaml [--force] [--json]
+                   # filtered task manifest from the base (validate-before-write; existing --out refuses without --force)
 ```
 
 `ow up -d --wait <duration> [--health <name>=<path> ...]` (e.g. `--wait 150s
@@ -362,6 +363,20 @@ catalog (fixed `question:` strings, never interactive): service-cwd confirm,
 port confirm, required-env names. Init writes at most the
 yaml file — it never edits `package.json`/CI/imports,
 never installs anything, never spawns app code.
+
+`ow render` derives a per-task manifest from the base `ow.yaml` without
+hand-editing it: `--only <a,b>` keeps a subset (base order),
+`--set-port <svc=port>` / `--set-cwd <svc=path>` apply task-local
+overrides (comma-separated pairs), `--out <path>` is required. The base
+stays the single source; the manifest lives at
+`.local-runtime/<task>/ow.yaml` by convention (not enforced). The output
+is re-parsed before writing, `env:` values are never copied (the task
+process env provides them), `cmd` keeps its base shape (list stays a
+flow argv list, string stays a string), and stdout/`--json` carry
+names/ports only — never secret values. An existing `--out` refuses
+without `--force` (exit 2, byte-identical); `--force` keeps a single
+`.bak`. Unknown services, malformed pairs, and render-only flags on any
+other verb are usage errors (exit 2, nothing written).
 
 State lives repo-local in `<root>/.ow/` (`supervisor.json`, `supervisor.lock`,
 `logs/<service>.jsonl`), all `0700`/`0600`, atomic tmp+rename writes.

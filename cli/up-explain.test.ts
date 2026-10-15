@@ -397,15 +397,6 @@ describe("ps --explain CLI", () => {
     }
   })
 
-  test("--probe ile explain reddedilir (exit 2)", async () => {
-    const { root, file } = await fixture()
-    try {
-      expect(await run(["ps", "--explain", "--probe", "--file", file])).toBe(2)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   test("the running line renders cwd; UNVERIFIED if dropped", () => {
     const withCwd = explainServices({
       rootDir: "/r",

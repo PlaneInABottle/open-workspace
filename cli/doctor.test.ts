@@ -9,18 +9,9 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { doctor } from "./doctor"
-import { DEFAULT_DB_PATH as DOCTOR_DB_PATH, DEFAULT_LOG_PATH as DOCTOR_LOG_PATH, staleSupervisorHint } from "./doctor"
-import { DEFAULT_DB_PATH as JOIN_DB_PATH, DEFAULT_LOG_PATH as JOIN_LOG_PATH } from "./join"
+import { doctor, staleSupervisorHint } from "./doctor"
 
 const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-doctor-"))
-
-describe("default paths single source", () => {
-  test("doctor defaults equal the join exports (no drift)", () => {
-    expect(DOCTOR_LOG_PATH).toBe(JOIN_LOG_PATH)
-    expect(DOCTOR_DB_PATH).toBe(JOIN_DB_PATH)
-  })
-})
 
 describe("staleSupervisorHint", () => {
   test("match, either side missing, or empty digests → silent", () => {

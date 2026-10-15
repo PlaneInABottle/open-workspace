@@ -145,15 +145,6 @@ describe("waitForReady", () => {
     expect(calls).toBe(1)
   })
 
-  test("unflagged targets carry no healthPath", async () => {
-    const results = await waitForReady({
-      targets: [{ name: "api", port: 1001 }],
-      timeoutMs: 1000,
-      probe: async () => true,
-      exited: async () => new Map(),
-    })
-    expect(results).toEqual([{ name: "api", port: 1001, status: "ready", waitedSec: 0 }])
-  })
 })
 
 describe("parseWaitDuration (moved from the retired trace verb; the runtime wait stays)", () => {

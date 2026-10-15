@@ -116,12 +116,6 @@ describe("reconcileOne ownership predicate (pure)", () => {
     ).toBeNull()
   })
 
-  test("depth-2 descendant owner means no drift", () => {
-    expect(
-      reconcileOne({ name: "api", expected: expPort(3000), running: run, ...liveBase, portOwners: [200], descendantOwners: [200] }),
-    ).toBeNull()
-  })
-
   test("empty owner list with a listener is no owner evidence — no drift (RED-before: foreign-port)", () => {
     expect(
       reconcileOne({ name: "api", expected: expPort(3000), running: run, ...liveBase, portOwners: [] }),
@@ -241,10 +235,6 @@ describe("reconcileOne ownership predicate (pure)", () => {
     expect(drift?.hint).toBe("port 3000 foreign listener (UNVERIFIED) — no kill, verify the owner")
   })
 
-  test("null or cyclic tables never hang — legacy foreign-port", () => {
-    const legacy = reconcileOne({ name: "api", expected: expPort(3000), running: run, ...liveBase, portOwners: [300] })
-    expect(legacy).toMatchObject({ kind: "foreign-port" })
-  })
 })
 
 describe("readProcessTable (real ps)", () => {

@@ -179,7 +179,7 @@ const requiredFromPython = async (rootDir: string): Promise<string[]> => {
 }
 
 /** Strip line comments and C-style block comments before the Spring-marker
- * test, so a comment like `// TODO: migrate to spring-boot later` never
+ * test, so a comment like `// note: spring-boot` never
  * emits `bootRun`. String literals are KEPT verbatim: the real marker lives
  * inside a quoted plugin id (`id 'org.springframework.boot'`), so stripping
  * literals would erase the strong signal itself. Comment markers inside

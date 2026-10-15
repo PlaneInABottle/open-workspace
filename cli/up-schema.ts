@@ -41,13 +41,9 @@ const PROBE_MAX_PARTS = 16
 const PROBE_MAX_PART_BYTES = 512
 // POSIX shell family (if argv[0] equals one of these the probe is a shell
 // binary and gains shell semantics with `-c` — Bun.spawn itself does not interpret).
-// powershell|cmd were REJECTED (rationale): the platform is macOS+Linux (POSIX,
-// Windows deferred in ROADMAP); revisit the list if that widens.
 const SHELL_ARGV0: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh"])
 
-/** Shell-binary detection: path basename + lowercase + `.exe` stripping
- * (`/bin/sh`, `Sh`, `sh.exe` are all caught; on POSIX a backslash is a file
- * name character, not a separator). */
+/** Shell-binary detection: path basename, case-insensitive. */
 export const isShellArgv0 = (argv0: string): boolean => {
   const base = argv0.split("/").pop() ?? argv0
   return SHELL_ARGV0.has(base.toLowerCase().replace(/\.exe$/, ""))

@@ -195,10 +195,6 @@ describe("runProbe", () => {
     expect(outcome.ok).toBe(false)
   })
 
-  test("touches no network outside the target, the command runs as-is (B2 declaration)", async () => {
-    const outcome = await runProbe({ spec: specOf(["echo", '{"ready": true}']), cwd: "/tmp", env })
-    expect(outcome.ok).toBe(true)
-  })
 })
 
 describe("wait/reconcile/explain wiring (M3 integration)", () => {

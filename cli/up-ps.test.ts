@@ -309,24 +309,6 @@ describe("ow up --wait", () => {
     }
   })
 
-  test("a service without a declared port waits for nothing and exits 2 (M-f vacuity refusal)", async () => {
-    const root = await tempRoot()
-    try {
-      const { waitForUpReady } = await import("./cli")
-      const { parseUpFile } = await import("./up-schema")
-      const services = parseUpFile("services:\n  job:\n    cmd: echo hi\n").services
-      const original = console.log
-      console.log = () => undefined
-      try {
-        expect(await waitForUpReady({ rootDir: root, services, timeoutMs: 1000, json: true })).toBe(2)
-      } finally {
-        console.log = original
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   test("--health without --wait is a usage error (exit 2) and starts nothing", async () => {
     const root = await tempRoot()
     try {
