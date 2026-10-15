@@ -169,6 +169,16 @@ line-naming error; a service needs `cmd` or `logs` (both allowed —
 `logs` then runs as a sibling tail). Services spawn in YAML declaration
 order; no ordering feature exists.
 
+Quoted flow values keep their exact bytes: double-quoted strings decode
+the JSON escape subset (`\" \\ \/ \b \f \n \r \t \uXXXX`) so a
+`JSON.stringify` argv list round-trips byte-identical (commas, brackets,
+`#` and quotes inside stay literal); any other backslash escape is a
+schema error naming the line only (exit 2, value never echoed).
+Single-quoted strings are literal except the standard doubled apostrophe
+(`'it''s'` → `it's`); a lone apostrophe (`it's`) stays literal, and an
+unterminated quote stays literal too (no silent arg drop). `#` starts a
+comment only outside quotes. Block sequences stay refused (exit 2).
+
 `env` sets per-service environment variables over the inherited process
 environment (service value wins over an inherited one; `OW_SERVICE` is always
 set last to the service name). It is a single inline flow map of scalar

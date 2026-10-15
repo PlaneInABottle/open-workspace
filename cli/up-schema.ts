@@ -109,8 +109,19 @@ const stripComment = (line: string): string => {
   let quote: string | null = null
   for (let i = 0; i < line.length; i += 1) {
     const ch = line[i]
-    if (quote) {
-      if (ch === quote) quote = null
+    if (quote === '"') {
+      // Backslash escapes inside double quotes: the escaped char (quote or
+      // otherwise) never toggles quoting, so `#` inside stays literal.
+      if (ch === "\\") i += 1
+      else if (ch === '"') quote = null
+      continue
+    }
+    if (quote === "'") {
+      // Doubled apostrophes inside single quotes are one literal quote.
+      if (ch === "'") {
+        if (line[i + 1] === "'") i += 1
+        else quote = null
+      }
       continue
     }
     if (ch === '"' || ch === "'") {
@@ -122,10 +133,44 @@ const stripComment = (line: string): string => {
   return line
 }
 
-const unquote = (raw: string): string => {
+/** Double-quoted escape decoding (JSON subset): `\" \\ \/ \b \f \n \r
+ * `\t \uXXXX`. Anything else after a backslash — including a trailing
+ * lone backslash — is a schema error naming the line only (never the
+ * value: flow values may carry secrets). Single-quoted values decode
+ * only the standard doubled apostrophe (`''` → `'`). */
+const decodeDoubleQuoted = (body: string, lineNo: number): string => {
+  const simple: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" }
+  let out = ""
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i]
+    if (ch !== "\\") {
+      out += ch
+      continue
+    }
+    const next = body[i + 1]
+    if (next === undefined) throw new UpSchemaError(lineNo, "invalid escape in double-quoted value")
+    if (next === "u") {
+      const hex = body.slice(i + 2, i + 6)
+      if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new UpSchemaError(lineNo, "invalid escape in double-quoted value")
+      out += String.fromCharCode(parseInt(hex, 16))
+      i += 5
+      continue
+    }
+    const decoded = simple[next]
+    if (decoded === undefined) throw new UpSchemaError(lineNo, "invalid escape in double-quoted value")
+    out += decoded
+    i += 1
+  }
+  return out
+}
+
+const unquote = (raw: string, lineNo: number): string => {
   const t = raw.trim()
-  if (t.length >= 2 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
-    return t.slice(1, -1)
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    return decodeDoubleQuoted(t.slice(1, -1), lineNo)
+  }
+  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) {
+    return t.slice(1, -1).replace(/''/g, "'")
   }
   return t
 }
@@ -147,7 +192,7 @@ const parseFlowList = (raw: string, line: number): YamlScalar[] => {
   if (inner.length === 0) return []
   // Quote-aware: quoted commas/empty strings/whitespace survive exactly;
   // `unquote` trims only outside the quotes, never inside.
-  return splitTopLevel(inner).map((part) => unquote(part))
+  return splitTopLevel(inner).map((part) => unquote(part, line))
 }
 
 const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
@@ -170,7 +215,7 @@ export const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
     }
     const colon = trimmed.indexOf(":")
     if (colon < 0) throw new UpSchemaError(lineNo, "key: value expected")
-    const key = unquote(trimmed.slice(0, colon).trim())
+    const key = unquote(trimmed.slice(0, colon).trim(), lineNo)
     const rest = trimmed.slice(colon + 1).trim()
     if (key.length === 0) throw new UpSchemaError(lineNo, "empty key")
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop()
@@ -206,24 +251,45 @@ export const parseSubsetYaml = (text: string): Record<string, YamlNode> => {
 const parseValue = (rest: string, lineNo: number): YamlNode => {
   if (rest.startsWith("[") && rest.endsWith("]")) return parseFlowList(rest, lineNo)
   if (rest.startsWith("{") && rest.endsWith("}")) return parseFlowMap(rest, lineNo)
-  return unquote(rest)
+  return unquote(rest, lineNo)
 }
 
 /** Top-level comma split: tracks `[]`/`{}` depth so nested flow values never
  * break the outer split, and only treats a quote as opening when it starts a
  * value (empty current or after whitespace/`:`/`[`/`{`/`,`). A lone quote
  * inside an unquoted token (e.g. `it's`) stays literal, so it can never
- * swallow the rest of the map. An unbalanced quote that DID open a value
- * stays literal too (no error): the value runs to end-of-input unchanged. */
+ * swallow the rest of the map. Inside double quotes a backslash escapes the
+ * next char (so `\"` never closes and `\,` never splits); inside single
+ * quotes a doubled apostrophe (`''`) is one literal quote. An unbalanced
+ * quote that DID open a value stays literal too (no error): the value runs
+ * to end-of-input unchanged. */
 const splitTopLevel = (inner: string): string[] => {
   const parts: string[] = []
   let current = ""
   let quote: string | null = null
   let depth = 0
-  for (const ch of inner) {
-    if (quote) {
+  for (let i = 0; i < inner.length; i += 1) {
+    const ch = inner[i]
+    if (quote === '"') {
       current += ch
-      if (ch === quote) quote = null
+      if (ch === "\\") {
+        current += inner[i + 1] ?? ""
+        i += 1
+      } else if (ch === '"') {
+        quote = null
+      }
+      continue
+    }
+    if (quote === "'") {
+      current += ch
+      if (ch === "'") {
+        if (inner[i + 1] === "'") {
+          current += "'"
+          i += 1
+        } else {
+          quote = null
+        }
+      }
       continue
     }
     if (ch === '"' || ch === "'") {
@@ -255,7 +321,7 @@ export const parseFlowMap = (raw: string, lineNo: number): Record<string, YamlNo
   for (const part of splitTopLevel(inner)) {
     const colon = part.indexOf(":")
     if (colon < 0) throw new UpSchemaError(lineNo, "key: value expected inside map")
-    const key = unquote(part.slice(0, colon).trim())
+    const key = unquote(part.slice(0, colon).trim(), lineNo)
     const value = part.slice(colon + 1).trim()
     if (key.length === 0 || value.length === 0) throw new UpSchemaError(lineNo, "empty key/value inside map")
     if (key in out) throw new UpSchemaError(lineNo, "duplicate key inside map")

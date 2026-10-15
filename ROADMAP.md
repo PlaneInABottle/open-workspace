@@ -111,3 +111,16 @@ and test output in their existing findings and task artifacts.
   old per-group ref values are NOT byte-equal (single-line groups still
   start at 1); JSON keys/types/envelopes unchanged, pure-empty lines and
   `--json` unchanged.
+- **Quoted JSON argv survives flow parsing (behavior correction).** A
+  `JSON.stringify` argv list in `cmd` (or a readiness probe / `env` map)
+  mis-split on its inner commas and truncated at `#` (fail-before: 3
+  expected args parsed as 4; a live run died with a shell EOF error, exit
+  2). The shared splitter/comment-stripper are now escape-aware and
+  double-quoted values decode the JSON escape subset; anything else after
+  a backslash is a line-naming schema error (exit 2, value never echoed).
+  Single-quoted stays literal except `''` doubling; lone apostrophes and
+  unterminated quotes stay literal. Intentional contract change:
+  double-quoted backslashes now decode (previously literal) — write
+  Windows-style literals single-quoted. Real-world check: fixture
+  emitter/probe capture exact argv count and bytes through the real
+  runner; block sequences still refused.

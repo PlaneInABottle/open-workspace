@@ -356,3 +356,96 @@ describe("readiness definition (M3)", () => {
     expect(parseUpFile(evil("bin\\sh, -c, echo hi")).services[0].readiness).toBeDefined()
   })
 })
+
+describe("up-schema quoted escapes (JSON argv fidelity)", () => {
+  test("RED: JSON-serialized argv list survives with exact count and bytes", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const payload = JSON.stringify({ items: ["a,b", "[x]"], ready: true })
+    const argv = ["/usr/bin/printf", "%s", payload]
+    const yaml = "services:\n  probe:\n    cmd: " + JSON.stringify(argv) + "\n"
+    const actual = parseUpFile(yaml).services[0].cmd
+    expect(actual).toEqual(argv)
+  })
+
+  test("payload matrix: commas/brackets/braces/hash/escapes/backslash/unicode/empty/whitespace", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    // Independent expectation: Node's JSON is the producer contract here,
+    // the parser must return its exact strings (self-matching forbidden).
+    const values = ["a,b", "[x]", "{k: v}", "a#b c", 'q"q', "a\\b", "héllo ✓", "", "  ", "tab\there"]
+    const argv = ["run", ...values]
+    const yaml = "services:\n  s:\n    cmd: " + JSON.stringify(argv) + "\n"
+    expect(parseUpFile(yaml).services[0].cmd).toEqual(argv)
+  })
+
+  test("single-quoted args: plain, doubled apostrophe decodes, lone apostrophe stays literal", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const cmd = (v: string): string[] => {
+      const parsed = parseUpFile(`services:\n  s:\n    cmd: [run, ${v}]\n`).services[0].cmd
+      if (!Array.isArray(parsed)) throw new Error("expected argv list")
+      return parsed
+    }
+    expect(cmd("'plain'")).toEqual(["run", "plain"])
+    expect(cmd("'it''s'")).toEqual(["run", "it's"])
+    expect(cmd("it's")).toEqual(["run", "it's"])
+    expect(cmd("'a # b'")).toEqual(["run", "a # b"])
+  })
+
+  test("double-quoted escapes decode (JSON subset); invalid escapes fail closed without echo", async () => {
+    const { parseUpFile, UpSchemaError } = await import("./up-schema")
+    const cmd = (v: string): string[] => {
+      const parsed = parseUpFile(`services:\n  s:\n    cmd: [run, ${v}]\n`).services[0].cmd
+      if (!Array.isArray(parsed)) throw new Error("expected argv list")
+      return parsed
+    }
+    expect(cmd('"a\\nb\\tc"')).toEqual(["run", "a\nb\tc"])
+    expect(cmd('"\\u00e9"')).toEqual(["run", "é"])
+    expect(cmd('"a\\\\\\\\b"')).toEqual(["run", "a\\\\b"])
+    for (const bad of ['"a\\qb"', '"trailing\\"', '"\\u12xz"']) {
+      let error: unknown = null
+      try {
+        cmd(bad)
+      } catch (e) {
+        error = e
+      }
+      expect(error).toBeInstanceOf(UpSchemaError)
+      // refusal names the line, never the (possibly secret-shaped) value
+      expect(String((error as Error).message)).not.toContain("hunter2")
+      expect(String((error as Error).message)).toContain("invalid escape")
+    }
+    // hostile value + bad escape: still no leak in the refusal
+    let hostile: unknown = null
+    try {
+      cmd('"token=hunter2\\qx"')
+    } catch (e) {
+      hostile = e
+    }
+    expect(hostile).toBeInstanceOf(UpSchemaError)
+    expect(String((hostile as Error).message)).not.toContain("hunter2")
+  })
+
+  test("unterminated quotes stay literal (no arg drop); real comments still strip", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const cmd = (v: string): string[] => {
+      const parsed = parseUpFile(`services:\n  s:\n    cmd: [run, ${v}]\n`).services[0].cmd
+      if (!Array.isArray(parsed)) throw new Error("expected argv list")
+      return parsed
+    }
+    expect(cmd('"oops')).toEqual(["run", '"oops'])
+    expect(cmd("'oops")).toEqual(["run", "'oops"])
+    const yaml = 'services:\n  s:\n    cmd: [run, "a\\" # b"] # trailing\n'
+    expect(parseUpFile(yaml).services[0].cmd).toEqual(["run", 'a" # b'])
+  })
+
+  test("env flow map and readiness probe share the same quoted fidelity", async () => {
+    const { parseUpFile } = await import("./up-schema")
+    const payload = JSON.stringify({ ready: true, items: ["a,b"] })
+    const yaml =
+      "services:\n  web:\n    cmd: x\n    port: 1\n" +
+      `    env: {DATA: ${JSON.stringify(payload)}, PLAIN: ok}\n` +
+      `    readiness: {probe: ["./ready.sh", ${JSON.stringify(payload)}], timeout: 10s}\n`
+    const svc = parseUpFile(yaml).services[0]
+    expect(svc.env).toMatchObject({ DATA: payload, PLAIN: "ok" })
+    const readiness = svc.readiness as { probe: string[] } | undefined
+    expect(readiness?.probe).toEqual(["./ready.sh", payload])
+  })
+})
