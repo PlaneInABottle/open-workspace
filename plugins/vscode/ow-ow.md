@@ -8,8 +8,7 @@ description: "Operate the ow CLI: past session analysis (sessions/show/meta/read
 `ow` is the shell-observer command line: past session analysis over
 OpenCode's session store. Read-only; it never changes sessions, files,
 or the database. Run it as `ow` from anywhere (via `/setup-ow`
-install, or `ow` on PATH). It supervises nothing — compose owns
-runtime now.
+install, or `ow` on PATH).
 
 ## Sessions (quick reference)
 
@@ -60,7 +59,7 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 | `show --json` | `{session, warnings, groups, tree?, window}` |
 | `meta --json` | `{meta, warning}` |
 | `reads --json` | `{session, reads, window}` |
-| `doctor --json` | `{checks[] ({name, ok, detail}), identity: {installed {sha8, dirty, time, binary8}\|null, supervisor {state, startedAt, sha8, time}, match}}` |
+| `doctor --json` | `{checks[] ({name, ok, detail}), identity: {installed {sha8, dirty, time, binary8}\|null}}` |
 | `version --json` | `{version, sha, time, dirty, sidecar}` |
 
 Full behavior, caps, and non-goals: product `cli/README.md`.

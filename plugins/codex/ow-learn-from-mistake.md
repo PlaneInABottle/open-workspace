@@ -36,16 +36,4 @@ Findings from `ow` evidence obey the same 5-rule cap and citation rule below
    5-rule cap.
 6. Orphan guidance goes with its feature's files: lessons whose feature no longer exists never linger as orphan guidance.
 
-## Record setup friction, not just test failures
-
-The primary learning target is setup friction in an unknown world: a service starts, a missing secret or setting surfaces, you set it, the next missing piece surfaces — each step costs time. When 10 or more minutes were wasted on such an avoidable detour, record it with the same care as a test failure:
-
-1. Write the durable rule first: the setup sequence that avoids the detour next time (for example, which values to confirm before starting the service).
-2. Write the detour context into the same rule: 1–10 lowercase situation tags describing the detour (for example `missing secret`, `service start`), citing the session or test run that showed it.
-3. Fix the rule text when the setup changes, or leave it while it still applies; fixes count toward the 5-rule cap above.
-
-## Probe offer (offer-only)
-
-When a recurring friction is under review in this invocation, read this offer once and continue: "This recurring friction could become a pre-flight check. Reply 'yes, draft a regression test at <path>' for a guidance note (at most 2KiB) inside the active project only, run by nobody. Nothing is created unless you accept."
-
 Write only patterns. Never record secrets, literal credentials, absolute user paths or path values, customer data, SQL literals, URLs containing credentials, or log/transcript content. Do not create a draft, quarantine file, or separate learning store. Do not modify product code, global configuration, or unrelated instruction files as a side effect.
