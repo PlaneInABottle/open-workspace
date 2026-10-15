@@ -3,35 +3,8 @@
 # against two binaries and diffs. Any difference → unified diff + exit 1.
 # Usage: scripts/check-ow-parity.sh <old-ow> <new-ow>
 # (`doctor` is compared by envelope keys + exit code only — ages/sizes vary.)
-#
-# M2 intended deltas (enumerated — everything else stays byte-identical):
-# - `help` stdout: four lines changed by decision (asserted on the new
-#   binary below, then normalized out of the diff): the `--since` line
-#   (shared grammar, no false `default 1d`), the `failures` line (shared
-#   `30m|3h|1d|1w` tokens), the `--boundaries` line (all eight readers),
-#   the `--json` verb list (+`doctor`).
-# - `sessions --json`: additive `"window":null` on the new binary
-#   (unwindowed call) — asserted present, stripped on both sides.
-# - `doctor --json`: top-level `identity` envelope (introduced in M2) —
-#   asserted by key shape on BOTH binaries (HEAD contains the committed
-#   identity work), stripped from the old-vs-new top-keys diff.
-# - exits/stderr: unchanged everywhere (new notices are flag-gated and no
-#   fixture passes those flags; `up --check` never announces state).
-# V2 intended deltas (same pattern — assert on new, normalize the diff):
-# - `help` stdout: the `scenarios` line and the `scenario run` line
-#   (probe-only lanes point at `record` + `contract check`).
-# OW-012 intended deltas (same pattern):
-# - `help` stdout: the single-service `up <name>` line and the `restart`
-#   line (single-service `--wait`/`--health`, `-d` ignored).
-# Caps batch intended deltas (same pattern):
-# - `help` stdout: the `prompts` line (default limit 20 → 50, measured).
-# C batch intended deltas (same pattern):
-# - `help` stdout: the `checkpoints show` line (`--resume` flag + view note).
-# B batch intended deltas (same pattern):
-# - `help` stdout: the `record` line (record-only `--claim-entrypoint` /
-#   `--claim-boundary` flags) plus its one-line `--claim-boundary`
-#   continuation (new-only line: asserted on the new binary, deleted
-#   from the diff; the shared `record` line is blanked on both sides).
+# Observer-only: supervision was retired (compose owns runtime), so the
+# gate replays `--help`, `sessions --json` and `doctor --json` only.
 set -u
 OLD="${1:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
 NEW="${2:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
@@ -65,57 +38,7 @@ run_case() {
   fi
 }
 
-# M2 help normalization: the four intended lines are asserted on the new
-# binary, then blanked on both sides so the diff still guards every byte.
-# V2 adds the two probe-only scenario lines (same pattern).
-# B adds the shared `record` line (blanked both sides) plus its new-only
-# `--claim-boundary` continuation (deleted: the old binary has no such
-# line, so blanking would leave a stray empty line in the diff).
-normalize_help() {
-  sed -e 's/--since  window:.*//' -e 's/^  failures \[--since.*//' -e 's/--boundaries <path>.*//' -e 's/--json  machine output.*//' -e 's/^  scenarios --check.*//' -e 's/^  scenario run <name>.*//' -e 's/single service (up <name>.*//' -e 's/^  restart <service>.*//' -e 's/last [0-9]* user prompts/last N user prompts/' -e 's/^  checkpoints show <run>.*//' -e 's/^  record <scenario>.*//' -e '/(repeatable, record-only;/d'
-}
-
-run_case_help() {
-  "$OLD" --help >"$OUT/help.old.out" 2>"$OUT/help.old.err"
-  local old_code=$?
-  "$NEW" --help >"$OUT/help.new.out" 2>"$OUT/help.new.err"
-  local new_code=$?
-  echo "$old_code" >"$OUT/help.old.code"
-  echo "$new_code" >"$OUT/help.new.code"
-  for line in \
-    '--since  window: 30m|3h|1d|1w (sessions/show/stuck/reads/logs/failures/trace/timeline)' \
-    'failures [--since 30m|3h|1d|1w]' \
-    'scenario-run/scenario-env only' \
-    '--json  machine output (English keys): doctor/show' \
-    'scenarios --check [--file] [--json]  ow.scenarios.yaml v1 schema validation (no runs; probe-only lanes: record + contract check)' \
-    'scenario run <name> [--file] [--json] [--run <id>] [--off-local]  narrowed deterministic run (5 phases, restore mandatory; probe-only lanes without restore: record + contract check)' \
-    'single service (up <name> [--wait 120s] [--health <name>=<path>]): added to the live supervisor by request, healthy ones unaffected; --wait waits one-shot (live only, -d ignored)' \
-    'restart <service> [--file] [--wait 120s] [--health <name>=<path>]   restart one service on the live supervisor + waited (live only; exit 2 without lock)' \
-    'prompts [session]             last 50 user prompts (oldest first)' \
-    'checkpoints show <run> [--file] [--json] [--resume]  shows envelopes as confirmed/stale/not-observed (+ resume view)' \
-    '  record <scenario> [--file] [--claim-entrypoint <text>] [--claim-boundary <name>=<kind>:<ref>]  declarative deterministic scenario capture (.ow/replay; no state-changing)' \
-    '                                --claim-boundary <name>=<kind>:<ref> (repeatable, record-only; kind real|fake; opaque caller claims, stored + rendered verbatim)' \
-  ; do
-    if ! grep -qF -- "$line" "$OUT/help.new.out"; then
-      echo "PARITY FAIL(help line missing on new): $line"
-      fail=1
-    fi
-  done
-  if ! diff -u <(normalize_help <"$OUT/help.old.out") <(normalize_help <"$OUT/help.new.out"); then
-    echo "PARITY FAIL(stdout): help"
-    fail=1
-  fi
-  if ! diff -u "$OUT/help.old.err" "$OUT/help.new.err"; then
-    echo "PARITY FAIL(stderr): help"
-    fail=1
-  fi
-  if [ "$old_code" != "$new_code" ]; then
-    echo "PARITY FAIL(exit $old_code vs $new_code): help"
-    fail=1
-  fi
-}
-
-# M2 window normalization: additive `"window":null` is asserted on the new
+# Window normalization: additive `"window":null` is asserted on the new
 # binary, stripped on both sides so the diff still guards every byte.
 strip_window() {
   sed -e 's/,"window":null//' -e 's/"window":null,//'
@@ -148,11 +71,7 @@ run_case_window_json() {
   fi
 }
 
-run_case_help
-run_case check-good up --check --file "$FIX/ow-good.yaml"
-run_case check-logsonly up --check --file "$FIX/ow-logs-only.yaml"
-run_case ps-missing ps --file "$FIX/ow-good.yaml" --json
-run_case logs-missing logs --file "$FIX/ow-good.yaml" --json
+run_case help --help
 run_case_window_json sessions sessions --json --log "$FIX/shell-events.jsonl"
 
 # doctor: envelope keys + exit code only (wall-clock fields vary by construction)
@@ -168,7 +87,6 @@ def keys(path):
         d = json.load(open(path))
     except Exception:
         return ["<unparseable>"]
-    # M2: `identity` is compared by shape below, never in the top-keys diff.
     names = sorted(c.get("name", "?") for c in d.get("checks", []))
     sub = sorted({k for c in d.get("checks", []) for k in c.keys()})
     return [f"top={sorted(k for k in d.keys() if k != 'identity')}", f"names={names}", f"checkkeys={sub}"]
@@ -197,30 +115,33 @@ if ! diff -u "$OUT/doctor.old.keys" "$OUT/doctor.new.keys"; then
   echo "PARITY FAIL(keys): doctor"
   fail=1
 fi
-# V2 reality: HEAD contains the committed M2 `identity` work, so the old
-# binary carries it too — pin the same key shape on old (values vary by
-# construction: no sidecar ships beside the scratch old binary, so its
-# `installed` reads None by build method; both exact shapes accepted).
 for expected in "identity=present" "supervisor=['sha8', 'startedAt', 'state', 'time']" "matchkey=True"; do
-  if ! grep -qxF "$expected" "$OUT/doctor.old.ident"; then
-    echo "PARITY FAIL(identity keys, old): $expected"
-    fail=1
-  fi
-done
-if ! grep -qxE "installed=(None|\['binary8', 'dirty', 'sha8', 'time'\])" "$OUT/doctor.old.ident"; then
-  echo "PARITY FAIL(identity keys, old): installed shape"
-  fail=1
-fi
-for expected in "identity=present" "installed=['binary8', 'dirty', 'sha8', 'time']" "supervisor=['sha8', 'startedAt', 'state', 'time']" "matchkey=True"; do
   if ! grep -qxF "$expected" "$OUT/doctor.new.ident"; then
     echo "PARITY FAIL(identity keys): $expected"
     fail=1
   fi
 done
+if ! grep -qxE "installed=(None|\['binary8', 'dirty', 'sha8', 'time'\])" "$OUT/doctor.new.ident"; then
+  echo "PARITY FAIL(identity keys): installed shape"
+  fail=1
+fi
 if [ "$old_code" != "$new_code" ]; then
   echo "PARITY FAIL(exit $old_code vs $new_code): doctor"
   fail=1
 fi
+
+# Retired supervision verbs refuse on the new binary (exit 2).
+for verb in up restart down reconcile ps logs init render where; do
+  if "$NEW" "$verb" >"$OUT/retired-$verb.out" 2>"$OUT/retired-$verb.err"; then
+    echo "PARITY FAIL(retired verb exits 0): $verb"
+    fail=1
+  fi
+  code=$?
+  if [ "$code" != "2" ]; then
+    echo "PARITY FAIL(retired verb exit $code, want 2): $verb"
+    fail=1
+  fi
+done
 
 if [ "$fail" = 0 ]; then
   echo "parity OK"

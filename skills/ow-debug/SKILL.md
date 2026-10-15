@@ -1,6 +1,6 @@
 ---
 name: ow-debug
-description: Debug with ow in order (ps/logs/doctor), join Langfuse by request ID, and diff DB snapshots with a copy-paste recipe.
+description: Debug with ow doctor first, join Langfuse by request ID, and diff DB snapshots with a copy-paste recipe.
 ---
 
 # ow-debug — debugging method + DB snapshot-diff recipe
@@ -10,23 +10,24 @@ this file never repeats its reference. No product-code change is implied.
 
 ## Method order (each step answers one question)
 
-1. `ow ps` — is anything alive? Note `running` vs `exited`/`stopped`/`unknown`
-   per service; a recycled pid reports unknown, never signaled.
-2. `ow logs <svc> --tail 200 --grep <id>` — what values and errors?
-   Start narrow (`--service`/`--since`/`--tail`/`--grep` first, full dump
-   never); widen only on demand. `--json` when piping into further analysis.
-3. `ow doctor` when results look wrong (stale tail, missing session):
-   it names liveness and listener hints.
+1. `ow doctor` when results look wrong (stale tail, missing session):
+   it names log/hook/ring/db health.
+2. `ow show <session>` — what ran, what failed, in which task group?
+   Narrow with `--since`/`--kind`/`--tool` first; `--json` when piping
+   into further analysis.
 
-Exits: 0 ok (quiet-empty listings included), 1 structural failure,
-2 usage error; always non-interactive.
+Exits: 0 ok, 1 structural failure, 2 usage error; always non-interactive.
+
+For service runtime (compose owns it now): `docker compose ps` for
+liveness, `docker compose logs <svc> --tail 200` for values and errors.
+`ow` never reads service state or logs.
 
 ## Langfuse join (only when the app also reports there)
 
-Local span collection is retired — `ow` no longer receives or stores
-spans. When the app reports to Langfuse, join there: the app's own UI
-for the remote leg, and `ow logs --grep <id>` to correlate values to
-the same request ID in local logs. `ow` never reads the Langfuse API —
+`ow` never receives or stores spans. When the app reports to Langfuse, join there: the app's own UI
+for the remote leg, and the service logs (`docker compose logs
+--grep <id>` or equivalent) to correlate values to the same request ID
+in local logs. `ow` never reads the Langfuse API —
 the join happens by ID in the agent's hands.
 
 ## DB snapshot-diff recipe (agent-run shell, not an ow command)

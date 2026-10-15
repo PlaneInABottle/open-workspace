@@ -1,10 +1,46 @@
 /** Shared redaction core: free-text secret mask + cap/mark. Every
- * remaining reader (ps/explain, logs, export, probe, supervisor,
- * init, join/tree) routes user-controlled text
- * through `maskSecrets` (mask-before-cap); `capText` bounds the length.
- * No envelope/freshness/normalize machinery lives here anymore. */
+ * reader (join/tree) routes user-controlled text through
+ * `maskSecrets` (mask-before-cap); `capText` bounds the length. The B3
+ * token patterns live here (single source). */
 
-import { isSecretFlagToken, maskSecretToken, PROVIDER_PREFIX_PATTERN, SECRET_WORD_PATTERN } from "./up-reconcile"
+/** Secret-shaped argv/cmd echo is a masked shape (B3): raw values never
+ * enter output/log. Rules: a secret word inside `name=value`
+ * (`password|secret|api[_-]?key|bearer|token|credential|private_key|
+ * authorization`) → `name=***`; the value after a secret flag
+ * (`--password hunter2`) → `***`; provider prefixes (ghp_/sk-/xox-) and
+ * ≥32-hex bodies → `***`; a bare part containing a secret word → `***`.
+ * Shape is preserved (same part count/order), values drop. */
+const SECRET_WORD = /password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization/i
+const PROVIDER_PREFIX = /^(ghp_|gho_|ghu_|ghs_|sk-(live|test)-|xox[bpas]-|Bearer\s|eyJ[A-Za-z0-9_-]{8,})/
+
+/** B3 mask list (shared with the evidence mask; single source). */
+export const SECRET_WORD_PATTERN = SECRET_WORD
+export const PROVIDER_PREFIX_PATTERN = PROVIDER_PREFIX
+
+/** B3 token mask (shared with the evidence mask; single source). */
+export const maskSecretToken = (token: string, prevIsSecretFlag: boolean): string => {
+  if (token.length === 0) return token
+  const eq = token.indexOf("=")
+  if (eq > 0) {
+    const key = token.slice(0, eq)
+    const value = token.slice(eq + 1)
+    if (SECRET_WORD.test(key) || SECRET_WORD.test(value) || /^[0-9a-fA-F]{32,}$/.test(value) || PROVIDER_PREFIX.test(value)) {
+      return `${key}=***`
+    }
+    return token
+  }
+  if (prevIsSecretFlag) return "***"
+  if (/^(-{1,2}[A-Za-z0-9_-]*password|^(-{1,2}[A-Za-z0-9_-]*secret)|(-{1,2}[A-Za-z0-9_-]*token))$/i.test(token)) return token
+  if (SECRET_WORD.test(token) || /^[0-9a-fA-F]{32,}$/.test(token) || PROVIDER_PREFIX.test(token)) return "***"
+  return token
+}
+
+const isSecretFlag = (token: string): boolean =>
+  /^(-{1,2})?[A-Za-z0-9_-]*(password|secret|api[_-]?key|bearer|token|credential|private[_-]?key|authorization)$/i.test(token) &&
+  !token.includes("=")
+
+/** B3 secret-flag test (shared with the evidence mask; single source). */
+export const isSecretFlagToken = isSecretFlag
 
 export const TRUNCATION_MARK = "…[truncated]"
 

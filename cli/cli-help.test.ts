@@ -1,15 +1,10 @@
-/** Ergonomics verbs: `--version`/`version`, per-verb `--help` (+ the `help`
- * alias) and `where`. All read-only; `where` answers even when files are
- * missing (absence is data, exit stays 0). */
+/** Ergonomics verbs: `--version`/`version` and per-verb `--help` (+ the
+ * `help` alias). Observer-only: the retired supervision verbs refuse
+ * (exit 2). All read-only, non-interactive. */
 
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 
 import { COMMANDS, helpText, run, VERB_HELP, verbHelpText } from "./cli"
-
-const tempRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "ow-help-"))
 
 const capture = (): { out: string[]; err: string[]; restore: () => void } => {
   const out: string[] = []
@@ -40,20 +35,23 @@ describe("per-verb help", () => {
     const io = capture()
     let code = -1
     try {
-      code = await run(["up", "--help"])
+      code = await run(["show", "--help"])
     } finally {
       io.restore()
     }
     const text = io.out.join("\n")
     expect(code).toBe(0)
-    expect(text).toContain("usage: ow up ")
-    expect(text).toContain("--health <name>=<path>")
+    expect(text).toContain("usage: ow show ")
+    expect(text).toContain("--tree")
     expect(text).toContain("run `ow --help` for the full command list")
     expect(text.includes("  doctor                        health")).toBe(false)
   })
 
   test("removed verbs are unknown (exit 2 without --help); verb help still scopes", async () => {
-    for (const argv of [["checkpoints"], ["scenarios", "--check"], ["record", "x"], ["contract", "check"], ["scenario", "run", "x"], ["failures"], ["preflight"], ["readiness"], ["provision", "--check"]]) {
+    for (const argv of [
+      ["checkpoints"], ["scenarios", "--check"], ["record", "x"], ["contract", "check"], ["scenario", "run", "x"], ["failures"], ["preflight"], ["readiness"], ["provision", "--check"],
+      ["up"], ["up", "--check"], ["restart", "api"], ["down"], ["reconcile", "--check"], ["ps"], ["ps", "--explain"], ["logs"], ["init"], ["render"], ["where"],
+    ]) {
       const io = capture()
       let code = -1
       try {
@@ -66,22 +64,39 @@ describe("per-verb help", () => {
     const sub = capture()
     let subCode = -1
     try {
-      subCode = await run(["logs", "--help"])
+      subCode = await run(["sessions", "--help"])
     } finally {
       sub.restore()
     }
     expect(subCode).toBe(0)
-    expect(sub.out.join("\n")).toContain("usage: ow logs")
+    expect(sub.out.join("\n")).toContain("usage: ow sessions")
 
     const alias = capture()
     let aliasCode = -1
     try {
-      aliasCode = await run(["help", "up"])
+      aliasCode = await run(["help", "show"])
     } finally {
       alias.restore()
     }
     expect(aliasCode).toBe(0)
-    expect(alias.out.join("\n")).toContain("usage: ow up ")
+    expect(alias.out.join("\n")).toContain("usage: ow show ")
+  })
+
+  test("retired supervision flags are unknown options (exit 2, never silent)", async () => {
+    for (const argv of [
+      ["sessions", "--file", "ow.yaml"], ["show", "ses_x", "--tail", "10"], ["doctor", "--check"],
+      ["sessions", "--wait", "10s"], ["show", "ses_x", "--probe"], ["reads", "ses_x", "--force"],
+      ["version", "--rm"], ["doctor", "--only", "api"], ["sessions", "--out", "x.yaml"],
+    ]) {
+      const io = capture()
+      let code = -1
+      try {
+        code = await run(argv)
+      } finally {
+        io.restore()
+      }
+      expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
+    }
   })
 
   test("ow --help still prints the full command list", async () => {
@@ -135,102 +150,11 @@ describe("version identity", () => {
     const io = capture()
     let code = -1
     try {
-      code = await run(["version", "--file", "ow.yaml"])
+      code = await run(["version", "--db", "x.db"])
     } finally {
       io.restore()
     }
     expect(code).toBe(2)
-    expect(io.err.join("\n")).toContain("--file cannot be used with version")
-  })
-})
-
-describe("where", () => {
-  test("explicit --file: root + present/missing files, exit 0", async () => {
-    const root = await tempRoot()
-    try {
-      const file = join(root, "ow.yaml")
-      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
-      await mkdir(join(root, ".ow"), { recursive: true })
-      const io = capture()
-      let code = -1
-      try {
-        code = await run(["where", "--file", file, "--json"])
-      } finally {
-        io.restore()
-      }
-      expect(code).toBe(0)
-      const node = JSON.parse(io.out.join("\n")) as Record<string, any>
-      expect(node.root).toBe(root)
-      expect(node.source).toBe(`--file ${file}`)
-      expect(node.owYaml).toEqual({ path: file, present: true })
-      expect(node.state.present).toBe(true)
-      expect(node.supervisor.present).toBe(false)
-      expect(typeof node.observer.log.path).toBe("string")
-      expect(typeof node.observer.db.present).toBe("boolean")
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("walked root: readers resolve upward from a nested cwd; missing files stay honest", async () => {
-    const root = await tempRoot()
-    const previous = process.cwd()
-    try {
-      await writeFile(join(root, "ow.yaml"), "services:\n  a:\n    cmd: echo hi\n", "utf8")
-      await mkdir(join(root, ".ow"), { recursive: true })
-      const nested = join(root, "src", "deep")
-      await mkdir(nested, { recursive: true })
-      process.chdir(nested)
-      const { realpath } = await import("node:fs/promises")
-      const realRoot = await realpath(root)
-      const realNested = await realpath(nested)
-      const io = capture()
-      let code = -1
-      try {
-        code = await run(["where"])
-      } finally {
-        io.restore()
-      }
-      expect(code).toBe(0)
-      const text = io.out.join("\n")
-      expect(text).toContain(`root: ${realRoot}`)
-      expect(text).toContain(`source: walked up from ${realNested}`)
-      expect(text).toContain(`supervisor: ${join(realRoot, ".ow", "supervisor.json")} (missing)`)
-    } finally {
-      process.chdir(previous)
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test("where without any state answers honestly (exit 0) and refuses foreign flags", async () => {
-    const root = await tempRoot()
-    const previous = process.cwd()
-    try {
-      process.chdir(root)
-      const io = capture()
-      let code = -1
-      try {
-        code = await run(["where"])
-      } finally {
-        io.restore()
-      }
-      expect(code).toBe(0)
-      expect(io.out.join("\n")).toContain("(no .ow found)")
-      expect(io.out.join("\n")).toContain("ow.yaml: ")
-      expect(io.out.join("\n")).toContain("(missing)")
-
-      const refused = capture()
-      let refusedCode = -1
-      try {
-        refusedCode = await run(["where", "--probe"])
-      } finally {
-        refused.restore()
-      }
-      expect(refusedCode).toBe(2)
-      expect(refused.err.join("\n")).toContain("--probe cannot be used with where")
-    } finally {
-      process.chdir(previous)
-      await rm(root, { recursive: true, force: true })
-    }
+    expect(io.err.join("\n")).toContain("--db cannot be used with version")
   })
 })

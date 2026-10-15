@@ -34,8 +34,7 @@ Findings from `ow` evidence obey the same 5-rule cap and citation rule below
    nearby work repeats a failure; fix the rule text if it no longer
    applies, or remove the rule if it was wrong. Fixes count toward the
    5-rule cap.
-6. Deleted in a cleanup: lessons whose feature no longer exists go with
-   the feature's files, never linger as orphan guidance.
+6. Orphan guidance goes with its feature's files: lessons whose feature no longer exists never linger as orphan guidance.
 
 ## Record setup friction, not just test failures
 

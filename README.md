@@ -1,8 +1,8 @@
 # OpenWorkspace
 
-Keep your own coding agent. OpenWorkspace shows what it actually did and runs the dev services around it — locally, without replacing your harness.
+Keep your own coding agent. OpenWorkspace shows what it actually did — locally, without replacing your harness.
 
-- **`ow` CLI** — read-only session observer (`sessions`, `show`, `meta`, `reads`, `where`) plus dev-service supervision (`up`/`down`/`ps`/`logs`, `init` scaffolding, `render` task manifests).
+- **`ow` CLI** — read-only session observer (`sessions`, `show`, `meta`, `reads`, `doctor`, `version`).
 
 **Source preview — no packaged release yet.** `ow` is bun-only and built manually. This is not a Node-free installer.
 
@@ -28,16 +28,17 @@ ow show <session> [--tree]            # grouped task view, incl. subagent sessio
 ow show <session> --json              # stable machine output (English keys)
 ```
 
-`ow` observes **OpenCode sessions** through the shell-observer plugin (`~/.config/opencode/opencode-plugins/shell-observer/`); other harnesses are not observed — an empty result means "not observed", never "nothing happened". Session analysis is read-only. Service supervision, the `ow.yaml` schema and caps live in [cli/README.md](cli/README.md); the consumer skills in `skills/` are the operator guidance.
+`ow` observes **OpenCode sessions** through the shell-observer plugin (`~/.config/opencode/opencode-plugins/shell-observer/`); other harnesses are not observed — an empty result means "not observed", never "nothing happened". Session analysis is read-only. The consumer skills in `skills/` are the operator guidance.
 
 ## Custom local configuration
 
-The `ow` CLI keeps its own repo-local state in `<root>/.ow/` (0700/0600).
+`ow` keeps no local state: every verb reads the session store
+(shell log + intent DB) and prints a view. Pass explicit
+`--log`/`--db` paths to point at another store.
 
 ## What works
 
 - **`ow` observer:** session inventory, grouped task view with subagent trees, file reads, cost/tokens and JSON output — read-only over OpenCode's session store.
-- **`ow` supervision:** start/stop/list/log declared dev services from a repo `ow.yaml` as plain child processes; `lstart`-guarded pids, repo-local state, port-conflict warnings (never reassignment).
 - **Consumer skills (6):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`, snapshotted per client.
 
 ## Consumer skill distribution
@@ -55,4 +56,4 @@ bun test cli/                     # ow CLI suites (bun-only)
 pnpm audit
 ```
 
-Tests use owned temporary directories and loopback services; they do not touch application repositories, read real credentials, install tools or start application services.
+Tests use owned temporary directories; they do not touch application repositories, read real credentials, install tools or start application services.

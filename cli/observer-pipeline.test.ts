@@ -653,72 +653,37 @@ describe("doctor", () => {
     expect(missing.every((l) => !l.ok)).toBe(true)
   })
 
-  test("up: line is informational (absent ok:false, live ok:true, stale ok:false)", async () => {
+  test("no supervision surface: exactly four lines, never an up line", async () => {
     const { mkdtemp, writeFile } = await import("node:fs/promises")
     const { tmpdir } = await import("node:os")
     const { join: joinPath } = await import("node:path")
+    const { Database } = await import("bun:sqlite")
     const { doctor } = await import("./doctor")
-    const { acquireLock, clearLock, upPaths } = await import("./up-state")
-    const { ensureUpStateDir } = await import("./up-state")
-    const dir = await mkdtemp(joinPath(tmpdir(), "doctor-up-"))
-    const paths = upPaths(dir)
-    await ensureUpStateDir(paths.stateDir)
-    const absent = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
-    const upAbsent = absent.find((l) => l.name === "up")
-    expect(upAbsent?.ok).toBe(false)
-    expect(upAbsent?.detail).toContain("idle")
-    await acquireLock(paths.lockFile, [])
-    const live = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
-    expect(live.find((l) => l.name === "up")?.ok).toBe(true)
-    expect(live.find((l) => l.name === "up")?.detail).toContain("running")
-    await clearLock(paths.lockFile)
-    await writeFile(
-      paths.lockFile,
-      JSON.stringify({ pid: 2147483647, lstart: "bogus", startedAt: new Date().toISOString() }),
-      "utf8",
-    )
-    const stale = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
-    const upStale = stale.find((l) => l.name === "up")
-    expect(upStale?.ok).toBe(false)
-    expect(upStale?.detail).toContain("stale")
-    await clearLock(paths.lockFile)
+    const dir = await mkdtemp(joinPath(tmpdir(), "doctor-noup-"))
+    const logPath = joinPath(dir, "events.jsonl")
+    await writeFile(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), command: "echo hi" })}\n`, "utf8")
+    const dbPath = joinPath(dir, "opencode.db")
+    const db = new Database(dbPath)
+    db.run("CREATE TABLE session_message (id TEXT PRIMARY KEY)")
+    db.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY)")
+    db.close()
+    const lines = await doctor({ logPath, dbPath })
+    expect(lines.map((l) => l.name)).toEqual(["log", "hook", "ring", "db"])
   })
 })
 
 describe("doctor build identity", () => {
-  test("shape: installed shorts + supervisor record + match (match 3-ways)", async () => {
-    const { mkdtemp } = await import("node:fs/promises")
-    const { tmpdir } = await import("node:os")
-    const { join: joinPath } = await import("node:path")
+  test("shape: installed shorts; supervisor always absent, match always null", async () => {
     const { doctorIdentity } = await import("./doctor")
-    const { ensureUpStateDir, upPaths, writeSupervisorState } = await import("./up-state")
-    const dir = await mkdtemp(joinPath(tmpdir(), "doctor-id-"))
-    const paths = upPaths(dir)
-    await ensureUpStateDir(paths.stateDir)
     const installed = { sha: "a1b2c3d4e5f60718293a4b5c6d7e8f90", digest: "d".repeat(64), time: "2026-10-01T00:00:00Z", dirty: false }
-    // No state file → supervisor absent, match unknown.
-    expect(await doctorIdentity({ upRoot: dir, installed })).toEqual({
+    expect(await doctorIdentity({ installed })).toEqual({
       installed: { sha8: "a1b2c3d4", dirty: false, time: "2026-10-01T00:00:00Z", binary8: "d".repeat(8) },
       supervisor: { state: "absent", startedAt: null, sha8: null, time: null },
       match: null,
     })
-    await writeSupervisorState(paths.supervisorFile, {
-      version: 1,
-      startedAt: "2026-10-07T00:00:00.000Z",
-      services: [],
-      build: { sha: "a1b2c3d4e5f60718293a4b5c6d7e8f90", digest: "d".repeat(64), time: "2026-10-07T00:00:00Z" },
-    })
-    // Same digest → match.
-    const same = await doctorIdentity({ upRoot: dir, installed })
-    expect(same.supervisor).toMatchObject({ state: "recorded", startedAt: "2026-10-07T00:00:00.000Z", sha8: "a1b2c3d4" })
-    expect(same.match).toBe(true)
-    // Differing digest → mismatch (compared internally, shorts on the wire).
-    const other = await doctorIdentity({ upRoot: dir, installed: { ...installed, digest: "e".repeat(64) } })
-    expect(other.match).toBe(false)
-    expect(other.installed?.binary8).toBe("e".repeat(8))
-    // Recorded but nothing installed → unknown.
-    const none = await doctorIdentity({ upRoot: dir, installed: null })
+    const none = await doctorIdentity({ installed: null })
     expect(none.installed).toBeNull()
+    expect(none.supervisor.state).toBe("absent")
     expect(none.match).toBeNull()
   })
 
@@ -727,7 +692,7 @@ describe("doctor build identity", () => {
     const { tmpdir } = await import("node:os")
     const { join: joinPath } = await import("node:path")
     const { doctorIdentity, formatIdentity } = await import("./doctor")
-    const { readBuildSidecar } = await import("./up-state")
+    const { readBuildSidecar } = await import("./build-info")
     const dir = await mkdtemp(joinPath(tmpdir(), "doctor-id-"))
     expect(await readBuildSidecar(joinPath(dir, "missing-bin"))).toBeNull()
     const withDirty = await (async () => {
@@ -741,7 +706,7 @@ describe("doctor build identity", () => {
       return readBuildSidecar(joinPath(binDir, "fake-ow"))
     })()
     expect(withDirty?.dirty).toBe(true)
-    const identity = await doctorIdentity({ upRoot: dir, installed: null })
+    const identity = await doctorIdentity({ installed: null })
     expect(identity.installed).toBeNull()
     expect(formatIdentity(identity)).toEqual(["identity: installed unknown (no sidecar)", "identity: supervisor absent: unknown"])
   })
@@ -752,33 +717,21 @@ describe("doctor build identity", () => {
     const { join: joinPath } = await import("node:path")
     const { doctorFails } = await import("./cli")
     const { doctor, doctorIdentity } = await import("./doctor")
-    const { ensureUpStateDir, upPaths, writeSupervisorState } = await import("./up-state")
     const dir = await mkdtemp(joinPath(tmpdir(), "doctor-id-"))
-    const paths = upPaths(dir)
-    await ensureUpStateDir(paths.stateDir)
-    const secretSha = `token=hunter2${"a".repeat(28)}`
-    await writeSupervisorState(paths.supervisorFile, {
-      version: 1,
-      startedAt: "2026-10-07T00:00:00.000Z",
-      services: [],
-      build: { sha: secretSha, digest: "d".repeat(64), time: "2026-10-07T00:00:00Z" },
-    })
     const installed = { sha: "b".repeat(40), digest: "e".repeat(64), time: "2026-10-01T00:00:00Z" }
-    const identity = await doctorIdentity({ upRoot: dir, installed })
+    const identity = await doctorIdentity({ installed })
     const wire = JSON.stringify(identity)
     expect(wire).not.toContain(process.execPath)
-    expect(wire).not.toContain(secretSha)
-    expect(wire).not.toContain("d".repeat(64))
     expect(wire).not.toContain("e".repeat(64))
     expect(wire).not.toContain(dir)
     // Human lines carry shorts only; identity never enters `lines`, so the
-    // exit rule (which filters `lines`) is unchanged by identity.
-    const lines = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db"), upRoot: dir })
+    // exit rule is unchanged by identity.
+    const lines = await doctor({ logPath: joinPath(dir, "missing.jsonl"), dbPath: joinPath(dir, "missing.db") })
     expect(lines.every((l) => l.name !== "identity")).toBe(true)
     const { formatIdentity } = await import("./doctor")
     const human = formatIdentity(identity)
     expect(human.length).toBe(2)
-    expect(human.join("\n")).not.toContain("d".repeat(64))
+    expect(human.join("\n")).not.toContain("e".repeat(64))
     expect(doctorFails(lines)).toBe(doctorFails(lines.filter((l) => l.name !== "identity")))
   })
 })

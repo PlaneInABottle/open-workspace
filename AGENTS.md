@@ -4,7 +4,7 @@ This is the product source directory. Application repositories are external data
 
 ## Start here
 
-- `README.md` owns source setup and usage; `cli/README.md` owns the `ow` CLI operator manual and the `ow.yaml` schema. No roadmap file; do not create another overlapping plan.
+- `README.md` owns source setup and usage; `cli/README.md` owns the `ow` CLI operator manual. No roadmap file; do not create another overlapping plan.
 - Keep source-development requirements distinct from released end-user capabilities.
 - Documentation language is English (`README.md`, `cli/README.md`, skills, code comments); user-locked rule: English everywhere (docs + code + CLI human lines; test names English; historical quotes excluded). Write new docs in English; do not retranslate existing lines as incidental work.
 - Read current code before relying on an old run's result. Preserve unrelated files, processes and client settings.
@@ -15,15 +15,10 @@ This is the product source directory. Application repositories are external data
 
 | Surface | Home |
 | --- | --- |
-| CLI dispatch, flags, help, wait loop | `cli/cli.ts` |
+| CLI dispatch, flags, help | `cli/cli.ts` |
 | Session observer (sessions/show/meta/reads, join/tree) | `cli/join.ts`, `cli/tree.ts`, `cli/signature.ts` |
-| Service supervision (up/down/restart, state, schema) | `cli/up-supervisor.ts`, `cli/up-supervisor-cli.ts`, `cli/up-state.ts`, `cli/up-schema.ts` |
-| Wait + project probes (wait loop, probe runner, reconcile) | `cli/up-ready.ts`, `cli/up-probe.ts`, `cli/up-reconcile.ts` |
-| Process ownership and provenance | `cli/up-provenance.ts`, `cli/up-ps.ts` |
 | Shared redaction (mask/cap, single source) | `cli/up-evidence.ts` |
-| Service logs | `cli/up-logs.ts` |
-| Init scaffolding | `cli/up-init.ts` |
-| Loopback TCP/HTTP probes | `cli/up-net.ts` |
+| Build identity (sidecar read) | `cli/build-info.ts` |
 | Doctor checks | `cli/doctor.ts` |
 | CLI suites (bun-only) | `cli/*.test.ts` |
 | Consumer skills (distribution source) | `skills/` |
@@ -59,7 +54,7 @@ A passing handler unit test is insufficient for changed CLI dispatch, flag parsi
 - Refusal-echo masking: refusal paths that echo caller-supplied values must mask like the success path — hostile fixtures cover the refusal channel too (seen live: a malformed-claim refusal printed the raw secret to stderr while the success echo was masked).
 - Review findings return to the same implementer session; re-verify fixes against their prior findings (targeted re-review) rather than repeating a whole audit. One implementation owner per coherent workstream; parallel workers need disjoint mutation scopes. Never run `git stash` while parallel work is active.
 - Prefer a fast executable check over prolonged review when the claim can be executed cheaply; reserve extended review for claims that cannot be executed or are expensive to run.
-- Use repository-native checks for changed behavior. Tests own disposable directories and loopback services; they must not depend on real project credentials, external providers or application runtimes.
+- Use repository-native checks for changed behavior. Tests own disposable directories; they must not depend on real project credentials, external providers or application runtimes.
 - Generated trees are part of the diff: `plugins/` mirrors must show regenerated paths whenever a skill changes (byte-compare tests are the gate); a claimed rebuild without them is a defect, not a shortcut.
 - Doc==code: every documented token/exit/flag/shape must be grep-verified against its emitter (seen live: exit tokens, `-` fallback, runner refusal, fence validity). README examples must match code paths, not aspirations.
 - Fail-closed defaults: absent/unreadable input refuses or states an explicit reason — never a vacuous green (empty services, missing file, placeholder probes).
@@ -68,14 +63,13 @@ A passing handler unit test is insufficient for changed CLI dispatch, flag parsi
 - Global parser flags require cross-verb guards (fail-loud precedent): a flag accepted by one verb must not silently no-op in another.
 - Evidence honesty: fail-before RED per finding; vary hostile fixtures beyond the benign shape; reused evidence is labeled, never re-presented as fresh runs.
 - Absence sweeps need a positive control: an empty repo-wide "no X anywhere" result is evidence only after a control probe has hit a known-X file with the same command (seen live: a diacritic-class sweep reported zero while ASCII-spelled Turkish survived; gitignored/hidden paths silently vanish without `--hidden --no-ignore`).
-- Remedy efficacy: a condition hint must name the effective remedy per the recording/clearing code path plus explicit non-remedies — scope transparency without an effective remedy is a false promise (seen live: a stale-supervisor hint prescribed per-service restart, but `state.build` is boot-resolved and only a supervisor restart re-records it).
 - Guard scope: fail-closed guards cover only the changed prefix; pin untouched-path HEAD parity with RED-before proof (seen live: a global quote refusal broke byte-identical non-env inference until scoped to env-prefixed strings).
 - Interleaved-log bounds: never positionally bound (tail) an interleaved append-only log — file-head records of old sessions silently drop (seen live: a 25% tail lost 312/369 sessions on the real sidecar). Optimize parse cost with full-read + prefilter and prove byte-equivalence including file-head records.
 - Single suppression point: when one flag adds a second print site (normal + vacuous/empty verdicts), route every verdict through one suppression point — a caller-side guard is not airtightness (seen live: a vacuity branch printed past `onPayload` until routed through it).
 
 ## Safety and capability boundaries
 
-- The CLI reads application checkouts (bounded metadata, session store, `ow.yaml`) but never writes them. Reading is not permission to execute a discovered command, write a project file, install tools or change global configuration.
+- The CLI reads application checkouts (bounded metadata, session store) but never writes them. Reading is not permission to execute a discovered command, write a project file, install tools or change global configuration.
 - Preserve symlink boundaries (never follow `.env`/state/symlinked parents into writes), private state permissions (0700/0600), and explicit human confirmation for irreversible actions. Do not bypass them to make tests green.
 - The CLI never reads secret values (only key names), never prints them, and masks secret-shaped values everywhere by construction. Never promise universal secret detection.
 - Separate found executables, process state, readiness and session-history verification. Keep unimplemented/fake/unverified boundaries visible.

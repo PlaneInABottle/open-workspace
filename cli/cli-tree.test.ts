@@ -22,14 +22,15 @@ const subagentRow = (child: string, agent: string, description: string, ts: stri
 describe("cli routing", () => {
   test("help lists every subcommand, --json and exit codes", () => {
     const text = helpText()
-    for (const word of ["doctor", "sessions", "show", "meta", "reads", "up", "down", "ps", "logs", "--json", "--help", "--rm", "--check", "--detach"]) {
+    for (const word of ["doctor", "sessions", "show", "meta", "reads", "version", "--json", "--help"]) {
       expect(text).toContain(word)
     }
     expect(text).toContain("0 ok, 1 structural error, 2 usage error")
     expect(text).toContain("30m|3h|1d|1w")
-    expect(text).toContain("show/meta/sessions/reads")
-    expect(text).toContain("up <name> [--wait 120s] [--health <name>=<path>]")
-    expect(text).toContain("restart <service> [--file] [--wait 120s] [--health <name>=<path>]")
+    expect(text).toContain("doctor/show/meta/sessions/reads/version")
+    for (const dropped of ["\n  up ", "\n  restart ", "\n  down ", "reconcile", "\n  ps ", "\n  logs ", "init", "render", "where", "ow.yaml"]) {
+      expect(text).not.toContain(dropped)
+    }
   })
 
   test("parseArgs routes subcommand, session and flags", () => {
@@ -58,19 +59,13 @@ describe("cli routing", () => {
     expect(parseArgs([]).error).toContain("command expected")
   })
 
-  test("parseArgs routes up/down/ps/logs flags and -d alias", () => {
-    const up = parseArgs(["up", "--check", "--file", "ow.yaml"])
-    expect(up.error).toBeNull()
-    expect(up.command).toBe("up")
-    const detached = parseArgs(["up", "-d"])
-    expect(detached.error).toBeNull()
-    expect(detached.flags["--detach"]).toBe(true)
-    const logs = parseArgs(["logs", "web", "--tail", "50", "--grep", "err"])
-    expect(logs.error).toBeNull()
-    expect(logs.command).toBe("logs")
-    expect(logs.sessionID).toBe("web")
-    expect(parseArgs(["logs", "--tail", "bogus"]).error).toContain("invalid --tail")
-    expect(parseArgs(["logs", "--tail", "99999"]).error).toContain("invalid --tail")
+  test("parseArgs rejects retired supervision verbs, flags and the -d alias", () => {
+    for (const argv of [["up"], ["up", "--check"], ["restart", "api"], ["down"], ["reconcile", "--check"], ["ps"], ["logs"], ["init"], ["render"], ["where"]]) {
+      expect(parseArgs(argv).error).not.toBeNull()
+    }
+    for (const argv of [["sessions", "--tail", "10"], ["show", "s", "--force"], ["doctor", "--file", "x"], ["reads", "s", "--wait", "5s"]]) {
+      expect(parseArgs(argv).error).toContain("unknown option")
+    }
   })
 })
 
@@ -88,9 +83,9 @@ describe("--since readers guard + window envelope", () => {
 
   test("non-reader verbs refuse --since fail-loud (exit 2)", async () => {
     for (const argv of [
-      ["ps", "--since", "1d"],
       ["doctor", "--since", "1d"],
       ["meta", "ses_x", "--since", "1d"],
+      ["version", "--since", "1d"],
     ]) {
       const io = capture()
       let code = -1
@@ -100,12 +95,12 @@ describe("--since readers guard + window envelope", () => {
         io.restore()
       }
       expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
-      expect(io.err.join("\n")).toContain("ow: --since can only be used with sessions, show, reads, logs")
+      expect(io.err.join("\n")).toContain("ow: --since can only be used with sessions, show, reads")
     }
   })
 
-  test("the guard + help derive from SINCE_READERS (four readers, shared tokens)", () => {
-    expect([...SINCE_READERS]).toEqual(["sessions", "show", "reads", "logs"])
+  test("the guard + help derive from SINCE_READERS (three readers, shared tokens)", () => {
+    expect([...SINCE_READERS]).toEqual(["sessions", "show", "reads"])
     expect(helpText()).toContain(`window: 30m|3h|1d|1w (${SINCE_READERS.join("/")})`)
   })
 
@@ -129,9 +124,7 @@ describe("--since readers guard + window envelope", () => {
     const groups = groupByTask([rec({ command: "echo hi", outcome: "success", taskRef: "t" })])
     expect(toShowJson("s", [], groups).window).toBeNull()
     expect(toShowJson("s", [], groups, undefined, w)).toMatchObject({ window: w })
-    // run()-level over the committed sidecar fixture (failures/trace pin
-    // theirs in their own suites; logs pins its main path below — the
-    // no-state early-empty envelope carries no window).
+    // run()-level over the committed sidecar fixture.
     const runJson = async (argv: string[]): Promise<{ code: number; payload: Record<string, unknown> }> => {
       const out: string[] = []
       const saved = console.log
@@ -159,34 +152,18 @@ describe("--since readers guard + window envelope", () => {
     const windowed = await runJson(["show", "ses_fix", "--json", "--log", log, "--since", "1d"])
     expect(windowed.code).toBe(0)
     expect(windowed.payload["window"]).toMatchObject({ since: "1d" })
-    // Logs main path carries window (null unwindowed here).
-    const dir = await mkdtemp(join(tmpdir(), "window-universal-"))
-    try {
-      const file = join(dir, "ow.yaml")
-      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
-      const { mkdir } = await import("node:fs/promises")
-      await mkdir(join(dir, ".ow", "logs"), { recursive: true })
-      await writeFile(join(dir, ".ow", "logs", "a.jsonl"), `${JSON.stringify({ t: "2026-10-05T11:00:00.000Z", stream: "stdout", line: "hi" })}\n`, "utf8")
-      const logged = await runJson(["logs", "a", "--json", "--file", file])
-      expect(logged.code).toBe(0)
-      expect(logged.payload).toHaveProperty("window")
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
   })
 
   test("removed overlay/scenario flags fail loud as unknown options (exit 2, never silent)", async () => {
     for (const argv of [
-      ["ps", "--boundaries", "x.yaml"],
-      ["up", "--check", "--boundaries", "x.yaml"],
-      ["ps", "--run", "x"],
-      ["up", "--check", "--off-local"],
-      ["ps", "--resume"],
-      ["ps", "--claim-entrypoint", "x"],
-      ["ps", "--trace", "abc123"],
-      ["logs", "--trace", "abc123"],
-      ["ps", "--min-spans", "2"],
-      ["init", "--tracing"],
+      ["sessions", "--boundaries", "x.yaml"],
+      ["show", "ses_x", "--run", "x"],
+      ["doctor", "--off-local"],
+      ["reads", "ses_x", "--resume"],
+      ["version", "--claim-entrypoint", "x"],
+      ["meta", "ses_x", "--trace", "abc123"],
+      ["sessions", "--min-spans", "2"],
+      ["show", "ses_x", "--tracing"],
     ]) {
       const io = capture()
       let code = -1
@@ -201,7 +178,7 @@ describe("--since readers guard + window envelope", () => {
   })
 
   test("removed verbs are unknown commands (exit 2 with the usage list, never silent)", async () => {
-    for (const argv of [["trace"], ["trace", "abc123"], ["checkpoints"], ["failures"], ["scenarios", "--check"], ["preflight"], ["readiness"], ["provision", "--check"], ["prompts"], ["prompts", "ses_x"], ["stuck"], ["stuck", "ses_x"], ["timeline"], ["timeline", "ses_x"], ["export"], ["export", "--bundle"]]) {
+    for (const argv of [["trace"], ["trace", "abc123"], ["checkpoints"], ["failures"], ["scenarios", "--check"], ["preflight"], ["readiness"], ["provision", "--check"], ["prompts"], ["prompts", "ses_x"], ["stuck"], ["stuck", "ses_x"], ["timeline"], ["timeline", "ses_x"], ["export"], ["export", "--bundle"], ["up"], ["restart", "api"], ["down"], ["reconcile", "--check"], ["ps"], ["logs"], ["init"], ["render"], ["where"]]) {
       const io = capture()
       let code = -1
       try {
@@ -210,100 +187,6 @@ describe("--since readers guard + window envelope", () => {
         io.restore()
       }
       expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
-    }
-  })
-})
-
-describe("writer state-dir announce + nested warning", () => {
-  const capture = (): { out: string[]; err: string[]; restore: () => void } => {
-    const out: string[] = []
-    const err: string[] = []
-    const savedLog = console.log
-    const savedError = console.error
-    console.log = (...args: unknown[]): void => {
-      out.push(args.map(String).join(" "))
-    }
-    console.error = (...args: unknown[]): void => {
-      err.push(args.map(String).join(" "))
-    }
-    return { out, err, restore: () => {
-      console.log = savedLog
-      console.error = savedError
-    } }
-  }
-
-  test("writers announce the state dir on stderr (readers stay silent)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "state-announce-"))
-    try {
-      const file = join(dir, "ow.yaml")
-      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
-      const io = capture()
-      try {
-        expect(await run(["down", "--file", file])).toBe(2)
-      } finally {
-        io.restore()
-      }
-      expect(io.err.join("\n")).toContain(`state dir: ${join(dir, ".ow")}`)
-      const io2 = capture()
-      try {
-        expect(await run(["ps", "--file", file])).toBe(0)
-      } finally {
-        io2.restore()
-      }
-      expect(io2.err.join("\n")).not.toContain("state dir:")
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
-  test("--json keeps stdout parse-clean (announce rides stderr)", async () => {
-    const { ensureUpStateDir, upPaths, writeSupervisorState } = await import("./up-state")
-    const dir = await mkdtemp(join(tmpdir(), "state-announce-"))
-    try {
-      const file = join(dir, "ow.yaml")
-      await writeFile(file, "services:\n  ghost:\n    cmd: echo hi\n", "utf8")
-      const paths = upPaths(dir)
-      await ensureUpStateDir(paths.stateDir)
-      await writeSupervisorState(paths.supervisorFile, {
-        version: 1,
-        startedAt: "2026-10-07T00:00:00.000Z",
-        services: [{ name: "ghost", pid: 987654321, lstart: "bogus", startedAt: "2026-10-07T00:00:00.000Z" }],
-      })
-      const io = capture()
-      try {
-        expect(await run(["down", "--json", "--file", file])).toBe(0)
-      } finally {
-        io.restore()
-      }
-      expect(() => JSON.parse(io.out.join("\n"))).not.toThrow()
-      // Suppressed under --json: stdout stays parse-clean, stderr clean too.
-      expect(io.err.join("\n")).not.toContain("state dir:")
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
-  test("nested state dir warns (ancestor workspace)", async () => {
-    const { ensureUpStateDir, upPaths } = await import("./up-state")
-    const parent = await mkdtemp(join(tmpdir(), "state-nested-"))
-    try {
-      await ensureUpStateDir(upPaths(parent).stateDir)
-      const child = join(parent, "child")
-      const { mkdir } = await import("node:fs/promises")
-      await mkdir(child, { recursive: true })
-      const file = join(child, "ow.yaml")
-      await writeFile(file, "services:\n  a:\n    cmd: echo hi\n", "utf8")
-      const io = capture()
-      try {
-        expect(await run(["down", "--file", file])).toBe(2)
-      } finally {
-        io.restore()
-      }
-      const err = io.err.join("\n")
-      expect(err).toContain("nested state dir:")
-      expect(err).toContain("writers stay put")
-    } finally {
-      await rm(parent, { recursive: true, force: true })
     }
   })
 })
