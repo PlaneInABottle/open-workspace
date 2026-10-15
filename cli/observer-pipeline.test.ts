@@ -673,18 +673,14 @@ describe("doctor", () => {
 })
 
 describe("doctor build identity", () => {
-  test("shape: installed shorts; supervisor always absent, match always null", async () => {
+  test("shape: installed shorts only", async () => {
     const { doctorIdentity } = await import("./doctor")
     const installed = { sha: "a1b2c3d4e5f60718293a4b5c6d7e8f90", digest: "d".repeat(64), time: "2026-10-01T00:00:00Z", dirty: false }
     expect(await doctorIdentity({ installed })).toEqual({
       installed: { sha8: "a1b2c3d4", dirty: false, time: "2026-10-01T00:00:00Z", binary8: "d".repeat(8) },
-      supervisor: { state: "absent", startedAt: null, sha8: null, time: null },
-      match: null,
     })
     const none = await doctorIdentity({ installed: null })
     expect(none.installed).toBeNull()
-    expect(none.supervisor.state).toBe("absent")
-    expect(none.match).toBeNull()
   })
 
   test("missing sidecar reads null installed; dirty flag parses", async () => {
@@ -708,7 +704,7 @@ describe("doctor build identity", () => {
     expect(withDirty?.dirty).toBe(true)
     const identity = await doctorIdentity({ installed: null })
     expect(identity.installed).toBeNull()
-    expect(formatIdentity(identity)).toEqual(["identity: installed unknown (no sidecar)", "identity: supervisor absent: unknown"])
+    expect(formatIdentity(identity)).toEqual(["identity: installed unknown (no sidecar)"])
   })
 
   test("NEGATIVE: no paths/execPath/secrets or full digests in identity JSON; exit unchanged", async () => {
@@ -730,7 +726,7 @@ describe("doctor build identity", () => {
     expect(lines.every((l) => l.name !== "identity")).toBe(true)
     const { formatIdentity } = await import("./doctor")
     const human = formatIdentity(identity)
-    expect(human.length).toBe(2)
+    expect(human.length).toBe(1)
     expect(human.join("\n")).not.toContain("e".repeat(64))
     expect(doctorFails(lines)).toBe(doctorFails(lines.filter((l) => l.name !== "identity")))
   })

@@ -11,8 +11,8 @@ export const RING_MAX_LINES = 50_000
 
 export type DoctorLine = { name: string; ok: boolean; detail: string }
 
-/** Observer health only: shell log growth, hook firing, ring buffer, intent
- * DB. No supervision surface remains (compose owns runtime now). */
+/** Observer health: shell log growth, hook firing, ring buffer, intent
+ * DB. */
 export const doctor = async (options: { logPath?: string; dbPath?: string } = {}): Promise<DoctorLine[]> => {
   const lines: DoctorLine[] = []
   const logPath = options.logPath ?? DEFAULT_LOG_PATH
@@ -61,40 +61,26 @@ export const doctor = async (options: { logPath?: string; dbPath?: string } = {}
 export const formatDoctor = (lines: DoctorLine[]): string =>
   lines.map((l) => `${l.ok ? "✓" : "✗"} ${l.name}: ${l.detail}`).join("\n")
 
-/** Additive `doctor --json` build identity (digests compared internally,
- * only short-8 forms reach the wire — full sha/digest never emitted, no
- * paths/execPath/secrets). No supervision remains, so `supervisor` always
- * reads absent and `match` is always null. */
+/** `doctor --json` build identity (only short-8 forms reach the wire —
+ * full sha/digest never emitted, no paths/execPath/secrets). */
 export type DoctorIdentity = {
   installed: { sha8: string; dirty: boolean; time: string; binary8: string } | null
-  supervisor: { state: "recorded" | "absent" | "unreadable"; startedAt: string | null; sha8: string | null; time: string | null }
-  match: boolean | null
 }
 
 export const doctorIdentity = async (options: { installed?: UpBuildInfo | null } = {}): Promise<DoctorIdentity> => {
   const installed = options.installed !== undefined ? options.installed : await readOwnBuildSidecar()
   return {
     installed: installed === null ? null : { sha8: installed.sha.slice(0, 8), dirty: installed.dirty ?? false, time: installed.time, binary8: installed.digest.slice(0, 8) },
-    supervisor: { state: "absent", startedAt: null, sha8: null, time: null },
-    match: null,
   }
 }
 
-/** Plain human identity lines (printed outside `lines`, so the exit rule
- * in cli.ts never sees them). */
-export const formatIdentity = (identity: DoctorIdentity): string[] => {
-  const first =
-    identity.installed === null
-      ? "identity: installed unknown (no sidecar)"
-      : `identity: installed ${identity.installed.sha8} (binary ${identity.installed.binary8}, ${identity.installed.time}${identity.installed.dirty ? ", dirty" : ""})`
-  const sup = identity.supervisor
-  const verdict = identity.match === null ? "unknown" : identity.match ? "match" : "mismatch"
-  const second =
-    sup.state === "recorded" && sup.sha8 !== null
-      ? `identity: supervisor recorded ${sup.sha8} (started ${sup.startedAt ?? "?"}): ${verdict}`
-      : `identity: supervisor ${sup.state}: ${verdict}`
-  return [first, second]
-}
+/** Plain human identity line (printed outside `lines`, so the exit rule
+ * in cli.ts never sees it). */
+export const formatIdentity = (identity: DoctorIdentity): string[] => [
+  identity.installed === null
+    ? "identity: installed unknown (no sidecar)"
+    : `identity: installed ${identity.installed.sha8} (binary ${identity.installed.binary8}, ${identity.installed.time}${identity.installed.dirty ? ", dirty" : ""})`,
+]
 
 if (import.meta.main) {
   const results = await doctor()

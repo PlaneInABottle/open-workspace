@@ -1,5 +1,4 @@
-/** Doctor observer health: log/hook/ring/db lines only. No supervision
- * surface remains — no `up` line, no lock/state/supervisor readings. */
+/** Doctor observer health: log/hook/ring/db lines. */
 
 import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
