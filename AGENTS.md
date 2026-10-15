@@ -80,6 +80,6 @@ A passing handler unit test is insufficient for changed CLI dispatch, flag parsi
 
 Load [openworkspace-development](.agents/skills/openworkspace-development/SKILL.md) for CLI changes. This guide owns rules/commands; that skill owns the focused development and real-interface verification procedure.
 
-`skills/` is the **consumer distribution source** (6 consumer skills: `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`); `plugins/` is generated from it by `pnpm build-skill-packs`. It is intentionally outside the active `.agents/skills/` development tree. Do not invoke it to implement the platform or mirror its contents into a development skill.
+`skills/` is the **consumer distribution source** (4 consumer skills: `learn-from-mistake`, `ow`, `setup-ow`, `update`); `plugins/` is generated from it by `pnpm build-skill-packs`. It is intentionally outside the active `.agents/skills/` development tree. Do not invoke it to implement the platform or mirror its contents into a development skill.
 
 Persist a reusable development rule here, a development procedure in its development skill, a consumer procedure in `skills/<name>/`, and a product decision/follow-up in the affected doc. Do not create an evidence.md, task diary, mandatory memory.md or duplicate capability profile for this small app. Prefer regression tests/guards for repeated failures. Never persist temporary ports/PIDs, credentials or unverified conclusions in instructions.

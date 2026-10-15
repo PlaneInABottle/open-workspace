@@ -39,7 +39,7 @@ ow show <session> --json              # stable machine output (English keys)
 ## What works
 
 - **`ow` observer:** session inventory, grouped task view with subagent trees, file reads, cost/tokens and JSON output — read-only over OpenCode's session store.
-- **Consumer skills (6):** `onboarding`, `learn-from-mistake`, `update`, `ow`, `ow-debug`, `setup-ow`, snapshotted per client.
+- **Consumer skills (4):** `learn-from-mistake`, `ow`, `setup-ow`, `update`, snapshotted per client.
 
 ## Consumer skill distribution
 

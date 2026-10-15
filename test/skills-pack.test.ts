@@ -230,7 +230,7 @@ test('fixture copy walkthrough: verbatim pinned files, preserved settings, same-
   const tmp = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-skill-install-')));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   // The user's agent copies from the generated pack into project-local paths.
-  const packFile = packPath(pluginsDir, 'claude', 'onboarding');
+  const packFile = packPath(pluginsDir, 'claude', 'ow');
   const packBytes = await readFile(packFile);
   const project = join(tmp, 'project');
   const commandsDir = join(project, '.claude', 'commands');
@@ -243,7 +243,7 @@ test('fixture copy walkthrough: verbatim pinned files, preserved settings, same-
   const before = await readFile(personalFile, 'utf8');
 
   // Initial install: verbatim snapshot next to untouched personal content.
-  const snapshot = join(commandsDir, 'ow-onboarding.md');
+  const snapshot = join(commandsDir, 'ow-ow.md');
   await writeFile(snapshot, packBytes);
   assert.equal((await readFile(snapshot)).toString(), packBytes.toString(), 'snapshot is a verbatim copy');
   assert.equal(await readFile(personalFile, 'utf8'), before, 'personal files stay byte-identical');
@@ -285,7 +285,7 @@ test('stale→refresh walkthrough: byte-compare reports per-skill current/update
 
   const currentSkill = 'learn-from-mistake';
   const staleSkill = 'update';
-  const missingSkill = 'onboarding';
+  const missingSkill = 'ow';
   const currentServed = await served(currentSkill);
   await writeFile(dest(currentSkill), installedForm(currentServed, currentSkill));
   // Stale seed: installed copy from an older canonical revision (final line
