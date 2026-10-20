@@ -31,11 +31,18 @@ const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g
 /** Command-position prefix: start of command or after `;` `&` `|` `(` `$(` (optionally followed by `do`/`then`/`else`), then
  * any env assignments and plain wrappers, then an optional path. Newlines are
  * not separators, so heredoc/quoted bodies never count as an invocation. */
-const COMMAND_START = String.raw`(?:^|[;&|(]|\$\()\s*(?:(?:do|then|else)\s+)?(?:(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)|timeout\s+\d+\S*|env|time|sudo|nohup|exec)\s+)*(?:[^\s;&|()]*/)?`
+const COMMAND_START = String.raw`(?:^|[;&|(]|\$\()[ \t]*(?:(?:do|then|else)[ \t]+)?(?:(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)|timeout\s+\d+\S*|env|time|sudo|nohup|exec)\s+)*(?:[^\s;&|()]*/)?`
+
+/** Heredoc bodies are data, not invocations: drop everything after the line
+ * that opens the first heredoc (`<<`, `<<-`, quoted or bare delimiter). */
+const withoutHeredocBody = (command: string): string => {
+  const open = /<<-?[ \t]*['"]?\w+['"]?[^\n]*/.exec(command)
+  return open ? command.slice(0, open.index + open[0].length) : command
+}
 
 /** True when `pattern` begins a command (token position), not just a substring. */
 export const atCommandPosition = (command: string, pattern: string): boolean =>
-  new RegExp(`${COMMAND_START}${escapeRegex(pattern)}(?=$|[\\s;&|)])`, "i").test(command)
+  new RegExp(`${COMMAND_START}${escapeRegex(pattern)}(?=$|[\\s;&|)])`, "i").test(withoutHeredocBody(command))
 
 /** `ow` invoking itself (bare, `./ow`, or by path) never counts as prior work. */
 const isOwInvocation = (command: string): boolean => atCommandPosition(command, "ow")
@@ -69,8 +76,9 @@ export const findLast = (
   rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
   const candidates = rows
     .map((row) => ({ ...row, command: maskCommand(row.command) }))
-    .filter((row) => row.command.toLowerCase().includes(needle) && !isOwInvocation(row.command))
-  // Token-position matches win outright; plain substring hits are the fallback.
+    .filter((row) => withoutHeredocBody(row.command).toLowerCase().includes(needle) && !isOwInvocation(row.command))
+  // Token-position matches win outright; plain substring hits (outside heredoc
+  // bodies) are the fallback.
   const tokenHits = candidates.filter((row) => atCommandPosition(row.command, options.pattern))
   const pool = tokenHits.length > 0 ? tokenHits : candidates
   const seen = new Set<string>()

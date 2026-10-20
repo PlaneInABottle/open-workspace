@@ -147,9 +147,10 @@ describe("command-position preference", () => {
     expect(findLast(log([{ t: "2026-10-02T12:00:00Z", command: ownRun }]), { pattern: "mvn", count: 1 })).toHaveLength(0)
   })
 
-  test("falls back to substring matches only when no command-position match exists", () => {
-    const out = findLast(log([{ t: "2026-10-02T10:00:00Z", command: heredoc }]), { pattern: "mvn", count: 1 })
-    expect(out).toHaveLength(1)
+  test("falls back to substring matches (outside heredoc bodies) only when no command-position match exists", () => {
+    const mention = log([{ t: "2026-10-02T10:00:00Z", command: "echo 'run mvn first'" }])
+    expect(findLast(mention, { pattern: "mvn", count: 1 })).toHaveLength(1)
+    expect(findLast(log([{ t: "2026-10-02T10:00:00Z", command: heredoc }]), { pattern: "mvn", count: 1 })).toHaveLength(0)
   })
 
   test("a path prefix and a later pipeline stage count as command position", () => {
@@ -157,5 +158,32 @@ describe("command-position preference", () => {
     expect(findLast(f, { pattern: "pytest", count: 1 })).toHaveLength(1)
     expect(atCommandPosition("echo x | docker compose ps", "docker compose")).toBe(true)
     expect(atCommandPosition("echo 'mvn'", "mvn")).toBe(false)
+  })
+})
+
+describe("heredoc bodies are not invocations (real failing shapes)", () => {
+  const composeDoc = "cd /w/.agents/skills/rt && python3 - <<'E'\nopen('x','w').write('')\nE\ncat > SKILL.md <<'E'\n```sh\ndocker compose \"$@\" ps ; docker compose \"$@\" logs -f <service>\ndocker compose \"$@\" up -d --wait\n```\nE\nwc -l SKILL.md"
+  const pytestDoc = "cd /w/.agents/skills; python3 - <<'E'\np='a'\nE\ncat > t/SKILL.md <<'E'\nuv run pytest <path> -q\nE\n"
+  const fixture = log([
+    { t: "2026-10-01T10:00:00Z", command: "docker compose --env-file .env -p t up -d --wait" },
+    { t: "2026-10-01T11:00:00Z", command: ".venv/bin/python3 -m pytest bin/e2e/tests -q" },
+    { t: "2026-10-01T11:30:00Z", command: "cd /w && uv run pytest src/tests -q" },
+    { t: "2026-10-02T10:00:00Z", command: composeDoc },
+    { t: "2026-10-02T11:00:00Z", command: pytestDoc },
+  ])
+
+  test("docker compose: newer heredoc with compose code-block lines loses to the real run", () => {
+    const out = findLast(fixture, { pattern: "docker compose", count: 5 })
+    expect(out.map((m) => m.command)).toEqual(["docker compose --env-file .env -p t up -d --wait"])
+  })
+
+  test("pytest: newer heredoc is dropped even from the substring fallback", () => {
+    const out = findLast(fixture, { pattern: "pytest", count: 5 })
+    expect(out.map((m) => m.command)).toEqual(["cd /w && uv run pytest src/tests -q", ".venv/bin/python3 -m pytest bin/e2e/tests -q"])
+  })
+
+  test("a command before the heredoc opener still counts", () => {
+    expect(atCommandPosition("cd /w; mvn -q package <<'E'\nignored\nE", "mvn")).toBe(true)
+    expect(atCommandPosition("cat <<'E'\nmvn -q\nE", "mvn")).toBe(false)
   })
 })
