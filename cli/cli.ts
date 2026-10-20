@@ -24,18 +24,19 @@ import {
   type SinceWindow,
 } from "./join"
 import { doctor, formatDoctor, formatIdentity, doctorIdentity } from "./doctor"
+import { findLast, formatLast, readLog } from "./last"
 import { buildTree, formatTree, loadTreeRecords, treeIds } from "./tree"
 
-export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "version"] as const
+export const COMMANDS = ["doctor", "sessions", "show", "meta", "reads", "last", "version"] as const
 export type Command = (typeof COMMANDS)[number]
 
 /** The three `--since` readers (single source for help + the fail-loud
  * cross-verb guard below; the help-coverage test derives from this). */
-export const SINCE_READERS = ["sessions", "show", "reads"] as const
+export const SINCE_READERS = ["sessions", "show", "reads", "last"] as const
 const ALIASES: Record<string, Command> = { list: "sessions" }
 
-const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes"])
-const BOOL_FLAGS = new Set(["--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--version"])
+const VALUE_FLAGS = new Set(["--db", "--log", "--since", "--dir", "--kind", "--tool", "--show", "--bytes", "-n"])
+const BOOL_FLAGS = new Set(["--failed", "--json", "--full", "--tree", "--flat", "--show-fails", "--help", "-h", "--version"])
 
 export type ParsedArgs = {
   command: Command | null
@@ -60,6 +61,8 @@ export const helpText = (): string =>
     "                                task summary; --tree shows the subtask tree",
     "  meta [session]                cost/token/changes/turns",
     "  reads [session] [--since]     read summary",
+    "  last <pattern> [-n K] [--failed] [--since] [--dir]",
+    "                                latest successful command matching <pattern> (re-runnable)",
     "  version [--json]  installed build identity: version + sidecar sha/time (read-only)",
     "",
     "general: --db <path> --log <path> --json --help --version",
@@ -96,6 +99,14 @@ export const VERB_HELP: Record<string, string[]> = {
   ],
   meta: ["flags: --json", "exits: 0 ok, 1 no account for the session, 2 usage"],
   reads: ["flags: --since, --json", "exits: 0 ok, 1 structural, 2 usage"],
+  last: [
+    "prints cwd + the recorded command (secret values masked, names kept) for the newest exit-0 shell",
+    "command whose text contains <pattern> (case-insensitive substring); identical command+cwd pairs collapse",
+    "flags: -n <K> newest distinct matches (default 1), --failed (non-zero exits instead; adds exit code),",
+    "       --since 30m|3h|1d|1w, --dir <path> (cwd prefix), --log <path>",
+    "exits: 0 match, 1 no match / unreadable log, 2 usage",
+    "example: ow last 'docker compose' -n 3",
+  ],
   version: [
     "flags: --json",
     "prints the sidecar identity of the running binary (version + sha8/time/dirty); no sidecar -> rebuild hint",
@@ -167,7 +178,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       flags["--help"] = true
       continue
     }
-    if (arg.startsWith("--")) {
+    if (arg.startsWith("--") || arg === "-n") {
       if (VALUE_FLAGS.has(arg)) {
         const value = argv[i + 1]
         if (value === undefined || value.startsWith("--")) return fail(`value expected: ${arg}`)
@@ -198,7 +209,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     return fail(`unexpected argument: ${arg}`)
   }
   if (flags["--help"]) return { command, sessionID, flags, error: null, extra }
-  if (!command) return fail("command expected: doctor|sessions|show|meta|reads|version (--help)")
+  if (!command) return fail("command expected: doctor|sessions|show|meta|reads|last|version (--help)")
   const since = typeof flags["--since"] === "string" ? parseSince(flags["--since"]) : undefined
   if (typeof flags["--since"] === "string" && since === null) return fail(`invalid --since: ${flags["--since"]} (${SINCE_TOKENS})`)
   const bytes = typeof flags["--bytes"] === "string" ? parseBytes(flags["--bytes"]) : undefined
@@ -330,6 +341,42 @@ export const run = async (argv: string[]): Promise<number> => {
     } else {
       console.log(sessions.length > 0 ? formatSessions(sessions) : "no sessions")
     }
+    return 0
+  }
+
+  if (command === "last") {
+    for (const key of Object.keys(flags)) {
+      if (!["-n", "--failed", "--since", "--dir", "--log"].includes(key)) {
+        console.error(`ow: ${key} cannot be used with last`)
+        return 2
+      }
+    }
+    if (positional === undefined || positional.length === 0) {
+      console.error("ow: last needs a <pattern> (usage: ow last <pattern> [-n K] [--failed])")
+      return 2
+    }
+    const countRaw = flag(flags, "-n") ?? "1"
+    const count = Number(countRaw)
+    if (!/^\d+$/.test(countRaw) || count < 1) {
+      console.error(`ow: invalid -n: ${countRaw} (positive integer expected)`)
+      return 2
+    }
+    const text = await readLog(logPath)
+    if (text === null) {
+      console.error(`ow: shell log unreadable (store: ${logPath})`)
+      return 1
+    }
+    const failed = flags["--failed"] === true
+    const sinceRaw = flag(flags, "--since")
+    const sinceMs = parseSince(sinceRaw)
+    const window = sinceWindow(sinceRaw, sinceMs, Date.now())
+    if (window !== null) warn(windowNotice(window))
+    const matches = findLast(text, { pattern: positional, count, failed, sinceMs, dir: flag(flags, "--dir") })
+    if (matches.length === 0) {
+      console.error(`ow: no ${failed ? "failing" : "successful"} command matching "${positional}" ${storeWindow(logPath, window)}`)
+      return 1
+    }
+    console.log(formatLast(matches, failed))
     return 0
   }
 

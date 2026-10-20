@@ -95,12 +95,12 @@ describe("--since readers guard + window envelope", () => {
         io.restore()
       }
       expect(`${argv.join(" ")} → ${code}`).toBe(`${argv.join(" ")} → 2`)
-      expect(io.err.join("\n")).toContain("ow: --since can only be used with sessions, show, reads")
+      expect(io.err.join("\n")).toContain("ow: --since can only be used with sessions, show, reads, last")
     }
   })
 
-  test("the guard + help derive from SINCE_READERS (three readers, shared tokens)", () => {
-    expect([...SINCE_READERS]).toEqual(["sessions", "show", "reads"])
+  test("the guard + help derive from SINCE_READERS (four readers, shared tokens)", () => {
+    expect([...SINCE_READERS]).toEqual(["sessions", "show", "reads", "last"])
     expect(helpText()).toContain(`window: 30m|3h|1d|1w (${SINCE_READERS.join("/")})`)
   })
 

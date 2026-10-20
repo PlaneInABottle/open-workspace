@@ -1,7 +1,7 @@
 # `ow` CLI (product-owned, bun-only)
 
 `ow` is the shell-observer command line: session analysis
-(`sessions/show/meta/reads/doctor`) plus build identity (`version`).
+(`sessions/show/meta/reads/last/doctor`) plus build identity (`version`).
 Read-only, non-interactive; it supervises nothing — compose owns
 runtime now. The observer hooks that feed it live in the opencode plugin directory
 (`~/.config/opencode/opencode-plugins/shell-observer/` — `index.ts` +
@@ -70,6 +70,8 @@ The sidecar record carries `messageID` (null for old rows), which keys into Open
 ./ow show <sessionID> --show-fails
 # tool slices: shell, file edits, MCP/code-mode/read/...
 ./ow show <sessionID> --kind tool-call --tool mcp
+# newest successful command matching a pattern (cwd + re-runnable text; secrets masked)
+./ow last <pattern> [-n K] [--failed] [--since 1d] [--dir /path]
 # session account / reads
 ./ow meta <sessionID>
 ./ow reads <sessionID> [--since 1d]

@@ -20,6 +20,7 @@ ow doctor                             # health first
 ow sessions [--since 1d] [--dir /path]
 ow show <session> [--since 30m|3h|1d|1w] [--tree] [--full] [--show N] [--show-fails] [--kind ..] [--tool ..]
 ow meta/reads <session>             # cost/tokens · read summary
+ow last <pattern> [-n K] [--failed] [--since 1d] [--dir /path]  # newest exit-0 command matching <pattern>: cwd + re-runnable text
 ow show <session> --json              # stable machine output (all commands, English keys)
 ```
 
