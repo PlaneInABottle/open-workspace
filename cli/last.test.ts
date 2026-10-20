@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { run } from "./cli"
-import { findLast, maskCommand } from "./last"
+import { atCommandPosition, findLast, maskCommand } from "./last"
 
 type Row = { t: string; command: string; workdir?: string; exitCode?: number | null }
 const log = (rows: Row[]): string =>
@@ -114,5 +114,48 @@ describe("ow last CLI", () => {
       console.error = orig
     }
     expect(errs.join("\n")).toContain('no successful command matching "nope-nothing"')
+  })
+})
+
+describe("command-position preference", () => {
+  const MVN = 'cd /w; export JAVA_HOME=/opt/openjdk@21; for r in a b; do (cd $r && GH_PACKAGES_USERNAME="$login" GH_PACKAGES_TOKEN="$(gh auth token)" timeout 420 mvn -B -q package -s /w/docker/maven-settings.xml); done'
+  const heredoc = "cd /w && python3 - <<'E'\ns='run mvn then docker compose up'\nE\ncat > SKILL.md <<'E'\nuse `mvn` and docker compose here\nE"
+  const ownRun = "cd /x; for p in pytest mvn 'docker compose'; do ow last \"$p\"; done"
+  const fixture = log([
+    { t: "2026-10-01T10:00:00Z", command: MVN },
+    { t: "2026-10-01T11:00:00Z", command: "docker compose --env-file .env -p t up -d --wait" },
+    { t: "2026-10-02T10:00:00Z", command: heredoc },
+    { t: "2026-10-02T11:00:00Z", command: ownRun },
+    { t: "2026-10-02T12:00:00Z", command: "ow last mvn" },
+    { t: "2026-10-02T13:00:00Z", command: "/Users/me/ow/cli/ow last 'docker compose'" },
+  ])
+
+  test("mvn: the real invocation (env prefix + timeout wrapper) beats newer heredoc and ow runs", () => {
+    const out = findLast(fixture, { pattern: "mvn", count: 5 })
+    expect(out).toHaveLength(1)
+    expect(out[0].command).toContain("timeout 420 mvn")
+    expect(out[0].command).toContain("GH_PACKAGES_TOKEN=\"$(gh auth token)\"")
+  })
+
+  test("docker compose: the real invocation beats newer text that only mentions it", () => {
+    const out = findLast(fixture, { pattern: "docker compose", count: 5 })
+    expect(out.map((m) => m.command)).toEqual(["docker compose --env-file .env -p t up -d --wait"])
+  })
+
+  test("ow's own invocations never match, even as the only hit", () => {
+    expect(findLast(log([{ t: "2026-10-02T12:00:00Z", command: "ow last mvn" }]), { pattern: "mvn", count: 1 })).toHaveLength(0)
+    expect(findLast(log([{ t: "2026-10-02T12:00:00Z", command: ownRun }]), { pattern: "mvn", count: 1 })).toHaveLength(0)
+  })
+
+  test("falls back to substring matches only when no command-position match exists", () => {
+    const out = findLast(log([{ t: "2026-10-02T10:00:00Z", command: heredoc }]), { pattern: "mvn", count: 1 })
+    expect(out).toHaveLength(1)
+  })
+
+  test("a path prefix and a later pipeline stage count as command position", () => {
+    const f = log([{ t: "2026-10-03T10:00:00Z", command: "cd /w && .venv/bin/pytest -q | tail -2" }])
+    expect(findLast(f, { pattern: "pytest", count: 1 })).toHaveLength(1)
+    expect(atCommandPosition("echo x | docker compose ps", "docker compose")).toBe(true)
+    expect(atCommandPosition("echo 'mvn'", "mvn")).toBe(false)
   })
 })

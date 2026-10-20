@@ -37,6 +37,7 @@ bun test cli/            # CLI suites (unit + contract)
 pnpm ow:build            # compile cli/cli.ts → cli/ow (+ cli/ow.build.json sidecar)
 pnpm ow:test             # same as bun test cli/
 pnpm ow:fresh            # fresh/stale check for the built binary
+pnpm ow:skill-install    # skills/ow/SKILL.md → ~/.agents/skills/ow/SKILL.md (single source; never hand-edit the copy)
 pnpm ow:parity           # scripts/check-ow-parity.sh <old> <new> (migration gate)
 pnpm build-skill-packs   # regenerate plugins/ from skills/ (byte-compare tested)
 ```

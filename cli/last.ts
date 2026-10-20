@@ -26,8 +26,23 @@ export const maskCommand = (command: string): string => {
   return maskSecrets(stashed).replace(/\u0000(\d+)\u0000/g, (_, index) => stash[Number(index)])
 }
 
+const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/** Command-position prefix: start of command or after `;` `&` `|` `(` `$(` (optionally followed by `do`/`then`/`else`), then
+ * any env assignments and plain wrappers, then an optional path. Newlines are
+ * not separators, so heredoc/quoted bodies never count as an invocation. */
+const COMMAND_START = String.raw`(?:^|[;&|(]|\$\()\s*(?:(?:do|then|else)\s+)?(?:(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)|timeout\s+\d+\S*|env|time|sudo|nohup|exec)\s+)*(?:[^\s;&|()]*/)?`
+
+/** True when `pattern` begins a command (token position), not just a substring. */
+export const atCommandPosition = (command: string, pattern: string): boolean =>
+  new RegExp(`${COMMAND_START}${escapeRegex(pattern)}(?=$|[\\s;&|)])`, "i").test(command)
+
+/** `ow` invoking itself (bare, `./ow`, or by path) never counts as prior work. */
+const isOwInvocation = (command: string): boolean => atCommandPosition(command, "ow")
+
 /** Newest-first distinct (command, cwd) shell records whose masked command
- * contains `pattern` (case-insensitive). `failed` selects non-zero exits
+ * contains `pattern` (case-insensitive); matches at a command position beat
+ * substring-only matches, and `ow` invocations are skipped. `failed` selects non-zero exits
  * instead of exit 0; rows without a numeric exit code never match. */
 export const findLast = (
   logText: string,
@@ -52,15 +67,19 @@ export const findLast = (
     rows.push({ command, workdir, timestamp, sessionID: typeof sessionID === "string" ? sessionID : "", exitCode })
   }
   rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+  const candidates = rows
+    .map((row) => ({ ...row, command: maskCommand(row.command) }))
+    .filter((row) => row.command.toLowerCase().includes(needle) && !isOwInvocation(row.command))
+  // Token-position matches win outright; plain substring hits are the fallback.
+  const tokenHits = candidates.filter((row) => atCommandPosition(row.command, options.pattern))
+  const pool = tokenHits.length > 0 ? tokenHits : candidates
   const seen = new Set<string>()
   const out: LastMatch[] = []
-  for (const row of rows) {
-    const command = maskCommand(row.command)
-    if (!command.toLowerCase().includes(needle)) continue
-    const key = `${row.workdir}\u0000${command}`
+  for (const row of pool) {
+    const key = `${row.workdir}\u0000${row.command}`
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ ...row, command })
+    out.push(row)
     if (out.length >= options.count) break
   }
   return out

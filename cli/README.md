@@ -7,8 +7,10 @@ runtime now. The observer hooks that feed it live in the opencode plugin directo
 (`~/.config/opencode/opencode-plugins/shell-observer/` — `index.ts` +
 `shell-observer-core.ts` only); every other CLI source lives here.
 
-Agent skill entry point: `skills/ow/SKILL.md` (sessions and observer
-health); generated client packs live under `plugins/`.
+Agent skill entry point: `skills/ow/SKILL.md` — the single authored source.
+The user-global copy `~/.agents/skills/ow/SKILL.md` is produced from it by
+`pnpm ow:skill-install` (never edit that copy by hand); generated client packs
+live under `plugins/` (`pnpm build-skill-packs`).
 
 ## Bun-only
 
@@ -22,6 +24,7 @@ bun test cli/            # CLI suites (unit + contract)
 pnpm ow:build            # compile cli/cli.ts → cli/ow (+ cli/ow.build.json sidecar)
 pnpm ow:test             # same as bun test cli/
 pnpm ow:fresh            # fresh/stale check for the built binary
+pnpm ow:skill-install    # copy skills/ow/SKILL.md → ~/.agents/skills/ow/SKILL.md (--check: report stale)
 pnpm ow:parity           # scripts/check-ow-parity.sh <old> <new> (migration gate)
 ```
 

@@ -11,6 +11,7 @@
     "build-skill-packs": "node scripts/build-skill-packs.mjs",
     "ow:build": "scripts/build-ow.sh",
     "ow:test": "bun test cli/",
+    "ow:skill-install": "scripts/install-ow-skill.sh",
     "ow:fresh": "scripts/check-ow-fresh.sh",
     "ow:parity": "scripts/check-ow-parity.sh"
   }

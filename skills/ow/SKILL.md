@@ -1,14 +1,14 @@
 ---
 name: ow
-description: "Operate the ow CLI: past session analysis (sessions/show/meta/reads/doctor). Read-only observer, no service supervision."
+description: "Observe past shell-command history with the ow CLI (sessions/show/meta/reads/last/doctor): what ran, what failed, what it cost; reuse a past command. Read-only."
 ---
 
-# ow — session observer
+# ow — shell-history observer
 
-`ow` is the shell-observer command line: past session analysis over
-OpenCode's session store. Read-only; it never changes sessions, files,
-or the database. Run it as `ow` from anywhere (via `/setup-ow`
-install, or `ow` on PATH).
+`ow` reads back past shell commands from OpenCode's session store: what ran,
+what failed, and what it cost. Read-only; it never changes sessions, files,
+or the database. Run it as `ow` from anywhere. It supervises nothing —
+local runtime is docker compose.
 
 ## Sessions (quick reference)
 
@@ -27,10 +27,21 @@ ow show <session> --json              # stable machine output (all commands, Eng
 No ID known: last sidecar line, or bare for latest. Exits: 0 ok,
 1 failure, 2 usage error; non-interactive. `doctor` first when results
 look wrong; sidecar rows land ~5s after session end, spans 5–15s late.
-Baseline first: run `ow doctor` and note the health lines before
-changing anything, re-run after. Report only what the output shows,
-never invent causes. Check counts first, keep
-`--since` narrow; open failures one by one, repeats first.
+Report only what the output shows, never invent causes. Check counts
+first, keep `--since` narrow; open failures one by one, repeats first.
+
+## Reuse a command that already worked
+
+Before reconstructing a build/test/compose invocation, run `ow last <pattern>`
+(case-insensitive substring over the command text). It prints the newest
+exit-0 match as `# cwd:` + the recorded command; `-n K` lists K distinct
+matches, `--failed` shows the newest failing one with its exit code. Exit 1
+= no match. Credential assignments (`*_TOKEN=`, `*_PASSWORD=`, `*_KEY=`,
+`*_SECRET=`) print as `NAME=***`; supply the value yourself, never guess it.
+Commands where the pattern is the command itself (start, or after `;`, `&&`,
+`|`, `(`, an env prefix or `timeout N`) win over mere mentions; `ow`'s own runs
+never match. The output is a record, not a promise it still works — check the
+cwd and paths.
 
 Self-documentation (all read-only):
 
@@ -63,7 +74,8 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 | `doctor --json` | `{checks[] ({name, ok, detail}), identity: {installed {sha8, dirty, time, binary8}\|null}}` |
 | `version --json` | `{version, sha, time, dirty, sidecar}` |
 
-Full behavior, caps, and non-goals: product `cli/README.md`.
+Full behavior: `ow --help` and `ow <command> --help` (verified against
+the installed build; past writeups may describe removed commands).
 
 ## Handoff (between agents/sessions)
 
