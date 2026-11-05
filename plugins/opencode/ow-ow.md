@@ -60,6 +60,10 @@ Output labels (English, quoted verbatim): `task:` task header
 `(reason: <first>; +N more)`, drilled down as
 `--- reasons (from command text) ---` under `--show N`). Budgets: success excerpts 2KB stored and
 300 chars shown, failures up to 16KB; 3h of history runs about 150KB.
+Recorded durations show as `time: <total> recorded across N records (max …)`
+plus per-group `· <total> (max <max>)`; a record without a duration claims no time.
+A `--since` window that starts before the oldest record is flagged as pruned
+(`log starts at <ISO>; older records were pruned by the ring cap`): the store drops old rows silently.
 
 ## `--json` keys (single table, additive)
 
@@ -67,7 +71,7 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 
 | command | envelope |
 |---|---|
-| `sessions --json` | `{sessions[], window}` |
+| `sessions --json` | `{sessions[], window, coverage}` (`coverage`: `{firstTimestamp, lastTimestamp, pruned}` or null) |
 | `show --json` | `{session, warnings, groups, tree?, window}` |
 | `meta --json` | `{meta, warning}` |
 | `reads --json` | `{session, reads, window}` |

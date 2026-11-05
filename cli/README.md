@@ -101,11 +101,28 @@ human only) and ride `--json` as the additive `window: {since, cutoff}`
 (or null); empty renders stay honest (`no X (store: …; window: …)`
 naming the searched store, never a silent blank or a false empty).
 
+`sessions --json` also carries the additive `coverage` object (or null when
+the log has no readable bounds):
+
+```json
+"coverage": { "firstTimestamp": "<ISO>", "lastTimestamp": "<ISO>", "pruned": false }
+```
+
+`firstTimestamp`/`lastTimestamp` are the oldest and newest records still in
+the store. `pruned` is `true` only when a `--since` window starts before
+`firstTimestamp` (records older than the window may have been dropped by the
+ring cap); it is `false` without a window. Human output prints the same fact
+as a stderr line `log starts at <ISO>; older records were pruned by the ring cap`.
+
 ## Observer health (`doctor`) and build identity
 
 `ow doctor` reports shell-log growth, hook firing, ring-buffer fill and
 intent-DB readability (`log/hook/ring/db`); exit 1 on any failing check,
-exit 0 when all pass. `ow doctor --json` adds the build `identity`
+exit 0 when all pass. The `ring` line also states what the store can and
+cannot tell you: `binding line cap 50k` or `binding byte cap 100MB` (whichever
+fill is higher), the `oldest`/`newest` record timestamps actually present, and
+the count of `unparseable line(s)` (corrupt lines are skipped by every reader).
+Reading the bounds scans the whole log once (measured 140–170 ms on a 73 MB store). `ow doctor --json` adds the build `identity`
 envelope beside `checks`: `installed` (the running binary's sidecar:
 short-8 `sha8`/`binary8`, `dirty`, `time` — null with no sidecar).
 Human output prints plain `identity:` lines outside the check lines, so
