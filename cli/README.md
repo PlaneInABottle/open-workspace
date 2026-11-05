@@ -25,7 +25,7 @@ pnpm ow:build            # compile cli/cli.ts → cli/ow (+ cli/ow.build.json si
 pnpm ow:test             # same as bun test cli/
 pnpm ow:fresh            # fresh/stale check for the built binary
 pnpm ow:skill-install    # copy skills/ow/SKILL.md → ~/.agents/skills/ow/SKILL.md (--check: report stale)
-pnpm ow:parity           # scripts/check-ow-parity.sh <old> <new> (migration gate)
+pnpm ow:parity           # scripts/check-ow-parity.sh [<old> <new>] (migration gate; default: pinned baseline vs cli/ow)
 ```
 
 ## Build / symlink / freshness
@@ -39,8 +39,17 @@ pnpm ow:parity           # scripts/check-ow-parity.sh <old> <new> (migration gat
   sidecar/binary missing (2).
 - Byte-identical migration gate: `scripts/check-ow-parity.sh` replays
   `--help`, `sessions --json` on the committed fixture log
-  (byte-compared), and `doctor --json` by envelope keys + exit code only
-  (wall-clock fields vary by construction). Fixtures: `cli/parity-fixtures/`.
+  (byte-compared; the additive `window`/`coverage` keys are asserted on
+  the new side and stripped), and `doctor --json` by envelope keys + exit
+  code only (wall-clock fields vary by construction). `version --json` is
+  checked by exit code and envelope keys (build identity differs by
+  construction). The nine retired supervision verbs must exit 2 with the
+  usage text on stdout and an empty stderr. Fixtures:
+  `cli/parity-fixtures/`. Not covered: build identity values, the
+  `show`/`meta`/`reads`/`last`/`tree` surfaces, and real-store output.
+  Default run (`pnpm ow:parity`) compares against a pinned pre-coverage
+  commit built offline by `scripts/build-ow-baseline.sh`; pass `<old> <new>`
+  to compare other binaries.
 
 ## Self-documentation (`version`, `--help`)
 

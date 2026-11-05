@@ -1,14 +1,21 @@
 #!/bin/bash
 # Byte-identical gate for the `ow` CLI migration: replays deterministic cases
 # against two binaries and diffs. Any difference → unified diff + exit 1.
-# Usage: scripts/check-ow-parity.sh <old-ow> <new-ow>
+# Usage: scripts/check-ow-parity.sh [<old-ow> <new-ow>]
+# No args: old = scripts/build-ow-baseline.sh (pinned pre-coverage commit,
+# built offline from git history), new = cli/ow (run `pnpm ow:build` first).
 # (`doctor` is compared by envelope keys + exit code only — ages/sizes vary.)
 # Observer-only: supervision was retired (compose owns runtime), so the
 # gate replays `--help`, `sessions --json` and `doctor --json` only.
 set -u
-OLD="${1:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
-NEW="${2:?usage: check-ow-parity.sh <old-ow> <new-ow>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ $# -eq 0 ]; then
+  OLD="$("$ROOT/scripts/build-ow-baseline.sh")" || { echo "baseline build failed"; exit 2; }
+  NEW="$ROOT/cli/ow"
+else
+  OLD="${1:?usage: check-ow-parity.sh [<old-ow> <new-ow>]}"
+  NEW="${2:?usage: check-ow-parity.sh [<old-ow> <new-ow>]}"
+fi
 FIX="$ROOT/cli/parity-fixtures"
 OUT="/tmp/ow-parity-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
@@ -109,12 +116,9 @@ def ident(path):
     if i is None:
         return ["identity=<absent>"]
     inst = i.get("installed")
-    sup = i.get("supervisor", {})
     return [
         "identity=present",
         f"installed={sorted(inst.keys()) if isinstance(inst, dict) else None}",
-        f"supervisor={sorted(sup.keys()) if isinstance(sup, dict) else None}",
-        f"matchkey={'match' in i}",
     ]
 open(f"{out}/doctor.old.keys", "w").write("\n".join(keys(f"{out}/doctor.old.out")) + "\n")
 open(f"{out}/doctor.new.keys", "w").write("\n".join(keys(f"{out}/doctor.new.out")) + "\n")
@@ -125,12 +129,12 @@ if ! diff -u "$OUT/doctor.old.keys" "$OUT/doctor.new.keys"; then
   echo "PARITY FAIL(keys): doctor"
   fail=1
 fi
-for expected in "identity=present" "supervisor=['sha8', 'startedAt', 'state', 'time']" "matchkey=True"; do
-  if ! grep -qxF "$expected" "$OUT/doctor.new.ident"; then
-    echo "PARITY FAIL(identity keys): $expected"
-    fail=1
-  fi
-done
+# `identity.installed` is `{sha8,dirty,time,binary8}` or null (no sidecar).
+# Pre-sidecar baselines emit null too, so both sides are allowed here.
+if ! grep -qxF "identity=present" "$OUT/doctor.new.ident"; then
+  echo "PARITY FAIL(identity keys): identity=present"
+  fail=1
+fi
 if ! grep -qxE "installed=(None|\['binary8', 'dirty', 'sha8', 'time'\])" "$OUT/doctor.new.ident"; then
   echo "PARITY FAIL(identity keys): installed shape"
   fail=1
@@ -140,15 +144,46 @@ if [ "$old_code" != "$new_code" ]; then
   fail=1
 fi
 
-# Retired supervision verbs refuse on the new binary (exit 2).
-for verb in up restart down reconcile ps logs init render where; do
-  if "$NEW" "$verb" >"$OUT/retired-$verb.out" 2>"$OUT/retired-$verb.err"; then
-    echo "PARITY FAIL(retired verb exits 0): $verb"
+# `version` identity differs by construction (sidecar added after the pin), so
+# it is compared on the exit code only; the JSON envelope keys are checked
+# against the observer shape. Build identity itself is not parity-compared.
+"$OLD" version --json </dev/null >"$OUT/version.old.out" 2>/dev/null
+old_vcode=$?
+"$NEW" version --json </dev/null >"$OUT/version.new.out" 2>/dev/null
+new_vcode=$?
+if [ "$old_vcode" != "$new_vcode" ]; then
+  echo "PARITY FAIL(exit $old_vcode vs $new_vcode): version --json"
+  fail=1
+fi
+if [ "$new_vcode" != "0" ]; then
+  echo "PARITY FAIL(version --json exit $new_vcode, want 0)"
+  fail=1
+fi
+for key in '"version":' '"sha":' '"time":' '"dirty":' '"sidecar":'; do
+  if ! grep -qF "$key" "$OUT/version.new.out"; then
+    echo "PARITY FAIL(version --json missing key $key)"
     fail=1
   fi
+done
+
+# Retired supervision verbs are not in COMMANDS, so the new binary refuses
+# them as a usage error: exit 2 with the command help on stdout and an empty
+# stderr (cli.ts treats an unknown first word as "no command"). The baseline
+# is not compared for these: it still runs them, so a byte-compare would test
+# removed behavior, not parity.
+for verb in up restart down reconcile ps logs init render where; do
+  "$NEW" "$verb" </dev/null >"$OUT/retired-$verb.out" 2>"$OUT/retired-$verb.err"
   code=$?
   if [ "$code" != "2" ]; then
     echo "PARITY FAIL(retired verb exit $code, want 2): $verb"
+    fail=1
+  fi
+  if ! grep -qF "usage: ow <command>" "$OUT/retired-$verb.out"; then
+    echo "PARITY FAIL(retired verb: no usage on stdout): $verb"
+    fail=1
+  fi
+  if [ -s "$OUT/retired-$verb.err" ]; then
+    echo "PARITY FAIL(retired verb wrote stderr): $verb"
     fail=1
   fi
 done
