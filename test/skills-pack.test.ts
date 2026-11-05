@@ -30,11 +30,17 @@ function splitSkill(text: string): { description: string; body: string } {
   return { description, body: text.slice(match[0].length) };
 }
 
-function runGenerator(env: Record<string, string>): Promise<{ code: number; output: string }> {
+function runGenerator(env: Record<string, string>, args: string[] = []): Promise<{ code: number; output: string }> {
   return new Promise(resolve => {
-    execFile(process.execPath, [generator], { env: { ...process.env, ...env } }, (error, stdout, stderr) => {
+    execFile(process.execPath, [generator, ...args], { env: { ...process.env, ...env } }, (error, stdout, stderr) => {
       resolve({ code: error && 'code' in error ? Number((error as { code: unknown }).code) || 1 : 0, output: `${stdout}${stderr}` });
     });
+  });
+}
+
+function git(cwd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', cwd, ...args], err => (err ? reject(err) : resolve()));
   });
 }
 
@@ -135,23 +141,67 @@ test('generator fails closed on cap breach with a named error', async t => {
     return entries;
   };
   const before = await snapshotDir(fixturePlugins);
-  const tooLong = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins });
+  const tooLong = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins }, ['--allow-dirty']);
   assert.notEqual(tooLong.code, 0, 'description over 200 chars fails');
   assert.match(tooLong.output, /DESCRIPTION_TOO_LONG/, 'named cap error');
   assert.deepEqual(await snapshotDir(fixturePlugins), before, 'failing run writes nothing and prunes nothing');
   await rm(join(fixtureSkills, 'verbose'), { recursive: true, force: true });
   await writeSkill('huge', 'A huge skill.', `${'x'.repeat(13 * 1024)}\n`);
-  const tooLarge = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins });
+  const tooLarge = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins }, ['--allow-dirty']);
   assert.notEqual(tooLarge.code, 0, 'file over 12 KiB fails');
   assert.match(tooLarge.output, /SKILL_TOO_LARGE/, 'named cap error');
   assert.match(tooLarge.output, /huge/, 'names the offending skill');
   assert.deepEqual(await snapshotDir(fixturePlugins), before, 'second failing run still writes nothing');
   await rm(join(fixtureSkills, 'huge'), { recursive: true, force: true });
-  const pruned = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins });
+  const pruned = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins }, ['--allow-dirty']);
   assert.equal(pruned.code, 0, pruned.output);
   const after = await snapshotDir(fixturePlugins);
   assert.ok(![...after.keys()].some(path => path.endsWith('ow-stale.md') || path.endsWith('openworkspace-stale.md')), 'successful run prunes current and legacy stale packs');
   assert.equal(after.get(unrelatedFile), 'Unrelated content.\n', 'unrelated files survive pruning');
+});
+
+test('generator refuses a dirty skills tree unless --allow-dirty is passed', async t => {
+  // Fixture git repo, so the guard is exercised without the developer's real
+  // working tree (which may carry an unrelated uncommitted skill edit).
+  const tmp = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-skill-dirty-')));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const fixtureSkills = join(tmp, 'skills');
+  const fixturePlugins = join(tmp, 'plugins');
+  await mkdir(join(fixtureSkills, 'alpha'), { recursive: true });
+  await writeFile(join(fixtureSkills, 'alpha', 'SKILL.md'), '---\nname: alpha\ndescription: A committed skill.\n---\nBody.\n');
+  await git(tmp, ['init', '-q']);
+  await git(tmp, ['config', 'user.email', 'fixture@example.invalid']);
+  await git(tmp, ['config', 'user.name', 'fixture']);
+  await git(tmp, ['add', '.']);
+  await git(tmp, ['commit', '-q', '-m', 'fixture']);
+  const env = { OPENWORKSPACE_SKILLS_DIR: fixtureSkills, OPENWORKSPACE_PLUGINS_DIR: fixturePlugins };
+
+  const clean = await runGenerator(env);
+  assert.equal(clean.code, 0, clean.output);
+  assert.match(clean.output, /1 skills × 4 clients/, 'clean committed tree generates');
+
+  // An uncommitted edit is the leak this guard exists for.
+  await writeFile(join(fixtureSkills, 'alpha', 'SKILL.md'), '---\nname: alpha\ndescription: A committed skill.\n---\nUNCOMMITTED EDIT.\n');
+  const before = await readFile(join(fixturePlugins, 'opencode', 'ow-alpha.md'), 'utf8');
+  const dirty = await runGenerator(env);
+  assert.notEqual(dirty.code, 0, 'dirty skills tree is refused');
+  assert.match(dirty.output, /DIRTY/, 'named refusal');
+  assert.match(dirty.output, /--allow-dirty/, 'refusal names the opt-in');
+  assert.match(dirty.output, /alpha\/SKILL\.md/, 'refusal lists the dirty entry');
+  assert.equal(await readFile(join(fixturePlugins, 'opencode', 'ow-alpha.md'), 'utf8'), before, 'refused run writes nothing');
+
+  const allowed = await runGenerator(env, ['--allow-dirty']);
+  assert.equal(allowed.code, 0, allowed.output);
+  assert.match(await readFile(join(fixturePlugins, 'opencode', 'ow-alpha.md'), 'utf8'), /UNCOMMITTED EDIT/, 'explicit opt-in generates from the working tree');
+
+  // Outside the fixture repo: a skills dir with no git work tree at all.
+  const notGit = await realpath(await mkdtemp(join(tmpdir(), 'openworkspace-skill-loose-')));
+  t.after(() => rm(notGit, { recursive: true, force: true }));
+  await mkdir(join(notGit, 'skills', 'beta'), { recursive: true });
+  await writeFile(join(notGit, 'skills', 'beta', 'SKILL.md'), '---\nname: beta\ndescription: Loose skill.\n---\nBody.\n');
+  const loose = await runGenerator({ OPENWORKSPACE_SKILLS_DIR: join(notGit, 'skills'), OPENWORKSPACE_PLUGINS_DIR: join(notGit, 'plugins') });
+  assert.notEqual(loose.code, 0, 'a skills dir outside git is refused, not silently trusted');
+  assert.match(loose.output, /NOT_GIT/, 'named refusal for an unverifiable source');
 });
 
 test('shipped skills and packs never reference removed views', async () => {

@@ -9,13 +9,30 @@
 // Usage: `pnpm build-skill-packs` (or `node scripts/build-skill-packs.mjs`).
 // Optional env overrides (tests only): OPENWORKSPACE_SKILLS_DIR,
 // OPENWORKSPACE_PLUGINS_DIR.
+import { execFile } from 'node:child_process';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillsDir = process.env.OPENWORKSPACE_SKILLS_DIR ?? join(repoRoot, 'skills');
 const pluginsDir = process.env.OPENWORKSPACE_PLUGINS_DIR ?? join(repoRoot, 'plugins');
+const allowDirty = process.argv.includes('--allow-dirty');
+
+// Refuse to regenerate packs from uncommitted skill edits: a dirty `skills/`
+// would bake an unreviewed working-tree change into `plugins/`. Fails closed:
+// a skills dir that is not inside a git work tree is refused too, so nothing
+// is written from an unverifiable source. Returns the dirty entries, or null
+// when the check itself cannot run.
+export async function dirtySkillEntries(dir) {
+  try {
+    const { stdout } = await promisify(execFile)('git', ['-C', dir, 'status', '--porcelain', '--', '.']);
+    return stdout.split('\n').filter(line => line.trim() !== '');
+  } catch {
+    return null;
+  }
+}
 
 const maxSkillBytes = 12 * 1024;
 const maxDescriptionChars = 200;
@@ -58,6 +75,13 @@ function outputPath(client, skillName) {
 }
 
 async function main() {
+  if (!allowDirty) {
+    const dirty = await dirtySkillEntries(skillsDir);
+    if (dirty === null) fail('NOT_GIT', `cannot verify ${skillsDir} is committed (not a git work tree); rerun with --allow-dirty to bypass`);
+    if (dirty.length > 0) {
+      fail('DIRTY', `${skillsDir} has uncommitted changes; commit or revert them, or rerun with --allow-dirty:\n${dirty.join('\n')}`);
+    }
+  }
   const entries = await readdir(skillsDir, { withFileTypes: true });
   const skillDirs = entries.filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   if (skillDirs.length === 0) fail('NO_SKILLS', `no skill directories in ${skillsDir}`);
