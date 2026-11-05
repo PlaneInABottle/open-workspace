@@ -14,8 +14,10 @@ import {
   parseBytes,
   parseSince,
   readDigest,
+  readLogBounds,
   sessionMeta,
   showLine,
+  timedSummary,
   SINCE_TOKENS,
   sinceWindow,
   storeWindow,
@@ -330,6 +332,12 @@ export const run = async (argv: string[]): Promise<number> => {
     const sinceMs = parseSince(sinceRaw)
     const window = sinceWindow(sinceRaw, sinceMs, Date.now())
     if (window !== null) warn(windowNotice(window))
+    if (sinceMs !== null) {
+      const bounds = await readLogBounds(logPath)
+      if (bounds !== null && bounds.firstMs > sinceMs) {
+        warn(`log starts at ${new Date(bounds.firstMs).toISOString()}; older records were pruned by the ring cap`)
+      }
+    }
     const sessions = await listSessions({
       logPath,
       dbPath: flag(flags, "--db"),
@@ -424,6 +432,12 @@ export const run = async (argv: string[]): Promise<number> => {
   // warn; show/reads share this region).
   const window = sinceWindow(flag(flags, "--since"), windowMs, Date.now())
   if (window !== null) warn(windowNotice(window))
+  if (windowMs !== null) {
+    const bounds = await readLogBounds(logPath)
+    if (bounds !== null && bounds.firstMs > windowMs) {
+      warn(`log starts at ${new Date(bounds.firstMs).toISOString()}; older records were pruned by the ring cap`)
+    }
+  }
 
   // show + reads share the joined records
   let by: Map<string, EnrichedRecord[]>
@@ -505,6 +519,8 @@ export const run = async (argv: string[]): Promise<number> => {
   if (json) {
     console.log(JSON.stringify(toShowJson(sid, warnings, groups, undefined, window)))
   } else {
+    const timings = timedSummary(groups)
+    if (timings !== null) console.log(timings)
     if (text.length > 0) console.log(text)
     else console.log(`no records ${storeWindow(logPath, window)}`)
     if (full) warn(`(full text: ${text.length} chars)`)

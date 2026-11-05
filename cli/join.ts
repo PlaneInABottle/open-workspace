@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises"
+import { open, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Database } from "bun:sqlite"
@@ -251,10 +251,32 @@ export type GroupedLine = {
   results: string[]
   intents: string[]
   messageIDs: string[]
+  /** Sum of recorded durationMs across merged records (0 when none recorded). */
+  durationTotalMs: number
+  /** Largest recorded duration in the group. */
+  durationMaxMs: number
+  /** How many merged records actually carried a duration. */
+  timedRuns: number
 }
 
 const MAX_STORED_VARIANTS = 50
 const MAX_SHOWN_VARIANTS = 3
+
+/** Human duration from recorded milliseconds; never invented when absent. */
+export const formatDuration = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return "0ms"
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return `${minutes}m ${String(rest).padStart(2, "0")}s`
+}
+
+const durationOf = (record: EnrichedRecord): number | null => {
+  const value = record.durationMs
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
+}
 
 export type TaskGroup = {
   taskRef: string
@@ -721,6 +743,12 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
       const result = typeof record.result === "string" && record.result.length > 0 ? record.result : null
       if (existing) {
         existing.runs += 1
+        const mergedDuration = durationOf(record)
+        if (mergedDuration !== null) {
+          existing.durationTotalMs += mergedDuration
+          existing.durationMaxMs = Math.max(existing.durationMaxMs, mergedDuration)
+          existing.timedRuns += 1
+        }
         if (agent && !existing.agents.includes(agent) && existing.agents.length < 3) existing.agents.push(agent)
         if (sess && !existing.sessions.includes(sess) && existing.sessions.length < 5) existing.sessions.push(sess)
         if (model && !existing.models.includes(model) && existing.models.length < 3) existing.models.push(model)
@@ -741,6 +769,7 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
         continue
       }
       const reason = recordFailReason(outcome, record)
+      const duration = durationOf(record)
       const line: GroupedLine = {
         ref: lines.length + 1,
         signature: sig,
@@ -758,6 +787,9 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
         results: result ? [result] : [],
         intents: intent ? [intent] : [],
         messageIDs: messageID ? [messageID] : [],
+        durationTotalMs: duration ?? 0,
+        durationMaxMs: duration ?? 0,
+        timedRuns: duration === null ? 0 : 1,
       }
       seen.set(dupKey, line)
       lines.push(line)
@@ -790,7 +822,11 @@ export const formatGrouped = (groups: TaskGroup[], full = false, withSession = f
             : ` (reason: ${line.failReason})`
           : ""
       const where = withSession && line.sessions.length > 0 ? ` [${line.sessions.join(",")}]` : ""
-      out.push(`  [${line.ref}]${who} ${line.signature} — ${line.outcome}${repeat}${reason}${where}`)
+      const timing =
+        line.timedRuns > 0
+          ? ` · ${formatDuration(line.durationTotalMs)} (max ${formatDuration(line.durationMaxMs)})`
+          : ""
+      out.push(`  [${line.ref}]${who} ${line.signature} — ${line.outcome}${repeat}${reason}${where}${timing}`)
       const rawMode = full && !sectionBudget
       for (const variant of line.variants.slice(0, full ? line.variants.length : MAX_SHOWN_VARIANTS)) {
         out.push(`      record: ${rawMode ? variant : clipText(variant, 130)}`)
@@ -859,3 +895,61 @@ export const showLine = (groups: TaskGroup[], ref: number, sectionBudget?: numbe
   return `line not found: ${ref}`
 }
 
+
+/** Total and worst recorded duration across the visible groups; null when nothing was timed. */
+export const timedSummary = (groups: TaskGroup[]): string | null => {
+  let total = 0
+  let max = 0
+  let runs = 0
+  for (const group of groups) {
+    for (const line of group.lines) {
+      if (line.timedRuns === 0) continue
+      total += line.durationTotalMs
+      max = Math.max(max, line.durationMaxMs)
+      runs += line.timedRuns
+    }
+  }
+  if (runs === 0) return null
+  return `time: ${formatDuration(total)} recorded across ${runs} records (max ${formatDuration(max)})`
+}
+
+/**
+ * First and last record timestamps still present in the log. The store keeps only the newest
+ * rows under its byte/line cap, so a window older than `firstMs` lost records silently.
+ */
+export const readLogBounds = async (logPath: string): Promise<{ firstMs: number; lastMs: number } | null> => {
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    handle = await open(logPath, "r")
+    const { size } = await handle.stat()
+    if (size === 0) return null
+    const window = 64 * 1024
+    const head = Buffer.alloc(Math.min(size, window))
+    await handle.read(head, 0, head.length, 0)
+    const tailLength = Math.min(size, window)
+    const tail = Buffer.alloc(tailLength)
+    await handle.read(tail, 0, tailLength, size - tailLength)
+    const tsOf = (line: string | undefined): number | null => {
+      if (!line) return null
+      try {
+        const value = JSON.parse(line) as { timestamp?: unknown }
+        const ms = typeof value.timestamp === "string" ? Date.parse(value.timestamp) : Number.NaN
+        return Number.isFinite(ms) ? ms : null
+      } catch {
+        return null
+      }
+    }
+    const firstLine = head.toString("utf8").split("\n")[0]
+    const tailLines = tail
+      .toString("utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+    const firstMs = tsOf(firstLine)
+    const lastMs = tsOf(tailLines[tailLines.length - 1])
+    return firstMs !== null && lastMs !== null ? { firstMs, lastMs } : null
+  } catch {
+    return null
+  } finally {
+    await handle?.close()
+  }
+}
