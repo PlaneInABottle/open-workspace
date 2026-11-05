@@ -6,29 +6,23 @@ description: "Observe past shell-command history with the ow CLI (sessions/show/
 # ow — shell-history observer
 
 `ow` reads back past shell commands from OpenCode's session store: what ran,
-what failed, and what it cost. Read-only; it never changes sessions, files,
-or the database. Run it as `ow` from anywhere. It supervises nothing —
-local runtime is docker compose.
+what failed, and what it cost. It is read-only and runs as `ow` from anywhere.
+It observes opencode sessions only; a harness it does not observe has no rows,
+which says nothing about what happened there.
 
-## Sessions (quick reference)
-
-`ow` observes **opencode sessions** only — other harnesses are not
-observed ("not observed" means exactly that, never "nothing happened").
+## Use
 
 ```sh
-ow doctor                             # health first
-ow sessions [--since 1d] [--dir /path]
-ow show <session> [--since 30m|3h|1d|1w] [--tree] [--full] [--show N] [--show-fails] [--kind ..] [--tool ..]
-ow meta/reads <session>             # cost/tokens · read summary
-ow last <pattern> [-n K] [--failed] [--since 1d] [--dir /path]  # newest exit-0 command matching <pattern>: cwd + re-runnable text
-ow show <session> --json              # stable machine output (all commands, English keys)
+ow doctor                  # health first, and whenever results look wrong
+ow sessions --since 1d     # find a session
+ow show <session>          # what ran; add --show-fails for failures
+ow last <pattern>          # newest successful command matching <pattern>
 ```
 
-No ID known: last sidecar line, or bare for latest. Exits: 0 ok,
-1 failure, 2 usage error; non-interactive. `doctor` first when results
-look wrong; sidecar rows land ~5s after session end, spans 5–15s late.
-Report only what the output shows, never invent causes. Check counts
-first, keep `--since` narrow; open failures one by one, repeats first.
+No ID known: last sidecar line, or bare for latest. Exits: 0 ok, 1 failure, 2 usage
+error; non-interactive. Usage, flags, labels and `--json` shapes: `ow --help` and
+`ow <command> --help`. Sidecar rows land ~5s after session end. Report only what
+the output shows; keep `--since` narrow and open failures repeats-first.
 
 ## Reuse a command that already worked
 
@@ -80,6 +74,29 @@ English human lines; stable English `--json` keys (old keys never change, new ke
 
 Full behavior: `ow --help` and `ow <command> --help` (verified against
 the installed build; past writeups may describe removed commands).
+
+## Reading friction out of a session
+
+To judge how much avoidable work a session cost, read its counts rather than its
+narrative: `ow sessions --since 1d` gives commands, files and failures per
+session, and `ow show <session> --show-fails` opens the failures, repeats first.
+A command retried several times with small edits is a detour even when it
+finally succeeded.
+
+Your own session is still open while you work, so its rows are incomplete and
+the newest land about 5s after it ends. Treat a reading of the active session as
+a lower bound, never as proof that nothing else failed.
+
+## Measurement limits
+
+- Deduplicate sessions by full canonical ID; prefixes and suffixes can name the same session.
+- Use `sessions` for command totals and `reads` for file-read counts; `show` row multiplicity
+  is not an independent execution count.
+- Claim durations only from explicit timings or tool-reported elapsed values: `ow show`'s
+  `time:` line is such a timing, and a record without a duration is unknown, never zero.
+  Counts, token totals and gaps do not measure model latency; label sampled extrapolations as estimates.
+- A repeated command is not proven wasted work without matching inputs, revision and target.
+  Check which findings a review produced before treating it as discarded or redundant.
 
 ## Handoff (between agents/sessions)
 
