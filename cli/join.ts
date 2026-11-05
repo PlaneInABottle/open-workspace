@@ -913,6 +913,21 @@ export const timedSummary = (groups: TaskGroup[]): string | null => {
   return `time: ${formatDuration(total)} recorded across ${runs} records (max ${formatDuration(max)})`
 }
 
+/** Coverage of the store for a requested window: `pruned` means the window starts before the oldest record kept. */
+export const logCoverage = (
+  bounds: { firstMs: number; lastMs: number } | null,
+  windowMs: number | null,
+  now: number,
+): { firstTimestamp: string; lastTimestamp: string; pruned: boolean } | null => {
+  if (bounds === null) return null
+  const cutoff = windowMs === null ? null : now - windowMs
+  return {
+    firstTimestamp: new Date(bounds.firstMs).toISOString(),
+    lastTimestamp: new Date(bounds.lastMs).toISOString(),
+    pruned: cutoff !== null && bounds.firstMs > cutoff,
+  }
+}
+
 /**
  * First and last record timestamps still present in the log. The store keeps only the newest
  * rows under its byte/line cap, so a window older than `firstMs` lost records silently.
@@ -939,13 +954,12 @@ export const readLogBounds = async (logPath: string): Promise<{ firstMs: number;
         return null
       }
     }
-    const firstLine = head.toString("utf8").split("\n")[0]
-    const tailLines = tail
-      .toString("utf8")
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
-    const firstMs = tsOf(firstLine)
-    const lastMs = tsOf(tailLines[tailLines.length - 1])
+    // Skip unparseable lines (a corrupt NUL run is possible at either edge),
+    // so one bad boundary line cannot erase the coverage facts.
+    const headLines = head.toString("utf8").split("\n")
+    const tailLines = tail.toString("utf8").split("\n").filter((line) => line.trim().length > 0)
+    const firstMs = headLines.map(tsOf).find((ms) => ms !== null) ?? null
+    const lastMs = [...tailLines].reverse().map(tsOf).find((ms) => ms !== null) ?? null
     return firstMs !== null && lastMs !== null ? { firstMs, lastMs } : null
   } catch {
     return null

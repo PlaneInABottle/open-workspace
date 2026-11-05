@@ -154,6 +154,32 @@ describe("--since readers guard + window envelope", () => {
     expect(windowed.payload["window"]).toMatchObject({ since: "1d" })
   })
 
+  test("sessions --json coverage: bounds of the store, pruned only when the window predates them", async () => {
+    const log = resolve(import.meta.dir, "parity-fixtures", "shell-events.jsonl")
+    const runJson = async (argv: string[]): Promise<Record<string, unknown>> => {
+      const out: string[] = []
+      const saved = console.log
+      console.log = (...args: unknown[]): void => {
+        out.push(args.map(String).join(" "))
+      }
+      try {
+        await run(argv)
+      } finally {
+        console.log = saved
+      }
+      return JSON.parse(out.join("\n")) as Record<string, unknown>
+    }
+    const unwindowed = await runJson(["sessions", "--json", "--log", log])
+    expect(unwindowed["coverage"]).toEqual({
+      firstTimestamp: "2026-09-01T10:00:00.000Z",
+      lastTimestamp: "2026-09-01T11:00:00.000Z",
+      pruned: false,
+    })
+    // A window reaching far before the 2026-09-01 fixture start is pruned.
+    const wide = await runJson(["sessions", "--json", "--log", log, "--since", "3650d"])
+    expect((wide["coverage"] as { pruned: boolean }).pruned).toBe(true)
+  })
+
   test("removed overlay/scenario flags fail loud as unknown options (exit 2, never silent)", async () => {
     for (const argv of [
       ["sessions", "--boundaries", "x.yaml"],
@@ -196,8 +222,9 @@ describe("cli --json shapes", () => {
     const payload = toSessionsJson([
       { sessionID: "s1", commands: 2, fileEdits: 1, fails: 0, first: "a", last: "b", workdir: "/w" },
     ])
-    expect(Object.keys(payload)).toEqual(["sessions", "window"])
+    expect(Object.keys(payload)).toEqual(["sessions", "window", "coverage"])
     expect(payload.window).toBeNull()
+    expect(payload.coverage).toBeNull()
     expect(Object.keys(payload.sessions[0]).sort()).toEqual(
       ["commands", "fails", "fileEdits", "first", "last", "sessionID", "workdir"].sort(),
     )

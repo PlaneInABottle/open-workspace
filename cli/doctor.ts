@@ -2,9 +2,18 @@ import { stat } from "node:fs/promises"
 import { Database } from "bun:sqlite"
 
 import { readOwnBuildSidecar, type UpBuildInfo } from "./build-info"
-import { DEFAULT_DB_PATH, DEFAULT_LOG_PATH } from "./join"
+import { DEFAULT_DB_PATH, DEFAULT_LOG_PATH, readLogBounds } from "./join"
 
 export { DEFAULT_DB_PATH, DEFAULT_LOG_PATH }
+
+const isJsonLine = (line: string): boolean => {
+  try {
+    JSON.parse(line)
+    return true
+  } catch {
+    return false
+  }
+}
 
 export const RING_MAX_BYTES = 100 * 1024 * 1024
 export const RING_MAX_LINES = 50_000
@@ -36,7 +45,15 @@ export const doctor = async (options: { logPath?: string; dbPath?: string } = {}
     const pctBytes = Math.min(99, Math.round((info.size / RING_MAX_BYTES) * 100))
     const pctLines = Math.min(99, Math.round((rows.length / RING_MAX_LINES) * 100))
     const pct = Math.max(pctBytes, pctLines)
-    lines.push({ name: "ring", ok: pct < 90, detail: `%${pct} full (${(info.size / 1024).toFixed(0)}KB/${rows.length} lines; cap 100MB/50k)` })
+    // Store facts a reader needs to judge coverage. Full scan of the log on
+    // purpose: a single pass over ~75 MB measured ~160-200 ms, and a corrupt
+    // line can sit anywhere (the live store has one mid-file), so head/tail
+    // sampling would miss it. Bounds reuse readLogBounds (single source).
+    const bounds = await readLogBounds(logPath)
+    const corrupt = rows.length - rows.filter((l) => isJsonLine(l)).length
+    const binding = pctLines >= pctBytes ? "line cap 50k" : "byte cap 100MB"
+    const span = bounds === null ? "span unknown" : `oldest ${new Date(bounds.firstMs).toISOString()}, newest ${new Date(bounds.lastMs).toISOString()}`
+    lines.push({ name: "ring", ok: pct < 90, detail: `%${pct} full (${(info.size / 1024).toFixed(0)}KB/${rows.length} lines; cap 100MB/50k); binding ${binding}; ${span}; ${corrupt} unparseable line(s)` })
   } catch (error) {
     lines.push({ name: "log", ok: false, detail: `unreadable: ${String(error).slice(0, 120)}` })
     lines.push({ name: "hook", ok: false, detail: "no log" })

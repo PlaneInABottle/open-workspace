@@ -44,6 +44,12 @@ strip_window() {
   sed -e 's/,"window":null//' -e 's/"window":null,//'
 }
 
+# Additive `coverage` object ({firstTimestamp,lastTimestamp,pruned}) is asserted
+# on the new binary, stripped on both sides; the rest stays byte-compared.
+strip_coverage() {
+  sed -e 's/,"coverage":{[^}]*}//'
+}
+
 run_case_window_json() {
   local name="$1"
   shift
@@ -57,7 +63,11 @@ run_case_window_json() {
     echo "PARITY FAIL(window key missing on new): $name"
     fail=1
   fi
-  if ! diff -u <(strip_window <"$OUT/$name.old.out") <(strip_window <"$OUT/$name.new.out"); then
+  if ! grep -qF '"coverage":{"firstTimestamp"' "$OUT/$name.new.out"; then
+    echo "PARITY FAIL(coverage key missing on new): $name"
+    fail=1
+  fi
+  if ! diff -u <(strip_window <"$OUT/$name.old.out") <(strip_window < <(strip_coverage <"$OUT/$name.new.out")); then
     echo "PARITY FAIL(stdout): $name"
     fail=1
   fi

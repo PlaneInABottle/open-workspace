@@ -11,6 +11,7 @@ import {
   joinSession,
   latestSession,
   listSessions,
+  logCoverage,
   parseBytes,
   parseSince,
   readDigest,
@@ -224,7 +225,12 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
 
 // --json envelopes: stable English keys; human views keep plain English labels.
 // `window` is the additive `--since` envelope ({since, cutoff} or null).
-export const toSessionsJson = (sessions: Awaited<ReturnType<typeof listSessions>>, window: SinceWindow | null = null) => ({ sessions, window })
+// `coverage` is the additive store-coverage object ({firstTimestamp, lastTimestamp, pruned} or null).
+export const toSessionsJson = (
+  sessions: Awaited<ReturnType<typeof listSessions>>,
+  window: SinceWindow | null = null,
+  coverage: ReturnType<typeof logCoverage> = null,
+) => ({ sessions, window, coverage })
 export const toShowJson = (
   sessionID: string,
   warnings: string[],
@@ -289,6 +295,7 @@ export const run = async (argv: string[]): Promise<number> => {
   const warn = (message: string): void => {
     if (!json) console.error(message)
   }
+  const warnPruned = (firstTimestamp: string): void => warn(`log starts at ${firstTimestamp}; older records were pruned by the ring cap`)
 
   if (command === "doctor") {
     for (const key of Object.keys(flags)) {
@@ -332,12 +339,8 @@ export const run = async (argv: string[]): Promise<number> => {
     const sinceMs = parseSince(sinceRaw)
     const window = sinceWindow(sinceRaw, sinceMs, Date.now())
     if (window !== null) warn(windowNotice(window))
-    if (sinceMs !== null) {
-      const bounds = await readLogBounds(logPath)
-      if (bounds !== null && bounds.firstMs > sinceMs) {
-        warn(`log starts at ${new Date(bounds.firstMs).toISOString()}; older records were pruned by the ring cap`)
-      }
-    }
+    const coverage = logCoverage(await readLogBounds(logPath), sinceMs, Date.now())
+    if (coverage?.pruned) warnPruned(coverage.firstTimestamp)
     const sessions = await listSessions({
       logPath,
       dbPath: flag(flags, "--db"),
@@ -345,7 +348,7 @@ export const run = async (argv: string[]): Promise<number> => {
       dir: flag(flags, "--dir"),
     })
     if (json) {
-      console.log(JSON.stringify(toSessionsJson(sessions, window)))
+      console.log(JSON.stringify(toSessionsJson(sessions, window, coverage)))
     } else {
       console.log(sessions.length > 0 ? formatSessions(sessions) : "no sessions")
     }
@@ -433,10 +436,8 @@ export const run = async (argv: string[]): Promise<number> => {
   const window = sinceWindow(flag(flags, "--since"), windowMs, Date.now())
   if (window !== null) warn(windowNotice(window))
   if (windowMs !== null) {
-    const bounds = await readLogBounds(logPath)
-    if (bounds !== null && bounds.firstMs > windowMs) {
-      warn(`log starts at ${new Date(bounds.firstMs).toISOString()}; older records were pruned by the ring cap`)
-    }
+    const coverage = logCoverage(await readLogBounds(logPath), windowMs, Date.now())
+    if (coverage?.pruned) warnPruned(coverage.firstTimestamp)
   }
 
   // show + reads share the joined records
