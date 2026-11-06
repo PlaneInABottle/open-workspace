@@ -89,6 +89,10 @@ a lower bound, never as proof that nothing else failed.
 
 ## Measurement limits
 
+- Never type a secret into a command. The observer stores command text verbatim (only readers mask it), so
+  `export TOKEN=…` or `echo KEY=… >> file` lands in the store in clear text. Write secrets with a file
+  editor or a secret store instead, and reference them as `$NAME` in commands.
+
 - Deduplicate sessions by full canonical ID; prefixes and suffixes can name the same session.
 - Use `sessions` for command totals and `reads` for file-read counts; `show` row multiplicity
   is not an independent execution count.
