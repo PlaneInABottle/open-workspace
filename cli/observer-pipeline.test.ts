@@ -457,8 +457,8 @@ describe("listSessions", () => {
     const dir = await mkdtemp(joinPath(tmpdir(), "list-test-"))
     const logPath = joinPath(dir, "events.jsonl")
     const lines = [
-      { sessionID: "s1", timestamp: "2026-10-05T10:00:00.000Z", workdir: "/a/resai", command: "echo hi", outcome: "success" },
-      { sessionID: "s1", timestamp: "2026-10-05T11:00:00.000Z", workdir: "/a/resai", kind: "file-edit", path: "x.ts", outcome: "completed" },
+      { sessionID: "s1", timestamp: "2026-10-05T10:00:00.000Z", workdir: "/a/project", command: "echo hi", outcome: "success" },
+      { sessionID: "s1", timestamp: "2026-10-05T11:00:00.000Z", workdir: "/a/project", kind: "file-edit", path: "x.ts", outcome: "completed" },
       { sessionID: "s2", timestamp: "2026-10-05T11:30:00.000Z", workdir: "/b/other", command: "bad", outcome: "failure" },
     ]
     await writeFile(logPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
@@ -468,7 +468,7 @@ describe("listSessions", () => {
     expect(all[0].sessionID).toBe("s2")
     expect(all.find((s) => s.sessionID === "s1")).toMatchObject({ commands: 1, fileEdits: 1, fails: 0 })
     expect(all.find((s) => s.sessionID === "s2")).toMatchObject({ fails: 1 })
-    const filtered = await listSessions({ logPath, dir: "/a/resai" })
+    const filtered = await listSessions({ logPath, dir: "/a/project" })
     expect(filtered.map((s) => s.sessionID)).toEqual(["s1"])
   })
 
@@ -486,7 +486,7 @@ describe("listSessions", () => {
     db.prepare("INSERT INTO session_v2 (id, directory) VALUES (?, ?)").run("s9", "/elsewhere/proj")
     db.close()
     const { listSessions } = await import("./join")
-    expect((await listSessions({ logPath, dbPath, dir: "/a/resai" })).length).toBe(0)
+    expect((await listSessions({ logPath, dbPath, dir: "/a/project" })).length).toBe(0)
     expect((await listSessions({ logPath, dbPath, dir: "/elsewhere" })).map((s) => s.sessionID)).toEqual(["s9"])
   })
 
