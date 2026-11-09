@@ -222,13 +222,42 @@ describe("cli --json shapes", () => {
     const payload = toSessionsJson([
       { sessionID: "s1", commands: 2, fileEdits: 1, fails: 0, first: "a", last: "b", workdir: "/w" },
     ])
-    expect(Object.keys(payload)).toEqual(["sessions", "window", "coverage"])
+    expect(Object.keys(payload)).toEqual(["sessions", "window", "coverage", "warnings"])
     expect(payload.window).toBeNull()
     expect(payload.coverage).toBeNull()
     expect(Object.keys(payload.sessions[0]).sort()).toEqual(
       ["commands", "fails", "fileEdits", "first", "last", "sessionID", "workdir"].sort(),
     )
     expect(() => JSON.stringify(payload)).not.toThrow()
+  })
+
+  test("sessions/reads with an unreadable shell log exit 1 and carry warnings", async () => {
+    const out: string[] = []
+    const err: string[] = []
+    const savedLog = console.log
+    const savedError = console.error
+    console.log = (...args: unknown[]): void => {
+      out.push(args.map(String).join(" "))
+    }
+    console.error = (...args: unknown[]): void => {
+      err.push(args.map(String).join(" "))
+    }
+    try {
+      const sessionsCode = await run(["sessions", "--json", "--log", "/nonexistent/x.jsonl"])
+      const sessionsPayload = JSON.parse(out.join("\n")) as { warnings: string[] }
+      expect(sessionsCode).toBe(1)
+      expect(sessionsPayload.warnings.length).toBeGreaterThan(0)
+      out.length = 0
+      const readsCode = await run(["reads", "ses_fix", "--json", "--log", "/nonexistent/x.jsonl"])
+      const readsPayload = JSON.parse(out.join("\n")) as { warnings: string[]; reads: unknown[] }
+      expect(readsCode).toBe(1)
+      expect(readsPayload.reads).toEqual([])
+      expect(readsPayload.warnings.length).toBeGreaterThan(0)
+    } finally {
+      console.log = savedLog
+      console.error = savedError
+    }
+    expect(err.join("\n")).toContain("unreadable")
   })
 
   test("show envelope carries session, warnings and groups", () => {
@@ -278,6 +307,27 @@ describe("tree builder", () => {
     // child sections reuse grouped lines with short-id tags, indented
     expect(text).toContain("  task: search")
     expect(text).toContain("[ses_child_a]")
+  })
+
+  test("an orphan reachable through another orphan's link is not duplicated", () => {
+    const by = new Map<string, EnrichedRecord[]>()
+    by.set("ses_parent", [])
+    by.set("ses_a", [
+      rec({
+        kind: "tool-call",
+        tool: "subagent",
+        args: JSON.stringify({ agent: "x", sessionID: "ses_b", description: "b" }),
+        timestamp: "2026-10-05T10:00:00.000Z",
+        outcome: "completed",
+        sessionID: "ses_a",
+      }),
+    ])
+    by.set("ses_b", [
+      rec({ command: "echo b", outcome: "success", timestamp: "2026-10-05T10:01:00.000Z", sessionID: "ses_b" }),
+    ])
+    const root = buildTree("ses_parent", by)
+    expect(root.children.map((c) => c.sessionID)).toEqual(["ses_a"])
+    expect(root.children[0].children.map((c) => c.sessionID)).toEqual(["ses_b"])
   })
 
   test("subtrees deeper than 2 collapse to a ... line", () => {

@@ -121,6 +121,21 @@ describe("signature", () => {
     expect(signature("FOO=bar | cat")).toBe("cat")
   })
 
+  test("drops the fd number that belongs to a redirect", () => {
+    expect(signature("cmd 2>&1")).toBe("cmd")
+    expect(signature("cmd 2>/dev/null")).toBe("cmd")
+  })
+
+  test("skips wrapper flags and their values", () => {
+    expect(signature("sudo -n git log")).toBe("git log")
+    expect(signature("sudo -u bob git log")).toBe("git log")
+    expect(signature("env -u FOO git status")).toBe("git status")
+  })
+
+  test("heredoc opener tails (the pipe) survive body stripping", () => {
+    expect(signature("cat <<'PY' | python3\nprint(1)\nPY")).toBe("cat | python3 [heredoc:PY]")
+  })
+
   test("backslash escapes survive splitting", () => {
     expect(signature('grep "a\\" | b" f | head')).toBe("grep <arg> <arg> | head")
     expect(signature("echo a\\ b | head")).toBe("echo <arg> | head")
@@ -149,6 +164,16 @@ describe("groupByTask", () => {
     expect(text).toContain("task: pass the tests (3 records, 2 failed)")
     expect(text).toContain("x2")
     expect(text.match(/task: pass the tests/g)?.length).toBe(1)
+  })
+
+  test("refs stay unique across task groups in display order", () => {
+    const groups = groupByTask([
+      { command: "echo a", outcome: "success", intent: null, messageID: "m1", taskRef: "task A" },
+      { command: "echo b", outcome: "success", intent: null, messageID: "m2", taskRef: "task B" },
+    ])
+    expect(groups.flatMap((group) => group.lines.map((line) => line.ref))).toEqual([1, 2])
+    expect(showLine(groups, 1)).toContain("echo b")
+    expect(showLine(groups, 2)).toContain("echo a")
   })
 
   test("collapses by signature and strips env prefix for display", () => {

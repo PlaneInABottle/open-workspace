@@ -102,6 +102,9 @@ export const buildTree = (parentID: string, recordsBy: Map<string, EnrichedRecor
   const orphans = [...known].filter((id) => !visited.has(id))
   orphans.sort((a, b) => earliest(recordsBy.get(a)) - earliest(recordsBy.get(b)))
   for (const id of orphans) {
+    // A prior orphan's subtree may already have attached this id; re-check
+    // inside the loop or A→B renders B both under A and as a root orphan.
+    if (visited.has(id)) continue
     visited.add(id)
     root.children.push({ sessionID: id, link: null, children: childrenOf(id) })
   }

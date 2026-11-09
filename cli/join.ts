@@ -173,9 +173,10 @@ export const joinSession = async (options: {
   sessionID: string
   sinceMs?: number | null
   now?: number
-}): Promise<{ records: EnrichedRecord[]; warnings: string[] }> => {
+}): Promise<{ records: EnrichedRecord[]; warnings: string[]; logUnreadable: boolean }> => {
   const warnings: string[] = []
   const logPath = options.logPath ?? DEFAULT_LOG_PATH
+  let logUnreadable = false
   let sidecar: SidecarRecord[] = []
   try {
     const text = await readFile(logPath, "utf8")
@@ -202,6 +203,7 @@ export const joinSession = async (options: {
         }
       })
   } catch (error) {
+    logUnreadable = true
     warnings.push(`sidecar unreadable: ${String(error).slice(0, 160)}`)
   }
   let rows: MessageRow[] | null = null
@@ -226,9 +228,9 @@ export const joinSession = async (options: {
   }
   if (!rows) {
     warnings.push("message table unavailable — records emitted without intent")
-    return { records: sidecar.map((record) => ({ ...record, intent: null, taskRef: null })), warnings }
+    return { records: sidecar.map((record) => ({ ...record, intent: null, taskRef: null })), warnings, logUnreadable }
   }
-  return { records: sidecar.map((record) => attachIntent(record, rows)), warnings }
+  return { records: sidecar.map((record) => attachIntent(record, rows)), warnings, logUnreadable }
 }
 
 export type GroupedLine = {
@@ -433,13 +435,18 @@ export const listSessions = async (options: {
   sinceMs?: number | null
   dir?: string
   now?: number
+  /** Caller-owned sink: an unreadable log is reported here instead of
+   * silently rendering as an empty inventory. */
+  warnings?: string[]
 }): Promise<SessionInfo[]> => {
   const { readFile } = await import("node:fs/promises")
   const now = options.now ?? Date.now()
   let text: string
   try {
     text = await readFile(options.logPath ?? DEFAULT_LOG_PATH, "utf8")
-  } catch {
+  } catch (error) {
+    const logPath = options.logPath ?? DEFAULT_LOG_PATH
+    options.warnings?.push(`shell log unreadable (${logPath}): ${String(error).slice(0, 160)}`)
     return []
   }
   const by = new Map<string, { commands: number; fileEdits: number; fails: number; first: string | null; last: string | null; workdir: string | null }>()
@@ -715,7 +722,7 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
     list.push(record)
     groups.set(key, list)
   }
-  return [...groups.entries()].reverse().map(([taskRef, list]) => {
+  const output = [...groups.entries()].reverse().map(([taskRef, list]) => {
     const seen = new Map<string, GroupedLine>()
     const lines: GroupedLine[] = []
     for (const record of list) {
@@ -771,7 +778,7 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
       const reason = recordFailReason(outcome, record)
       const duration = durationOf(record)
       const line: GroupedLine = {
-        ref: lines.length + 1,
+        ref: 0,
         signature: sig,
         outcome,
         runs: 1,
@@ -801,6 +808,16 @@ export const groupByTask = (records: EnrichedRecord[]): TaskGroup[] => {
       lines: lines.reverse(),
     }
   })
+  // Refs follow the rendered order across every task group: a per-group
+  // counter made `--show 1` ambiguous (every group had its own [1]).
+  let nextRef = 1
+  for (const group of output) {
+    for (const line of group.lines) {
+      line.ref = nextRef
+      nextRef += 1
+    }
+  }
+  return output
 }
 
 export const formatGrouped = (groups: TaskGroup[], full = false, withSession = false, sectionBudget?: number): string => {

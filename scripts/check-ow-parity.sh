@@ -2,7 +2,7 @@
 # Byte-identical gate for the `ow` CLI migration: replays deterministic cases
 # against two binaries and diffs. Any difference → unified diff + exit 1.
 # Usage: scripts/check-ow-parity.sh [<old-ow> <new-ow>]
-# No args: old = scripts/build-ow-baseline.sh (pinned pre-coverage commit,
+# No args: old = scripts/build-ow-baseline.sh (pinned pre-coverage/warnings commit,
 # built offline from git history), new = cli/ow (run `pnpm ow:build` first).
 # (`doctor` is compared by envelope keys + exit code only — ages/sizes vary.)
 # Observer-only: supervision was retired (compose owns runtime), so the
@@ -46,7 +46,8 @@ run_case() {
 }
 
 # Window normalization: additive `"window":null` is asserted on the new
-# binary, stripped on both sides so the diff still guards every byte.
+# binary, stripped on both sides so the diff still guards every byte. The
+# additive `coverage` object and `warnings` array follow the same rule.
 strip_window() {
   sed -e 's/,"window":null//' -e 's/"window":null,//'
 }
@@ -55,6 +56,12 @@ strip_window() {
 # on the new binary, stripped on both sides; the rest stays byte-compared.
 strip_coverage() {
   sed -e 's/,"coverage":{[^}]*}//'
+}
+
+# Additive `warnings` array is asserted on the new binary and stripped on the
+# new side only (the pinned baseline predates the unreadable-store report).
+strip_warnings() {
+  sed -e 's/,"warnings":\[\]//'
 }
 
 run_case_window_json() {
@@ -74,7 +81,11 @@ run_case_window_json() {
     echo "PARITY FAIL(coverage key missing on new): $name"
     fail=1
   fi
-  if ! diff -u <(strip_window <"$OUT/$name.old.out") <(strip_window < <(strip_coverage <"$OUT/$name.new.out")); then
+  if ! grep -qF '"warnings":[]' "$OUT/$name.new.out"; then
+    echo "PARITY FAIL(warnings key missing on new): $name"
+    fail=1
+  fi
+  if ! diff -u <(strip_window <"$OUT/$name.old.out") <(strip_window < <(strip_coverage < <(strip_warnings <"$OUT/$name.new.out"))); then
     echo "PARITY FAIL(stdout): $name"
     fail=1
   fi

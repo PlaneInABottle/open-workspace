@@ -230,7 +230,8 @@ export const toSessionsJson = (
   sessions: Awaited<ReturnType<typeof listSessions>>,
   window: SinceWindow | null = null,
   coverage: ReturnType<typeof logCoverage> = null,
-) => ({ sessions, window, coverage })
+  warnings: string[] = [],
+) => ({ sessions, window, coverage, warnings })
 export const toShowJson = (
   sessionID: string,
   warnings: string[],
@@ -292,8 +293,10 @@ export const run = async (argv: string[]): Promise<number> => {
   const dbPath = flag(flags, "--db") ?? DEFAULT_DB_PATH
   const logPath = flag(flags, "--log") ?? DEFAULT_LOG_PATH
   const json = flags["--json"] === true
+  // Warnings stay on stderr in every mode (stdout stays parse-clean for
+  // --json); suppressing them in JSON mode hid unreadable-store facts.
   const warn = (message: string): void => {
-    if (!json) console.error(message)
+    console.error(message)
   }
   const warnPruned = (firstTimestamp: string): void => warn(`log starts at ${firstTimestamp}; older records were pruned by the ring cap`)
 
@@ -341,18 +344,23 @@ export const run = async (argv: string[]): Promise<number> => {
     if (window !== null) warn(windowNotice(window))
     const coverage = logCoverage(await readLogBounds(logPath), sinceMs, Date.now())
     if (coverage?.pruned) warnPruned(coverage.firstTimestamp)
+    const sessionWarnings: string[] = []
     const sessions = await listSessions({
       logPath,
       dbPath: flag(flags, "--db"),
       sinceMs,
       dir: flag(flags, "--dir"),
+      warnings: sessionWarnings,
     })
+    for (const message of sessionWarnings) warn(`warn: ${message}`)
     if (json) {
-      console.log(JSON.stringify(toSessionsJson(sessions, window, coverage)))
-    } else {
-      console.log(sessions.length > 0 ? formatSessions(sessions) : "no sessions")
+      console.log(JSON.stringify(toSessionsJson(sessions, window, coverage, sessionWarnings)))
+    } else if (sessions.length > 0) {
+      console.log(formatSessions(sessions))
+    } else if (sessionWarnings.length === 0) {
+      console.log("no sessions")
     }
-    return 0
+    return sessionWarnings.length > 0 ? 1 : 0
   }
 
   if (command === "last") {
@@ -443,6 +451,7 @@ export const run = async (argv: string[]): Promise<number> => {
   // show + reads share the joined records
   let by: Map<string, EnrichedRecord[]>
   let warnings: string[]
+  let logUnreadable = false
   if (treeMode) {
     const { by: loaded, warnings: treeWarnings, childCount } = await loadTreeRecords({ dbPath: flag(flags, "--db"), logPath, sessionID: sid, sinceMs: windowMs })
     if (childCount > 0) warn(`tree: ${childCount + 1} sessions (${childCount} children)`)
@@ -452,6 +461,7 @@ export const run = async (argv: string[]): Promise<number> => {
     const r = await joinSession({ sessionID: sid, dbPath: flag(flags, "--db"), logPath, sinceMs: windowMs })
     by = new Map([[sid, r.records]])
     warnings = r.warnings
+    logUnreadable = r.logUnreadable
   }
   for (const w of warnings) warn(`warn: ${w}`)
   const kind = flag(flags, "--kind")
@@ -463,12 +473,13 @@ export const run = async (argv: string[]): Promise<number> => {
   if (command === "reads") {
     const stats = readDigest(merged)
     if (json) {
-      console.log(JSON.stringify({ session: sid, reads: stats, window }))
+      console.log(JSON.stringify({ session: sid, reads: stats, window, warnings }))
     } else {
       const text = formatReads(stats)
-      console.log(text.length > 0 ? text : "no read records")
+      if (text.length > 0) console.log(text)
+      else if (warnings.length === 0) console.log("no read records")
     }
-    return 0
+    return logUnreadable ? 1 : 0
   }
 
   // show

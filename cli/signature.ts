@@ -8,7 +8,32 @@ const SUBCOMMAND_TOOLS = new Set([
   "python", "python3", "node", "deno",
 ])
 const WRAPPERS = new Set(["sudo", "env", "time", "nohup", "xargs", "sh", "bash", "zsh", "dash"])
+const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "dash"])
 const SECOND_LEVEL = new Set(["run", "exec", "runCommand"])
+/** Wrapper flags that consume the following token (so `sudo -u bob git log`
+ * signs as `git log`, not `bob <arg> <arg>`). Boolean flags are skipped one
+ * token at a time by `skipWrapperFlags`. */
+const WRAPPER_VALUE_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set(["-u", "-g", "-p", "-C", "-D", "-r", "-t", "-U"]),
+  env: new Set(["-u", "-C"]),
+  time: new Set(["-f", "-o"]),
+  xargs: new Set(["-n", "-I", "-L", "-P", "-s", "-d", "-a", "-E", "-e", "-l", "-i"]),
+}
+
+/** Drop the wrapper's own options before reading the wrapped command. */
+const skipWrapperFlags = (tokens: string[], wrapper: string): string[] => {
+  const withValue = WRAPPER_VALUE_FLAGS[wrapper]
+  let i = 0
+  while (i < tokens.length && tokens[i].startsWith("-") && tokens[i] !== "-") {
+    const flag = tokens[i]
+    if (flag === "--") {
+      i += 1
+      break
+    }
+    i += withValue?.has(flag) && i + 1 < tokens.length ? 2 : 1
+  }
+  return tokens.slice(i)
+}
 
 /** Split on top-level separators, respecting single/double quotes. */
 const splitTop = (command: string, separators: string[]): string[] => {
@@ -53,7 +78,10 @@ const splitTop = (command: string, separators: string[]): string[] => {
 
 /** Tokenize respecting quotes; drops redirection targets. */
 const tokenize = (segment: string): string[] => {
-  const noRedirect = splitTop(segment, [">", "<"]).filter((_, index) => index === 0)
+  // `cmd 2>&1` / `cmd 2>file`: the fd number belongs to the redirection,
+  // not to the command shape (`cmd`, never `cmd <n>`).
+  const withoutFd = segment.replace(/\b\d+(?=[<>])/g, "")
+  const noRedirect = splitTop(withoutFd, [">", "<"]).filter((_, index) => index === 0)
   const text = noRedirect[0] ?? ""
   const tokens: string[] = []
   let current = ""
@@ -177,7 +205,14 @@ export const stripHeredoc = (text: string): string => {
     const rest = out.slice(afterOpener)
     const close = rest.match(new RegExp(`^${marker}[ \\t]*\\r?$`, "m"))
     if (!close || close.index === undefined) break
-    const next = out.slice(0, afterOpener) + " <body> " + rest.slice(close.index + close[0].length)
+    // Keep whatever follows the opener on its own line (`cat <<'PY' |
+    // python3`): only the body between the opener line and the closer is
+    // replaced, so the pipe stays part of the command shape.
+    const lineEnd = rest.indexOf("\n")
+    if (lineEnd < 0) break
+    const openerTail = rest.slice(0, lineEnd)
+    if (close.index < lineEnd + 1) break
+    const next = out.slice(0, afterOpener) + openerTail + " <body> " + rest.slice(close.index + close[0].length)
     if (next === out) break
     out = next
   }
@@ -203,11 +238,16 @@ export const signature = (command: unknown): string => {
     while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens = tokens.slice(1)
     // unwrap wrappers: sudo, sh -c, env ...
     while (tokens.length > 1 && WRAPPERS.has(basename(tokens[0]).toLowerCase())) {
+      const wrapper = basename(tokens[0]).toLowerCase()
       tokens = tokens.slice(1)
-      if ((tokens[0] === "-c" || tokens[0] === "-lc") && tokens.length > 1) {
+      if (SHELL_WRAPPERS.has(wrapper) && (tokens[0] === "-c" || tokens[0] === "-lc") && tokens.length > 1) {
         const inner = tokens.slice(1).join(" ").replace(/^["']|["']$/g, "")
         return `sh-c:${signature(inner)}`
       }
+      // env-style leading assignments and the wrapper's own flags/values
+      // are not part of the wrapped command's shape.
+      while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens = tokens.slice(1)
+      tokens = skipWrapperFlags(tokens, wrapper)
     }
     if (tokens.length === 0) return "empty"
     const head = basename(tokens[0]).toLowerCase()

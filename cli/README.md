@@ -39,8 +39,8 @@ pnpm ow:parity           # scripts/check-ow-parity.sh [<old> <new>] (migration g
   sidecar/binary missing (2).
 - Byte-identical migration gate: `scripts/check-ow-parity.sh` replays
   `--help`, `sessions --json` on the committed fixture log
-  (byte-compared; the additive `window`/`coverage` keys are asserted on
-  the new side and stripped), and `doctor --json` by envelope keys + exit
+  (byte-compared; the additive `window`/`coverage`/`warnings` keys are
+  asserted on the new side and stripped), and `doctor --json` by envelope keys + exit
   code only (wall-clock fields vary by construction). `version --json` is
   checked by exit code and envelope keys (build identity differs by
   construction). The nine retired supervision verbs must exit 2 with the
@@ -87,7 +87,7 @@ The sidecar record carries `messageID` (null for old rows), which keys into Open
 # session account / reads
 ./ow meta <sessionID>
 ./ow reads <sessionID> [--since 1d]
-# machine output (stable English keys) for show/meta/sessions
+# machine output (stable English keys) for show/meta/sessions/reads
 ./ow show <sessionID> --json
 # exit codes: 0 ok, 1 structural failure, 2 usage error; always non-interactive
 ```
@@ -98,7 +98,7 @@ Direct `bun doctor.ts` / `bun join.ts <session>
 [--tree] ...` invocations remain as fallback and share the same
 tree loader (`tree.ts`); `ow` subcommands map 1:1 to those views.
 
-`join.ts` is fail-soft: unreadable DB or missing message table yields records with `intent: null` plus a stderr warning, never a crash. The DB schema is OpenCode-internal; if a future version moves the table, only intent attachment degrades — shell logging is unaffected.
+`join.ts` is fail-soft for the intent join: an unreadable DB or a missing message table yields records with `intent: null` plus a stderr warning, never a crash. An unreadable shell log is not a degrade: `sessions`/`reads` exit 1, print the warning to stderr, and carry it in the additive `warnings` array of their `--json` envelopes (stdout stays parse-clean). The DB schema is OpenCode-internal; if a future version moves the table, only intent attachment degrades — shell logging is unaffected.
 
 Grouped `show` counts records, not commands: the task header
 `(N records, M failed)` sums every joined row (shell commands, file
@@ -122,6 +122,11 @@ the store. `pruned` is `true` only when a `--since` window starts before
 `firstTimestamp` (records older than the window may have been dropped by the
 ring cap); it is `false` without a window. Human output prints the same fact
 as a stderr line `log starts at <ISO>; older records were pruned by the ring cap`.
+
+`sessions --json` and `reads --json` also carry the additive
+`warnings: []` array. A non-empty array accompanies exit 1 when the shell log
+cannot be read (an unreadable intent DB remains a warning only: shell records
+still render with `intent: null`).
 
 ## Observer health (`doctor`) and build identity
 
